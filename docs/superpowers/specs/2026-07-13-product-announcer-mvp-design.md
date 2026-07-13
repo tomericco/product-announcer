@@ -12,8 +12,8 @@ Frontitude is tenant #1, using its own product repos as the first real workload 
 ### Goals
 
 - Automatically capture merged PRs and commits from connected GitHub repos.
-- On a per-tenant configurable schedule (cadence and/or backlog threshold), batch pending changes into a single AI-drafted announcement written in the tenant's configured brand voice.
-- Let a human review, edit, and approve/reject drafts before anything is considered published.
+- On a per-tenant configurable schedule (cadence and/or backlog threshold), batch pending changes into a single AI-drafted announcement written in the tenant's configured brand voice and grounded in their product context (industry, user personas).
+- Let a human review, edit, preview, and approve/reject drafts before anything is considered published.
 - Expose approved updates as JSON via API and outbound webhook, for downstream systems to consume.
 - Give tenants a history view of every update ever generated, for auditing what's been communicated to their users over time.
 - Give tenants visibility into what's queued for the *next* announcement — the pending changes and when the next run will fire — let them drop individual changes they don't want announced, and let them trigger that run early instead of waiting.
@@ -60,14 +60,14 @@ Manual "Run now" follow-up (after the batch is generated):
 
 Generation worker
     → fetch the batch's ChangeItems (PR and/or commit sourced, mixed is fine)
-    → build a prompt: each item's content + the tenant's VoiceProfile
+    → build a prompt: each item's content + the tenant's BrandProfile
     → AI SDK generate → ONE structured draft (title, body, category, sourceItems[])
     → store as Update (status: draft)
 
 Onboarding (first-run gate, before any dashboard view is shown)
     → Step 1: install GitHub App, select repo(s)
     → Step 2: set ScheduleConfig (cadence + threshold)
-    → VoiceProfile auto-created with neutral defaults, editable later — not required to finish onboarding
+    → BrandProfile auto-created with neutral defaults, editable later — not required to finish onboarding
     → once both steps complete → tenant lands on the Pending view
 
 Dashboard (Next.js, NextAuth-gated, tenant-scoped)
@@ -80,12 +80,16 @@ Dashboard (Next.js, NextAuth-gated, tenant-scoped)
           remaining pending (non-excluded) items; resulting Update still lands as a draft
           for review, same as any scheduled run. Immediately after, prompts: keep the next
           scheduled update the same, or skip it (see Scheduler above for the mechanics)
-    → Drafts queue: pending AI drafts awaiting review/edit/approval
+    → Drafts queue: pending AI drafts awaiting review
+        - user can freely edit title/body/category before publishing (saved to the Update row)
+        - "Preview" shows the current title/body/category rendered in a generic changelog-card
+          mockup (headline, body, category badge, date) — a QA aid for catching formatting/length
+          issues before publish, not a real delivery surface (see Non-goals)
+        - user approves → status: draft → published, publishedAt set
     → History view: every Update ever generated (draft/approved/published/rejected),
       filterable by status/date/repo — the audit trail of what's been told to users
     → Integrations: manage the active Generic Webhook, browse coming-soon integrations
-    → Settings: repo connections, VoiceProfile, ScheduleConfig
-    → user edits a draft → approves → status: draft → published, publishedAt set
+    → Settings: repo connections, BrandProfile, ScheduleConfig
 
 Publish
     → on publish: available immediately via GET /api/tenants/:id/updates?status=published
@@ -100,8 +104,8 @@ External system (future: CMS, Webflow, Customer.io, etc.)
 - **Ingestion** — GitHub App webhook handler. Verifies signature, extracts PR-merge or push/commit data per the repo's configured `sourceTypes`, writes `ChangeItem` rows. Does not trigger generation directly.
 - **Onboarding** — first-run gate before any dashboard view: connect GitHub + set a schedule. Blocks access to the rest of the dashboard until both steps are done.
 - **Scheduler** — evaluates each tenant/repo's `ScheduleConfig` (cadence and threshold, whichever comes first) and decides whether to fire a batch; also the entry point for a manual "Run now" trigger, which fires unconditionally.
-- **Generation worker** — consumes a batch of `ChangeItem`s (scheduled or manually triggered), calls the AI SDK with the tenant's `VoiceProfile` and the batch's content, writes one `Update`.
-- **Dashboard** — Pending view (next run + pending changes + Run now), drafts queue, history view, integrations, and settings (repos, voice profile, schedule).
+- **Generation worker** — consumes a batch of `ChangeItem`s (scheduled or manually triggered), calls the AI SDK with the tenant's `BrandProfile` and the batch's content, writes one `Update`.
+- **Dashboard** — Pending view (next run + pending changes + Run now), drafts queue (with preview + edit), history view, integrations, and settings (repos, brand profile, schedule).
 - **Integrations** — see dedicated section below; owns outbound delivery of published updates.
 - **Publish API** — read endpoint for polling, used regardless of which (if any) integration is active.
 - **Auth** — NextAuth (Auth.js), org/tenant-scoped sessions.
@@ -133,9 +137,12 @@ ScheduleConfig
   -- collapsing that into "restart the clock from now" (which lastRunAt-derived math would do).
   -- lastRunAt is pure record-keeping (last time any run happened, for the Pending view / History).
 
-VoiceProfile
-  id, tenantId, tone, readingLevel, doList, dontList, examplePhrases
+BrandProfile
+  id, tenantId, tone, readingLevel, doList, dontList, examplePhrases,
+  industry, userPersonas (array of strings)
   -- auto-created with neutral defaults when a tenant finishes onboarding; not required to fill in
+  -- industry + userPersonas are injected into the same generation prompt as tone/style, so the
+  -- AI writes for a defined audience ("engineering managers at a B2B SaaS") rather than nobody
 
 ChangeItem
   id, tenantId, repoId, sourceType ("pr" | "commit"), status (pending/batched/excluded),
@@ -200,9 +207,14 @@ A dedicated dashboard section that presents delivery of published `Update`s as a
 
 The coming-soon list exists to communicate product direction and collect intent (e.g. a "notify me" click), not to be configured or wired up yet. Turning one of these into a real integration later means adding its own config schema and a delivery implementation, following the same pattern as Generic Webhook — the Integrations section is designed to hold more than one active entry, not to be replaced.
 
-## Voice Profile
+## Brand Profile
 
-Each tenant configures a `VoiceProfile` (tone, reading level, do's/don'ts, example phrases) that's injected into every generation prompt alongside the batch's `ChangeItem` content. This is the product's core differentiator versus generic AI-changelog tools, so it's built into the MVP rather than deferred.
+Each tenant configures a `BrandProfile` covering both *how* they write and *who* they're writing for:
+
+- **Voice/style:** tone, reading level, do's/don'ts, example phrases.
+- **Product context:** industry (e.g. "B2B project management SaaS") and user personas (e.g. "engineering managers," "IC developers").
+
+Both halves are injected into the same generation prompt alongside the batch's `ChangeItem` content — tone dictates *how* it's said, industry/personas dictate *what matters* and *how much explaining is needed* for that audience. Keeping them in one entity/settings page reflects that they're really one input to the model, not two independent concerns. This combined context is the product's core differentiator versus generic AI-changelog tools, so it's built into the MVP rather than deferred.
 
 ## Error Handling
 
