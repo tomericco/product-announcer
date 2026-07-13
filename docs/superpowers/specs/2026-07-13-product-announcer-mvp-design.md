@@ -16,6 +16,7 @@ Frontitude is tenant #1, using its own product repos as the first real workload 
 - Let a human review, edit, and approve/reject drafts before anything is considered published.
 - Expose approved updates as JSON via API and outbound webhook, for downstream systems to consume.
 - Give tenants a history view of every update ever generated, for auditing what's been communicated to their users over time.
+- Give tenants visibility into what's queued for the *next* announcement — the pending changes and when the next run will fire — and let them trigger that run early instead of waiting.
 
 ### Non-goals (explicitly out of scope for this MVP)
 
@@ -34,14 +35,17 @@ GitHub PR merged / commits pushed
     → verify signature, extract PR or commit data
     → store as ChangeItem (tenant, repo, sourceType: "pr" | "commit", status: pending)
 
-Scheduler (Vercel Cron, periodic tick e.g. hourly)
+Scheduler (Vercel Cron, periodic tick e.g. hourly; OR a manual "Run now" click)
     → for each tenant+repo's ScheduleConfig:
         - has the cadence deadline passed? → trigger
         - OR has the pending ChangeItem count >= threshold? → trigger
+        - OR was a manual run just requested? → trigger, provided pending count > 0
+          ("Run now" is disabled in the UI when there's nothing pending — no empty updates, ever)
         - if pending count == 0 at a cadence tick → skip silently, no empty update
     → on trigger: collect all pending ChangeItems for that repo since the last run
     → enqueue ONE generation job for that batch
     → mark those ChangeItems "batched" (linked to the Update once created)
+    → set ScheduleConfig.lastRunAt = now, regardless of what triggered the run
 
 Generation worker
     → fetch the batch's ChangeItems (PR and/or commit sourced, mixed is fine)
@@ -49,7 +53,19 @@ Generation worker
     → AI SDK generate → ONE structured draft (title, body, category, sourceItems[])
     → store as Update (status: draft)
 
+Onboarding (first-run gate, before any dashboard view is shown)
+    → Step 1: install GitHub App, select repo(s)
+    → Step 2: set ScheduleConfig (cadence + threshold)
+    → VoiceProfile auto-created with neutral defaults, editable later — not required to finish onboarding
+    → once both steps complete → tenant lands on the Pending view
+
 Dashboard (Next.js, NextAuth-gated, tenant-scoped)
+    → Pending view (default landing page post-onboarding):
+        - next scheduled run time, computed from ScheduleConfig.cadence + lastRunAt
+        - current pending ChangeItem count vs. threshold
+        - list of pending ChangeItems (not yet batched) for the repo
+        - "Run now" action → manually triggers the Scheduler logic immediately (see above);
+          resulting Update still lands as a draft for review, same as any scheduled run
     → Drafts queue: pending AI drafts awaiting review/edit/approval
     → History view: every Update ever generated (draft/approved/published/rejected),
       filterable by status/date/repo — the audit trail of what's been told to users
@@ -68,9 +84,10 @@ External system (future: CMS, Webflow, Customer.io, etc.)
 ### Components
 
 - **Ingestion** — GitHub App webhook handler. Verifies signature, extracts PR-merge or push/commit data per the repo's configured `sourceTypes`, writes `ChangeItem` rows. Does not trigger generation directly.
-- **Scheduler** — periodic job that evaluates each tenant/repo's `ScheduleConfig` (cadence and threshold, whichever comes first) and decides whether to fire a batch.
-- **Generation worker** — consumes a scheduled batch of `ChangeItem`s, calls the AI SDK with the tenant's `VoiceProfile` and the batch's content, writes one `Update`.
-- **Dashboard** — drafts queue, history view, integrations, and settings (repos, voice profile, schedule).
+- **Onboarding** — first-run gate before any dashboard view: connect GitHub + set a schedule. Blocks access to the rest of the dashboard until both steps are done.
+- **Scheduler** — evaluates each tenant/repo's `ScheduleConfig` (cadence and threshold, whichever comes first) and decides whether to fire a batch; also the entry point for a manual "Run now" trigger, which fires unconditionally.
+- **Generation worker** — consumes a batch of `ChangeItem`s (scheduled or manually triggered), calls the AI SDK with the tenant's `VoiceProfile` and the batch's content, writes one `Update`.
+- **Dashboard** — Pending view (next run + pending changes + Run now), drafts queue, history view, integrations, and settings (repos, voice profile, schedule).
 - **Integrations** — see dedicated section below; owns outbound delivery of published updates.
 - **Publish API** — read endpoint for polling, used regardless of which (if any) integration is active.
 - **Auth** — NextAuth (Auth.js), org/tenant-scoped sessions.
@@ -96,9 +113,12 @@ ScheduleConfig
   threshold (int, e.g. 5), lastRunAt
   -- cadence "none" means threshold is the only trigger (no calendar deadline ever fires);
   -- threshold 0/null means cadence is the only trigger (fires every tick regardless of count)
+  -- "next run" shown in the Pending view is computed on read as lastRunAt + cadence interval,
+  -- not stored — a manual "Run now" resets lastRunAt, which pushes the next cadence deadline out too
 
 VoiceProfile
   id, tenantId, tone, readingLevel, doList, dontList, examplePhrases
+  -- auto-created with neutral defaults when a tenant finishes onboarding; not required to fill in
 
 ChangeItem
   id, tenantId, repoId, sourceType ("pr" | "commit"), status (pending/batched), updateId (nullable),
@@ -167,6 +187,7 @@ Each tenant configures a `VoiceProfile` (tone, reading level, do's/don'ts, examp
 
 - **Webhook ingestion** — verify GitHub signature; reject invalid payloads. Malformed payloads are logged and dropped, not retried (GitHub itself retries webhook delivery on failure).
 - **Scheduler run** — if generation fails for a batch, its `ChangeItem`s stay `pending` (not marked `batched`) and roll into the next run rather than being lost.
+- **Manual "Run now" vs. cadence tick racing** — a run (manual or scheduled) claims its batch by marking `ChangeItem`s `batched` in the same transaction that creates the `Update`; a concurrent trigger for the same repo simply finds nothing left `pending` and no-ops rather than double-batching.
 - **Generation** — AI SDK call failures get one retry; if still failing, the batch is flagged (e.g. `failed` status) and surfaces in the dashboard for manual retry.
 - **Outbound webhook delivery** — signed (HMAC) payload, retried with backoff (e.g. 3 attempts), tracked in `WebhookDelivery`. The polling API remains the source of truth even if push delivery ultimately fails.
 
