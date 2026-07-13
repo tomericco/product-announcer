@@ -216,12 +216,33 @@ Each tenant configures a `BrandProfile` covering both *how* they write and *who*
 
 Both halves are injected into the same generation prompt alongside the batch's `ChangeItem` content — tone dictates *how* it's said, industry/personas dictate *what matters* and *how much explaining is needed* for that audience. Keeping them in one entity/settings page reflects that they're really one input to the model, not two independent concerns. This combined context is the product's core differentiator versus generic AI-changelog tools, so it's built into the MVP rather than deferred.
 
+## Generation Strategy
+
+How the generation worker turns a batch + `BrandProfile` into an `Update` — the architectural decisions here, not the literal prompt wording (that's tuned iteratively during implementation).
+
+**Structured output, not free-text parsing.** Generate with the AI SDK's schema-constrained mode (`generateObject`) against a Zod schema matching `{ title, body, category }`. This guarantees a parseable result and removes the need for ad-hoc JSON extraction/repair from a text completion. A result that fails schema validation is treated as a generation failure and follows the same retry-then-flag path as any other AI SDK error (see Error Handling).
+
+**Batch serialization.** Each `ChangeItem` in the batch is rendered into the prompt as a numbered entry tagged with its source type, so the model can distinguish a PR from a raw commit:
+```
+1. [PR #142] "Add dark mode toggle" — <PR description>
+2. [commit a1b2c3d] "fix export timeout" — <diff, truncated>
+3. [PR #145] "Rebuild search indexing" — <PR description>
+```
+The model is not asked to echo back which items it used — `Update.sourceItems` is populated directly from the batch's `ChangeItem` ids by the app, not parsed out of the AI's response.
+
+**Truncation / context limits.** Commit diffs are the main risk of blowing the context window:
+- Each commit-sourced `ChangeItem`'s diff is capped at a fixed length (e.g. first ~200 lines) before it ever reaches the prompt.
+- If the full serialized batch still exceeds a configured token budget, items are included title/message-only (diff dropped) starting with the largest diffs, rather than failing the run or silently chunking into multiple AI calls.
+- This is a fixed, logged fallback for the MVP, not a summarization pipeline — worth revisiting once real batches show whether it's actually needed.
+
+**Model/provider.** Generation runs through the AI SDK v6 via the Vercel AI Gateway, using a single model configured at the platform level (not per-tenant) for the MVP — e.g. `"anthropic/claude-sonnet-4-5"`. The Gateway makes this a config change, not a code change, when the default model needs to move.
+
 ## Error Handling
 
 - **Webhook ingestion** — verify GitHub signature; reject invalid payloads. Malformed payloads are logged and dropped, not retried (GitHub itself retries webhook delivery on failure).
 - **Scheduler run** — if generation fails for a batch, its `ChangeItem`s stay `pending` (not marked `batched`) and roll into the next run rather than being lost.
 - **Manual "Run now" vs. cadence tick racing** — a run (manual or scheduled) claims its batch by marking `ChangeItem`s `batched` in the same transaction that creates the `Update`; a concurrent trigger for the same repo simply finds nothing left `pending` and no-ops rather than double-batching.
-- **Generation** — AI SDK call failures get one retry; if still failing, the batch is flagged (e.g. `failed` status) and surfaces in the dashboard for manual retry.
+- **Generation** — AI SDK call failures *and* schema-validation failures (see Generation Strategy) get one retry; if still failing, the batch is flagged (e.g. `failed` status) and surfaces in the dashboard for manual retry.
 - **Outbound webhook delivery** — signed (HMAC) payload, retried with backoff (e.g. 3 attempts), tracked in `WebhookDelivery`. The polling API remains the source of truth even if push delivery ultimately fails.
 
 ## Tech Stack
