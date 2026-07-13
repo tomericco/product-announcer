@@ -2,22 +2,21 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Expose published `Update`s to the outside world — a per-tenant API-key-authenticated read endpoint, plus a signed outbound webhook fired on publish with a retry sweep — and give tenants an Integrations page to configure the one working delivery mechanism (Generic Webhook) alongside a "coming soon" catalog.
+**Goal:** Deliver published `Update`s to the outside world via a signed outbound webhook fired on publish, with a retry sweep — and give tenants an Integrations page to configure the one working delivery mechanism (Generic Webhook) alongside a "coming soon" catalog. There is no read/polling API in this MVP; webhook is the only delivery mechanism.
 
-**Architecture:** Each tenant gets a hashed API key (`tenants.apiKeyHash`) for the headless read API (`GET /api/updates`, `Authorization: Bearer <key>`). On publish (Drafts queue's "Approve & publish"), a signed HMAC POST is attempted once, synchronously, against the tenant's `WebhookConfig` if one is active; the attempt is recorded as a `WebhookDelivery` row regardless of outcome. A retry sweep for failed deliveries piggybacks on the existing hourly scheduler cron tick rather than adding new job infrastructure — coarse hourly backoff, not precise exponential timing, which is an acceptable trade-off given the tick granularity already established in Plan 3.
+**Architecture:** On publish (Drafts queue's "Approve & publish"), a signed HMAC POST is attempted once, synchronously, against the tenant's `WebhookConfig` if one is active; the attempt is recorded as a `WebhookDelivery` row regardless of outcome. A retry sweep for failed deliveries piggybacks on the existing hourly scheduler cron tick rather than adding new job infrastructure — coarse hourly backoff, not precise exponential timing, which is an acceptable trade-off given the tick granularity already established in Plan 3.
 
-**Tech Stack:** Node's built-in `crypto` (HMAC signing, API key hashing), no new dependencies.
+**Tech Stack:** Node's built-in `crypto` (HMAC signing), no new dependencies.
 
 ## Global Constraints
 
-- The read API and outbound webhook are the *only* functional delivery mechanisms in this MVP — the Integrations page's "coming soon" entries (Webflow, Customer.io, Mailchimp, HubSpot) remain static, unconfigurable list items with no backing table or delivery logic. (Design spec: "Integrations")
-- API keys are stored hashed (SHA-256), never in plaintext, and are only ever shown to the user once, immediately after generation.
-- **Known trade-off, documented not silently accepted:** the newly generated raw API key is passed through a redirect query param (`/settings?newApiKey=...`) to keep this plan free of client-side state, per Plan 4's "no client JS state" constraint. This means the raw key transiently appears in the URL and potentially server access logs. Acceptable for an internal-only MVP tenant; revisit (e.g. a client component with `useActionState` instead) before onboarding real external tenants.
+- Generic Webhook is the *only* functional delivery mechanism in this MVP — the Integrations page's "coming soon" entries (Webflow, Customer.io, Mailchimp, HubSpot) remain static, unconfigurable list items with no backing table or delivery logic. (Design spec: "Integrations")
+- There is no read/polling API in this MVP, and none should be added in this plan — a tenant with no webhook configured simply gets no outbound delivery; the `Update` still exists and is visible in History. (Design spec: Overview, Non-goals)
 - Outbound webhook delivery must never block or fail the publish action itself — a delivery failure is recorded, not thrown; the draft is still published either way.
 
 ---
 
-### Task 1: Extend the schema — API key, `WebhookConfig`, `WebhookDelivery`
+### Task 1: Extend the schema — `WebhookConfig`, `WebhookDelivery`
 
 **Files:**
 - Modify: `src/db/schema.ts`
@@ -25,9 +24,9 @@
 
 **Interfaces:**
 - Consumes: `tenants`, `updates` (Plans 1, 3).
-- Produces: `tenants.apiKeyHash` column, `webhookConfigs`, `webhookDeliveries` tables + `webhookDeliveryStatusEnum`.
+- Produces: `webhookConfigs`, `webhookDeliveries` tables + `webhookDeliveryStatusEnum`.
 
-- [ ] **Step 1: Add the API key column and the new tables**
+- [ ] **Step 1: Add the new tables**
 
 Modify `src/db/schema.ts`:
 
@@ -35,16 +34,7 @@ Modify `src/db/schema.ts`:
    ```typescript
    import { pgTable, pgEnum, uuid, text, timestamp, primaryKey, integer, jsonb, boolean } from "drizzle-orm/pg-core";
    ```
-2. In the `tenants` table definition, add an `apiKeyHash` field:
-   ```typescript
-   export const tenants = pgTable("tenants", {
-     id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
-     name: text("name").notNull(),
-     apiKeyHash: text("api_key_hash"),
-     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-   });
-   ```
-3. Append to the end of the file:
+2. Append to the end of the file:
    ```typescript
    export const webhookDeliveryStatusEnum = pgEnum("webhook_delivery_status", ["pending", "success", "failed"]);
 
@@ -80,7 +70,7 @@ Modify `src/db/schema.ts`:
 ```bash
 npm run db:generate
 ```
-Expected: `2 tables` new (`webhook_configs`, `webhook_deliveries`) plus an `ALTER TABLE "tenants" ADD COLUMN "api_key_hash" text` — not a `tenants` table rebuild.
+Expected: `2 tables` new (`webhook_configs`, `webhook_deliveries`) — no changes to any existing table.
 
 ```bash
 npm run db:migrate
@@ -101,11 +91,11 @@ describe("publish/integrations schema", () => {
     await db.delete(tenants).where(eq(tenants.name, "Publish Schema Test Tenant"));
   });
 
-  it("stores an apiKeyHash on tenants and links a WebhookDelivery to a WebhookConfig and an Update", async () => {
-    const [tenant] = await db.insert(tenants).values({ name: "Publish Schema Test Tenant", apiKeyHash: "abc" }).returning();
+  it("links a WebhookDelivery to a WebhookConfig and an Update", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: "Publish Schema Test Tenant" }).returning();
     const [repo] = await db
       .insert(repos)
-      .values({ tenantId: tenant.id, githubRepoFullName: "acme/x", githubInstallationId: "1", defaultBranch: "main" })
+      .values({ tenantId: tenant.id, githubRepoFullName: "acme/x", githubInstallationId: "1", watchedBranch: "main" })
       .returning();
     const [update] = await db
       .insert(updates)
@@ -123,9 +113,6 @@ describe("publish/integrations schema", () => {
 
     expect(delivery.status).toBe("pending");
     expect(delivery.attempts).toBe(0);
-
-    const [reloadedTenant] = await db.select().from(tenants).where(eq(tenants.id, tenant.id));
-    expect(reloadedTenant.apiKeyHash).toBe("abc");
   });
 });
 ```
@@ -142,214 +129,17 @@ Expected: `Tests  1 passed (1)`.
 ```bash
 git add src/db tests/db
 git commit -m "$(cat <<'EOF'
-Add apiKeyHash to tenants, plus WebhookConfig and WebhookDelivery
+Add WebhookConfig and WebhookDelivery tables
 
-Confirmed via generate/migrate as an incremental ALTER + two new
-tables, not a tenants table rebuild.
+No read/polling API in this MVP — webhook is the only delivery
+mechanism, so no API-key infrastructure is added here either.
 EOF
 )"
 ```
 
 ---
 
-### Task 2: API key generation and lookup
-
-**Files:**
-- Create: `src/lib/api-key.ts`
-- Test: `tests/lib/api-key.test.ts`
-
-**Interfaces:**
-- Consumes: `tenants` (Task 1).
-- Produces: `generateApiKey()`, `hashApiKey(rawKey)`, `regenerateApiKey(tenantId, database?)`, `findTenantByApiKey(rawKey, database?)` — Task 3's read API and Task 5's Settings extension both use these.
-
-- [ ] **Step 1: Write the failing tests**
-
-Create `tests/lib/api-key.test.ts`:
-```typescript
-import { describe, it, expect, afterEach } from "vitest";
-import { eq } from "drizzle-orm";
-import { db } from "../../src/db";
-import { tenants } from "../../src/db/schema";
-import { generateApiKey, hashApiKey, regenerateApiKey, findTenantByApiKey } from "../../src/lib/api-key";
-
-describe("api-key", () => {
-  afterEach(async () => {
-    await db.delete(tenants).where(eq(tenants.name, "API Key Test Tenant"));
-  });
-
-  it("generateApiKey returns a raw key whose hash matches hashApiKey", () => {
-    const { rawKey, hash } = generateApiKey();
-    expect(hash).toBe(hashApiKey(rawKey));
-    expect(rawKey).not.toBe(hash);
-    expect(rawKey.length).toBeGreaterThan(32);
-  });
-
-  it("regenerateApiKey stores the hash and findTenantByApiKey resolves the raw key back to the tenant", async () => {
-    const [tenant] = await db.insert(tenants).values({ name: "API Key Test Tenant" }).returning();
-
-    const rawKey = await regenerateApiKey(tenant.id);
-
-    const resolvedTenantId = await findTenantByApiKey(rawKey);
-    expect(resolvedTenantId).toBe(tenant.id);
-  });
-
-  it("findTenantByApiKey returns null for an unknown key", async () => {
-    expect(await findTenantByApiKey("not-a-real-key")).toBeNull();
-  });
-
-  it("regenerating invalidates the previous key", async () => {
-    const [tenant] = await db.insert(tenants).values({ name: "API Key Test Tenant" }).returning();
-
-    const firstKey = await regenerateApiKey(tenant.id);
-    const secondKey = await regenerateApiKey(tenant.id);
-
-    expect(await findTenantByApiKey(firstKey)).toBeNull();
-    expect(await findTenantByApiKey(secondKey)).toBe(tenant.id);
-  });
-});
-```
-
-- [ ] **Step 2: Run it and confirm it fails**
-
-```bash
-npx vitest run tests/lib/api-key.test.ts
-```
-Expected: FAIL — `Cannot find module '../../src/lib/api-key'`.
-
-- [ ] **Step 3: Implement it**
-
-Create `src/lib/api-key.ts`:
-```typescript
-import { randomBytes, createHash } from "node:crypto";
-import { eq } from "drizzle-orm";
-import { db as defaultDb } from "../db";
-import { tenants } from "../db/schema";
-
-export function hashApiKey(rawKey: string): string {
-  return createHash("sha256").update(rawKey).digest("hex");
-}
-
-export function generateApiKey(): { rawKey: string; hash: string } {
-  const rawKey = randomBytes(32).toString("hex");
-  return { rawKey, hash: hashApiKey(rawKey) };
-}
-
-export async function regenerateApiKey(tenantId: string, database: typeof defaultDb = defaultDb): Promise<string> {
-  const { rawKey, hash } = generateApiKey();
-  await database.update(tenants).set({ apiKeyHash: hash }).where(eq(tenants.id, tenantId));
-  return rawKey;
-}
-
-export async function findTenantByApiKey(
-  rawKey: string,
-  database: typeof defaultDb = defaultDb
-): Promise<string | null> {
-  const hash = hashApiKey(rawKey);
-  const [tenant] = await database.select({ id: tenants.id }).from(tenants).where(eq(tenants.apiKeyHash, hash)).limit(1);
-  return tenant?.id ?? null;
-}
-```
-
-- [ ] **Step 4: Run it and confirm it passes**
-
-```bash
-npx vitest run tests/lib/api-key.test.ts
-```
-Expected: `Tests  4 passed (4)`.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add src/lib/api-key.ts tests/lib/api-key.test.ts
-git commit -m "$(cat <<'EOF'
-Add hashed API key generation and lookup for the publish read API
-EOF
-)"
-```
-
----
-
-### Task 3: Publish read API
-
-**Files:**
-- Create: `src/app/api/updates/route.ts`
-
-**Interfaces:**
-- Consumes: `findTenantByApiKey` (Task 2), `updates` (Plan 3).
-- Produces: `GET /api/updates` (optionally `?repoId=`), the headless read endpoint described in the design spec's Overview.
-
-- [ ] **Step 1: Implement the route**
-
-Create `src/app/api/updates/route.ts`:
-```typescript
-import { NextRequest, NextResponse } from "next/server";
-import { and, eq } from "drizzle-orm";
-import { db } from "@/db";
-import { updates } from "@/db/schema";
-import { findTenantByApiKey } from "@/lib/api-key";
-
-export async function GET(request: NextRequest) {
-  const authHeader = request.headers.get("authorization");
-  const rawKey = authHeader?.startsWith("Bearer ") ? authHeader.slice("Bearer ".length) : null;
-  if (!rawKey) {
-    return NextResponse.json({ error: "missing API key" }, { status: 401 });
-  }
-
-  const tenantId = await findTenantByApiKey(rawKey);
-  if (!tenantId) {
-    return NextResponse.json({ error: "invalid API key" }, { status: 401 });
-  }
-
-  const repoId = request.nextUrl.searchParams.get("repoId");
-  const conditions = repoId
-    ? and(eq(updates.tenantId, tenantId), eq(updates.status, "published"), eq(updates.repoId, repoId))
-    : and(eq(updates.tenantId, tenantId), eq(updates.status, "published"));
-
-  const results = await db.select().from(updates).where(conditions);
-
-  return NextResponse.json({ updates: results });
-}
-```
-
-- [ ] **Step 2: Verify the app still builds**
-
-```bash
-npm run build
-```
-Expected: `✓ Compiled successfully`, now including `/api/updates`.
-
-- [ ] **Step 3: Manually verify end to end**
-
-Requires at least one `published` `Update` (from Plan 4's Drafts queue manual verification) and a real API key.
-
-1. Generate a key for your tenant (Task 5 adds the UI for this — for now, call `regenerateApiKey` directly):
-   ```bash
-   docker exec product-announcer-postgres psql -U postgres -d product_announcer -c "select id, name from tenants;"
-   ```
-   then, in a `node -e` one-liner or a scratch script using the running app's env, call `regenerateApiKey('<tenant-id>')` and note the printed raw key — or simply wait for Task 5 and use the Settings UI, then return to this step.
-2. `curl -H "Authorization: Bearer <raw-key>" http://localhost:3000/api/updates`
-   Expected: `{"updates":[...]}` containing only `published` updates for that tenant.
-3. `curl http://localhost:3000/api/updates` (no header)
-   Expected: `401 {"error":"missing API key"}`.
-4. `curl -H "Authorization: Bearer wrong-key" http://localhost:3000/api/updates`
-   Expected: `401 {"error":"invalid API key"}`.
-
-- [ ] **Step 4: Commit**
-
-```bash
-git add src/app/api/updates
-git commit -m "$(cat <<'EOF'
-Add the headless publish read API (GET /api/updates)
-
-Bearer-token authenticated via the per-tenant hashed API key; scoped
-to published updates only, optionally filtered by repoId.
-EOF
-)"
-```
-
----
-
-### Task 4: Outbound webhook delivery + retry sweep
+### Task 2: Outbound webhook delivery + retry sweep
 
 **Files:**
 - Create: `src/lib/webhook-delivery.ts`
@@ -384,7 +174,7 @@ describe("webhook-delivery", () => {
     const [tenant] = await db.insert(tenants).values({ name: "Webhook Delivery Test Tenant" }).returning();
     const [repo] = await db
       .insert(repos)
-      .values({ tenantId: tenant.id, githubRepoFullName: "acme/x", githubInstallationId: "1", defaultBranch: "main" })
+      .values({ tenantId: tenant.id, githubRepoFullName: "acme/x", githubInstallationId: "1", watchedBranch: "main" })
       .returning();
     const [update] = await db
       .insert(updates)
@@ -703,14 +493,14 @@ EOF
 
 ---
 
-### Task 5: Integrations page + Settings API key section
+### Task 3: Integrations page
 
 **Files:**
 - Create: `src/app/(dashboard)/integrations/page.tsx`, `src/app/(dashboard)/integrations/actions.ts`
-- Modify: `src/app/(dashboard)/settings/page.tsx`, `src/app/(dashboard)/settings/actions.ts`, `src/app/(dashboard)/layout.tsx`
+- Modify: `src/app/(dashboard)/layout.tsx`
 
 **Interfaces:**
-- Consumes: `webhookConfigs` (Task 1), `regenerateApiKey` (Task 2), `requireSession` (Plan 1).
+- Consumes: `webhookConfigs` (Task 1), `requireSession` (Plan 1).
 
 - [ ] **Step 1: Implement the Integrations actions**
 
@@ -816,231 +606,7 @@ Modify `src/app/(dashboard)/layout.tsx` — add one line to the `<nav>`:
       </nav>
 ```
 
-- [ ] **Step 4: Add the API key action to Settings**
-
-Modify `src/app/(dashboard)/settings/actions.ts` — add the import and the new action:
-```typescript
-"use server";
-
-import { eq } from "drizzle-orm";
-import { revalidatePath } from "next/cache";
-import { redirect } from "next/navigation";
-import { db } from "@/db";
-import { brandProfiles, repos, scheduleConfigs } from "@/db/schema";
-import { requireSession } from "@/lib/session";
-import { getOrCreateBrandProfile } from "@/lib/brand-profile";
-import { advanceNextScheduledAt, type Cadence } from "@/lib/scheduler-decision";
-import { regenerateApiKey } from "@/lib/api-key";
-
-function splitCsv(value: FormDataEntryValue | null): string[] {
-  if (!value || typeof value !== "string") return [];
-  return value
-    .split(",")
-    .map((v) => v.trim())
-    .filter(Boolean);
-}
-
-export async function saveBrandProfile(formData: FormData) {
-  const session = await requireSession();
-  const profile = await getOrCreateBrandProfile(session.user.tenantId);
-
-  await db
-    .update(brandProfiles)
-    .set({
-      tone: (formData.get("tone") as string) || null,
-      readingLevel: (formData.get("readingLevel") as string) || null,
-      industry: (formData.get("industry") as string) || null,
-      userPersonas: splitCsv(formData.get("userPersonas")),
-      doList: splitCsv(formData.get("doList")),
-      dontList: splitCsv(formData.get("dontList")),
-      updatedAt: new Date(),
-    })
-    .where(eq(brandProfiles.id, profile.id));
-
-  revalidatePath("/settings");
-}
-
-export async function saveRepoSchedule(formData: FormData) {
-  const session = await requireSession();
-  const repoId = formData.get("repoId") as string;
-
-  const [repo] = await db.select().from(repos).where(eq(repos.id, repoId)).limit(1);
-  if (!repo || repo.tenantId !== session.user.tenantId) {
-    throw new Error("Repo not found for this tenant");
-  }
-
-  const cadence = formData.get("cadence") as Cadence;
-  const thresholdRaw = formData.get("threshold");
-  const threshold = thresholdRaw ? Number(thresholdRaw) : null;
-
-  const [existing] = await db.select().from(scheduleConfigs).where(eq(scheduleConfigs.repoId, repoId)).limit(1);
-  const nextScheduledAt = cadence === "none" ? null : advanceNextScheduledAt(new Date(), cadence);
-
-  if (existing) {
-    await db
-      .update(scheduleConfigs)
-      .set({
-        cadence,
-        threshold,
-        nextScheduledAt: cadence === existing.cadence ? existing.nextScheduledAt : nextScheduledAt,
-      })
-      .where(eq(scheduleConfigs.id, existing.id));
-  } else {
-    await db.insert(scheduleConfigs).values({ tenantId: session.user.tenantId, repoId, cadence, threshold, nextScheduledAt });
-  }
-
-  revalidatePath("/settings");
-  revalidatePath("/pending");
-}
-
-export async function regenerateTenantApiKey() {
-  const session = await requireSession();
-  const rawKey = await regenerateApiKey(session.user.tenantId);
-  redirect(`/settings?newApiKey=${rawKey}`);
-}
-```
-
-- [ ] **Step 5: Add the API key section to the Settings page**
-
-Modify `src/app/(dashboard)/settings/page.tsx` — add `searchParams`, the `tenants` import, and a new section:
-```tsx
-import { eq } from "drizzle-orm";
-import { db } from "@/db";
-import { repos, scheduleConfigs, tenants } from "@/db/schema";
-import { requireSession } from "@/lib/session";
-import { getOrCreateBrandProfile } from "@/lib/brand-profile";
-import { saveBrandProfile, saveRepoSchedule, regenerateTenantApiKey } from "./actions";
-
-export default async function SettingsPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ newApiKey?: string }>;
-}) {
-  const session = await requireSession();
-  const { newApiKey } = await searchParams;
-  const brandProfile = await getOrCreateBrandProfile(session.user.tenantId);
-  const tenantRepos = await db.select().from(repos).where(eq(repos.tenantId, session.user.tenantId));
-  const tenantSchedules = await db.select().from(scheduleConfigs).where(eq(scheduleConfigs.tenantId, session.user.tenantId));
-  const [tenant] = await db.select().from(tenants).where(eq(tenants.id, session.user.tenantId));
-
-  return (
-    <div className="space-y-12">
-      <section>
-        <h1 className="text-xl font-semibold mb-4">Brand profile</h1>
-        <form action={saveBrandProfile} className="space-y-3 max-w-lg">
-          <label className="block">
-            Tone
-            <input type="text" name="tone" defaultValue={brandProfile.tone ?? ""} className="block w-full border p-2" />
-          </label>
-          <label className="block">
-            Reading level
-            <input
-              type="text"
-              name="readingLevel"
-              defaultValue={brandProfile.readingLevel ?? ""}
-              className="block w-full border p-2"
-            />
-          </label>
-          <label className="block">
-            Industry
-            <input
-              type="text"
-              name="industry"
-              defaultValue={brandProfile.industry ?? ""}
-              className="block w-full border p-2"
-            />
-          </label>
-          <label className="block">
-            User personas (comma-separated)
-            <input
-              type="text"
-              name="userPersonas"
-              defaultValue={brandProfile.userPersonas.join(", ")}
-              className="block w-full border p-2"
-            />
-          </label>
-          <label className="block">
-            Do (comma-separated)
-            <input
-              type="text"
-              name="doList"
-              defaultValue={brandProfile.doList.join(", ")}
-              className="block w-full border p-2"
-            />
-          </label>
-          <label className="block">
-            Don&apos;t (comma-separated)
-            <input
-              type="text"
-              name="dontList"
-              defaultValue={brandProfile.dontList.join(", ")}
-              className="block w-full border p-2"
-            />
-          </label>
-          <button type="submit" className="border px-4 py-2">
-            Save
-          </button>
-        </form>
-      </section>
-
-      <section>
-        <h1 className="text-xl font-semibold mb-4">Repos &amp; schedule</h1>
-        <div className="space-y-4">
-          {tenantRepos.map((repo) => {
-            const config = tenantSchedules.find((s) => s.repoId === repo.id);
-            return (
-              <form key={repo.id} action={saveRepoSchedule} className="border p-4 space-y-2 max-w-md">
-                <input type="hidden" name="repoId" value={repo.id} />
-                <p className="font-medium">{repo.githubRepoFullName}</p>
-                <label className="block">
-                  Cadence
-                  <select name="cadence" defaultValue={config?.cadence ?? "weekly"} className="block border p-2 w-full">
-                    <option value="daily">Daily</option>
-                    <option value="weekly">Weekly</option>
-                    <option value="biweekly">Every 2 weeks</option>
-                    <option value="monthly">Monthly</option>
-                    <option value="none">No fixed cadence</option>
-                  </select>
-                </label>
-                <label className="block">
-                  Threshold
-                  <input
-                    type="number"
-                    name="threshold"
-                    min={1}
-                    defaultValue={config?.threshold ?? 5}
-                    className="block border p-2 w-full"
-                  />
-                </label>
-                <button type="submit" className="border px-4 py-2">
-                  Save
-                </button>
-              </form>
-            );
-          })}
-        </div>
-      </section>
-
-      <section>
-        <h1 className="text-xl font-semibold mb-4">API access</h1>
-        {newApiKey && (
-          <div className="border border-yellow-500 p-3 mb-3 max-w-lg">
-            <p className="text-sm">Your new API key — copy it now, it won&apos;t be shown again:</p>
-            <code className="block break-all">{newApiKey}</code>
-          </div>
-        )}
-        <form action={regenerateTenantApiKey}>
-          <button type="submit" className="border px-4 py-2">
-            {tenant?.apiKeyHash ? "Regenerate API key" : "Generate API key"}
-          </button>
-        </form>
-      </section>
-    </div>
-  );
-}
-```
-
-- [ ] **Step 6: Verify the app still builds and the full test suite passes**
+- [ ] **Step 4: Verify the app still builds and the full test suite passes**
 
 ```bash
 npm run build
@@ -1048,7 +614,7 @@ npx vitest run
 ```
 Expected: `✓ Compiled successfully`, now including `/integrations`; all tests pass.
 
-- [ ] **Step 7: Manually verify end to end**
+- [ ] **Step 5: Manually verify end to end**
 
 1. `npm run dev`, visit `/integrations`. Fill in a webhook URL (use a request-bin style test endpoint like `https://webhook.site/<your-id>`) and a secret, save.
 2. Publish a draft from `/drafts`. Expected: the request-bin endpoint receives a signed POST within a few seconds; a `webhook_deliveries` row exists with `status = 'success'`.
@@ -1057,17 +623,17 @@ Expected: `✓ Compiled successfully`, now including `/integrations`; all tests 
    ```bash
    curl -H "Authorization: Bearer <CRON_SECRET from .env.local>" http://localhost:3000/api/cron/scheduler
    ```
-5. Visit `/settings`, click "Generate API key" (or "Regenerate"). Expected: redirected back to `/settings?newApiKey=...` showing the raw key once; confirm `GET /api/updates` with that key now works (Task 3's manual verification).
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add "src/app/(dashboard)/integrations" "src/app/(dashboard)/settings" "src/app/(dashboard)/layout.tsx"
+git add "src/app/(dashboard)/integrations" "src/app/(dashboard)/layout.tsx"
 git commit -m "$(cat <<'EOF'
-Add Integrations page and Settings API key section
+Add Integrations page
 
 Generic Webhook is the only configurable integration; Webflow,
 Customer.io, Mailchimp, and HubSpot are static "coming soon" entries.
+No read/polling API — webhook is the only way updates leave the system.
 EOF
 )"
 ```
@@ -1076,4 +642,4 @@ EOF
 
 ## What's next
 
-This completes the Product Announcer MVP across all 5 plans: tenant-scoped GitHub login and data layer (Plan 1), repo connection and PR/commit ingestion (Plan 2), scheduled and manual AI generation in the tenant's brand voice (Plan 3), a full click-through dashboard (Plan 4), and headless publishing via API key and signed webhook (Plan 5). Everything called out as a Non-goal in the original design spec — a public changelog page/widget, email/Slack delivery, ticket-tracker enrichment, real CMS integrations, billing enforcement, multi-language generation, and a live (as-you-type) draft preview — remains explicitly out of scope and undocumented as a "TODO," ready to become its own future spec when prioritized.
+This completes the Product Announcer MVP across all 5 plans: tenant-scoped GitHub login and data layer (Plan 1), multi-repo/branch connection and PR/commit ingestion (Plan 2), scheduled and manual AI generation in the tenant's brand voice (Plan 3), a full click-through dashboard with skippable onboarding (Plan 4), and headless publishing via signed webhook only (Plan 5). Everything called out as a Non-goal in the design spec — a public changelog page/widget, email/Slack delivery, ticket-tracker enrichment, real CMS integrations, billing enforcement, multi-language generation, a live (as-you-type) draft preview, and a read/polling API — remains explicitly out of scope, ready to become its own future spec when prioritized.
