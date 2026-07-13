@@ -16,7 +16,7 @@ Frontitude is tenant #1, using its own product repos as the first real workload 
 - Let a human review, edit, and approve/reject drafts before anything is considered published.
 - Expose approved updates as JSON via API and outbound webhook, for downstream systems to consume.
 - Give tenants a history view of every update ever generated, for auditing what's been communicated to their users over time.
-- Give tenants visibility into what's queued for the *next* announcement — the pending changes and when the next run will fire — and let them trigger that run early instead of waiting.
+- Give tenants visibility into what's queued for the *next* announcement — the pending changes and when the next run will fire — let them drop individual changes they don't want announced, and let them trigger that run early instead of waiting.
 
 ### Non-goals (explicitly out of scope for this MVP)
 
@@ -37,15 +37,26 @@ GitHub PR merged / commits pushed
 
 Scheduler (Vercel Cron, periodic tick e.g. hourly; OR a manual "Run now" click)
     → for each tenant+repo's ScheduleConfig:
-        - has the cadence deadline passed? → trigger
-        - OR has the pending ChangeItem count >= threshold? → trigger
+        - has now passed nextScheduledAt? → trigger (cadence path)
+          → on fire: nextScheduledAt += cadence interval (roll forward one cycle)
+        - OR has the pending (non-excluded) ChangeItem count >= threshold? → trigger (threshold path)
+          → nextScheduledAt is untouched by a threshold-triggered run
         - OR was a manual run just requested? → trigger, provided pending count > 0
           ("Run now" is disabled in the UI when there's nothing pending — no empty updates, ever)
-        - if pending count == 0 at a cadence tick → skip silently, no empty update
-    → on trigger: collect all pending ChangeItems for that repo since the last run
+          → nextScheduledAt handling depends on the user's choice, see below
+        - if now has passed nextScheduledAt but pending count == 0 → skip silently, leave
+          nextScheduledAt as-is (no empty update; fires as soon as a ChangeItem arrives and
+          the next tick runs — it does not wait for a further full cadence interval)
+    → on trigger: collect all pending, non-excluded ChangeItems for that repo
     → enqueue ONE generation job for that batch
     → mark those ChangeItems "batched" (linked to the Update once created)
-    → set ScheduleConfig.lastRunAt = now, regardless of what triggered the run
+    → set ScheduleConfig.lastRunAt = now, always (record-keeping, distinct from nextScheduledAt)
+
+Manual "Run now" follow-up (after the batch is generated):
+    → user is asked: keep the next scheduled update as-is, or skip it?
+    → "Keep it the same" → nextScheduledAt unchanged (the originally-planned cadence run still fires then)
+    → "Skip it" → nextScheduledAt += cadence interval (the upcoming occurrence is skipped entirely,
+       landing one full cycle later than originally planned — not one cycle from "now")
 
 Generation worker
     → fetch the batch's ChangeItems (PR and/or commit sourced, mixed is fine)
@@ -61,11 +72,14 @@ Onboarding (first-run gate, before any dashboard view is shown)
 
 Dashboard (Next.js, NextAuth-gated, tenant-scoped)
     → Pending view (default landing page post-onboarding):
-        - next scheduled run time, computed from ScheduleConfig.cadence + lastRunAt
+        - next scheduled run time (ScheduleConfig.nextScheduledAt)
         - current pending ChangeItem count vs. threshold
-        - list of pending ChangeItems (not yet batched) for the repo
-        - "Run now" action → manually triggers the Scheduler logic immediately (see above);
-          resulting Update still lands as a draft for review, same as any scheduled run
+        - list of pending ChangeItems for the repo, each with a "drop" action →
+          status: pending → excluded (permanent, no undo); dropped items stay listed, muted
+        - "Run now" action → manually triggers the Scheduler logic immediately over the
+          remaining pending (non-excluded) items; resulting Update still lands as a draft
+          for review, same as any scheduled run. Immediately after, prompts: keep the next
+          scheduled update the same, or skip it (see Scheduler above for the mechanics)
     → Drafts queue: pending AI drafts awaiting review/edit/approval
     → History view: every Update ever generated (draft/approved/published/rejected),
       filterable by status/date/repo — the audit trail of what's been told to users
@@ -110,22 +124,29 @@ Repo
 
 ScheduleConfig
   id, tenantId, repoId, cadence (daily/weekly/biweekly/monthly/none),
-  threshold (int, e.g. 5), lastRunAt
-  -- cadence "none" means threshold is the only trigger (no calendar deadline ever fires);
+  threshold (int, e.g. 5), lastRunAt, nextScheduledAt
+  -- cadence "none" means threshold is the only trigger (nextScheduledAt is never set/checked);
   -- threshold 0/null means cadence is the only trigger (fires every tick regardless of count)
-  -- "next run" shown in the Pending view is computed on read as lastRunAt + cadence interval,
-  -- not stored — a manual "Run now" resets lastRunAt, which pushes the next cadence deadline out too
+  -- nextScheduledAt is the actual anchor the cadence path checks against — it's an explicit,
+  -- independently-movable field, NOT derived from lastRunAt + interval on every read. This is
+  -- what lets a manual run "skip" the upcoming occurrence (nextScheduledAt += interval) without
+  -- collapsing that into "restart the clock from now" (which lastRunAt-derived math would do).
+  -- lastRunAt is pure record-keeping (last time any run happened, for the Pending view / History).
 
 VoiceProfile
   id, tenantId, tone, readingLevel, doList, dontList, examplePhrases
   -- auto-created with neutral defaults when a tenant finishes onboarding; not required to fill in
 
 ChangeItem
-  id, tenantId, repoId, sourceType ("pr" | "commit"), status (pending/batched), updateId (nullable),
+  id, tenantId, repoId, sourceType ("pr" | "commit"), status (pending/batched/excluded),
+  updateId (nullable), excludedAt (nullable), excludedBy (nullable),
   -- pr-sourced fields:
   prNumber, prTitle, prDescription, prUrl, mergedAt,
   -- commit-sourced fields:
   commitSha, commitMessage, diff, commitUrl, committedAt
+  -- "excluded" is a permanent, one-way transition from "pending" (no un-drop in this MVP).
+  -- Excluded items are never picked up by scheduler/threshold/manual-run batch collection,
+  -- but remain visible (muted) in the Pending view and queryable in History for transparency.
 
 Update
   id, tenantId, repoId, title, body, category (new/improved/fixed),
@@ -202,8 +223,8 @@ Each tenant configures a `VoiceProfile` (tone, reading level, do's/don'ts, examp
 
 ## Testing Strategy
 
-- **Unit** — scheduler trigger logic (cadence vs threshold vs "whichever first," zero-pending skip), webhook signature verification, prompt-building from a `ChangeItem` batch.
-- **Integration** — webhook → `ChangeItem` persistence; scheduler run → batch → `Update` creation, including mixed PR + commit batches; publish → outbound webhook delivery + retry.
+- **Unit** — scheduler trigger logic (cadence vs threshold vs "whichever first," zero-pending skip, nextScheduledAt roll-forward on cadence fire vs. manual skip vs. manual keep), webhook signature verification, prompt-building from a `ChangeItem` batch (respecting excluded items).
+- **Integration** — webhook → `ChangeItem` persistence; drop action → excluded items never appear in a batch; scheduler run → batch → `Update` creation, including mixed PR + commit batches; manual run + skip/keep choice → correct `nextScheduledAt`; publish → outbound webhook delivery + retry.
 - **Manual/E2E** — install GitHub App on a real test repo, merge a PR, verify a draft appears, edit and approve it, confirm it's queryable via the API and delivered to a test webhook receiver.
 
 ## Open Questions / Future Work
