@@ -5,7 +5,7 @@
 
 ## Overview
 
-An AI-powered, cloud-based service that helps SaaS companies turn their engineering activity (merged GitHub PRs and commits) into product-update announcements, written in the company's own brand voice, on an automated cadence. This MVP scopes to the **core authoring/generation pipeline** on a **lean, headless, multi-tenant foundation** — no public-facing delivery channel (widget, email, changelog page) yet. Output is structured JSON, consumable via polling API or outbound webhook, so it can later be wired into CMSs, Webflow, Customer.io, or other publishing/newsletter targets.
+An AI-powered, cloud-based service that helps SaaS companies turn their engineering activity (merged GitHub PRs and commits) into product-update announcements, written in the company's own brand voice, on an automated cadence. This MVP scopes to the **core authoring/generation pipeline** on a **lean, headless, multi-tenant foundation** — no public-facing delivery channel (widget, email, changelog page) yet. Output is structured JSON, delivered via a signed outbound webhook, so it can later be wired into CMSs, Webflow, Customer.io, or other publishing/newsletter targets. There is no polling/read API in this MVP — webhook is the only delivery mechanism.
 
 Frontitude is tenant #1, using its own product repos as the first real workload — but the system is built as a genuine multi-tenant SaaS from day one (org, users, billing-ready tenant model), not a single-tenant tool with a tenant_id bolted on.
 
@@ -14,14 +14,14 @@ Frontitude is tenant #1, using its own product repos as the first real workload 
 - Automatically capture merged PRs and commits from connected GitHub repos.
 - On a per-tenant configurable schedule (cadence and/or backlog threshold), batch pending changes into a single AI-drafted announcement written in the tenant's configured brand voice and grounded in their product context (industry, user personas).
 - Let a human review, edit, preview, and approve/reject drafts before anything is considered published.
-- Expose approved updates as JSON via API and outbound webhook, for downstream systems to consume.
-- Give tenants a history view of every update ever generated, for auditing what's been communicated to their users over time.
+- Expose published updates as JSON via a signed outbound webhook, for downstream systems to consume.
+- Give tenants a history view of every announcement actually sent (published), for auditing what's been communicated to their users over time.
 - Give tenants visibility into what's queued for the *next* announcement — the pending changes and when the next run will fire — let them drop individual changes they don't want announced, and let them trigger that run early instead of waiting.
 
 ### Non-goals (explicitly out of scope for this MVP)
 
 - No public-facing changelog page or embeddable "What's New" widget.
-- No email, Slack, or in-app delivery channels — output is JSON via webhook/API only.
+- No email, Slack, or in-app delivery channels, and no polling/read API — the signed outbound webhook is the only delivery mechanism.
 - No ticket-tracker (Linear/Jira) integration — PR/commit content only.
 - No functional CMS/newsletter-specific publishing integrations (Webflow, Customer.io, Mailchimp, HubSpot, etc.) — these appear only as disabled "coming soon" catalog entries in the Integrations section; Generic Webhook is the only delivery mechanism tenants can actually configure and use.
 - No real per-tenant billing/plan enforcement — the tenant data model supports it, but there's no paywall or usage metering yet.
@@ -64,11 +64,20 @@ Generation worker
     → AI SDK generate → ONE structured draft (title, body, category, sourceItems[])
     → store as Update (status: draft)
 
-Onboarding (first-run gate, before any dashboard view is shown)
-    → Step 1: install GitHub App, select repo(s)
-    → Step 2: set ScheduleConfig (cadence + threshold)
-    → BrandProfile auto-created with neutral defaults, editable later — not required to finish onboarding
-    → once both steps complete → tenant lands on the Pending view
+Onboarding (first-run flow, shown once before the dashboard — skippable at any point)
+    → Step 1: install GitHub App (GitHub's own picker controls which repos the App *can*
+      access; recorded as Tenant.githubInstallationId — one installation per tenant for MVP)
+    → Step 2: from the accessible repos, select which ones to actually watch — multiple at
+      once — and, per selected repo, which branch (pre-filled with that repo's real GitHub
+      default branch, editable to track something else, e.g. "develop")
+    → Step 3: set ScheduleConfig (cadence + threshold), applied to every repo picked in Step 2
+    → "Skip" is available at any point → Tenant.onboardingCompletedAt is set immediately with
+      zero repos/schedule required; repos + branches can be added later from Settings using
+      the same Step 2 flow
+    → BrandProfile auto-created with neutral defaults, editable later — never blocks onboarding
+    → once the user finishes OR skips → Tenant.onboardingCompletedAt is set → tenant lands on
+      the Pending view. This is a one-time gate — it is never re-triggered just because a
+      tenant currently has zero repos connected.
 
 Dashboard (Next.js, NextAuth-gated, tenant-scoped)
     → Pending view (default landing page post-onboarding):
@@ -86,35 +95,42 @@ Dashboard (Next.js, NextAuth-gated, tenant-scoped)
           mockup (headline, body, category badge, date) — a QA aid for catching formatting/length
           issues before publish, not a real delivery surface (see Non-goals)
         - user approves → status: draft → published, publishedAt set
-    → History view: every Update ever generated (draft/approved/published/rejected),
-      filterable by status/date/repo — the audit trail of what's been told to users
+    → History view: every PUBLISHED Update only — "sent announcements" — filterable by
+      date/repo. Drafts, in-review edits, and rejected updates do NOT appear here; this is
+      the audit trail of what's actually been told to end users, not a full activity log.
     → Integrations: manage the active Generic Webhook, browse coming-soon integrations
-    → Settings: repo connections, BrandProfile, ScheduleConfig
+    → Settings: repo connections + branches (same add-repo flow as onboarding Step 2),
+      BrandProfile, ScheduleConfig
 
 Publish
-    → on publish: available immediately via GET /api/tenants/:id/updates?status=published
-    → if the Generic Webhook integration is active: dispatch signed JSON payload, retry with backoff on failure
+    → on publish: if the Generic Webhook integration is active, dispatch a signed JSON
+      payload immediately, retried with backoff on failure (see Error Handling)
+    → no read/polling API in this MVP — a tenant with no webhook configured simply gets no
+      outbound delivery (the published Update still exists and shows in History)
 
 External system (future: CMS, Webflow, Customer.io, etc.)
-    → receives JSON via webhook, or polls the read API
+    → receives JSON via the signed webhook
 ```
 
 ### Components
 
-- **Ingestion** — GitHub App webhook handler. Verifies signature, extracts PR-merge or push/commit data per the repo's configured `sourceTypes`, writes `ChangeItem` rows. Does not trigger generation directly.
-- **Onboarding** — first-run gate before any dashboard view: connect GitHub + set a schedule. Blocks access to the rest of the dashboard until both steps are done.
+- **Ingestion** — GitHub App webhook handler. Verifies signature, extracts PR-merge or push/commit data per the repo's configured `sourceTypes` and `watchedBranch`, writes `ChangeItem` rows. Does not trigger generation directly.
+- **Onboarding** — first-run flow, skippable at any point: connect GitHub, select repos + branches to watch, set a schedule. Finishing or skipping sets `Tenant.onboardingCompletedAt`, a one-time gate — never re-triggered just because a tenant currently has zero repos connected.
 - **Scheduler** — evaluates each tenant/repo's `ScheduleConfig` (cadence and threshold, whichever comes first) and decides whether to fire a batch; also the entry point for a manual "Run now" trigger, which fires unconditionally.
 - **Generation worker** — consumes a batch of `ChangeItem`s (scheduled or manually triggered), calls the AI SDK with the tenant's `BrandProfile` and the batch's content, writes one `Update`.
-- **Dashboard** — Pending view (next run + pending changes + Run now), drafts queue (with preview + edit), history view, integrations, and settings (repos, brand profile, schedule).
-- **Integrations** — see dedicated section below; owns outbound delivery of published updates.
-- **Publish API** — read endpoint for polling, used regardless of which (if any) integration is active.
+- **Dashboard** — Pending view (next run + pending changes + Run now), drafts queue (with preview + edit), history view (published only), integrations, and settings (repos + branches, brand profile, schedule).
+- **Integrations** — see dedicated section below; owns outbound delivery of published updates. This is the *only* delivery mechanism in the MVP — there is no read/polling API.
 - **Auth** — NextAuth (Auth.js), org/tenant-scoped sessions.
 
 ## Data Model
 
 ```
 Tenant
-  id, name, createdAt
+  id, name, githubInstallationId (nullable), onboardingCompletedAt (nullable), createdAt
+  -- githubInstallationId is set once the tenant installs the GitHub App; one installation
+  -- per tenant for this MVP (multiple installations per tenant is future work)
+  -- onboardingCompletedAt is set when the user finishes OR explicitly skips onboarding —
+  -- a one-time gate, not re-derived from whether any repos currently exist
 
 User
   id, email, name
@@ -123,8 +139,14 @@ TenantMember
   tenantId, userId, role (owner/member)
 
 Repo
-  id, tenantId, githubRepoFullName, githubInstallationId, defaultBranch,
+  id, tenantId, githubRepoFullName, githubInstallationId, watchedBranch,
   sourceTypes (array: ["pr"] | ["commit"] | ["pr","commit"])
+  -- watchedBranch is user-selected when the repo is added (pre-filled with that repo's
+  -- actual GitHub default branch, but editable) — it is NOT assumed to always be "the"
+  -- default branch. Applies to both push-sourced ChangeItems and to filtering merged PRs
+  -- to only those merged into this branch.
+  -- A tenant can add multiple Repos in one pass through the same add-repo action, each
+  -- with its own watchedBranch.
 
 ScheduleConfig
   id, tenantId, repoId, cadence (daily/weekly/biweekly/monthly/none),
@@ -189,8 +211,9 @@ Key relationships: `ScheduleConfig` governs when pending `ChangeItem`s for a ten
 
 ## GitHub Integration
 
-- Tenants install a GitHub App scoped to the repos they want connected.
-- Per repo, `sourceTypes` determines which webhook events matter: `pull_request` (merged, to default branch) for `"pr"`, `push` (to default branch) for `"commit"`.
+- Tenants install a GitHub App; GitHub's own install picker controls which repos the App *can* access — recorded as `Tenant.githubInstallationId` (one installation per tenant for MVP).
+- From that accessible set, the tenant explicitly selects which repos to actually watch — multiple at once — and, per selected repo, which branch (`Repo.watchedBranch`, pre-filled with GitHub's real default branch, editable). This same selection action is used both during onboarding and later from Settings.
+- Per repo, `sourceTypes` determines which webhook events matter: `pull_request` (merged **into `watchedBranch`**) for `"pr"`, `push` (**to `watchedBranch`**) for `"commit"`.
 - Each PR-merge or each commit in a push becomes its own `ChangeItem` — no content batching at ingestion time.
 
 ## Integrations
@@ -243,7 +266,7 @@ The model is not asked to echo back which items it used — `Update.sourceItems`
 - **Scheduler run** — if generation fails for a batch, its `ChangeItem`s stay `pending` (not marked `batched`) and roll into the next run rather than being lost.
 - **Manual "Run now" vs. cadence tick racing** — a run (manual or scheduled) claims its batch by marking `ChangeItem`s `batched` in the same transaction that creates the `Update`; a concurrent trigger for the same repo simply finds nothing left `pending` and no-ops rather than double-batching.
 - **Generation** — AI SDK call failures *and* schema-validation failures (see Generation Strategy) get one retry; if still failing, the batch is flagged (e.g. `failed` status) and surfaces in the dashboard for manual retry.
-- **Outbound webhook delivery** — signed (HMAC) payload, retried with backoff (e.g. 3 attempts), tracked in `WebhookDelivery`. The polling API remains the source of truth even if push delivery ultimately fails.
+- **Outbound webhook delivery** — signed (HMAC) payload, retried with backoff (e.g. 3 attempts), tracked in `WebhookDelivery`. There is no read/polling API fallback in this MVP — if delivery ultimately fails after all retries, the `Update` is still `published` and visible in History, but the external system never receives it automatically; the tenant would need to notice (e.g. via a failed-delivery indicator) and address it manually.
 
 ## Tech Stack
 
@@ -258,12 +281,14 @@ The model is not asked to echo back which items it used — `Update.sourceItems`
 
 - **Unit** — scheduler trigger logic (cadence vs threshold vs "whichever first," zero-pending skip, nextScheduledAt roll-forward on cadence fire vs. manual skip vs. manual keep), webhook signature verification, prompt-building from a `ChangeItem` batch (respecting excluded items).
 - **Integration** — webhook → `ChangeItem` persistence; drop action → excluded items never appear in a batch; scheduler run → batch → `Update` creation, including mixed PR + commit batches; manual run + skip/keep choice → correct `nextScheduledAt`; publish → outbound webhook delivery + retry.
-- **Manual/E2E** — install GitHub App on a real test repo, merge a PR, verify a draft appears, edit and approve it, confirm it's queryable via the API and delivered to a test webhook receiver.
+- **Manual/E2E** — install GitHub App, select a repo + branch during onboarding (and again later via Settings), merge a PR into that branch, verify a draft appears, edit and approve it, confirm it's delivered to a test webhook receiver and appears in History.
 
 ## Open Questions / Future Work
 
 - Turning coming-soon catalog entries (Webflow, Customer.io, Mailchimp, HubSpot) into real, configurable integrations.
+- A read/polling API for pulling published updates — deliberately cut from this MVP in favor of webhook-only delivery; likely to return once a second real consumer needs it.
 - Delivery channels: public changelog page, embeddable widget, email digest, Slack.
 - Ticket-tracker enrichment (Linear/Jira) as an additional generation input.
 - Billing/plan enforcement once real external tenants onboard.
 - Multi-language generation.
+- Multiple GitHub App installations per tenant (e.g. across separate GitHub orgs) — one installation per tenant is the MVP assumption.
