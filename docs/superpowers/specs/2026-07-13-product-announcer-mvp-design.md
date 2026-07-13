@@ -5,7 +5,7 @@
 
 ## Overview
 
-An AI-powered, cloud-based service that helps SaaS companies turn their engineering activity (merged GitHub PRs and commits) into product-update announcements, written in the company's own brand voice, on an automated cadence. This MVP scopes to the **core authoring/generation pipeline** on a **lean, headless, multi-tenant foundation** — no public-facing delivery channel (widget, email, changelog page) yet. Output is structured JSON, consumable via polling API or outbound webhook, so it can later be wired into CMSs, Webflow, Wix, or other publishing targets.
+An AI-powered, cloud-based service that helps SaaS companies turn their engineering activity (merged GitHub PRs and commits) into product-update announcements, written in the company's own brand voice, on an automated cadence. This MVP scopes to the **core authoring/generation pipeline** on a **lean, headless, multi-tenant foundation** — no public-facing delivery channel (widget, email, changelog page) yet. Output is structured JSON, consumable via polling API or outbound webhook, so it can later be wired into CMSs, Webflow, Customer.io, or other publishing/newsletter targets.
 
 Frontitude is tenant #1, using its own product repos as the first real workload — but the system is built as a genuine multi-tenant SaaS from day one (org, users, billing-ready tenant model), not a single-tenant tool with a tenant_id bolted on.
 
@@ -22,7 +22,7 @@ Frontitude is tenant #1, using its own product repos as the first real workload 
 - No public-facing changelog page or embeddable "What's New" widget.
 - No email, Slack, or in-app delivery channels — output is JSON via webhook/API only.
 - No ticket-tracker (Linear/Jira) integration — PR/commit content only.
-- No CMS-specific publishing integrations (Webflow, Wix, etc.) — a generic outbound webhook is the only delivery mechanism; tenants bridge the gap with their own automation.
+- No functional CMS/newsletter-specific publishing integrations (Webflow, Customer.io, Mailchimp, HubSpot, etc.) — these appear only as disabled "coming soon" catalog entries in the Integrations section; Generic Webhook is the only delivery mechanism tenants can actually configure and use.
 - No real per-tenant billing/plan enforcement — the tenant data model supports it, but there's no paywall or usage metering yet.
 - No multi-language generation — single language (English) for MVP.
 
@@ -53,14 +53,15 @@ Dashboard (Next.js, NextAuth-gated, tenant-scoped)
     → Drafts queue: pending AI drafts awaiting review/edit/approval
     → History view: every Update ever generated (draft/approved/published/rejected),
       filterable by status/date/repo — the audit trail of what's been told to users
-    → Settings: repo connections, VoiceProfile, ScheduleConfig, WebhookConfig
+    → Integrations: manage the active Generic Webhook, browse coming-soon integrations
+    → Settings: repo connections, VoiceProfile, ScheduleConfig
     → user edits a draft → approves → status: draft → published, publishedAt set
 
 Publish
     → on publish: available immediately via GET /api/tenants/:id/updates?status=published
-    → if a WebhookConfig is active: dispatch signed JSON payload, retry with backoff on failure
+    → if the Generic Webhook integration is active: dispatch signed JSON payload, retry with backoff on failure
 
-External system (future: CMS, Webflow, Wix, etc.)
+External system (future: CMS, Webflow, Customer.io, etc.)
     → receives JSON via webhook, or polls the read API
 ```
 
@@ -69,8 +70,9 @@ External system (future: CMS, Webflow, Wix, etc.)
 - **Ingestion** — GitHub App webhook handler. Verifies signature, extracts PR-merge or push/commit data per the repo's configured `sourceTypes`, writes `ChangeItem` rows. Does not trigger generation directly.
 - **Scheduler** — periodic job that evaluates each tenant/repo's `ScheduleConfig` (cadence and threshold, whichever comes first) and decides whether to fire a batch.
 - **Generation worker** — consumes a scheduled batch of `ChangeItem`s, calls the AI SDK with the tenant's `VoiceProfile` and the batch's content, writes one `Update`.
-- **Dashboard** — drafts queue, history view, and settings (repos, voice profile, schedule, webhook).
-- **Publish API** — read endpoint for polling, plus an outbound webhook dispatcher with HMAC signing and retry.
+- **Dashboard** — drafts queue, history view, integrations, and settings (repos, voice profile, schedule).
+- **Integrations** — see dedicated section below; owns outbound delivery of published updates.
+- **Publish API** — read endpoint for polling, used regardless of which (if any) integration is active.
 - **Auth** — NextAuth (Auth.js), org/tenant-scoped sessions.
 
 ## Data Model
@@ -117,6 +119,8 @@ WebhookDelivery
   id, updateId, webhookConfigId, status (pending/success/failed), attempts, lastAttemptAt
 ```
 
+`WebhookConfig`/`WebhookDelivery` back the one functional integration ("Generic Webhook"). The other catalog entries described in **Integrations** below (Webflow, Customer.io, etc.) are a static, hardcoded list for the coming-soon UI — they have no backing table or config schema in this MVP.
+
 Key relationships: `ScheduleConfig` governs when pending `ChangeItem`s for a tenant+repo get batched into an `Update`. A batch can mix PR-sourced and commit-sourced `ChangeItem`s. `ChangeItem` is single-commit / single-PR by design — grouping multiple small commits into one coherent announcement is the scheduler's/generation worker's job (the same batching mechanism already used for multiple PRs), not something baked into the `ChangeItem` schema itself. `Update` rows are never deleted; status transitions (draft → approved → published, or → rejected) are what populate the history view.
 
 ### Example published Update JSON
@@ -140,6 +144,20 @@ Key relationships: `ScheduleConfig` governs when pending `ChangeItem`s for a ten
 - Tenants install a GitHub App scoped to the repos they want connected.
 - Per repo, `sourceTypes` determines which webhook events matter: `pull_request` (merged, to default branch) for `"pr"`, `push` (to default branch) for `"commit"`.
 - Each PR-merge or each commit in a push becomes its own `ChangeItem` — no content batching at ingestion time.
+
+## Integrations
+
+A dedicated dashboard section that presents delivery of published `Update`s as a catalog, not a single hardcoded webhook field:
+
+- **Active:**
+  - **Generic Webhook** — fully functional. Tenant sets a URL; on publish, the payload is signed (HMAC) and POSTed, with retry/backoff on failure (see Error Handling). Backed by `WebhookConfig` / `WebhookDelivery`.
+- **Coming soon** (static catalog entries, disabled — no config UI, no backing data, no delivery logic in this MVP):
+  - Webflow
+  - Customer.io
+  - Mailchimp
+  - HubSpot
+
+The coming-soon list exists to communicate product direction and collect intent (e.g. a "notify me" click), not to be configured or wired up yet. Turning one of these into a real integration later means adding its own config schema and a delivery implementation, following the same pattern as Generic Webhook — the Integrations section is designed to hold more than one active entry, not to be replaced.
 
 ## Voice Profile
 
@@ -169,7 +187,7 @@ Each tenant configures a `VoiceProfile` (tone, reading level, do's/don'ts, examp
 
 ## Open Questions / Future Work
 
-- CMS-specific publish integrations (Webflow, Wix, etc.).
+- Turning coming-soon catalog entries (Webflow, Customer.io, Mailchimp, HubSpot) into real, configurable integrations.
 - Delivery channels: public changelog page, embeddable widget, email digest, Slack.
 - Ticket-tracker enrichment (Linear/Jira) as an additional generation input.
 - Billing/plan enforcement once real external tenants onboard.
