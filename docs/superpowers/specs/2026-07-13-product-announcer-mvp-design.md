@@ -23,7 +23,7 @@ Frontitude is tenant #1, using its own product repos as the first real workload 
 - No public-facing changelog page or embeddable "What's New" widget.
 - No email, Slack, or in-app delivery channels, and no polling/read API — the signed outbound webhook is the only delivery mechanism.
 - No ticket-tracker (Linear/Jira) integration — PR/commit content only.
-- No functional CMS/newsletter-specific publishing integrations (Webflow, Customer.io, Mailchimp, HubSpot, etc.) — these appear only as disabled "coming soon" catalog entries in the Integrations section; Generic Webhook is the only delivery mechanism tenants can actually configure and use.
+- No functional CMS/newsletter/social publishing integrations (Webflow, Customer.io, Mailchimp, HubSpot, LinkedIn, etc.) — these appear only as disabled "coming soon" catalog entries in the Integrations section; Generic Webhook is the only delivery mechanism tenants can actually configure and use.
 - No real per-tenant billing/plan enforcement — the tenant data model supports it, but there's no paywall or usage metering yet.
 - No multi-language generation — single language (English) for MVP.
 
@@ -227,6 +227,7 @@ A dedicated dashboard section that presents delivery of published `Update`s as a
   - Customer.io
   - Mailchimp
   - HubSpot
+  - LinkedIn (post the announcement to the company's LinkedIn Page)
 
 The coming-soon list exists to communicate product direction and collect intent (e.g. a "notify me" click), not to be configured or wired up yet. Turning one of these into a real integration later means adding its own config schema and a delivery implementation, following the same pattern as Generic Webhook — the Integrations section is designed to hold more than one active entry, not to be replaced.
 
@@ -285,7 +286,7 @@ The model is not asked to echo back which items it used — `Update.sourceItems`
 
 ## Open Questions / Future Work
 
-- Turning coming-soon catalog entries (Webflow, Customer.io, Mailchimp, HubSpot) into real, configurable integrations.
+- Turning coming-soon catalog entries (Webflow, Customer.io, Mailchimp, HubSpot, LinkedIn) into real, configurable integrations.
 - A read/polling API for pulling published updates — deliberately cut from this MVP in favor of webhook-only delivery; likely to return once a second real consumer needs it.
 - Delivery channels: public changelog page, embeddable widget, email digest, Slack.
 - Ticket-tracker enrichment (Linear/Jira) as an additional generation input.

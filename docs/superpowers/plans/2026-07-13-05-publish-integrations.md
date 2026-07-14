@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- Generic Webhook is the *only* functional delivery mechanism in this MVP — the Integrations page's "coming soon" entries (Webflow, Customer.io, Mailchimp, HubSpot) remain static, unconfigurable list items with no backing table or delivery logic. (Design spec: "Integrations")
+- Generic Webhook is the *only* functional delivery mechanism in this MVP — the Integrations page's "coming soon" entries (Webflow, Customer.io, Mailchimp, HubSpot, LinkedIn) remain static, unconfigurable list items with no backing table or delivery logic. (Design spec: "Integrations")
 - There is no read/polling API in this MVP, and none should be added in this plan — a tenant with no webhook configured simply gets no outbound delivery; the `Update` still exists and is visible in History. (Design spec: Overview, Non-goals)
 - Outbound webhook delivery must never block or fail the publish action itself — a delivery failure is recorded, not thrown; the draft is still published either way.
 
@@ -546,7 +546,7 @@ import { webhookConfigs } from "@/db/schema";
 import { requireSession } from "@/lib/session";
 import { saveWebhookConfig } from "./actions";
 
-const COMING_SOON = ["Webflow", "Customer.io", "Mailchimp", "HubSpot"];
+const COMING_SOON = ["Webflow", "Customer.io", "Mailchimp", "HubSpot", "LinkedIn"];
 
 export default async function IntegrationsPage() {
   const session = await requireSession();
@@ -632,8 +632,9 @@ git commit -m "$(cat <<'EOF'
 Add Integrations page
 
 Generic Webhook is the only configurable integration; Webflow,
-Customer.io, Mailchimp, and HubSpot are static "coming soon" entries.
-No read/polling API — webhook is the only way updates leave the system.
+Customer.io, Mailchimp, HubSpot, and LinkedIn are static "coming soon"
+entries. No read/polling API — webhook is the only way updates leave
+the system.
 EOF
 )"
 ```
