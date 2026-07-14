@@ -1,6 +1,6 @@
 "use server";
 
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { db } from "@/db";
@@ -23,10 +23,15 @@ export async function dropChangeItem(formData: FormData) {
   const repoId = formData.get("repoId") as string;
   await assertOwnsRepo(session.user.tenantId, repoId);
 
+  // Scope the mutation to both the change item AND the caller's tenant: the
+  // ownership check above only proves the tenant owns `repoId`, not that this
+  // `changeItemId` belongs to them — without the tenantId filter, a caller
+  // could pass a repo they own alongside another tenant's changeItemId and
+  // exclude it (cross-tenant write). The tenantId predicate closes that.
   await db
     .update(changeItems)
     .set({ status: "excluded", excludedAt: new Date(), excludedBy: session.user.id })
-    .where(eq(changeItems.id, changeItemId));
+    .where(and(eq(changeItems.id, changeItemId), eq(changeItems.tenantId, session.user.tenantId)));
 
   revalidatePath("/pending");
 }
