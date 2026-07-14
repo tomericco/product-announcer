@@ -240,9 +240,19 @@ Each tenant configures a `BrandProfile` covering both *how* they write and *who*
 
 Both halves are injected into the same generation prompt alongside the batch's `ChangeItem` content — tone dictates *how* it's said, industry/personas dictate *what matters* and *how much explaining is needed* for that audience. Keeping them in one entity/settings page reflects that they're really one input to the model, not two independent concerns. This combined context is the product's core differentiator versus generic AI-changelog tools, so it's built into the MVP rather than deferred.
 
-## Design Direction
+## Bare UI (current MVP)
 
-Product Announcer's own UI needs a deliberate visual identity — not the default "AI SaaS" look (Inter, white background, blue-to-purple gradient hero, rounded-xl cards with soft shadows, filled rainbow status pills). This is documented direction for whoever implements the Dashboard/Integrations UI; it is **not** yet reflected in the plans' example JSX, which currently uses plain gray-bordered Tailwind as structural placeholder. Independent identity — not tied to Frontitude's own brand, since Product Announcer is a standalone product from day one, even though Frontitude is tenant #1.
+Before investing in a visual identity, the MVP ships with a deliberately plain, standard SaaS shell — the goal is a usable, real workflow to validate first; "look and feel" is a separate pass, tracked below under "Design Direction (future)."
+
+- **Layout:** a persistent left sidebar — workspace name/switcher at top, section nav (Pending, Drafts, History, Integrations, Settings) below it, signed-in user pinned to the bottom. This is the standard modern B2B SaaS pattern (Linear, Vercel, Notion, Retool) and replaces any earlier top-nav sketch.
+- **Color:** grayscale only — white surfaces, light-gray backgrounds/borders, black/near-black text. No brand accent color anywhere in this pass, including on primary buttons (solid black fill, white text) and the active nav item (a plain bold/border indicator, not a color). "Reject" and other non-primary actions are plain text, not colored red — semantic status color (e.g. a real destructive-red, success-green) is explicitly deferred to the future design pass, not assumed here.
+- **Typography:** a single system font stack (Next.js's default `Geist`/`Geist Mono` from the Foundation scaffold is sufficient) — no additional custom font loading in this pass.
+- **Components:** standard Tailwind defaults — small border radius, 1px gray borders, no shadows, no custom motion, no iconography or decorative elements beyond what's structurally necessary.
+- **Preview:** the Drafts queue's "Preview" (see Generation Strategy) opens in a modal dialog rather than inline, triggered by a "Preview" button; "Approve & Publish" lives inside that modal alongside "Close."
+
+## Design Direction (future) — "The Wire"
+
+Once the bare UI above is validated, this is the intended direction for Product Announcer's actual visual identity — not the default "AI SaaS" look (Inter, white background, blue-to-purple gradient hero, rounded-xl cards with soft shadows, filled rainbow status pills). **Not implemented in this MVP pass** — kept here as documented intent for a later design iteration, not something any current plan builds against. Independent identity — not tied to Frontitude's own brand, since Product Announcer is a standalone product from day one, even though Frontitude is tenant #1.
 
 **Concept: "The Wire."** The product's whole job is turning raw engineering activity into polished, published prose — so the UI is styled like an editorial desk processing a news wire, not a generic admin panel. Pending changes are a wire feed; the Drafts queue is a copy desk where a manuscript gets marked up; approving a draft is "stamping" it for publication; History is the archive/masthead index. This isn't decorative — it makes the review workflow (raw signal → edited copy → published record) legible at a glance.
 
