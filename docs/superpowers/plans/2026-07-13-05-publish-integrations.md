@@ -595,7 +595,7 @@ export default async function IntegrationsPage() {
 
 - [ ] **Step 3: Add the Integrations nav link**
 
-Modify `src/app/(dashboard)/layout.tsx` — add one `Link` to the sidebar `<nav>` (matching Plan 4's bare grayscale sidebar shell, not a top nav bar):
+Modify `src/app/(dashboard)/layout.tsx` — add one `Link` to the sidebar `<nav>` (matching Plan 4's bare grayscale sidebar shell, not a top nav bar). Note `Settings` is **not** in this list — Plan 4 moved it into the workspace-name dropdown above the nav; don't add it back here:
 ```tsx
         <nav className="mt-4 flex flex-col gap-1">
           <Link href="/pending" className="rounded-md px-2 py-1.5 text-sm text-gray-700 hover:bg-gray-100">
@@ -609,9 +609,6 @@ Modify `src/app/(dashboard)/layout.tsx` — add one `Link` to the sidebar `<nav>
           </Link>
           <Link href="/integrations" className="rounded-md px-2 py-1.5 text-sm text-gray-700 hover:bg-gray-100">
             Integrations
-          </Link>
-          <Link href="/settings" className="rounded-md px-2 py-1.5 text-sm text-gray-700 hover:bg-gray-100">
-            Settings
           </Link>
         </nav>
 ```

@@ -65,15 +65,18 @@ Generation worker
     → store as Update (status: draft)
 
 Onboarding (first-run flow, shown once before the dashboard — skippable at any point)
-    → Step 1: install GitHub App (GitHub's own picker controls which repos the App *can*
+    → Step 1: name the workspace (Tenant.name, pre-filled with a default derived from the
+      user's email domain — see deriveDefaultTenantName — editable; also editable later from
+      Settings)
+    → Step 2: install GitHub App (GitHub's own picker controls which repos the App *can*
       access; recorded as Tenant.githubInstallationId — one installation per tenant for MVP)
-    → Step 2: from the accessible repos, select which ones to actually watch — multiple at
+    → Step 3: from the accessible repos, select which ones to actually watch — multiple at
       once — and, per selected repo, which branch (pre-filled with that repo's real GitHub
       default branch, editable to track something else, e.g. "develop")
-    → Step 3: set ScheduleConfig (cadence + threshold), applied to every repo picked in Step 2
-    → "Skip" is available at any point → Tenant.onboardingCompletedAt is set immediately with
-      zero repos/schedule required; repos + branches can be added later from Settings using
-      the same Step 2 flow
+    → Step 4: set ScheduleConfig (cadence + threshold), applied to every repo picked in Step 3
+    → "Skip" is available at any point (after naming the workspace) → Tenant.onboardingCompletedAt
+      is set immediately with zero repos/schedule required; repos + branches can be added later
+      from Settings using the same Step 3 flow
     → BrandProfile auto-created with neutral defaults, editable later — never blocks onboarding
     → once the user finishes OR skips → Tenant.onboardingCompletedAt is set → tenant lands on
       the Pending view. This is a one-time gate — it is never re-triggered just because a
@@ -99,8 +102,9 @@ Dashboard (Next.js, NextAuth-gated, tenant-scoped)
       date/repo. Drafts, in-review edits, and rejected updates do NOT appear here; this is
       the audit trail of what's actually been told to end users, not a full activity log.
     → Integrations: manage the active Generic Webhook, browse coming-soon integrations
-    → Settings: repo connections + branches (same add-repo flow as onboarding Step 2),
-      BrandProfile, ScheduleConfig
+    → Settings (reached via the workspace-name dropdown, not the section nav — see Bare UI
+      below): workspace name, repo connections + branches (same add-repo flow as onboarding
+      Step 3), BrandProfile, ScheduleConfig
 
 Publish
     → on publish: if the Generic Webhook integration is active, dispatch a signed JSON
@@ -244,7 +248,7 @@ Both halves are injected into the same generation prompt alongside the batch's `
 
 Before investing in a visual identity, the MVP ships with a deliberately plain, standard SaaS shell — the goal is a usable, real workflow to validate first; "look and feel" is a separate pass, tracked below under "Design Direction (future)."
 
-- **Layout:** a persistent left sidebar — workspace name/switcher at top, section nav (Pending, Drafts, History, Integrations, Settings) below it, signed-in user pinned to the bottom. This is the standard modern B2B SaaS pattern (Linear, Vercel, Notion, Retool) and replaces any earlier top-nav sketch.
+- **Layout:** a persistent left sidebar — workspace name at top, section nav (Pending, Drafts, History, Integrations) below it, signed-in user pinned to the bottom. This is the standard modern B2B SaaS pattern (Linear, Vercel, Notion, Retool) and replaces any earlier top-nav sketch. The workspace name is a dropdown (native `<details>/<summary>`, no client JS) rather than a plain label — opening it reveals a "Settings" link, so Settings is one click from the workspace name instead of living in the flat section nav.
 - **Color:** grayscale only — white surfaces, light-gray backgrounds/borders, black/near-black text. No brand accent color anywhere in this pass, including on primary buttons (solid black fill, white text) and the active nav item (a plain bold/border indicator, not a color). "Reject" and other non-primary actions are plain text, not colored red — semantic status color (e.g. a real destructive-red, success-green) is explicitly deferred to the future design pass, not assumed here.
 - **Typography:** a single system font stack (Next.js's default `Geist`/`Geist Mono` from the Foundation scaffold is sufficient) — no additional custom font loading in this pass.
 - **Components:** standard Tailwind defaults — small border radius, 1px gray borders, no shadows, no custom motion, no iconography or decorative elements beyond what's structurally necessary.
@@ -332,7 +336,7 @@ The model is not asked to echo back which items it used — `Update.sourceItems`
 
 - **Unit** — scheduler trigger logic (cadence vs threshold vs "whichever first," zero-pending skip, nextScheduledAt roll-forward on cadence fire vs. manual skip vs. manual keep), webhook signature verification, prompt-building from a `ChangeItem` batch (respecting excluded items).
 - **Integration** — webhook → `ChangeItem` persistence; drop action → excluded items never appear in a batch; scheduler run → batch → `Update` creation, including mixed PR + commit batches; manual run + skip/keep choice → correct `nextScheduledAt`; publish → outbound webhook delivery + retry.
-- **Manual/E2E** — install GitHub App, select a repo + branch during onboarding (and again later via Settings), merge a PR into that branch, verify a draft appears, edit and approve it, confirm it's delivered to a test webhook receiver and appears in History.
+- **Manual/E2E** — name the workspace during onboarding, install GitHub App, select a repo + branch during onboarding (and again later via Settings, reached from the workspace-name dropdown), merge a PR into that branch, verify a draft appears, edit and approve it, confirm it's delivered to a test webhook receiver and appears in History.
 
 ## Open Questions / Future Work
 
