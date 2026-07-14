@@ -1,19 +1,36 @@
 import { eq } from "drizzle-orm";
+import { redirect } from "next/navigation";
 import { db } from "@/db";
 import { repos, tenants } from "@/db/schema";
 import { requireSession } from "@/lib/session";
 import { getGithubApp, listAccessibleRepos } from "@/lib/github";
+import { isOnboardingComplete } from "@/lib/onboarding";
 import { addOnboardingRepos, saveOnboardingSchedule, skipOnboarding, saveWorkspaceName } from "./actions";
 
 export default async function OnboardingPage() {
   const session = await requireSession();
 
+  // One-time gate: a tenant that already finished (or skipped) onboarding must
+  // not re-enter this flow (bookmark, browser-back, manual URL). Re-running
+  // "Finish setup" would insert a second scheduleConfigs row per repo — there's
+  // no unique constraint on repoId — causing double generation and Settings/
+  // scheduler divergence. This mirrors the (dashboard) layout's gate.
+  if (await isOnboardingComplete(session.user.tenantId)) redirect("/pending");
+
   const [tenant] = await db.select().from(tenants).where(eq(tenants.id, session.user.tenantId)).limit(1);
   const tenantRepos = await db.select().from(repos).where(eq(repos.tenantId, session.user.tenantId));
 
-  const installUrl = !tenant?.githubInstallationId
-    ? await getGithubApp().getInstallationUrl({ state: `${session.user.tenantId}|onboarding` })
-    : null;
+  // Deriving the install URL constructs the GitHub App, which throws if
+  // GITHUB_APP_ID isn't configured yet. Degrade gracefully so the page still
+  // renders (and "Skip for now" stays usable) before the App is set up.
+  let installUrl: string | null = null;
+  if (!tenant?.githubInstallationId) {
+    try {
+      installUrl = await getGithubApp().getInstallationUrl({ state: `${session.user.tenantId}|onboarding` });
+    } catch {
+      installUrl = null;
+    }
+  }
 
   const accessibleRepos = tenant?.githubInstallationId ? await listAccessibleRepos(tenant.githubInstallationId) : [];
   const watchedFullNames = new Set(tenantRepos.map((r) => r.githubRepoFullName));
@@ -48,10 +65,12 @@ export default async function OnboardingPage() {
         <h2 className="font-medium mb-2">2. Connect GitHub</h2>
         {tenant?.githubInstallationId ? (
           <p>Connected.</p>
-        ) : (
-          <a href={installUrl ?? "#"} className="text-gray-900 underline">
+        ) : installUrl ? (
+          <a href={installUrl} className="text-gray-900 underline">
             Connect GitHub
           </a>
+        ) : (
+          <p className="text-sm text-gray-500">GitHub integration isn&apos;t configured yet.</p>
         )}
       </section>
 

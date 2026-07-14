@@ -13,9 +13,17 @@ export default async function SettingsPage() {
   const tenantRepos = await db.select().from(repos).where(eq(repos.tenantId, session.user.tenantId));
   const tenantSchedules = await db.select().from(scheduleConfigs).where(eq(scheduleConfigs.tenantId, session.user.tenantId));
 
-  const installUrl = !tenant?.githubInstallationId
-    ? await getGithubApp().getInstallationUrl({ state: `${session.user.tenantId}|settings` })
-    : null;
+  // Deriving the install URL constructs the GitHub App, which throws if
+  // GITHUB_APP_ID isn't configured yet. Degrade gracefully so Settings still
+  // renders (workspace name, brand profile, schedules) before the App is set up.
+  let installUrl: string | null = null;
+  if (!tenant?.githubInstallationId) {
+    try {
+      installUrl = await getGithubApp().getInstallationUrl({ state: `${session.user.tenantId}|settings` });
+    } catch {
+      installUrl = null;
+    }
+  }
   const accessibleRepos = tenant?.githubInstallationId ? await listAccessibleRepos(tenant.githubInstallationId) : [];
   const watchedBranchByFullName = new Map(tenantRepos.map((r) => [r.githubRepoFullName, r.watchedBranch]));
 
@@ -34,9 +42,13 @@ export default async function SettingsPage() {
       <section>
         <h1 className="text-xl font-semibold mb-4">GitHub repos</h1>
         {!tenant?.githubInstallationId ? (
-          <a href={installUrl ?? "#"} className="text-gray-900 underline">
-            Connect GitHub
-          </a>
+          installUrl ? (
+            <a href={installUrl} className="text-gray-900 underline">
+              Connect GitHub
+            </a>
+          ) : (
+            <p className="text-sm text-gray-500">GitHub integration isn&apos;t configured yet.</p>
+          )
         ) : (
           <form action={addSettingsRepos} className="space-y-3 max-w-lg">
             <input type="hidden" name="repoCount" value={accessibleRepos.length} />
