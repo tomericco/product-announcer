@@ -1,4 +1,4 @@
-import { pgTable, pgEnum, uuid, text, timestamp, primaryKey, integer, jsonb, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, pgEnum, uuid, text, timestamp, primaryKey, integer, jsonb, uniqueIndex, boolean } from "drizzle-orm/pg-core";
 
 export const tenantRoleEnum = pgEnum("tenant_role", ["owner", "member"]);
 
@@ -135,4 +135,32 @@ export const updates = pgTable("updates", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   publishedAt: timestamp("published_at", { withTimezone: true }),
   editedBy: uuid("edited_by").references(() => users.id),
+});
+
+export const webhookDeliveryStatusEnum = pgEnum("webhook_delivery_status", ["pending", "success", "failed"]);
+
+export const webhookConfigs = pgTable("webhook_configs", {
+  id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  tenantId: uuid("tenant_id")
+    .notNull()
+    .unique()
+    .references(() => tenants.id, { onDelete: "cascade" }),
+  url: text("url").notNull(),
+  secret: text("secret").notNull(),
+  active: boolean("active").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const webhookDeliveries = pgTable("webhook_deliveries", {
+  id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  updateId: uuid("update_id")
+    .notNull()
+    .references(() => updates.id, { onDelete: "cascade" }),
+  webhookConfigId: uuid("webhook_config_id")
+    .notNull()
+    .references(() => webhookConfigs.id, { onDelete: "cascade" }),
+  status: webhookDeliveryStatusEnum("status").notNull().default("pending"),
+  attempts: integer("attempts").notNull().default(0),
+  lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
