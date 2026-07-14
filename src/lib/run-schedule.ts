@@ -80,3 +80,24 @@ export async function runSchedulerTick(now: Date, database: typeof defaultDb = d
     }
   }
 }
+
+export async function applyPostRunScheduleChoice(
+  repoId: string,
+  choice: "keep" | "skip",
+  database: typeof defaultDb = defaultDb
+): Promise<void> {
+  if (choice !== "skip") return;
+
+  const [config] = await database.select().from(scheduleConfigs).where(eq(scheduleConfigs.repoId, repoId)).limit(1);
+  if (config && config.cadence !== "none" && config.nextScheduledAt) {
+    await database
+      .update(scheduleConfigs)
+      .set({
+        nextScheduledAt: advanceNextScheduledAt(
+          config.nextScheduledAt,
+          config.cadence as Exclude<Cadence, "none">
+        ),
+      })
+      .where(eq(scheduleConfigs.id, config.id));
+  }
+}
