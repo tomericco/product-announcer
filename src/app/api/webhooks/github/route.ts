@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyGithubSignature } from "@/lib/github-webhook";
 import { ingestMergedPullRequest } from "@/lib/ingest-pull-request";
+import { ingestPush } from "@/lib/ingest-push";
+import { githubApp } from "@/lib/github";
 
 export async function POST(request: NextRequest) {
   const rawBody = await request.text();
@@ -24,6 +26,28 @@ export async function POST(request: NextRequest) {
       prUrl: payload.pull_request.html_url,
       mergedAt: new Date(payload.pull_request.merged_at),
     });
+  }
+
+  if (event === "push") {
+    const installationId = String(payload.installation.id);
+    await ingestPush(
+      {
+        installationId,
+        repoFullName: payload.repository.full_name,
+        ref: payload.ref,
+        commits: payload.commits.map((c: { id: string; message: string; url: string; timestamp: string }) => ({
+          id: c.id,
+          message: c.message,
+          url: c.url,
+          timestamp: c.timestamp,
+        })),
+      },
+      async (owner, repoName, sha) => {
+        const installationOctokit = await githubApp.getInstallationOctokit(Number(installationId));
+        const { data: commit } = await installationOctokit.rest.repos.getCommit({ owner, repo: repoName, ref: sha });
+        return (commit.files ?? []).map((f) => f.patch ?? "").join("\n");
+      }
+    );
   }
 
   return NextResponse.json({ ok: true });
