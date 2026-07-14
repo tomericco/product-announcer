@@ -135,7 +135,7 @@ describe("scheduler/generation schema", () => {
         tenantId: tenant.id,
         githubRepoFullName: "acme/widgets",
         githubInstallationId: "1",
-        defaultBranch: "main",
+        watchedBranch: "main",
       })
       .returning();
 
@@ -221,7 +221,7 @@ describe("change-item-batch", () => {
     const [tenant] = await db.insert(tenants).values({ name: "Batch Test Tenant" }).returning();
     const [repo] = await db
       .insert(repos)
-      .values({ tenantId: tenant.id, githubRepoFullName: "acme/x", githubInstallationId: "1", defaultBranch: "main" })
+      .values({ tenantId: tenant.id, githubRepoFullName: "acme/x", githubInstallationId: "1", watchedBranch: "main" })
       .returning();
     return { tenant, repo };
   }
@@ -918,7 +918,7 @@ describe("runBatchForRepo", () => {
     const [tenant] = await db.insert(tenants).values({ name: "Run Batch Test Tenant" }).returning();
     const [repo] = await db
       .insert(repos)
-      .values({ tenantId: tenant.id, githubRepoFullName: "acme/x", githubInstallationId: "1", defaultBranch: "main" })
+      .values({ tenantId: tenant.id, githubRepoFullName: "acme/x", githubInstallationId: "1", watchedBranch: "main" })
       .returning();
     await db.insert(changeItems).values({
       tenantId: tenant.id,
@@ -948,7 +948,7 @@ describe("runBatchForRepo", () => {
     const [tenant] = await db.insert(tenants).values({ name: "Run Batch Test Tenant" }).returning();
     const [repo] = await db
       .insert(repos)
-      .values({ tenantId: tenant.id, githubRepoFullName: "acme/x", githubInstallationId: "1", defaultBranch: "main" })
+      .values({ tenantId: tenant.id, githubRepoFullName: "acme/x", githubInstallationId: "1", watchedBranch: "main" })
       .returning();
 
     await runBatchForRepo(repo.id, tenant.id, []);
@@ -962,7 +962,7 @@ describe("runBatchForRepo", () => {
     const [tenant] = await db.insert(tenants).values({ name: "Run Batch Test Tenant" }).returning();
     const [repo] = await db
       .insert(repos)
-      .values({ tenantId: tenant.id, githubRepoFullName: "acme/x", githubInstallationId: "1", defaultBranch: "main" })
+      .values({ tenantId: tenant.id, githubRepoFullName: "acme/x", githubInstallationId: "1", watchedBranch: "main" })
       .returning();
     await db.insert(changeItems).values({
       tenantId: tenant.id,

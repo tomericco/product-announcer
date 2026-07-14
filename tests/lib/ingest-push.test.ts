@@ -16,7 +16,7 @@ describe("ingestPush", () => {
       .values({
         tenantId: tenant.id,
         githubRepoFullName: "acme/no-prs",
-        githubInstallationId: "999",
+        githubInstallationId: "90002",
         watchedBranch: "main",
         sourceTypes: ["commit"],
       })
@@ -26,7 +26,7 @@ describe("ingestPush", () => {
 
     await ingestPush(
       {
-        installationId: "999",
+        installationId: "90002",
         repoFullName: "acme/no-prs",
         ref: "refs/heads/main",
         commits: [
@@ -52,7 +52,7 @@ describe("ingestPush", () => {
       .values({
         tenantId: tenant.id,
         githubRepoFullName: "acme/no-prs",
-        githubInstallationId: "999",
+        githubInstallationId: "90002",
         watchedBranch: "main",
         sourceTypes: ["commit"],
       })
@@ -61,7 +61,7 @@ describe("ingestPush", () => {
     const getCommitDiff = vi.fn().mockResolvedValue("diff --git a/x b/x\n+added a line");
 
     const input = {
-      installationId: "999",
+      installationId: "90002",
       repoFullName: "acme/no-prs",
       ref: "refs/heads/main",
       commits: [
@@ -85,7 +85,7 @@ describe("ingestPush", () => {
       .values({
         tenantId: tenant.id,
         githubRepoFullName: "acme/no-prs",
-        githubInstallationId: "999",
+        githubInstallationId: "90002",
         watchedBranch: "main",
         sourceTypes: ["commit"],
       })
@@ -95,7 +95,7 @@ describe("ingestPush", () => {
 
     await ingestPush(
       {
-        installationId: "999",
+        installationId: "90002",
         repoFullName: "acme/no-prs",
         ref: "refs/heads/feature-branch",
         commits: [{ id: "abc123", message: "wip", url: "https://x", timestamp: "2026-07-01T00:00:00Z" }],
@@ -113,7 +113,7 @@ describe("ingestPush", () => {
     await db.insert(repos).values({
       tenantId: tenant.id,
       githubRepoFullName: "acme/pr-only",
-      githubInstallationId: "999",
+      githubInstallationId: "90002",
       watchedBranch: "main",
       sourceTypes: ["pr"],
     });
@@ -122,7 +122,7 @@ describe("ingestPush", () => {
 
     await ingestPush(
       {
-        installationId: "999",
+        installationId: "90002",
         repoFullName: "acme/pr-only",
         ref: "refs/heads/main",
         commits: [{ id: "abc123", message: "wip", url: "https://x", timestamp: "2026-07-01T00:00:00Z" }],

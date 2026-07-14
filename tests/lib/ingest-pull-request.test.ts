@@ -16,14 +16,14 @@ describe("ingestMergedPullRequest", () => {
       .values({
         tenantId: tenant.id,
         githubRepoFullName: "acme/widgets",
-        githubInstallationId: "999",
+        githubInstallationId: "90001",
         watchedBranch: "main",
         sourceTypes: ["pr"],
       })
       .returning();
 
     await ingestMergedPullRequest({
-      installationId: "999",
+      installationId: "90001",
       repoFullName: "acme/widgets",
       baseBranch: "main",
       prNumber: 7,
@@ -50,14 +50,14 @@ describe("ingestMergedPullRequest", () => {
       .values({
         tenantId: tenant.id,
         githubRepoFullName: "acme/widgets",
-        githubInstallationId: "999",
+        githubInstallationId: "90001",
         watchedBranch: "main",
         sourceTypes: ["pr"],
       })
       .returning();
 
     await ingestMergedPullRequest({
-      installationId: "999",
+      installationId: "90001",
       repoFullName: "acme/widgets",
       baseBranch: "release-1.0",
       prNumber: 9,
@@ -78,14 +78,14 @@ describe("ingestMergedPullRequest", () => {
       .values({
         tenantId: tenant.id,
         githubRepoFullName: "acme/commit-only",
-        githubInstallationId: "999",
+        githubInstallationId: "90001",
         watchedBranch: "main",
         sourceTypes: ["commit"],
       })
       .returning();
 
     await ingestMergedPullRequest({
-      installationId: "999",
+      installationId: "90001",
       repoFullName: "acme/commit-only",
       baseBranch: "main",
       prNumber: 1,
@@ -106,14 +106,14 @@ describe("ingestMergedPullRequest", () => {
       .values({
         tenantId: tenant.id,
         githubRepoFullName: "acme/widgets",
-        githubInstallationId: "999",
+        githubInstallationId: "90001",
         watchedBranch: "main",
         sourceTypes: ["pr"],
       })
       .returning();
 
     const input = {
-      installationId: "999",
+      installationId: "90001",
       repoFullName: "acme/widgets",
       baseBranch: "main",
       prNumber: 42,
