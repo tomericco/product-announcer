@@ -23,7 +23,7 @@ describe("authOptions.callbacks.jwt", () => {
       token: {},
       account: { provider: "github" },
       profile: { id: 42, email: "tomer@frontitude.com", name: "Tomer" },
-    } as Parameters<NonNullable<NonNullable<typeof authOptions.callbacks>["jwt"]>>[0]);
+    } as unknown as Parameters<NonNullable<NonNullable<typeof authOptions.callbacks>["jwt"]>>[0]);
 
     expect(token.userId).toBe("user-1");
     expect(token.tenantId).toBe("tenant-1");
@@ -42,7 +42,7 @@ describe("authOptions.callbacks.jwt", () => {
       token: existingToken,
       account: null,
       profile: undefined,
-    } as Parameters<NonNullable<NonNullable<typeof authOptions.callbacks>["jwt"]>>[0]);
+    } as unknown as Parameters<NonNullable<NonNullable<typeof authOptions.callbacks>["jwt"]>>[0]);
 
     expect(token).toEqual(existingToken);
     expect(getOrCreateTenantForUser).not.toHaveBeenCalled();

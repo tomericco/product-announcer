@@ -17,8 +17,14 @@ export const authOptions: NextAuthOptions = {
     async jwt({ token, account, profile }) {
       if (account && profile) {
         const githubProfile = profile as GithubProfile;
+        const email = githubProfile.email ?? (token.email as string | undefined);
+        if (!email) {
+          throw new Error(
+            "GitHub sign-in did not return an email address. Please make your GitHub email public or grant email access, then try again."
+          );
+        }
         const { userId, tenantId, role } = await getOrCreateTenantForUser({
-          email: githubProfile.email ?? (token.email as string | undefined) ?? "",
+          email,
           name: githubProfile.name,
           githubId: String(githubProfile.id),
         });
