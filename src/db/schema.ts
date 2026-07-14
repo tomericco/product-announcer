@@ -6,6 +6,7 @@ export const tenants = pgTable("tenants", {
   id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
   name: text("name").notNull(),
   githubInstallationId: text("github_installation_id"),
+  onboardingCompletedAt: timestamp("onboarding_completed_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
