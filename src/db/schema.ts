@@ -1,4 +1,4 @@
-import { pgTable, pgEnum, uuid, text, timestamp, primaryKey, integer, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, pgEnum, uuid, text, timestamp, primaryKey, integer, jsonb, uniqueIndex } from "drizzle-orm/pg-core";
 
 export const tenantRoleEnum = pgEnum("tenant_role", ["owner", "member"]);
 
@@ -59,8 +59,7 @@ export const changeItems = pgTable(
       .references(() => repos.id, { onDelete: "cascade" }),
     sourceType: sourceTypeEnum("source_type").notNull(),
     status: changeItemStatusEnum("status").notNull().default("pending"),
-    // No FK yet — the `updates` table is created in Plan 3, which adds the reference.
-    updateId: uuid("update_id"),
+    updateId: uuid("update_id").references(() => updates.id),
     excludedAt: timestamp("excluded_at", { withTimezone: true }),
     excludedBy: uuid("excluded_by").references(() => users.id),
     // pr-sourced fields
@@ -82,3 +81,57 @@ export const changeItems = pgTable(
     uniqueIndex("change_items_repo_commit_unique").on(table.repoId, table.commitSha),
   ]
 );
+
+export const cadenceEnum = pgEnum("cadence", ["daily", "weekly", "biweekly", "monthly", "none"]);
+export const updateStatusEnum = pgEnum("update_status", ["draft", "approved", "published", "rejected"]);
+export const updateCategoryEnum = pgEnum("update_category", ["new", "improved", "fixed"]);
+
+export const scheduleConfigs = pgTable("schedule_configs", {
+  id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  tenantId: uuid("tenant_id")
+    .notNull()
+    .references(() => tenants.id, { onDelete: "cascade" }),
+  repoId: uuid("repo_id")
+    .notNull()
+    .references(() => repos.id, { onDelete: "cascade" }),
+  cadence: cadenceEnum("cadence").notNull().default("weekly"),
+  threshold: integer("threshold"),
+  lastRunAt: timestamp("last_run_at", { withTimezone: true }),
+  nextScheduledAt: timestamp("next_scheduled_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const brandProfiles = pgTable("brand_profiles", {
+  id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  tenantId: uuid("tenant_id")
+    .notNull()
+    .unique()
+    .references(() => tenants.id, { onDelete: "cascade" }),
+  tone: text("tone"),
+  readingLevel: text("reading_level"),
+  doList: text("do_list").array().notNull().default([]),
+  dontList: text("dont_list").array().notNull().default([]),
+  examplePhrases: text("example_phrases").array().notNull().default([]),
+  industry: text("industry"),
+  userPersonas: text("user_personas").array().notNull().default([]),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const updates = pgTable("updates", {
+  id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  tenantId: uuid("tenant_id")
+    .notNull()
+    .references(() => tenants.id, { onDelete: "cascade" }),
+  repoId: uuid("repo_id")
+    .notNull()
+    .references(() => repos.id, { onDelete: "cascade" }),
+  title: text("title").notNull(),
+  body: text("body").notNull(),
+  category: updateCategoryEnum("category").notNull(),
+  status: updateStatusEnum("status").notNull().default("draft"),
+  sourceItems: jsonb("source_items").$type<string[]>().notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  publishedAt: timestamp("published_at", { withTimezone: true }),
+  editedBy: uuid("edited_by").references(() => users.id),
+});
