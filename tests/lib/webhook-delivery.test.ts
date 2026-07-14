@@ -114,4 +114,40 @@ describe("webhook-delivery", () => {
 
     expect(fetch).not.toHaveBeenCalled();
   });
+
+  it("dispatchWebhookForUpdate never throws, even if a DB operation fails", async () => {
+    const { update } = await seed();
+
+    // A database whose first query throws simulates a DB error mid-dispatch.
+    // Publish already committed before dispatch runs, so dispatch must swallow
+    // this rather than propagate a 500 out of approveDraft.
+    const brokenDb = {
+      select: () => {
+        throw new Error("db connection lost");
+      },
+    } as unknown as typeof db;
+
+    await expect(dispatchWebhookForUpdate(update.id, brokenDb)).resolves.not.toThrow();
+  });
+
+  it("retryFailedWebhookDeliveries skips deliveries whose config was deactivated", async () => {
+    const { tenant, update } = await seed();
+    const [config] = await db
+      .insert(webhookConfigs)
+      .values({ tenantId: tenant.id, url: "https://example.com/hook", secret: "s3cr3t", active: false })
+      .returning();
+    await db.insert(webhookDeliveries).values({
+      updateId: update.id,
+      webhookConfigId: config.id,
+      status: "failed",
+      attempts: 1,
+    });
+
+    await retryFailedWebhookDeliveries();
+
+    expect(fetch).not.toHaveBeenCalled();
+    const [delivery] = await db.select().from(webhookDeliveries).where(eq(webhookDeliveries.updateId, update.id));
+    expect(delivery.status).toBe("failed");
+    expect(delivery.attempts).toBe(1);
+  });
 });
