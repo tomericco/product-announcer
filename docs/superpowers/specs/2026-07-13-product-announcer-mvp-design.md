@@ -240,6 +240,46 @@ Each tenant configures a `BrandProfile` covering both *how* they write and *who*
 
 Both halves are injected into the same generation prompt alongside the batch's `ChangeItem` content — tone dictates *how* it's said, industry/personas dictate *what matters* and *how much explaining is needed* for that audience. Keeping them in one entity/settings page reflects that they're really one input to the model, not two independent concerns. This combined context is the product's core differentiator versus generic AI-changelog tools, so it's built into the MVP rather than deferred.
 
+## Design Direction
+
+Product Announcer's own UI needs a deliberate visual identity — not the default "AI SaaS" look (Inter, white background, blue-to-purple gradient hero, rounded-xl cards with soft shadows, filled rainbow status pills). This is documented direction for whoever implements the Dashboard/Integrations UI; it is **not** yet reflected in the plans' example JSX, which currently uses plain gray-bordered Tailwind as structural placeholder. Independent identity — not tied to Frontitude's own brand, since Product Announcer is a standalone product from day one, even though Frontitude is tenant #1.
+
+**Concept: "The Wire."** The product's whole job is turning raw engineering activity into polished, published prose — so the UI is styled like an editorial desk processing a news wire, not a generic admin panel. Pending changes are a wire feed; the Drafts queue is a copy desk where a manuscript gets marked up; approving a draft is "stamping" it for publication; History is the archive/masthead index. This isn't decorative — it makes the review workflow (raw signal → edited copy → published record) legible at a glance.
+
+**Typography:**
+- Display/headings — **Fraunces** (variable serif, expressive, available via Google Fonts). Used for page titles, the drafted update's title in the editor and preview, and the workspace nameplate in the header. Never a generic sans for these.
+- UI/body text — **Public Sans**. Clean, humanist, used for labels, buttons, table content, form copy. Deliberately not Inter/Roboto/system-ui.
+- Technical metadata — **IBM Plex Mono**. Used for anything that came from git: branch names, commit SHAs, timestamps, cadence/threshold values. Reinforces "this originated in code" wherever it appears next to the polished prose.
+- Load all three via `next/font/google` in the root layout and expose them as CSS variables (`--font-display`, `--font-body`, `--font-mono`) so every page can reference them consistently.
+
+**Color (light, paper-toned; dark mode is future work, not required for this MVP):**
+```
+--color-paper:        #F6F1E7   /* page background — warm cream, not white */
+--color-surface:      #FFFDF8   /* cards/panels — slightly lighter than paper */
+--color-ink:          #1B1712   /* primary text — warm near-black, not pure #000 */
+--color-ink-muted:     #6B6255   /* secondary text, captions, metadata labels */
+--color-rule:          #DDD3C0   /* hairline borders/dividers — soft tan, not gray-300 */
+--color-accent:        #B23A2E   /* "stamp red" — primary actions, Published state */
+--color-accent-quiet:  #6B7C5C   /* sage — pending/scheduled state, secondary emphasis */
+```
+Two accents only (vermillion + sage) — not a five-color rainbow status system. Status is communicated primarily through *language and position* (a dateline, a stamp, a strikethrough), with color as reinforcement, not the only signal.
+
+**Layout per view:**
+- **Global chrome** — a masthead-style header (workspace name in Fraunces, like a newspaper nameplate) instead of a generic top app bar. Nav items read like section tabs with a thin rule beneath the row; the active section gets a small vermillion underline, not a filled pill/button.
+- **Pending ("The Wire")** — each `ChangeItem` renders like a wire dispatch: monospace timestamp/branch on the left, the PR/commit title in body type. "Drop" is a quiet, text-only affordance (e.g. a strikethrough-on-hover before confirming), not a loud red delete button. The next-scheduled-run line reads like a dateline: "Next edition: Tue, 9:00 AM."
+- **Drafts ("The Copy Desk")** — the editor treats the draft like a manuscript; focus states use a thin vermillion underline instead of a default blue browser ring. The preview card is styled like a printed clipping (paper surface, Fraunces headline, a thin rule, small-caps category label) — this is the same "Preview" feature from the Generation section, just skinned to the concept. "Approve & Publish" is treated as a stamp: solid vermillion fill, sharp corners (2–4px radius, not `rounded-xl`), a brief press micro-interaction on click. "Reject" is a quiet text link, not a competing button.
+- **History ("The Archive")** — a dense ledger/table: serif title column, monospace date column, minimal chrome, no card wrappers per row.
+- **Integrations ("The Wire Services Directory")** — the active Generic Webhook reads as "plugged in"; coming-soon entries (Webflow, Customer.io, Mailchimp, HubSpot, LinkedIn) render visibly dimmed, like an out-of-service listing, not just a slightly-lower-opacity chip.
+
+**Motion:** restrained and purposeful, not decorative. One well-placed moment beats many small ones: a brief stamp-press (scale down then up, ~150ms) on "Approve & Publish"; new items entering the Pending feed fade/slide in from the top. No hover effects on things that aren't interactive, no gratuitous page-load animation.
+
+**Explicit guardrails (never do):**
+- Never use Inter, Roboto, Arial, or system-ui as the primary UI font.
+- Never use a purple/blue gradient background or hero section.
+- Never default to `rounded-xl` cards with soft drop shadows as the primary surface treatment — this reads as generic AI-tool chrome.
+- Never use the browser's default blue focus ring — use the accent color.
+- Status is not five filled rainbow pill badges; prefer a small colored dot/rule plus a text label, or no color at all where position/language already communicates state.
+
 ## Generation Strategy
 
 How the generation worker turns a batch + `BrandProfile` into an `Update` — the architectural decisions here, not the literal prompt wording (that's tuned iteratively during implementation).
