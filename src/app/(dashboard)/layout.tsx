@@ -37,6 +37,9 @@ export default async function DashboardLayout({ children }: { children: React.Re
           <Link href="/history" className="rounded-md px-2 py-1.5 text-sm text-gray-700 hover:bg-gray-100">
             History
           </Link>
+          <Link href="/integrations" className="rounded-md px-2 py-1.5 text-sm text-gray-700 hover:bg-gray-100">
+            Integrations
+          </Link>
         </nav>
         <div className="mt-auto border-t border-gray-200 px-2 pt-3 text-xs text-gray-500">
           {session.user.email}
