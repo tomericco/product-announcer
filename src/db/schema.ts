@@ -1,4 +1,4 @@
-import { pgTable, pgEnum, uuid, text, timestamp, primaryKey, integer } from "drizzle-orm/pg-core";
+import { pgTable, pgEnum, uuid, text, timestamp, primaryKey, integer, uniqueIndex } from "drizzle-orm/pg-core";
 
 export const tenantRoleEnum = pgEnum("tenant_role", ["owner", "member"]);
 
@@ -47,31 +47,38 @@ export const repos = pgTable("repos", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
-export const changeItems = pgTable("change_items", {
-  id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
-  tenantId: uuid("tenant_id")
-    .notNull()
-    .references(() => tenants.id, { onDelete: "cascade" }),
-  repoId: uuid("repo_id")
-    .notNull()
-    .references(() => repos.id, { onDelete: "cascade" }),
-  sourceType: sourceTypeEnum("source_type").notNull(),
-  status: changeItemStatusEnum("status").notNull().default("pending"),
-  // No FK yet — the `updates` table is created in Plan 3, which adds the reference.
-  updateId: uuid("update_id"),
-  excludedAt: timestamp("excluded_at", { withTimezone: true }),
-  excludedBy: uuid("excluded_by").references(() => users.id),
-  // pr-sourced fields
-  prNumber: integer("pr_number"),
-  prTitle: text("pr_title"),
-  prDescription: text("pr_description"),
-  prUrl: text("pr_url"),
-  mergedAt: timestamp("merged_at", { withTimezone: true }),
-  // commit-sourced fields
-  commitSha: text("commit_sha"),
-  commitMessage: text("commit_message"),
-  diff: text("diff"),
-  commitUrl: text("commit_url"),
-  committedAt: timestamp("committed_at", { withTimezone: true }),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+export const changeItems = pgTable(
+  "change_items",
+  {
+    id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    repoId: uuid("repo_id")
+      .notNull()
+      .references(() => repos.id, { onDelete: "cascade" }),
+    sourceType: sourceTypeEnum("source_type").notNull(),
+    status: changeItemStatusEnum("status").notNull().default("pending"),
+    // No FK yet — the `updates` table is created in Plan 3, which adds the reference.
+    updateId: uuid("update_id"),
+    excludedAt: timestamp("excluded_at", { withTimezone: true }),
+    excludedBy: uuid("excluded_by").references(() => users.id),
+    // pr-sourced fields
+    prNumber: integer("pr_number"),
+    prTitle: text("pr_title"),
+    prDescription: text("pr_description"),
+    prUrl: text("pr_url"),
+    mergedAt: timestamp("merged_at", { withTimezone: true }),
+    // commit-sourced fields
+    commitSha: text("commit_sha"),
+    commitMessage: text("commit_message"),
+    diff: text("diff"),
+    commitUrl: text("commit_url"),
+    committedAt: timestamp("committed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("change_items_repo_pr_unique").on(table.repoId, table.prNumber),
+    uniqueIndex("change_items_repo_commit_unique").on(table.repoId, table.commitSha),
+  ]
+);

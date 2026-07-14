@@ -45,6 +45,39 @@ describe("ingestPush", () => {
     expect(getCommitDiff).toHaveBeenCalledTimes(2);
   });
 
+  it("is idempotent: ingesting the same push twice does not double the commit count", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: "Push Ingest Test Tenant" }).returning();
+    const [repo] = await db
+      .insert(repos)
+      .values({
+        tenantId: tenant.id,
+        githubRepoFullName: "acme/no-prs",
+        githubInstallationId: "999",
+        watchedBranch: "main",
+        sourceTypes: ["commit"],
+      })
+      .returning();
+
+    const getCommitDiff = vi.fn().mockResolvedValue("diff --git a/x b/x\n+added a line");
+
+    const input = {
+      installationId: "999",
+      repoFullName: "acme/no-prs",
+      ref: "refs/heads/main",
+      commits: [
+        { id: "abc123", message: "fix export timeout", url: "https://github.com/acme/no-prs/commit/abc123", timestamp: "2026-07-01T00:00:00Z" },
+        { id: "def456", message: "tweak logging", url: "https://github.com/acme/no-prs/commit/def456", timestamp: "2026-07-01T00:05:00Z" },
+      ],
+    };
+
+    await ingestPush(input, getCommitDiff);
+    await ingestPush(input, getCommitDiff);
+
+    const items = await db.select().from(changeItems).where(eq(changeItems.repoId, repo.id));
+    expect(items).toHaveLength(2);
+    expect(items.map((i) => i.commitSha).sort()).toEqual(["abc123", "def456"]);
+  });
+
   it("ignores pushes to a branch other than the watched one", async () => {
     const [tenant] = await db.insert(tenants).values({ name: "Push Ingest Test Tenant" }).returning();
     const [repo] = await db

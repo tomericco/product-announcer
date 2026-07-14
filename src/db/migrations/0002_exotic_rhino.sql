@@ -1,0 +1,2 @@
+CREATE UNIQUE INDEX "change_items_repo_pr_unique" ON "change_items" USING btree ("repo_id","pr_number");--> statement-breakpoint
+CREATE UNIQUE INDEX "change_items_repo_commit_unique" ON "change_items" USING btree ("repo_id","commit_sha");

@@ -15,39 +15,55 @@ export async function POST(request: NextRequest) {
   const event = request.headers.get("x-github-event");
   const payload = JSON.parse(rawBody);
 
-  if (event === "pull_request" && payload.action === "closed" && payload.pull_request?.merged) {
-    await ingestMergedPullRequest({
-      installationId: String(payload.installation.id),
-      repoFullName: payload.repository.full_name,
-      baseBranch: payload.pull_request.base.ref,
-      prNumber: payload.pull_request.number,
-      prTitle: payload.pull_request.title,
-      prDescription: payload.pull_request.body ?? "",
-      prUrl: payload.pull_request.html_url,
-      mergedAt: new Date(payload.pull_request.merged_at),
-    });
+  const isProcessableEvent =
+    (event === "pull_request" && payload.action === "closed" && payload.pull_request?.merged) || event === "push";
+
+  if (isProcessableEvent && !payload.installation?.id) {
+    return NextResponse.json({ ok: true, skipped: "no installation" });
   }
 
-  if (event === "push") {
-    const installationId = String(payload.installation.id);
-    await ingestPush(
-      {
-        installationId,
+  try {
+    if (event === "pull_request" && payload.action === "closed" && payload.pull_request?.merged) {
+      await ingestMergedPullRequest({
+        installationId: String(payload.installation.id),
         repoFullName: payload.repository.full_name,
-        ref: payload.ref,
-        commits: payload.commits.map((c: { id: string; message: string; url: string; timestamp: string }) => ({
-          id: c.id,
-          message: c.message,
-          url: c.url,
-          timestamp: c.timestamp,
-        })),
-      },
-      async (owner, repoName, sha) => {
-        const installationOctokit = await githubApp.getInstallationOctokit(Number(installationId));
-        const { data: commit } = await installationOctokit.rest.repos.getCommit({ owner, repo: repoName, ref: sha });
-        return (commit.files ?? []).map((f) => f.patch ?? "").join("\n");
-      }
-    );
+        baseBranch: payload.pull_request.base.ref,
+        prNumber: payload.pull_request.number,
+        prTitle: payload.pull_request.title,
+        prDescription: payload.pull_request.body ?? "",
+        prUrl: payload.pull_request.html_url,
+        mergedAt: new Date(payload.pull_request.merged_at),
+      });
+    }
+
+    if (event === "push") {
+      const installationId = String(payload.installation.id);
+      await ingestPush(
+        {
+          installationId,
+          repoFullName: payload.repository.full_name,
+          ref: payload.ref,
+          commits: payload.commits.map((c: { id: string; message: string; url: string; timestamp: string }) => ({
+            id: c.id,
+            message: c.message,
+            url: c.url,
+            timestamp: c.timestamp,
+          })),
+        },
+        async (owner, repoName, sha) => {
+          const installationOctokit = await githubApp.getInstallationOctokit(Number(installationId));
+          const { data: commit } = await installationOctokit.rest.repos.getCommit({
+            owner,
+            repo: repoName,
+            ref: sha,
+          });
+          return (commit.files ?? []).map((f) => f.patch ?? "").join("\n");
+        }
+      );
+    }
+  } catch (error) {
+    console.error("Error processing GitHub webhook:", error);
+    return NextResponse.json({ ok: true });
   }
 
   return NextResponse.json({ ok: true });

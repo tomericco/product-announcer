@@ -33,15 +33,18 @@ export async function ingestPush(
   for (const commit of input.commits) {
     const rawDiff = await getCommitDiff(owner, repoName, commit.id);
 
-    await database.insert(changeItems).values({
-      tenantId: repo.tenantId,
-      repoId: repo.id,
-      sourceType: "commit",
-      commitSha: commit.id,
-      commitMessage: commit.message,
-      commitUrl: commit.url,
-      committedAt: new Date(commit.timestamp),
-      diff: truncateDiff(rawDiff),
-    });
+    await database
+      .insert(changeItems)
+      .values({
+        tenantId: repo.tenantId,
+        repoId: repo.id,
+        sourceType: "commit",
+        commitSha: commit.id,
+        commitMessage: commit.message,
+        commitUrl: commit.url,
+        committedAt: new Date(commit.timestamp),
+        diff: truncateDiff(rawDiff),
+      })
+      .onConflictDoNothing();
   }
 }

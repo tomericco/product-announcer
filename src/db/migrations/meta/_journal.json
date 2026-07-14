@@ -15,6 +15,13 @@
       "when": 1784056191837,
       "tag": "0001_melodic_jackpot",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1784057570667,
+      "tag": "0002_exotic_rhino",
+      "breakpoints": true
     }
   ]
 }

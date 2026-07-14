@@ -28,14 +28,17 @@ export async function ingestMergedPullRequest(
   if (!repo || !repo.sourceTypes.includes("pr")) return;
   if (input.baseBranch !== repo.watchedBranch) return;
 
-  await database.insert(changeItems).values({
-    tenantId: repo.tenantId,
-    repoId: repo.id,
-    sourceType: "pr",
-    prNumber: input.prNumber,
-    prTitle: input.prTitle,
-    prDescription: input.prDescription,
-    prUrl: input.prUrl,
-    mergedAt: input.mergedAt,
-  });
+  await database
+    .insert(changeItems)
+    .values({
+      tenantId: repo.tenantId,
+      repoId: repo.id,
+      sourceType: "pr",
+      prNumber: input.prNumber,
+      prTitle: input.prTitle,
+      prDescription: input.prDescription,
+      prUrl: input.prUrl,
+      mergedAt: input.mergedAt,
+    })
+    .onConflictDoNothing();
 }

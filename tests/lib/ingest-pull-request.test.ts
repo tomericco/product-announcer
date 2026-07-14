@@ -99,6 +99,37 @@ describe("ingestMergedPullRequest", () => {
     expect(items).toHaveLength(0);
   });
 
+  it("is idempotent: ingesting the same merged PR twice creates only one ChangeItem", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: "PR Ingest Test Tenant" }).returning();
+    const [repo] = await db
+      .insert(repos)
+      .values({
+        tenantId: tenant.id,
+        githubRepoFullName: "acme/widgets",
+        githubInstallationId: "999",
+        watchedBranch: "main",
+        sourceTypes: ["pr"],
+      })
+      .returning();
+
+    const input = {
+      installationId: "999",
+      repoFullName: "acme/widgets",
+      baseBranch: "main",
+      prNumber: 42,
+      prTitle: "Add dark mode",
+      prDescription: "Adds a dark mode toggle to settings.",
+      prUrl: "https://github.com/acme/widgets/pull/42",
+      mergedAt: new Date("2026-07-01T00:00:00Z"),
+    };
+
+    await ingestMergedPullRequest(input);
+    await ingestMergedPullRequest(input);
+
+    const items = await db.select().from(changeItems).where(eq(changeItems.repoId, repo.id));
+    expect(items).toHaveLength(1);
+  });
+
   it("does nothing when no matching repo is found", async () => {
     await expect(
       ingestMergedPullRequest({
