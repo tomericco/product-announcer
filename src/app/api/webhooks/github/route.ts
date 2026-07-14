@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { verifyGithubSignature } from "@/lib/github-webhook";
 import { ingestMergedPullRequest } from "@/lib/ingest-pull-request";
 import { ingestPush } from "@/lib/ingest-push";
-import { githubApp } from "@/lib/github";
+import { getGithubApp } from "@/lib/github";
 
 export async function POST(request: NextRequest) {
   const rawBody = await request.text();
@@ -51,7 +51,7 @@ export async function POST(request: NextRequest) {
           })),
         },
         async (owner, repoName, sha) => {
-          const installationOctokit = await githubApp.getInstallationOctokit(Number(installationId));
+          const installationOctokit = await getGithubApp().getInstallationOctokit(Number(installationId));
           const { data: commit } = await installationOctokit.rest.repos.getCommit({
             owner,
             repo: repoName,
