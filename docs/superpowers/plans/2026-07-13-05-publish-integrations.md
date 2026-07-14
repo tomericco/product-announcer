@@ -30,9 +30,9 @@
 
 Modify `src/db/schema.ts`:
 
-1. Update the `pg-core` import line to add `boolean`:
+1. Update the `pg-core` import line to add `boolean` — keeping every identifier already imported (`uniqueIndex` from Plan 2, `jsonb` from Plan 3, etc.); only append `boolean`:
    ```typescript
-   import { pgTable, pgEnum, uuid, text, timestamp, primaryKey, integer, jsonb, boolean } from "drizzle-orm/pg-core";
+   import { pgTable, pgEnum, uuid, text, timestamp, primaryKey, integer, jsonb, uniqueIndex, boolean } from "drizzle-orm/pg-core";
    ```
 2. Append to the end of the file:
    ```typescript
