@@ -12,7 +12,8 @@ export async function getPendingChangeItems(
   return database
     .select()
     .from(changeItems)
-    .where(and(eq(changeItems.repoId, repoId), eq(changeItems.status, "pending")));
+    .where(and(eq(changeItems.repoId, repoId), eq(changeItems.status, "pending")))
+    .orderBy(changeItems.createdAt);
 }
 
 export type DraftInput = { title: string; body: string; category: "new" | "improved" | "fixed" };

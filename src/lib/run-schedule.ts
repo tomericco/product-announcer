@@ -13,8 +13,8 @@ export async function runBatchForRepo(
   tenantId: string,
   pending: ChangeItemRow[],
   database: typeof defaultDb = defaultDb
-): Promise<void> {
-  if (pending.length === 0) return;
+): Promise<boolean> {
+  if (pending.length === 0) return false;
 
   const brandProfile = await getOrCreateBrandProfile(tenantId, database);
 
@@ -28,43 +28,55 @@ export async function runBatchForRepo(
       // Both attempts failed. Leave the batch's items pending — they roll into
       // the next scheduled/threshold/manual run automatically (see Plan's
       // Global Constraints re: deferred failure surfacing).
-      return;
+      return false;
     }
   }
 
-  await claimBatchAndCreateUpdate(
+  const update = await claimBatchAndCreateUpdate(
     { tenantId, repoId, changeItemIds: pending.map((p) => p.id), draft },
     database
   );
+
+  return update !== null;
 }
 
 export async function runSchedulerTick(now: Date, database: typeof defaultDb = defaultDb): Promise<void> {
   const configs = await database.select().from(scheduleConfigs);
 
   for (const config of configs) {
-    const pending = await getPendingChangeItems(config.repoId, database);
+    try {
+      const pending = await getPendingChangeItems(config.repoId, database);
 
-    const reason = shouldTriggerRun(
-      {
-        cadence: config.cadence,
-        nextScheduledAt: config.nextScheduledAt,
-        threshold: config.threshold,
-        pendingCount: pending.length,
-      },
-      now
-    );
-
-    if (!reason) continue;
-
-    await runBatchForRepo(config.repoId, config.tenantId, pending, database);
-
-    const updateFields: Partial<typeof scheduleConfigs.$inferInsert> = { lastRunAt: now };
-    if (reason === "cadence" && config.cadence !== "none" && config.nextScheduledAt) {
-      updateFields.nextScheduledAt = advanceNextScheduledAt(
-        config.nextScheduledAt,
-        config.cadence as Exclude<Cadence, "none">
+      const reason = shouldTriggerRun(
+        {
+          cadence: config.cadence,
+          nextScheduledAt: config.nextScheduledAt,
+          threshold: config.threshold,
+          pendingCount: pending.length,
+        },
+        now
       );
+
+      if (!reason) continue;
+
+      const created = await runBatchForRepo(config.repoId, config.tenantId, pending, database);
+
+      const updateFields: Partial<typeof scheduleConfigs.$inferInsert> = { lastRunAt: now };
+      // Advance the cadence clock only when an Update was actually produced. A
+      // cadence tick that fired but generated nothing (double-failure) must not
+      // consume the cadence slot — leaving nextScheduledAt in the past lets the
+      // next hourly tick retry instead of waiting a full cadence cycle.
+      if (created && reason === "cadence" && config.cadence !== "none" && config.nextScheduledAt) {
+        updateFields.nextScheduledAt = advanceNextScheduledAt(
+          config.nextScheduledAt,
+          config.cadence as Exclude<Cadence, "none">
+        );
+      }
+      await database.update(scheduleConfigs).set(updateFields).where(eq(scheduleConfigs.id, config.id));
+    } catch (error) {
+      // One repo's unexpected failure must not starve the other tenants'
+      // configs in this tick. Log and continue.
+      console.error(`Scheduler tick failed for repo ${config.repoId}:`, error);
     }
-    await database.update(scheduleConfigs).set(updateFields).where(eq(scheduleConfigs.id, config.id));
   }
 }
