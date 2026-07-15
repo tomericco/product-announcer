@@ -1,4 +1,5 @@
 import { chooseSchedule } from "../actions";
+import { Button } from "@/components/ui/button";
 
 export default async function ScheduleChoicePage({
   searchParams,
@@ -8,23 +9,25 @@ export default async function ScheduleChoicePage({
   const { repoId } = await searchParams;
 
   return (
-    <div className="space-y-4 max-w-md">
+    <div className="max-w-md space-y-4">
       <h1 className="text-xl font-semibold">Update generated</h1>
-      <p>Keep the next scheduled update as planned, or skip it since you just ran one manually?</p>
-      <div className="flex gap-4">
+      <p className="text-sm text-muted-foreground">
+        Keep the next scheduled update as planned, or skip it since you just ran one manually?
+      </p>
+      <div className="flex gap-3">
         <form action={chooseSchedule}>
           <input type="hidden" name="repoId" value={repoId} />
           <input type="hidden" name="choice" value="keep" />
-          <button type="submit" className="border px-4 py-2">
+          <Button type="submit" variant="outline">
             Keep next scheduled update
-          </button>
+          </Button>
         </form>
         <form action={chooseSchedule}>
           <input type="hidden" name="repoId" value={repoId} />
           <input type="hidden" name="choice" value="skip" />
-          <button type="submit" className="border px-4 py-2">
+          <Button type="submit" variant="outline">
             Skip it
-          </button>
+          </Button>
         </form>
       </div>
     </div>

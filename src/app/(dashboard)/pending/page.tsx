@@ -5,6 +5,8 @@ import { repos, scheduleConfigs } from "@/db/schema";
 import { requireSession } from "@/lib/session";
 import { getPendingChangeItems } from "@/lib/change-item-batch";
 import { dropChangeItem, runNow } from "./actions";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
 
 export default async function PendingPage({
   searchParams,
@@ -20,9 +22,9 @@ export default async function PendingPage({
     return (
       <div className="space-y-3">
         <h1 className="text-xl font-semibold">No repos connected yet</h1>
-        <p className="text-sm text-gray-600">
+        <p className="text-sm text-muted-foreground">
           Onboarding was skipped without connecting a repo. Add one from{" "}
-          <Link href="/settings" className="text-gray-900 underline">
+          <Link href="/settings" className="font-medium underline">
             Settings
           </Link>{" "}
           to start collecting changes.
@@ -39,49 +41,56 @@ export default async function PendingPage({
   return (
     <div className="space-y-6">
       {tenantRepos.length > 1 && (
-        <div className="flex gap-4">
+        <div className="flex flex-wrap gap-2">
           {tenantRepos.map((r) => (
-            <Link
+            <Button
               key={r.id}
-              href={`/pending?repoId=${r.id}`}
-              className={r.id === activeRepo.id ? "font-semibold underline" : "text-gray-500"}
+              variant={r.id === activeRepo.id ? "secondary" : "ghost"}
+              size="sm"
+              render={<Link href={`/pending?repoId=${r.id}`} />}
             >
               {r.githubRepoFullName}
-            </Link>
+            </Button>
           ))}
         </div>
       )}
 
-      <h1 className="text-xl font-semibold">
-        {activeRepo.githubRepoFullName} <span className="text-sm text-gray-500">({activeRepo.watchedBranch})</span>
-      </h1>
-      <p className="text-sm text-gray-600">
-        Next scheduled update: {config?.nextScheduledAt ? config.nextScheduledAt.toLocaleString() : "not scheduled"}
-        {" · "}Threshold: {config?.threshold ?? "none"}
-      </p>
+      <div>
+        <h1 className="text-xl font-semibold">
+          {activeRepo.githubRepoFullName}{" "}
+          <span className="text-sm text-muted-foreground">({activeRepo.watchedBranch})</span>
+        </h1>
+        <p className="text-sm text-muted-foreground">
+          Next scheduled update:{" "}
+          {config?.nextScheduledAt ? config.nextScheduledAt.toLocaleString() : "not scheduled"}
+          {" · "}Threshold: {config?.threshold ?? "none"}
+        </p>
+      </div>
 
       <form action={runNow}>
         <input type="hidden" name="repoId" value={activeRepo.id} />
-        <button type="submit" disabled={pending.length === 0} className="border px-4 py-2 disabled:opacity-50">
+        <Button type="submit" disabled={pending.length === 0}>
           Run now ({pending.length} pending)
-        </button>
+        </Button>
       </form>
 
-      <ul className="space-y-2">
+      <div className="space-y-2">
         {pending.map((item) => (
-          <li key={item.id} className="flex items-center justify-between border p-3">
-            <span>{item.sourceType === "pr" ? item.prTitle : item.commitMessage}</span>
-            <form action={dropChangeItem}>
-              <input type="hidden" name="changeItemId" value={item.id} />
-              <input type="hidden" name="repoId" value={activeRepo.id} />
-              <button type="submit" className="text-sm text-gray-500 underline">
-                Drop
-              </button>
-            </form>
-          </li>
+          <Card key={item.id}>
+            <CardContent className="flex items-center justify-between gap-4 py-3">
+              <span>{item.sourceType === "pr" ? item.prTitle : item.commitMessage}</span>
+              <form action={dropChangeItem}>
+                <input type="hidden" name="changeItemId" value={item.id} />
+                <input type="hidden" name="repoId" value={activeRepo.id} />
+                <Button type="submit" variant="ghost" size="sm" className="text-muted-foreground">
+                  Drop
+                </Button>
+              </form>
+            </CardContent>
+          </Card>
         ))}
-        {pending.length === 0 && <li className="text-gray-500">Nothing pending.</li>}
-      </ul>
+        {pending.length === 0 && <p className="text-sm text-muted-foreground">Nothing pending.</p>}
+      </div>
     </div>
   );
 }
