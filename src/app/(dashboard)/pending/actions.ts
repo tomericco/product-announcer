@@ -4,30 +4,17 @@ import { and, eq } from "drizzle-orm";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { db } from "@/db";
-import { changeItems, repos, scheduleConfigs } from "@/db/schema";
+import { changeItems, scheduleConfigs } from "@/db/schema";
 import { requireSession } from "@/lib/session";
 import { getPendingChangeItems } from "@/lib/change-item-batch";
-import { runBatchForRepo, applyPostRunScheduleChoice } from "@/lib/run-schedule";
-
-async function assertOwnsRepo(tenantId: string, repoId: string) {
-  const [repo] = await db.select().from(repos).where(eq(repos.id, repoId)).limit(1);
-  if (!repo || repo.tenantId !== tenantId) {
-    throw new Error("Repo not found for this tenant");
-  }
-  return repo;
-}
+import { runBatchForWorkspace, applyPostRunScheduleChoice } from "@/lib/run-schedule";
 
 export async function dropChangeItem(formData: FormData) {
   const session = await requireSession();
   const changeItemId = formData.get("changeItemId") as string;
-  const repoId = formData.get("repoId") as string;
-  await assertOwnsRepo(session.user.tenantId, repoId);
 
-  // Scope the mutation to both the change item AND the caller's tenant: the
-  // ownership check above only proves the tenant owns `repoId`, not that this
-  // `changeItemId` belongs to them — without the tenantId filter, a caller
-  // could pass a repo they own alongside another tenant's changeItemId and
-  // exclude it (cross-tenant write). The tenantId predicate closes that.
+  // Scope the mutation to the change item AND the caller's tenant so a caller
+  // can only ever exclude their own rows.
   await db
     .update(changeItems)
     .set({ status: "excluded", excludedAt: new Date(), excludedBy: session.user.id })
@@ -36,30 +23,29 @@ export async function dropChangeItem(formData: FormData) {
   revalidatePath("/pending");
 }
 
-export async function runNow(formData: FormData) {
+export async function runNow() {
   const session = await requireSession();
-  const repoId = formData.get("repoId") as string;
-  const repo = await assertOwnsRepo(session.user.tenantId, repoId);
 
-  const pending = await getPendingChangeItems(repoId);
+  const pending = await getPendingChangeItems(session.user.tenantId);
   if (pending.length === 0) {
     revalidatePath("/pending");
     return;
   }
 
-  await runBatchForRepo(repoId, repo.tenantId, pending);
-  await db.update(scheduleConfigs).set({ lastRunAt: new Date() }).where(eq(scheduleConfigs.repoId, repoId));
+  await runBatchForWorkspace(session.user.tenantId, pending);
+  await db
+    .update(scheduleConfigs)
+    .set({ lastRunAt: new Date() })
+    .where(eq(scheduleConfigs.tenantId, session.user.tenantId));
 
-  redirect(`/pending/schedule-choice?repoId=${repoId}`);
+  redirect("/pending/schedule-choice");
 }
 
 export async function chooseSchedule(formData: FormData) {
   const session = await requireSession();
-  const repoId = formData.get("repoId") as string;
   const choice = formData.get("choice") as "keep" | "skip";
-  await assertOwnsRepo(session.user.tenantId, repoId);
 
-  await applyPostRunScheduleChoice(repoId, choice);
+  await applyPostRunScheduleChoice(session.user.tenantId, choice);
 
-  redirect(`/pending?repoId=${repoId}`);
+  redirect("/pending");
 }

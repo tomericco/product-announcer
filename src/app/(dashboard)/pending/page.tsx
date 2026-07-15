@@ -6,15 +6,11 @@ import { requireSession } from "@/lib/session";
 import { getPendingChangeItems } from "@/lib/change-item-batch";
 import { dropChangeItem, runNow } from "./actions";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 
-export default async function PendingPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ repoId?: string }>;
-}) {
+export default async function PendingPage() {
   const session = await requireSession();
-  const { repoId: requestedRepoId } = await searchParams;
 
   const tenantRepos = await db.select().from(repos).where(eq(repos.tenantId, session.user.tenantId));
 
@@ -33,42 +29,26 @@ export default async function PendingPage({
     );
   }
 
-  const activeRepo = tenantRepos.find((r) => r.id === requestedRepoId) ?? tenantRepos[0];
-
-  const [config] = await db.select().from(scheduleConfigs).where(eq(scheduleConfigs.repoId, activeRepo.id));
-  const pending = await getPendingChangeItems(activeRepo.id);
+  const repoNameById = new Map(tenantRepos.map((r) => [r.id, r.githubRepoFullName]));
+  const [config] = await db
+    .select()
+    .from(scheduleConfigs)
+    .where(eq(scheduleConfigs.tenantId, session.user.tenantId));
+  const pending = await getPendingChangeItems(session.user.tenantId);
 
   return (
     <div className="space-y-6">
-      {tenantRepos.length > 1 && (
-        <div className="flex flex-wrap gap-2">
-          {tenantRepos.map((r) => (
-            <Button
-              key={r.id}
-              variant={r.id === activeRepo.id ? "secondary" : "ghost"}
-              size="sm"
-              render={<Link href={`/pending?repoId=${r.id}`} />}
-            >
-              {r.githubRepoFullName}
-            </Button>
-          ))}
-        </div>
-      )}
-
       <div>
-        <h1 className="text-xl font-semibold">
-          {activeRepo.githubRepoFullName}{" "}
-          <span className="text-sm text-muted-foreground">({activeRepo.watchedBranch})</span>
-        </h1>
+        <h1 className="text-xl font-semibold">Pending changes</h1>
         <p className="text-sm text-muted-foreground">
           Next scheduled update:{" "}
           {config?.nextScheduledAt ? config.nextScheduledAt.toLocaleString() : "not scheduled"}
-          {" · "}Threshold: {config?.threshold ?? "none"}
+          {" · "}
+          {pending.length} pending{config?.threshold ? ` / ${config.threshold} threshold` : ""}
         </p>
       </div>
 
       <form action={runNow}>
-        <input type="hidden" name="repoId" value={activeRepo.id} />
         <Button type="submit" disabled={pending.length === 0}>
           Run now ({pending.length} pending)
         </Button>
@@ -78,10 +58,12 @@ export default async function PendingPage({
         {pending.map((item) => (
           <Card key={item.id}>
             <CardContent className="flex items-center justify-between gap-4 py-3">
-              <span>{item.sourceType === "pr" ? item.prTitle : item.commitMessage}</span>
+              <div className="flex items-center gap-3">
+                <Badge variant="outline">{repoNameById.get(item.repoId) ?? "unknown"}</Badge>
+                <span>{item.sourceType === "pr" ? item.prTitle : item.commitMessage}</span>
+              </div>
               <form action={dropChangeItem}>
                 <input type="hidden" name="changeItemId" value={item.id} />
-                <input type="hidden" name="repoId" value={activeRepo.id} />
                 <Button type="submit" variant="ghost" size="sm" className="text-muted-foreground">
                   Drop
                 </Button>
