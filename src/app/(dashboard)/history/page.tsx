@@ -2,6 +2,15 @@ import { and, desc, eq } from "drizzle-orm";
 import { db } from "@/db";
 import { updates } from "@/db/schema";
 import { requireSession } from "@/lib/session";
+import { Badge } from "@/components/ui/badge";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 
 export default async function HistoryPage() {
   const session = await requireSession();
@@ -14,32 +23,34 @@ export default async function HistoryPage() {
   return (
     <div className="space-y-4">
       <h1 className="text-xl font-semibold">History</h1>
-      <p className="text-sm text-gray-600">Announcements that have actually been sent to your users.</p>
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="text-left border-b">
-            <th className="py-2">Title</th>
-            <th>Category</th>
-            <th>Sent</th>
-          </tr>
-        </thead>
-        <tbody>
+      <p className="text-sm text-muted-foreground">Announcements that have actually been sent to your users.</p>
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Title</TableHead>
+            <TableHead>Category</TableHead>
+            <TableHead>Sent</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
           {sentUpdates.map((u) => (
-            <tr key={u.id} className="border-b">
-              <td className="py-2">{u.title}</td>
-              <td>{u.category}</td>
-              <td>{u.publishedAt?.toLocaleDateString()}</td>
-            </tr>
+            <TableRow key={u.id}>
+              <TableCell>{u.title}</TableCell>
+              <TableCell>
+                <Badge variant="secondary">{u.category}</Badge>
+              </TableCell>
+              <TableCell>{u.publishedAt?.toLocaleDateString()}</TableCell>
+            </TableRow>
           ))}
           {sentUpdates.length === 0 && (
-            <tr>
-              <td colSpan={3} className="py-4 text-gray-500">
+            <TableRow>
+              <TableCell colSpan={3} className="text-muted-foreground">
                 No announcements sent yet.
-              </td>
-            </tr>
+              </TableCell>
+            </TableRow>
           )}
-        </tbody>
-      </table>
+        </TableBody>
+      </Table>
     </div>
   );
 }

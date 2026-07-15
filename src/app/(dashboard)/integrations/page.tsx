@@ -3,6 +3,11 @@ import { db } from "@/db";
 import { webhookConfigs } from "@/db/schema";
 import { requireSession } from "@/lib/session";
 import { saveWebhookConfig } from "./actions";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 const COMING_SOON = ["Webflow", "Customer.io", "Mailchimp", "HubSpot", "LinkedIn"];
 
@@ -12,39 +17,48 @@ export default async function IntegrationsPage() {
 
   return (
     <div className="space-y-10">
-      <section>
-        <h1 className="text-xl font-semibold mb-4">Integrations</h1>
-        <div className="border p-4 max-w-lg space-y-3">
-          <p className="font-medium">Generic Webhook</p>
-          <form action={saveWebhookConfig} className="space-y-3">
-            <label className="block">
-              URL
-              <input type="url" name="url" defaultValue={config?.url ?? ""} required className="block w-full border p-2" />
-            </label>
-            <label className="block">
-              Secret
-              <input type="text" name="secret" defaultValue={config?.secret ?? ""} required className="block w-full border p-2" />
-            </label>
-            <label className="flex items-center gap-2">
-              <input type="checkbox" name="active" defaultChecked={config?.active ?? true} />
-              Active
-            </label>
-            <button type="submit" className="border px-4 py-2">
-              Save
-            </button>
-          </form>
-        </div>
+      <section className="space-y-4">
+        <h1 className="text-xl font-semibold">Integrations</h1>
+        <Card className="max-w-lg">
+          <CardHeader>
+            <CardTitle>Generic Webhook</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <form action={saveWebhookConfig} className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="url">URL</Label>
+                <Input id="url" type="url" name="url" defaultValue={config?.url ?? ""} required />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="secret">Secret</Label>
+                <Input id="secret" type="text" name="secret" defaultValue={config?.secret ?? ""} required />
+              </div>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  name="active"
+                  defaultChecked={config?.active ?? true}
+                  className="size-4 rounded border-input"
+                />
+                Active
+              </label>
+              <Button type="submit" variant="outline">
+                Save
+              </Button>
+            </form>
+          </CardContent>
+        </Card>
       </section>
 
-      <section>
-        <h2 className="font-medium mb-2">Coming soon</h2>
-        <ul className="flex gap-3">
+      <section className="space-y-2">
+        <h2 className="font-medium">Coming soon</h2>
+        <div className="flex flex-wrap gap-2">
           {COMING_SOON.map((name) => (
-            <li key={name} className="border px-3 py-2 opacity-50">
+            <Badge key={name} variant="outline" className="opacity-60">
               {name}
-            </li>
+            </Badge>
           ))}
-        </ul>
+        </div>
       </section>
     </div>
   );
