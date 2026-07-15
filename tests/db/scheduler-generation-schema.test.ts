@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../src/db";
-import { tenants, repos, changeItems, updates } from "../../src/db/schema";
+import { tenants, repos, changeItems, updates, scheduleConfigs } from "../../src/db/schema";
 
 describe("scheduler/generation schema", () => {
   afterEach(async () => {
@@ -46,5 +46,21 @@ describe("scheduler/generation schema", () => {
       .returning();
 
     expect(item.updateId).toBe(update.id);
+  });
+
+  it("allows a cross-repo update (null repoId) and one schedule config per tenant", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: "Scheduler Schema Test Tenant" }).returning();
+
+    const [update] = await db
+      .insert(updates)
+      .values({ tenantId: tenant.id, title: "T", body: "B", category: "new", sourceItems: [] })
+      .returning();
+    expect(update.repoId).toBeNull();
+
+    const [config] = await db
+      .insert(scheduleConfigs)
+      .values({ tenantId: tenant.id, cadence: "weekly" })
+      .returning();
+    expect(config.tenantId).toBe(tenant.id);
   });
 });

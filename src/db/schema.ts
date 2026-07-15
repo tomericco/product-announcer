@@ -91,10 +91,8 @@ export const scheduleConfigs = pgTable("schedule_configs", {
   id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
   tenantId: uuid("tenant_id")
     .notNull()
+    .unique()
     .references(() => tenants.id, { onDelete: "cascade" }),
-  repoId: uuid("repo_id")
-    .notNull()
-    .references(() => repos.id, { onDelete: "cascade" }),
   cadence: cadenceEnum("cadence").notNull().default("weekly"),
   threshold: integer("threshold"),
   lastRunAt: timestamp("last_run_at", { withTimezone: true }),
@@ -124,9 +122,7 @@ export const updates = pgTable("updates", {
   tenantId: uuid("tenant_id")
     .notNull()
     .references(() => tenants.id, { onDelete: "cascade" }),
-  repoId: uuid("repo_id")
-    .notNull()
-    .references(() => repos.id, { onDelete: "cascade" }),
+  repoId: uuid("repo_id").references(() => repos.id, { onDelete: "cascade" }),
   title: text("title").notNull(),
   body: text("body").notNull(),
   category: updateCategoryEnum("category").notNull(),
