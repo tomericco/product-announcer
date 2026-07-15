@@ -3,6 +3,8 @@ import Link from "next/link";
 import { db } from "@/db";
 import { updates } from "@/db/schema";
 import { requireSession } from "@/lib/session";
+import { Card, CardContent } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 
 export default async function DraftsPage() {
   const session = await requireSession();
@@ -14,17 +16,19 @@ export default async function DraftsPage() {
   return (
     <div className="space-y-4">
       <h1 className="text-xl font-semibold">Drafts</h1>
-      <ul className="space-y-2">
+      <div className="space-y-2">
         {drafts.map((d) => (
-          <li key={d.id} className="border p-3">
-            <Link href={`/drafts/${d.id}`} className="font-medium underline">
-              {d.title}
-            </Link>
-            <p className="text-sm text-gray-500">{d.category}</p>
-          </li>
+          <Card key={d.id}>
+            <CardContent className="flex items-center justify-between gap-4 py-4">
+              <Link href={`/drafts/${d.id}`} className="font-medium hover:underline">
+                {d.title}
+              </Link>
+              <Badge variant="secondary">{d.category}</Badge>
+            </CardContent>
+          </Card>
         ))}
-        {drafts.length === 0 && <li className="text-gray-500">No drafts waiting for review.</li>}
-      </ul>
+        {drafts.length === 0 && <p className="text-sm text-muted-foreground">No drafts waiting for review.</p>}
+      </div>
     </div>
   );
 }

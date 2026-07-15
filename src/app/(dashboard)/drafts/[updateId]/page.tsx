@@ -5,6 +5,17 @@ import { updates } from "@/db/schema";
 import { requireSession } from "@/lib/session";
 import { saveDraft, approveDraft, rejectDraft } from "../actions";
 import { PreviewDialog } from "./preview-dialog";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 export default async function DraftDetailPage({ params }: { params: Promise<{ updateId: string }> }) {
   const session = await requireSession();
@@ -19,27 +30,32 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ up
 
   return (
     <div className="space-y-8">
-      <form action={saveDraft} className="max-w-lg space-y-3">
+      <form action={saveDraft} className="max-w-lg space-y-4">
         <input type="hidden" name="updateId" value={update.id} />
-        <label className="block">
-          Title
-          <input type="text" name="title" defaultValue={update.title} className="block w-full border p-2" />
-        </label>
-        <label className="block">
-          Body
-          <textarea name="body" defaultValue={update.body} rows={8} className="block w-full border p-2" />
-        </label>
-        <label className="block">
-          Category
-          <select name="category" defaultValue={update.category} className="block border p-2">
-            <option value="new">New</option>
-            <option value="improved">Improved</option>
-            <option value="fixed">Fixed</option>
-          </select>
-        </label>
-        <button type="submit" className="border px-4 py-2">
+        <div className="space-y-2">
+          <Label htmlFor="title">Title</Label>
+          <Input id="title" name="title" defaultValue={update.title} />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="body">Body</Label>
+          <Textarea id="body" name="body" defaultValue={update.body} rows={8} />
+        </div>
+        <div className="space-y-2">
+          <Label>Category</Label>
+          <Select name="category" defaultValue={update.category}>
+            <SelectTrigger className="w-40">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="new">New</SelectItem>
+              <SelectItem value="improved">Improved</SelectItem>
+              <SelectItem value="fixed">Fixed</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <Button type="submit" variant="outline">
           Save changes
-        </button>
+        </Button>
       </form>
 
       <div className="flex items-center gap-4">
@@ -52,9 +68,9 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ up
         />
         <form action={rejectDraft}>
           <input type="hidden" name="updateId" value={update.id} />
-          <button type="submit" className="text-sm text-gray-500 underline">
+          <Button type="submit" variant="ghost" className="text-muted-foreground">
             Reject
-          </button>
+          </Button>
         </form>
       </div>
     </div>
