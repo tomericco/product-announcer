@@ -6,20 +6,20 @@ type ChangeItemRow = typeof changeItems.$inferSelect;
 type UpdateRow = typeof updates.$inferSelect;
 
 export async function getPendingChangeItems(
-  repoId: string,
+  tenantId: string,
   database: typeof defaultDb = defaultDb
 ): Promise<ChangeItemRow[]> {
   return database
     .select()
     .from(changeItems)
-    .where(and(eq(changeItems.repoId, repoId), eq(changeItems.status, "pending")))
+    .where(and(eq(changeItems.tenantId, tenantId), eq(changeItems.status, "pending")))
     .orderBy(changeItems.createdAt);
 }
 
 export type DraftInput = { title: string; body: string; category: "new" | "improved" | "fixed" };
 
 export async function claimBatchAndCreateUpdate(
-  input: { tenantId: string; repoId: string; changeItemIds: string[]; draft: DraftInput },
+  input: { tenantId: string; changeItemIds: string[]; draft: DraftInput },
   database: typeof defaultDb = defaultDb
 ): Promise<UpdateRow | null> {
   return database.transaction(async (tx) => {
@@ -37,7 +37,6 @@ export async function claimBatchAndCreateUpdate(
       .insert(updates)
       .values({
         tenantId: input.tenantId,
-        repoId: input.repoId,
         title: input.draft.title,
         body: input.draft.body,
         category: input.draft.category,

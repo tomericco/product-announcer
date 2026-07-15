@@ -11,60 +11,66 @@ describe("change-item-batch", () => {
 
   async function seed() {
     const [tenant] = await db.insert(tenants).values({ name: "Batch Test Tenant" }).returning();
-    const [repo] = await db
+    const [repoA] = await db
       .insert(repos)
-      .values({ tenantId: tenant.id, githubRepoFullName: "acme/x", githubInstallationId: "1", watchedBranch: "main" })
+      .values({ tenantId: tenant.id, githubRepoFullName: "acme/a", githubInstallationId: "1", watchedBranch: "main" })
       .returning();
-    return { tenant, repo };
+    const [repoB] = await db
+      .insert(repos)
+      .values({ tenantId: tenant.id, githubRepoFullName: "acme/b", githubInstallationId: "1", watchedBranch: "main" })
+      .returning();
+    return { tenant, repoA, repoB };
   }
 
-  it("getPendingChangeItems returns only pending items for the repo", async () => {
-    const { tenant, repo } = await seed();
+  it("getPendingChangeItems returns pending items across all of the tenant's repos", async () => {
+    const { tenant, repoA, repoB } = await seed();
     await db.insert(changeItems).values([
-      { tenantId: tenant.id, repoId: repo.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "a" },
-      { tenantId: tenant.id, repoId: repo.id, sourceType: "pr", status: "excluded", prNumber: 2, prTitle: "b" },
+      { tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "a" },
+      { tenantId: tenant.id, repoId: repoB.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "b" },
+      { tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "excluded", prNumber: 2, prTitle: "x" },
     ]);
 
-    const pending = await getPendingChangeItems(repo.id);
-    expect(pending).toHaveLength(1);
-    expect(pending[0].prTitle).toBe("a");
+    const pending = await getPendingChangeItems(tenant.id);
+    expect(pending).toHaveLength(2);
+    expect(pending.map((p) => p.prTitle).sort()).toEqual(["a", "b"]);
   });
 
-  it("claimBatchAndCreateUpdate creates an Update and marks the items batched", async () => {
-    const { tenant, repo } = await seed();
-    const [item] = await db
-      .insert(changeItems)
-      .values({ tenantId: tenant.id, repoId: repo.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "a" })
-      .returning();
-
-    const update = await claimBatchAndCreateUpdate({
-      tenantId: tenant.id,
-      repoId: repo.id,
-      changeItemIds: [item.id],
-      draft: { title: "T", body: "B", category: "new" },
-    });
-
-    expect(update).not.toBeNull();
-    expect(update!.sourceItems).toEqual([item.id]);
-
-    const [reloaded] = await db.select().from(changeItems).where(eq(changeItems.id, item.id));
-    expect(reloaded.status).toBe("batched");
-    expect(reloaded.updateId).toBe(update!.id);
-  });
-
-  it("only claims items still pending, excluding ones already batched (race simulation)", async () => {
-    const { tenant, repo } = await seed();
-    const [stillPending, alreadyBatched] = await db
+  it("claimBatchAndCreateUpdate creates one cross-repo Update (repoId null) and marks items batched", async () => {
+    const { tenant, repoA, repoB } = await seed();
+    const inserted = await db
       .insert(changeItems)
       .values([
-        { tenantId: tenant.id, repoId: repo.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "a" },
-        { tenantId: tenant.id, repoId: repo.id, sourceType: "pr", status: "batched", prNumber: 2, prTitle: "b" },
+        { tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "a" },
+        { tenantId: tenant.id, repoId: repoB.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "b" },
       ])
       .returning();
 
     const update = await claimBatchAndCreateUpdate({
       tenantId: tenant.id,
-      repoId: repo.id,
+      changeItemIds: inserted.map((i) => i.id),
+      draft: { title: "T", body: "B", category: "new" },
+    });
+
+    expect(update).not.toBeNull();
+    expect(update!.repoId).toBeNull();
+    expect(update!.sourceItems.sort()).toEqual(inserted.map((i) => i.id).sort());
+
+    const reloaded = await db.select().from(changeItems).where(eq(changeItems.tenantId, tenant.id));
+    expect(reloaded.every((r) => r.status === "batched" && r.updateId === update!.id)).toBe(true);
+  });
+
+  it("only claims items still pending (race simulation)", async () => {
+    const { tenant, repoA } = await seed();
+    const [stillPending, alreadyBatched] = await db
+      .insert(changeItems)
+      .values([
+        { tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "a" },
+        { tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "batched", prNumber: 2, prTitle: "b" },
+      ])
+      .returning();
+
+    const update = await claimBatchAndCreateUpdate({
+      tenantId: tenant.id,
       changeItemIds: [stillPending.id, alreadyBatched.id],
       draft: { title: "T", body: "B", category: "new" },
     });
@@ -73,21 +79,20 @@ describe("change-item-batch", () => {
   });
 
   it("returns null and creates no Update when none of the ids are still pending", async () => {
-    const { tenant, repo } = await seed();
+    const { tenant, repoA } = await seed();
     const [item] = await db
       .insert(changeItems)
-      .values({ tenantId: tenant.id, repoId: repo.id, sourceType: "pr", status: "batched", prNumber: 1, prTitle: "a" })
+      .values({ tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "batched", prNumber: 1, prTitle: "a" })
       .returning();
 
     const update = await claimBatchAndCreateUpdate({
       tenantId: tenant.id,
-      repoId: repo.id,
       changeItemIds: [item.id],
       draft: { title: "T", body: "B", category: "new" },
     });
 
     expect(update).toBeNull();
-    const allUpdates = await db.select().from(updates).where(eq(updates.repoId, repo.id));
+    const allUpdates = await db.select().from(updates).where(eq(updates.tenantId, tenant.id));
     expect(allUpdates).toHaveLength(0);
   });
 });
