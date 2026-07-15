@@ -1,10 +1,26 @@
 import Link from "next/link";
 import { eq } from "drizzle-orm";
 import { redirect } from "next/navigation";
+import { ChevronsUpDown } from "lucide-react";
 import { db } from "@/db";
 import { tenants } from "@/db/schema";
 import { requireSession } from "@/lib/session";
 import { isOnboardingComplete } from "@/lib/onboarding";
+import { Button } from "@/components/ui/button";
+import { Separator } from "@/components/ui/separator";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+
+const NAV = [
+  { href: "/pending", label: "Pending" },
+  { href: "/drafts", label: "Drafts" },
+  { href: "/history", label: "History" },
+  { href: "/integrations", label: "Integrations" },
+];
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
   const session = await requireSession();
@@ -15,35 +31,28 @@ export default async function DashboardLayout({ children }: { children: React.Re
 
   return (
     <div className="flex min-h-screen">
-      <aside className="flex w-56 shrink-0 flex-col border-r border-gray-200 p-3">
-        <details className="relative">
-          <summary className="flex cursor-pointer list-none items-center justify-between rounded-md px-2 py-2 text-sm font-semibold text-gray-900 hover:bg-gray-100 [&::-webkit-details-marker]:hidden">
+      <aside className="flex w-60 shrink-0 flex-col gap-1 border-r p-3">
+        <DropdownMenu>
+          <DropdownMenuTrigger render={<Button variant="ghost" className="w-full justify-between font-semibold" />}>
             {tenant?.name ?? "Workspace"}
-            <span className="text-gray-400">▾</span>
-          </summary>
-          <div className="absolute left-0 right-0 z-10 mt-1 rounded-md border border-gray-200 bg-white py-1">
-            <Link href="/settings" className="block px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-100">
-              Settings
-            </Link>
-          </div>
-        </details>
-        <nav className="mt-4 flex flex-col gap-1">
-          <Link href="/pending" className="rounded-md px-2 py-1.5 text-sm text-gray-700 hover:bg-gray-100">
-            Pending
-          </Link>
-          <Link href="/drafts" className="rounded-md px-2 py-1.5 text-sm text-gray-700 hover:bg-gray-100">
-            Drafts
-          </Link>
-          <Link href="/history" className="rounded-md px-2 py-1.5 text-sm text-gray-700 hover:bg-gray-100">
-            History
-          </Link>
-          <Link href="/integrations" className="rounded-md px-2 py-1.5 text-sm text-gray-700 hover:bg-gray-100">
-            Integrations
-          </Link>
+            <ChevronsUpDown className="size-4 text-muted-foreground" />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="w-[13rem]">
+            <DropdownMenuItem render={<Link href="/settings" />}>Settings</DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+
+        <Separator className="my-2" />
+
+        <nav className="flex flex-col gap-1">
+          {NAV.map((item) => (
+            <Button key={item.href} variant="ghost" className="justify-start font-normal" render={<Link href={item.href} />}>
+              {item.label}
+            </Button>
+          ))}
         </nav>
-        <div className="mt-auto border-t border-gray-200 px-2 pt-3 text-xs text-gray-500">
-          {session.user.email}
-        </div>
+
+        <div className="mt-auto px-2 pt-3 text-xs text-muted-foreground">{session.user.email}</div>
       </aside>
       <main className="flex-1 p-8">{children}</main>
     </div>
