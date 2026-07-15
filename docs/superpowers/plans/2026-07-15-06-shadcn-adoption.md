@@ -13,7 +13,13 @@
 - **Behavior-preserving.** The existing automated suite (66 tests across 21 files) MUST pass unchanged after every task — this phase touches only `.tsx` presentation and shadcn config, never `src/lib/**`, `src/db/**`, Server Action logic, route handlers, or any `*.test.ts`.
 - **Neutral/grayscale only.** shadcn is initialized with the **`neutral`** base color. Do NOT introduce any brand accent color. Light mode only (no dark-mode work in this phase).
 - **Form field names are frozen.** Every `name="…"` on an input/select/checkbox/hidden field MUST stay identical (Server Actions and `parseRepoSelections`'s `repo-N-*` convention depend on them).
-- **Keep Server-Action forms working.** Any control inside a `<form action={serverAction}>` must still submit its value. Use shadcn `Input`/`Textarea`/`Button`/`Label` (they render native elements) freely. For dropdowns, use shadcn `Select` with a `name` prop (Radix renders a hidden native select for form submission). Keep native `<input type="checkbox">` elements as-is (restyled with classes) — do NOT swap them for Radix Checkbox in this phase, to avoid form-value regressions.
+- **Keep Server-Action forms working.** Any control inside a `<form action={serverAction}>` must still submit its value. Use shadcn `Input`/`Textarea`/`Button`/`Label` freely. For dropdowns, use shadcn `Select` with a `name` prop (verified: Base UI `Select` submits its value via `name`). Keep native `<input type="checkbox">` elements as-is (restyled with classes) — do NOT swap them for a Base UI Checkbox in this phase, to avoid form-value regressions.
+- **This is the Base UI flavor of shadcn** (`@base-ui/react` + `cmdk`, style `base-nova`), installed in Task 1. It has **no `asChild`** — use the Base UI **`render` prop** instead. These exact forms are verified to compile; transcribe them as written:
+  - Button rendered as a link: `<Button variant="ghost" render={<Link href="/x" />}>Label</Button>`
+  - Raw link styled as a button: `<Link href="/x" className={buttonVariants({ variant: "outline" })}>Label</Link>` (`buttonVariants` is exported from `@/components/ui/button`)
+  - A trigger wrapping a Button: `<DialogTrigger render={<Button variant="outline">Preview</Button>} />`, or with separate children `<DropdownMenuTrigger render={<Button variant="ghost" className="…" />}>{children}</DropdownMenuTrigger>`
+  - A menu item that is a link: `<DropdownMenuItem render={<Link href="/settings" />}>Settings</DropdownMenuItem>`
+  - `DialogContent` already renders its own X close button, so an extra footer Close is optional.
 - **Local dev DB:** Docker Postgres container `product-announcer-postgres` on host port **5434**; `.env.local` `DATABASE_URL` points at 5434. Tests need it running.
 - TypeScript strict; `tsc --noEmit` and `npm run build` must be clean after each task.
 
@@ -139,16 +145,12 @@ export default async function DashboardLayout({ children }: { children: React.Re
     <div className="flex min-h-screen">
       <aside className="flex w-60 shrink-0 flex-col gap-1 border-r p-3">
         <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="ghost" className="w-full justify-between font-semibold">
-              {tenant?.name ?? "Workspace"}
-              <ChevronsUpDown className="size-4 text-muted-foreground" />
-            </Button>
+          <DropdownMenuTrigger render={<Button variant="ghost" className="w-full justify-between font-semibold" />}>
+            {tenant?.name ?? "Workspace"}
+            <ChevronsUpDown className="size-4 text-muted-foreground" />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="w-[13rem]">
-            <DropdownMenuItem asChild>
-              <Link href="/settings">Settings</Link>
-            </DropdownMenuItem>
+            <DropdownMenuItem render={<Link href="/settings" />}>Settings</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
 
@@ -156,8 +158,8 @@ export default async function DashboardLayout({ children }: { children: React.Re
 
         <nav className="flex flex-col gap-1">
           {NAV.map((item) => (
-            <Button key={item.href} asChild variant="ghost" className="justify-start font-normal">
-              <Link href={item.href}>{item.label}</Link>
+            <Button key={item.href} variant="ghost" className="justify-start font-normal" render={<Link href={item.href} />}>
+              {item.label}
             </Button>
           ))}
         </nav>
@@ -229,9 +231,7 @@ export function PreviewDialog({
 }) {
   return (
     <Dialog>
-      <DialogTrigger asChild>
-        <Button variant="outline">Preview</Button>
-      </DialogTrigger>
+      <DialogTrigger render={<Button variant="outline">Preview</Button>} />
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Preview</DialogTitle>
@@ -244,9 +244,7 @@ export function PreviewDialog({
           <p className="whitespace-pre-wrap text-sm text-muted-foreground">{body}</p>
         </div>
         <DialogFooter>
-          <DialogClose asChild>
-            <Button variant="outline">Close</Button>
-          </DialogClose>
+          <DialogClose render={<Button variant="outline">Close</Button>} />
           <form action={onApprove}>
             <input type="hidden" name="updateId" value={updateId} />
             <Button type="submit">Approve &amp; publish</Button>
@@ -649,8 +647,8 @@ export default async function OnboardingPage() {
           {tenant?.githubInstallationId ? (
             <p className="text-sm">Connected.</p>
           ) : installUrl ? (
-            <Button asChild variant="outline">
-              <a href={installUrl}>Connect GitHub</a>
+            <Button variant="outline" render={<a href={installUrl} />}>
+              Connect GitHub
             </Button>
           ) : (
             <p className="text-sm text-muted-foreground">GitHub integration isn&apos;t configured yet.</p>
@@ -783,8 +781,13 @@ export default async function PendingPage({
       {tenantRepos.length > 1 && (
         <div className="flex flex-wrap gap-2">
           {tenantRepos.map((r) => (
-            <Button key={r.id} asChild variant={r.id === activeRepo.id ? "secondary" : "ghost"} size="sm">
-              <Link href={`/pending?repoId=${r.id}`}>{r.githubRepoFullName}</Link>
+            <Button
+              key={r.id}
+              variant={r.id === activeRepo.id ? "secondary" : "ghost"}
+              size="sm"
+              render={<Link href={`/pending?repoId=${r.id}`} />}
+            >
+              {r.githubRepoFullName}
             </Button>
           ))}
         </div>
@@ -937,8 +940,8 @@ export default async function SettingsPage() {
         <CardContent>
           {!tenant?.githubInstallationId ? (
             installUrl ? (
-              <Button asChild variant="outline">
-                <a href={installUrl}>Connect GitHub</a>
+              <Button variant="outline" render={<a href={installUrl} />}>
+                Connect GitHub
               </Button>
             ) : (
               <p className="text-sm text-muted-foreground">GitHub integration isn&apos;t configured yet.</p>

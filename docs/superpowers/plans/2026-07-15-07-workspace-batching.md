@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- **Builds on Phase 1** (`2026-07-15-06-shadcn-adoption.md`) — shadcn is installed and every page is already on shadcn components. This plan changes behavior on top of that.
+- **Builds on Phase 1** (`2026-07-15-06-shadcn-adoption.md`) — shadcn (the **Base UI flavor**: `@base-ui/react` + `cmdk`) is installed and every page is on shadcn components. Base UI has **no `asChild`** — use the **`render` prop** (e.g. `<PopoverTrigger render={<Button … />}>children</PopoverTrigger>`, `<Button render={<Link href="/x" />}>Label</Button>`). Base UI `Select` submits via `name`. These forms are verified to compile; transcribe them as written.
 - **One draft per batch, spanning all repos.** A scheduled or manual run produces exactly one `Update` per batch; `updates.repoId` is left `null`.
 - **Transactional claim unchanged in spirit:** items move `pending → batched` only inside the transaction that creates their `Update`; only items still pending at claim time are included; `sourceItems` = the ids actually claimed.
 - **One `scheduleConfig` per tenant** (`tenantId` unique). Threshold counts **total** pending across the workspace. `nextScheduledAt` advances only on a successful cadence fire, from its current value (unchanged rule).
@@ -1164,11 +1164,9 @@ export function RepoRow({
         {fullName}
       </label>
       <Popover open={open} onOpenChange={setOpen}>
-        <PopoverTrigger asChild>
-          <Button type="button" variant="outline" role="combobox" className="w-44 justify-between font-normal">
-            <span className="truncate">{branch || "Select branch"}</span>
-            <ChevronsUpDown className="size-4 opacity-50" />
-          </Button>
+        <PopoverTrigger render={<Button type="button" variant="outline" role="combobox" className="w-44 justify-between font-normal" />}>
+          <span className="truncate">{branch || "Select branch"}</span>
+          <ChevronsUpDown className="size-4 opacity-50" />
         </PopoverTrigger>
         <PopoverContent className="w-56 p-0">
           <Command>
