@@ -3,9 +3,10 @@ import { redirect } from "next/navigation";
 import { db } from "@/db";
 import { repos, tenants } from "@/db/schema";
 import { requireSession } from "@/lib/session";
-import { getGithubApp, listAccessibleRepos } from "@/lib/github";
+import { getGithubApp, listAccessibleRepos, listRepoBranches } from "@/lib/github";
 import { isOnboardingComplete } from "@/lib/onboarding";
 import { addOnboardingRepos, saveOnboardingSchedule, skipOnboarding, saveWorkspaceName } from "./actions";
+import { RepoRow } from "@/app/(dashboard)/settings/repo-row";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -36,6 +37,12 @@ export default async function OnboardingPage() {
 
   const accessibleRepos = tenant?.githubInstallationId ? await listAccessibleRepos(tenant.githubInstallationId) : [];
   const watchedFullNames = new Set(tenantRepos.map((r) => r.githubRepoFullName));
+  const branchesByFullName = new Map<string, string[]>();
+  if (tenant?.githubInstallationId) {
+    for (const r of accessibleRepos) {
+      branchesByFullName.set(r.fullName, await listRepoBranches(tenant.githubInstallationId, r.fullName));
+    }
+  }
 
   return (
     <main className="mx-auto max-w-lg space-y-6 p-8">
@@ -88,23 +95,14 @@ export default async function OnboardingPage() {
             <form action={addOnboardingRepos} className="space-y-3">
               <input type="hidden" name="repoCount" value={accessibleRepos.length} />
               {accessibleRepos.map((repo, i) => (
-                <div key={repo.fullName} className="flex items-center gap-3">
-                  <input type="hidden" name={`repo-${i}-fullName`} value={repo.fullName} />
-                  <label className="flex flex-1 items-center gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      name={`repo-${i}-selected`}
-                      defaultChecked={watchedFullNames.has(repo.fullName)}
-                      className="size-4 rounded border-input"
-                    />
-                    {repo.fullName}
-                  </label>
-                  <Input
-                    name={`repo-${i}-branch`}
-                    defaultValue={repo.defaultBranch}
-                    className="w-36"
-                  />
-                </div>
+                <RepoRow
+                  key={repo.fullName}
+                  index={i}
+                  fullName={repo.fullName}
+                  branches={branchesByFullName.get(repo.fullName) ?? []}
+                  defaultBranch={repo.defaultBranch}
+                  defaultChecked={watchedFullNames.has(repo.fullName)}
+                />
               ))}
               {accessibleRepos.length === 0 && (
                 <p className="text-sm text-muted-foreground">No accessible repos found.</p>
@@ -120,7 +118,7 @@ export default async function OnboardingPage() {
       {tenantRepos.length > 0 && (
         <Card>
           <CardHeader>
-            <CardTitle>4. Set your schedule</CardTitle>
+            <CardTitle>4. Set your workspace schedule</CardTitle>
           </CardHeader>
           <CardContent>
             <form action={saveOnboardingSchedule} className="space-y-4">

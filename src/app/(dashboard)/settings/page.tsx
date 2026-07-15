@@ -2,9 +2,10 @@ import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { repos, scheduleConfigs, tenants } from "@/db/schema";
 import { requireSession } from "@/lib/session";
-import { getGithubApp, listAccessibleRepos } from "@/lib/github";
+import { getGithubApp, listAccessibleRepos, listRepoBranches } from "@/lib/github";
 import { getOrCreateBrandProfile } from "@/lib/brand-profile";
-import { saveWorkspaceName, saveBrandProfile, saveRepoSchedule, addSettingsRepos } from "./actions";
+import { saveWorkspaceName, saveBrandProfile, saveWorkspaceSchedule, addSettingsRepos } from "./actions";
+import { RepoRow } from "./repo-row";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -22,7 +23,7 @@ export default async function SettingsPage() {
   const brandProfile = await getOrCreateBrandProfile(session.user.tenantId);
   const [tenant] = await db.select().from(tenants).where(eq(tenants.id, session.user.tenantId)).limit(1);
   const tenantRepos = await db.select().from(repos).where(eq(repos.tenantId, session.user.tenantId));
-  const tenantSchedules = await db
+  const [workspaceSchedule] = await db
     .select()
     .from(scheduleConfigs)
     .where(eq(scheduleConfigs.tenantId, session.user.tenantId));
@@ -37,6 +38,12 @@ export default async function SettingsPage() {
   }
   const accessibleRepos = tenant?.githubInstallationId ? await listAccessibleRepos(tenant.githubInstallationId) : [];
   const watchedBranchByFullName = new Map(tenantRepos.map((r) => [r.githubRepoFullName, r.watchedBranch]));
+  const branchesByFullName = new Map<string, string[]>();
+  if (tenant?.githubInstallationId) {
+    for (const r of accessibleRepos) {
+      branchesByFullName.set(r.fullName, await listRepoBranches(tenant.githubInstallationId, r.fullName));
+    }
+  }
 
   return (
     <div className="space-y-8">
@@ -71,23 +78,14 @@ export default async function SettingsPage() {
             <form action={addSettingsRepos} className="space-y-3">
               <input type="hidden" name="repoCount" value={accessibleRepos.length} />
               {accessibleRepos.map((repo, i) => (
-                <div key={repo.fullName} className="flex items-center gap-3">
-                  <input type="hidden" name={`repo-${i}-fullName`} value={repo.fullName} />
-                  <label className="flex flex-1 items-center gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      name={`repo-${i}-selected`}
-                      defaultChecked={watchedBranchByFullName.has(repo.fullName)}
-                      className="size-4 rounded border-input"
-                    />
-                    {repo.fullName}
-                  </label>
-                  <Input
-                    name={`repo-${i}-branch`}
-                    defaultValue={watchedBranchByFullName.get(repo.fullName) ?? repo.defaultBranch}
-                    className="w-36"
-                  />
-                </div>
+                <RepoRow
+                  key={repo.fullName}
+                  index={i}
+                  fullName={repo.fullName}
+                  branches={branchesByFullName.get(repo.fullName) ?? []}
+                  defaultBranch={watchedBranchByFullName.get(repo.fullName) ?? repo.defaultBranch}
+                  defaultChecked={watchedBranchByFullName.has(repo.fullName)}
+                />
               ))}
               {accessibleRepos.length === 0 && (
                 <p className="text-sm text-muted-foreground">No accessible repos found.</p>
@@ -139,50 +137,33 @@ export default async function SettingsPage() {
 
       <Card className="max-w-lg">
         <CardHeader>
-          <CardTitle>Schedule per repo</CardTitle>
+          <CardTitle>Workspace schedule</CardTitle>
         </CardHeader>
-        <CardContent className="space-y-4">
-          {tenantRepos.map((repo) => {
-            const config = tenantSchedules.find((s) => s.repoId === repo.id);
-            return (
-              <form key={repo.id} action={saveRepoSchedule} className="space-y-3 rounded-md border p-4">
-                <input type="hidden" name="repoId" value={repo.id} />
-                <p className="font-medium">
-                  {repo.githubRepoFullName}{" "}
-                  <span className="text-sm text-muted-foreground">({repo.watchedBranch})</span>
-                </p>
-                <div className="space-y-2">
-                  <Label>Cadence</Label>
-                  <Select name="cadence" defaultValue={config?.cadence ?? "weekly"}>
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="daily">Daily</SelectItem>
-                      <SelectItem value="weekly">Weekly</SelectItem>
-                      <SelectItem value="biweekly">Every 2 weeks</SelectItem>
-                      <SelectItem value="monthly">Monthly</SelectItem>
-                      <SelectItem value="none">No fixed cadence</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor={`threshold-${repo.id}`}>Threshold</Label>
-                  <Input
-                    id={`threshold-${repo.id}`}
-                    type="number"
-                    name="threshold"
-                    min={1}
-                    defaultValue={config?.threshold ?? 5}
-                  />
-                </div>
-                <Button type="submit" variant="outline">
-                  Save
-                </Button>
-              </form>
-            );
-          })}
-          {tenantRepos.length === 0 && <p className="text-sm text-muted-foreground">No repos connected yet.</p>}
+        <CardContent>
+          <form action={saveWorkspaceSchedule} className="space-y-4">
+            <div className="space-y-2">
+              <Label>Cadence</Label>
+              <Select name="cadence" defaultValue={workspaceSchedule?.cadence ?? "weekly"}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="daily">Daily</SelectItem>
+                  <SelectItem value="weekly">Weekly</SelectItem>
+                  <SelectItem value="biweekly">Every 2 weeks</SelectItem>
+                  <SelectItem value="monthly">Monthly</SelectItem>
+                  <SelectItem value="none">No fixed cadence</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="threshold">Threshold</Label>
+              <Input id="threshold" type="number" name="threshold" min={1} defaultValue={workspaceSchedule?.threshold ?? 5} />
+            </div>
+            <Button type="submit" variant="outline">
+              Save
+            </Button>
+          </form>
         </CardContent>
       </Card>
     </div>

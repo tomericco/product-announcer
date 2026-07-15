@@ -3,12 +3,13 @@
 import { eq } from "drizzle-orm";
 import { redirect } from "next/navigation";
 import { db } from "@/db";
-import { repos, scheduleConfigs, tenants } from "@/db/schema";
+import { scheduleConfigs, tenants } from "@/db/schema";
 import { requireSession } from "@/lib/session";
 import { advanceNextScheduledAt, type Cadence } from "@/lib/scheduler-decision";
 import { addSelectedRepos } from "@/lib/repo-sync";
 import { parseRepoSelections } from "@/lib/repo-selection-form";
 import { markOnboardingComplete } from "@/lib/onboarding";
+import { listRepoBranches } from "@/lib/github";
 
 export async function addOnboardingRepos(formData: FormData) {
   const session = await requireSession();
@@ -18,8 +19,13 @@ export async function addOnboardingRepos(formData: FormData) {
   }
 
   const selections = parseRepoSelections(formData);
-  if (selections.length > 0) {
-    await addSelectedRepos(session.user.tenantId, tenant.githubInstallationId, selections);
+  const validated: typeof selections = [];
+  for (const selection of selections) {
+    const branches = await listRepoBranches(tenant.githubInstallationId, selection.fullName);
+    if (branches.includes(selection.branch)) validated.push(selection);
+  }
+  if (validated.length > 0) {
+    await addSelectedRepos(session.user.tenantId, tenant.githubInstallationId, validated);
   }
 
   redirect("/onboarding");
@@ -30,19 +36,15 @@ export async function saveOnboardingSchedule(formData: FormData) {
   const cadence = formData.get("cadence") as Cadence;
   const thresholdRaw = formData.get("threshold");
   const threshold = thresholdRaw ? Number(thresholdRaw) : null;
-
-  const tenantRepos = await db.select().from(repos).where(eq(repos.tenantId, session.user.tenantId));
   const nextScheduledAt = cadence === "none" ? null : advanceNextScheduledAt(new Date(), cadence);
 
-  for (const repo of tenantRepos) {
-    await db.insert(scheduleConfigs).values({
-      tenantId: session.user.tenantId,
-      repoId: repo.id,
-      cadence,
-      threshold,
-      nextScheduledAt,
+  await db
+    .insert(scheduleConfigs)
+    .values({ tenantId: session.user.tenantId, cadence, threshold, nextScheduledAt })
+    .onConflictDoUpdate({
+      target: scheduleConfigs.tenantId,
+      set: { cadence, threshold, nextScheduledAt },
     });
-  }
 
   await markOnboardingComplete(session.user.tenantId);
   redirect("/pending");

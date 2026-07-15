@@ -3,12 +3,13 @@
 import { eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { db } from "@/db";
-import { brandProfiles, repos, scheduleConfigs, tenants } from "@/db/schema";
+import { brandProfiles, scheduleConfigs, tenants } from "@/db/schema";
 import { requireSession } from "@/lib/session";
 import { getOrCreateBrandProfile } from "@/lib/brand-profile";
 import { advanceNextScheduledAt, type Cadence } from "@/lib/scheduler-decision";
 import { addSelectedRepos } from "@/lib/repo-sync";
 import { parseRepoSelections } from "@/lib/repo-selection-form";
+import { listRepoBranches } from "@/lib/github";
 
 function splitCsv(value: FormDataEntryValue | null): string[] {
   if (!value || typeof value !== "string") return [];
@@ -35,8 +36,13 @@ export async function addSettingsRepos(formData: FormData) {
   }
 
   const selections = parseRepoSelections(formData);
-  if (selections.length > 0) {
-    await addSelectedRepos(session.user.tenantId, tenant.githubInstallationId, selections);
+  const validated: typeof selections = [];
+  for (const selection of selections) {
+    const branches = await listRepoBranches(tenant.githubInstallationId, selection.fullName);
+    if (branches.includes(selection.branch)) validated.push(selection);
+  }
+  if (validated.length > 0) {
+    await addSelectedRepos(session.user.tenantId, tenant.githubInstallationId, validated);
   }
 
   revalidatePath("/settings");
@@ -63,21 +69,18 @@ export async function saveBrandProfile(formData: FormData) {
   revalidatePath("/settings");
 }
 
-export async function saveRepoSchedule(formData: FormData) {
+export async function saveWorkspaceSchedule(formData: FormData) {
   const session = await requireSession();
-  const repoId = formData.get("repoId") as string;
-
-  const [repo] = await db.select().from(repos).where(eq(repos.id, repoId)).limit(1);
-  if (!repo || repo.tenantId !== session.user.tenantId) {
-    throw new Error("Repo not found for this tenant");
-  }
-
   const cadence = formData.get("cadence") as Cadence;
   const thresholdRaw = formData.get("threshold");
   const threshold = thresholdRaw ? Number(thresholdRaw) : null;
 
-  const [existing] = await db.select().from(scheduleConfigs).where(eq(scheduleConfigs.repoId, repoId)).limit(1);
-  const nextScheduledAt = cadence === "none" ? null : advanceNextScheduledAt(new Date(), cadence);
+  const [existing] = await db
+    .select()
+    .from(scheduleConfigs)
+    .where(eq(scheduleConfigs.tenantId, session.user.tenantId))
+    .limit(1);
+  const freshAnchor = cadence === "none" ? null : advanceNextScheduledAt(new Date(), cadence);
 
   if (existing) {
     await db
@@ -85,13 +88,13 @@ export async function saveRepoSchedule(formData: FormData) {
       .set({
         cadence,
         threshold,
-        // Only reset the anchor if the cadence itself changed — editing just the
-        // threshold shouldn't perturb an already-scheduled cadence run.
-        nextScheduledAt: cadence === existing.cadence ? existing.nextScheduledAt : nextScheduledAt,
+        nextScheduledAt: cadence === existing.cadence ? existing.nextScheduledAt : freshAnchor,
       })
       .where(eq(scheduleConfigs.id, existing.id));
   } else {
-    await db.insert(scheduleConfigs).values({ tenantId: session.user.tenantId, repoId, cadence, threshold, nextScheduledAt });
+    await db
+      .insert(scheduleConfigs)
+      .values({ tenantId: session.user.tenantId, cadence, threshold, nextScheduledAt: freshAnchor });
   }
 
   revalidatePath("/settings");
