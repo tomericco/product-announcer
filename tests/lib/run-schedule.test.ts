@@ -8,215 +8,117 @@ import { generateObject } from "ai";
 import { eq } from "drizzle-orm";
 import { db } from "../../src/db";
 import { tenants, repos, changeItems, updates, scheduleConfigs } from "../../src/db/schema";
-import { runBatchForRepo, runSchedulerTick } from "../../src/lib/run-schedule";
+import { runBatchForWorkspace, runSchedulerTick, applyPostRunScheduleChoice } from "../../src/lib/run-schedule";
 import { getPendingChangeItems } from "../../src/lib/change-item-batch";
 import { advanceNextScheduledAt } from "../../src/lib/scheduler-decision";
 
-describe("runBatchForRepo", () => {
+const TENANT = "Run Batch Test Tenant";
+
+describe("run-schedule (workspace-level)", () => {
   afterEach(async () => {
-    await db.delete(tenants).where(eq(tenants.name, "Run Batch Test Tenant"));
+    await db.delete(tenants).where(eq(tenants.name, TENANT));
     vi.mocked(generateObject).mockReset();
   });
 
-  it("creates an Update from the pending batch and marks the items batched", async () => {
-    const [tenant] = await db.insert(tenants).values({ name: "Run Batch Test Tenant" }).returning();
-    const [repo] = await db
+  async function seed() {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const [repoA] = await db
       .insert(repos)
-      .values({ tenantId: tenant.id, githubRepoFullName: "acme/x", githubInstallationId: "1", watchedBranch: "main" })
+      .values({ tenantId: tenant.id, githubRepoFullName: "acme/a", githubInstallationId: "1", watchedBranch: "main" })
       .returning();
-    await db.insert(changeItems).values({
-      tenantId: tenant.id,
-      repoId: repo.id,
-      sourceType: "pr",
-      status: "pending",
-      prNumber: 1,
-      prTitle: "Add dark mode",
-    });
+    const [repoB] = await db
+      .insert(repos)
+      .values({ tenantId: tenant.id, githubRepoFullName: "acme/b", githubInstallationId: "1", watchedBranch: "main" })
+      .returning();
+    return { tenant, repoA, repoB };
+  }
 
+  it("runBatchForWorkspace makes one cross-repo Update from all pending and marks them batched", async () => {
+    const { tenant, repoA, repoB } = await seed();
+    await db.insert(changeItems).values([
+      { tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "a" },
+      { tenantId: tenant.id, repoId: repoB.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "b" },
+    ]);
     vi.mocked(generateObject).mockResolvedValue({
-      object: { title: "Dark mode", body: "You can now enable dark mode.", category: "new" },
+      object: { title: "Combined", body: "Two repos.", category: "new" },
     } as never);
 
-    const pending = await getPendingChangeItems(repo.id);
-    await runBatchForRepo(repo.id, tenant.id, pending);
+    const pending = await getPendingChangeItems(tenant.id);
+    const created = await runBatchForWorkspace(tenant.id, pending);
 
-    const createdUpdates = await db.select().from(updates).where(eq(updates.repoId, repo.id));
+    expect(created).toBe(true);
+    const createdUpdates = await db.select().from(updates).where(eq(updates.tenantId, tenant.id));
     expect(createdUpdates).toHaveLength(1);
-    expect(createdUpdates[0].title).toBe("Dark mode");
-
-    const remainingPending = await getPendingChangeItems(repo.id);
-    expect(remainingPending).toHaveLength(0);
+    expect(createdUpdates[0].repoId).toBeNull();
+    expect(await getPendingChangeItems(tenant.id)).toHaveLength(0);
   });
 
-  it("does nothing when there are no pending items", async () => {
-    const [tenant] = await db.insert(tenants).values({ name: "Run Batch Test Tenant" }).returning();
-    const [repo] = await db
-      .insert(repos)
-      .values({ tenantId: tenant.id, githubRepoFullName: "acme/x", githubInstallationId: "1", watchedBranch: "main" })
-      .returning();
-
-    await runBatchForRepo(repo.id, tenant.id, []);
-
+  it("runBatchForWorkspace does nothing on empty pending", async () => {
+    const { tenant } = await seed();
+    const created = await runBatchForWorkspace(tenant.id, []);
+    expect(created).toBe(false);
     expect(generateObject).not.toHaveBeenCalled();
-    const createdUpdates = await db.select().from(updates).where(eq(updates.repoId, repo.id));
-    expect(createdUpdates).toHaveLength(0);
   });
 
-  it("leaves items pending (no Update) when generation fails twice", async () => {
-    const [tenant] = await db.insert(tenants).values({ name: "Run Batch Test Tenant" }).returning();
-    const [repo] = await db
-      .insert(repos)
-      .values({ tenantId: tenant.id, githubRepoFullName: "acme/x", githubInstallationId: "1", watchedBranch: "main" })
-      .returning();
+  it("leaves items pending when generation fails twice", async () => {
+    const { tenant, repoA } = await seed();
     await db.insert(changeItems).values({
-      tenantId: tenant.id,
-      repoId: repo.id,
-      sourceType: "pr",
-      status: "pending",
-      prNumber: 1,
-      prTitle: "Flaky",
+      tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "flaky",
     });
-
     vi.mocked(generateObject).mockRejectedValue(new Error("model unavailable"));
 
-    const pending = await getPendingChangeItems(repo.id);
-    await runBatchForRepo(repo.id, tenant.id, pending);
+    const pending = await getPendingChangeItems(tenant.id);
+    const created = await runBatchForWorkspace(tenant.id, pending);
 
-    expect(generateObject).toHaveBeenCalledTimes(2); // one retry
-    const stillPending = await getPendingChangeItems(repo.id);
-    expect(stillPending).toHaveLength(1);
-  });
-});
-
-describe("runSchedulerTick", () => {
-  afterEach(async () => {
-    await db.delete(tenants).where(eq(tenants.name, "Run Batch Test Tenant"));
-    vi.mocked(generateObject).mockReset();
-  });
-
-  it("advances nextScheduledAt by one cadence interval when a cadence-due tick creates an Update", async () => {
-    const [tenant] = await db.insert(tenants).values({ name: "Run Batch Test Tenant" }).returning();
-    const [repo] = await db
-      .insert(repos)
-      .values({ tenantId: tenant.id, githubRepoFullName: "acme/x", githubInstallationId: "1", watchedBranch: "main" })
-      .returning();
-    await db.insert(changeItems).values({
-      tenantId: tenant.id,
-      repoId: repo.id,
-      sourceType: "pr",
-      status: "pending",
-      prNumber: 1,
-      prTitle: "Add dark mode",
-    });
-
-    const now = new Date("2026-07-14T12:00:00Z");
-    const originalNextScheduledAt = new Date(now.getTime() - 24 * 60 * 60 * 1000); // 1 day in the past
-    const [config] = await db
-      .insert(scheduleConfigs)
-      .values({
-        tenantId: tenant.id,
-        repoId: repo.id,
-        cadence: "weekly",
-        threshold: null,
-        nextScheduledAt: originalNextScheduledAt,
-      })
-      .returning();
-
-    vi.mocked(generateObject).mockResolvedValue({
-      object: { title: "Dark mode", body: "You can now enable dark mode.", category: "new" },
-    } as never);
-
-    await runSchedulerTick(now, db);
-
-    const createdUpdates = await db.select().from(updates).where(eq(updates.repoId, repo.id));
-    expect(createdUpdates).toHaveLength(1);
-
-    const [reloaded] = await db.select().from(scheduleConfigs).where(eq(scheduleConfigs.id, config.id));
-    expect(reloaded.nextScheduledAt?.getTime()).toBe(advanceNextScheduledAt(originalNextScheduledAt, "weekly").getTime());
-    expect(reloaded.lastRunAt).not.toBeNull();
-  });
-
-  it("does not advance nextScheduledAt when the run is triggered by threshold, not cadence", async () => {
-    const [tenant] = await db.insert(tenants).values({ name: "Run Batch Test Tenant" }).returning();
-    const [repo] = await db
-      .insert(repos)
-      .values({ tenantId: tenant.id, githubRepoFullName: "acme/x", githubInstallationId: "1", watchedBranch: "main" })
-      .returning();
-    await db.insert(changeItems).values({
-      tenantId: tenant.id,
-      repoId: repo.id,
-      sourceType: "pr",
-      status: "pending",
-      prNumber: 1,
-      prTitle: "Add dark mode",
-    });
-
-    const now = new Date("2026-07-14T12:00:00Z");
-    const originalNextScheduledAt = new Date(now.getTime() + 24 * 60 * 60 * 1000); // 1 day in the future
-    const [config] = await db
-      .insert(scheduleConfigs)
-      .values({
-        tenantId: tenant.id,
-        repoId: repo.id,
-        cadence: "weekly",
-        threshold: 1,
-        nextScheduledAt: originalNextScheduledAt,
-      })
-      .returning();
-
-    vi.mocked(generateObject).mockResolvedValue({
-      object: { title: "Dark mode", body: "You can now enable dark mode.", category: "new" },
-    } as never);
-
-    await runSchedulerTick(now, db);
-
-    const createdUpdates = await db.select().from(updates).where(eq(updates.repoId, repo.id));
-    expect(createdUpdates).toHaveLength(1);
-
-    const [reloaded] = await db.select().from(scheduleConfigs).where(eq(scheduleConfigs.id, config.id));
-    expect(reloaded.nextScheduledAt?.getTime()).toBe(originalNextScheduledAt.getTime());
-  });
-
-  it("does not advance nextScheduledAt and leaves the item pending when generation fails twice", async () => {
-    const [tenant] = await db.insert(tenants).values({ name: "Run Batch Test Tenant" }).returning();
-    const [repo] = await db
-      .insert(repos)
-      .values({ tenantId: tenant.id, githubRepoFullName: "acme/x", githubInstallationId: "1", watchedBranch: "main" })
-      .returning();
-    await db.insert(changeItems).values({
-      tenantId: tenant.id,
-      repoId: repo.id,
-      sourceType: "pr",
-      status: "pending",
-      prNumber: 1,
-      prTitle: "Flaky",
-    });
-
-    const now = new Date("2026-07-14T12:00:00Z");
-    const originalNextScheduledAt = new Date(now.getTime() - 24 * 60 * 60 * 1000); // 1 day in the past
-    const [config] = await db
-      .insert(scheduleConfigs)
-      .values({
-        tenantId: tenant.id,
-        repoId: repo.id,
-        cadence: "weekly",
-        threshold: null,
-        nextScheduledAt: originalNextScheduledAt,
-      })
-      .returning();
-
-    vi.mocked(generateObject).mockRejectedValue(new Error("model unavailable"));
-
-    await runSchedulerTick(now, db);
-
-    const createdUpdates = await db.select().from(updates).where(eq(updates.repoId, repo.id));
-    expect(createdUpdates).toHaveLength(0);
-
-    const stillPending = await getPendingChangeItems(repo.id, db);
-    expect(stillPending).toHaveLength(1);
-
-    const [reloaded] = await db.select().from(scheduleConfigs).where(eq(scheduleConfigs.id, config.id));
-    expect(reloaded.nextScheduledAt?.getTime()).toBe(originalNextScheduledAt.getTime());
+    expect(created).toBe(false);
     expect(generateObject).toHaveBeenCalledTimes(2);
+    expect(await getPendingChangeItems(tenant.id)).toHaveLength(1);
+  });
+
+  it("runSchedulerTick fires the workspace config, creates one Update, advances nextScheduledAt on cadence", async () => {
+    const { tenant, repoA } = await seed();
+    await db.insert(changeItems).values({
+      tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "a",
+    });
+    const past = new Date("2026-07-01T00:00:00Z");
+    await db.insert(scheduleConfigs).values({ tenantId: tenant.id, cadence: "weekly", threshold: null, nextScheduledAt: past });
+    vi.mocked(generateObject).mockResolvedValue({
+      object: { title: "T", body: "B", category: "new" },
+    } as never);
+
+    await runSchedulerTick(new Date("2026-07-14T00:00:00Z"));
+
+    expect(await db.select().from(updates).where(eq(updates.tenantId, tenant.id))).toHaveLength(1);
+    const [config] = await db.select().from(scheduleConfigs).where(eq(scheduleConfigs.tenantId, tenant.id));
+    expect(config.nextScheduledAt).toEqual(advanceNextScheduledAt(past, "weekly"));
+  });
+
+  it("runSchedulerTick does NOT advance nextScheduledAt on a threshold-reason fire", async () => {
+    const { tenant, repoA } = await seed();
+    await db.insert(changeItems).values({
+      tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "a",
+    });
+    const future = new Date("2026-08-01T00:00:00Z");
+    await db.insert(scheduleConfigs).values({ tenantId: tenant.id, cadence: "weekly", threshold: 1, nextScheduledAt: future });
+    vi.mocked(generateObject).mockResolvedValue({
+      object: { title: "T", body: "B", category: "new" },
+    } as never);
+
+    await runSchedulerTick(new Date("2026-07-14T00:00:00Z"));
+
+    expect(await db.select().from(updates).where(eq(updates.tenantId, tenant.id))).toHaveLength(1);
+    const [config] = await db.select().from(scheduleConfigs).where(eq(scheduleConfigs.tenantId, tenant.id));
+    expect(config.nextScheduledAt).toEqual(future);
+  });
+
+  it("applyPostRunScheduleChoice('skip') advances the workspace schedule from its current value", async () => {
+    const { tenant } = await seed();
+    const anchor = new Date("2026-07-10T00:00:00Z");
+    await db.insert(scheduleConfigs).values({ tenantId: tenant.id, cadence: "weekly", nextScheduledAt: anchor });
+
+    await applyPostRunScheduleChoice(tenant.id, "skip");
+
+    const [config] = await db.select().from(scheduleConfigs).where(eq(scheduleConfigs.tenantId, tenant.id));
+    expect(config.nextScheduledAt).toEqual(advanceNextScheduledAt(anchor, "weekly"));
   });
 });

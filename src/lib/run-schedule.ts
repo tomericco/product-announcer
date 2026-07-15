@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import { db as defaultDb } from "../db";
-import { scheduleConfigs } from "../db/schema";
+import { repos, scheduleConfigs } from "../db/schema";
 import { getPendingChangeItems, claimBatchAndCreateUpdate } from "./change-item-batch";
 import { generateUpdateDraft } from "./generation";
 import { getOrCreateBrandProfile } from "./brand-profile";
@@ -8,8 +8,15 @@ import { shouldTriggerRun, advanceNextScheduledAt, type Cadence } from "./schedu
 
 type ChangeItemRow = Awaited<ReturnType<typeof getPendingChangeItems>>[number];
 
-export async function runBatchForRepo(
-  repoId: string,
+async function reposByIdForTenant(
+  tenantId: string,
+  database: typeof defaultDb
+): Promise<Map<string, string>> {
+  const rows = await database.select().from(repos).where(eq(repos.tenantId, tenantId));
+  return new Map(rows.map((r) => [r.id, r.githubRepoFullName]));
+}
+
+export async function runBatchForWorkspace(
   tenantId: string,
   pending: ChangeItemRow[],
   database: typeof defaultDb = defaultDb
@@ -17,23 +24,23 @@ export async function runBatchForRepo(
   if (pending.length === 0) return false;
 
   const brandProfile = await getOrCreateBrandProfile(tenantId, database);
+  const reposById = await reposByIdForTenant(tenantId, database);
 
   let draft;
   try {
-    draft = await generateUpdateDraft(pending, brandProfile);
+    draft = await generateUpdateDraft(pending, brandProfile, reposById);
   } catch {
     try {
-      draft = await generateUpdateDraft(pending, brandProfile);
+      draft = await generateUpdateDraft(pending, brandProfile, reposById);
     } catch {
       // Both attempts failed. Leave the batch's items pending — they roll into
-      // the next scheduled/threshold/manual run automatically (see Plan's
-      // Global Constraints re: deferred failure surfacing).
+      // the next scheduled/threshold/manual run automatically.
       return false;
     }
   }
 
   const update = await claimBatchAndCreateUpdate(
-    { tenantId, repoId, changeItemIds: pending.map((p) => p.id), draft },
+    { tenantId, changeItemIds: pending.map((p) => p.id), draft },
     database
   );
 
@@ -45,7 +52,7 @@ export async function runSchedulerTick(now: Date, database: typeof defaultDb = d
 
   for (const config of configs) {
     try {
-      const pending = await getPendingChangeItems(config.repoId, database);
+      const pending = await getPendingChangeItems(config.tenantId, database);
 
       const reason = shouldTriggerRun(
         {
@@ -59,13 +66,9 @@ export async function runSchedulerTick(now: Date, database: typeof defaultDb = d
 
       if (!reason) continue;
 
-      const created = await runBatchForRepo(config.repoId, config.tenantId, pending, database);
+      const created = await runBatchForWorkspace(config.tenantId, pending, database);
 
       const updateFields: Partial<typeof scheduleConfigs.$inferInsert> = { lastRunAt: now };
-      // Advance the cadence clock only when an Update was actually produced. A
-      // cadence tick that fired but generated nothing (double-failure) must not
-      // consume the cadence slot — leaving nextScheduledAt in the past lets the
-      // next hourly tick retry instead of waiting a full cadence cycle.
       if (created && reason === "cadence" && config.cadence !== "none" && config.nextScheduledAt) {
         updateFields.nextScheduledAt = advanceNextScheduledAt(
           config.nextScheduledAt,
@@ -74,21 +77,20 @@ export async function runSchedulerTick(now: Date, database: typeof defaultDb = d
       }
       await database.update(scheduleConfigs).set(updateFields).where(eq(scheduleConfigs.id, config.id));
     } catch (error) {
-      // One repo's unexpected failure must not starve the other tenants'
-      // configs in this tick. Log and continue.
-      console.error(`Scheduler tick failed for repo ${config.repoId}:`, error);
+      // One tenant's failure must not starve the others in this tick.
+      console.error(`Scheduler tick failed for tenant ${config.tenantId}:`, error);
     }
   }
 }
 
 export async function applyPostRunScheduleChoice(
-  repoId: string,
+  tenantId: string,
   choice: "keep" | "skip",
   database: typeof defaultDb = defaultDb
 ): Promise<void> {
   if (choice !== "skip") return;
 
-  const [config] = await database.select().from(scheduleConfigs).where(eq(scheduleConfigs.repoId, repoId)).limit(1);
+  const [config] = await database.select().from(scheduleConfigs).where(eq(scheduleConfigs.tenantId, tenantId)).limit(1);
   if (config && config.cadence !== "none" && config.nextScheduledAt) {
     await database
       .update(scheduleConfigs)
