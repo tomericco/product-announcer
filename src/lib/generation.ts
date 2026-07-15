@@ -15,19 +15,29 @@ export type UpdateDraft = z.infer<typeof UpdateDraftSchema>;
 
 const DEFAULT_MAX_PROMPT_CHARS = 24000;
 
-function formatChangeItem(item: ChangeItemRow, index: number, includeDiff: boolean): string {
+function formatChangeItem(
+  item: ChangeItemRow,
+  index: number,
+  includeDiff: boolean,
+  reposById: Map<string, string>
+): string {
+  const repo = reposById.get(item.repoId) ?? "unknown";
   if (item.sourceType === "pr") {
-    return `${index + 1}. [PR #${item.prNumber}] "${item.prTitle}" — ${item.prDescription ?? ""}`;
+    return `${index + 1}. [${repo} · PR #${item.prNumber}] "${item.prTitle}" — ${item.prDescription ?? ""}`;
   }
   const shortSha = item.commitSha?.slice(0, 7) ?? "unknown";
   const diffPart = includeDiff && item.diff ? ` — ${item.diff}` : "";
-  return `${index + 1}. [commit ${shortSha}] "${item.commitMessage}"${diffPart}`;
+  return `${index + 1}. [${repo} · commit ${shortSha}] "${item.commitMessage}"${diffPart}`;
 }
 
-export function serializeBatchForPrompt(items: ChangeItemRow[], maxChars = DEFAULT_MAX_PROMPT_CHARS): string {
+export function serializeBatchForPrompt(
+  items: ChangeItemRow[],
+  reposById: Map<string, string>,
+  maxChars = DEFAULT_MAX_PROMPT_CHARS
+): string {
   const includeDiffFlags = items.map(() => true);
 
-  const render = () => items.map((item, i) => formatChangeItem(item, i, includeDiffFlags[i])).join("\n");
+  const render = () => items.map((item, i) => formatChangeItem(item, i, includeDiffFlags[i], reposById)).join("\n");
 
   let current = render();
   if (current.length <= maxChars) return current;
@@ -61,9 +71,10 @@ function buildSystemPrompt(brandProfile: BrandProfileRow): string {
 
 export async function generateUpdateDraft(
   items: ChangeItemRow[],
-  brandProfile: BrandProfileRow
+  brandProfile: BrandProfileRow,
+  reposById: Map<string, string>
 ): Promise<UpdateDraft> {
-  const batchText = serializeBatchForPrompt(items);
+  const batchText = serializeBatchForPrompt(items, reposById);
 
   const result = await generateObject({
     model: process.env.GENERATION_MODEL ?? "anthropic/claude-sonnet-4-5",
