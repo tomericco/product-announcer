@@ -40,7 +40,15 @@ export default async function OnboardingPage() {
   const branchesByFullName = new Map<string, string[]>();
   if (tenant?.githubInstallationId) {
     for (const r of accessibleRepos) {
-      branchesByFullName.set(r.fullName, await listRepoBranches(tenant.githubInstallationId, r.fullName));
+      // Guard each repo's fetch: a transient GitHub error or missing branch-list
+      // permission on ONE repo must not crash the whole page (which also carries
+      // the workspace-name and skip controls). The Combobox degrades to an empty
+      // list and the row still submits its default branch.
+      try {
+        branchesByFullName.set(r.fullName, await listRepoBranches(tenant.githubInstallationId, r.fullName));
+      } catch {
+        branchesByFullName.set(r.fullName, []);
+      }
     }
   }
 

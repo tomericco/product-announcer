@@ -92,9 +92,16 @@ export async function saveWorkspaceSchedule(formData: FormData) {
       })
       .where(eq(scheduleConfigs.id, existing.id));
   } else {
+    // onConflictDoUpdate (not a plain insert) so a concurrent first-time save
+    // can't violate the one-per-tenant unique constraint — matches
+    // saveOnboardingSchedule.
     await db
       .insert(scheduleConfigs)
-      .values({ tenantId: session.user.tenantId, cadence, threshold, nextScheduledAt: freshAnchor });
+      .values({ tenantId: session.user.tenantId, cadence, threshold, nextScheduledAt: freshAnchor })
+      .onConflictDoUpdate({
+        target: scheduleConfigs.tenantId,
+        set: { cadence, threshold, nextScheduledAt: freshAnchor },
+      });
   }
 
   revalidatePath("/settings");
