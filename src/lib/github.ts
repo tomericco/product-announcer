@@ -30,6 +30,17 @@ export async function listAccessibleRepos(
   }));
 }
 
+export async function listRepoBranches(installationId: string, repoFullName: string): Promise<string[]> {
+  const [owner, repo] = repoFullName.split("/");
+  const installationOctokit = await getGithubApp().getInstallationOctokit(Number(installationId));
+  const branches = await installationOctokit.paginate(installationOctokit.rest.repos.listBranches, {
+    owner,
+    repo,
+    per_page: 100,
+  });
+  return branches.map((b) => b.name);
+}
+
 export function truncateDiff(diff: string, maxLines = 200): string {
   const lines = diff.split("\n");
   if (lines.length <= maxLines) return diff;
