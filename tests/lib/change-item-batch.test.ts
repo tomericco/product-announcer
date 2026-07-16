@@ -115,6 +115,25 @@ describe("change-item-batch", () => {
     const allUpdates = await db.select().from(updates).where(eq(updates.tenantId, tenant.id));
     expect(allUpdates).toHaveLength(0);
   });
+
+  it("claimBatchAndCreateUpdate persists the review outcome when provided", async () => {
+    const { tenant, repoA } = await seed();
+    const [item] = await db
+      .insert(changeItems)
+      .values({ tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "a" })
+      .returning();
+
+    const update = await claimBatchAndCreateUpdate({
+      tenantId: tenant.id,
+      changeItemIds: [item.id],
+      draft: { title: "T", body: "B", category: "new" },
+      review: { status: "failed", issues: ["too salesy"] },
+    });
+
+    expect(update!.reviewStatus).toBe("failed");
+    expect(update!.reviewIssues).toEqual(["too salesy"]);
+    expect(update!.reviewedAt).toBeInstanceOf(Date);
+  });
 });
 
 describe("batchCategories", () => {

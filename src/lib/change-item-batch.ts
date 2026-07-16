@@ -1,6 +1,7 @@
 import { and, eq, inArray, isNull, or } from "drizzle-orm";
 import { db as defaultDb } from "../db";
 import { changeItems, updates } from "../db/schema";
+import type { ReviewStatus } from "./review-draft";
 
 type ChangeItemRow = typeof changeItems.$inferSelect;
 type UpdateRow = typeof updates.$inferSelect;
@@ -42,7 +43,12 @@ export async function getBatchableChangeItems(
 export type DraftInput = { title: string; body: string; category: "new" | "improved" | "fixed" };
 
 export async function claimBatchAndCreateUpdate(
-  input: { tenantId: string; changeItemIds: string[]; draft: DraftInput },
+  input: {
+    tenantId: string;
+    changeItemIds: string[];
+    draft: DraftInput;
+    review?: { status: ReviewStatus; issues: string[] };
+  },
   database: typeof defaultDb = defaultDb
 ): Promise<UpdateRow | null> {
   return database.transaction(async (tx) => {
@@ -64,6 +70,9 @@ export async function claimBatchAndCreateUpdate(
         body: input.draft.body,
         category: input.draft.category,
         sourceItems: claimedIds,
+        ...(input.review
+          ? { reviewStatus: input.review.status, reviewIssues: input.review.issues, reviewedAt: new Date() }
+          : {}),
       })
       .returning();
 
