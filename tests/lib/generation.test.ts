@@ -93,18 +93,20 @@ describe("generateUpdateDraft", () => {
       dontList: ["no jargon"],
       examplePhrases: [],
       industry: "B2B SaaS",
-      userPersonas: [
-        { name: "engineering managers", usage: "track shipped work", deliveredValue: "know what changed" },
-      ],
+      userPersonas: [],
     } as never;
 
-    const draft = await generateUpdateDraft(items, brandProfile, REPOS);
+    const personas = [
+      { name: "engineering managers", brief: "track shipped work; care about what changed" },
+    ];
+
+    const draft = await generateUpdateDraft(items, brandProfile, REPOS, personas);
 
     expect(draft).toEqual({ title: "Faster search", body: "We rebuilt search.", category: "improved" });
 
     const callArgs = vi.mocked(generateObject).mock.calls[0][0];
     expect(callArgs.system).toContain("Industry: B2B SaaS.");
-    expect(callArgs.system).toContain("Audience personas: engineering managers");
+    expect(callArgs.system).toContain("engineering managers: track shipped work");
     expect(callArgs.prompt).toContain("acme/web");
     expect(callArgs.prompt).toContain("Add dark mode");
   });

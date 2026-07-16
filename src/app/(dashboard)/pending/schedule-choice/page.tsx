@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 
 export default function ScheduleChoicePage() {
   return (
-    <div className="max-w-md space-y-4">
+    <div className="space-y-4">
       <h1 className="text-xl font-semibold">Update generated</h1>
       <p className="text-sm text-muted-foreground">
         Keep the next scheduled update as planned, or skip it since you just ran one manually?

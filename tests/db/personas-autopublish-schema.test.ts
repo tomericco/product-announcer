@@ -16,12 +16,16 @@ describe("personas + auto-publish schema", () => {
       .insert(brandProfiles)
       .values({
         tenantId: tenant.id,
-        userPersonas: [{ name: "Eng managers", usage: "track shipped work", deliveredValue: "know what changed" }],
+        userPersonas: [
+          { type: "system", key: "developer" },
+          { type: "custom", name: "Eng managers", brief: "track shipped work" },
+        ],
       })
       .returning();
 
     expect(profile.userPersonas).toEqual([
-      { name: "Eng managers", usage: "track shipped work", deliveredValue: "know what changed" },
+      { type: "system", key: "developer" },
+      { type: "custom", name: "Eng managers", brief: "track shipped work" },
     ]);
   });
 });

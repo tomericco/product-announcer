@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { shouldTriggerRun, advanceNextScheduledAt } from "../../src/lib/scheduler-decision";
+import {
+  shouldTriggerRun,
+  advanceNextScheduledAt,
+  computeNextScheduledAt,
+} from "../../src/lib/scheduler-decision";
 
 describe("shouldTriggerRun", () => {
   const now = new Date("2026-07-13T12:00:00Z");
@@ -81,5 +85,53 @@ describe("advanceNextScheduledAt", () => {
   it("skipping a run due tomorrow lands 8 days out on a weekly cadence, not 7 from today", () => {
     const dueTomorrow = new Date("2026-07-14T00:00:00Z"); // "now" is 2026-07-13
     expect(advanceNextScheduledAt(dueTomorrow, "weekly")).toEqual(new Date("2026-07-21T00:00:00Z"));
+  });
+});
+
+describe("computeNextScheduledAt", () => {
+  // Wed 2026-07-15 12:00 UTC (getUTCDay() === 3)
+  const now = new Date("2026-07-15T12:00:00Z");
+
+  it("daily: today at the hour if still ahead, else tomorrow", () => {
+    expect(computeNextScheduledAt(now, "daily", { hour: 18 })).toEqual(
+      new Date("2026-07-15T18:00:00Z")
+    );
+    expect(computeNextScheduledAt(now, "daily", { hour: 9 })).toEqual(
+      new Date("2026-07-16T09:00:00Z")
+    );
+  });
+
+  it("weekly: lands on the next occurrence of the target weekday at the hour", () => {
+    // target Monday (1) — next Monday after Wed is 2026-07-20
+    expect(computeNextScheduledAt(now, "weekly", { hour: 9, dayOfWeek: 1 })).toEqual(
+      new Date("2026-07-20T09:00:00Z")
+    );
+    // target same weekday (Wed) but earlier hour → next Wednesday, not today
+    expect(computeNextScheduledAt(now, "weekly", { hour: 9, dayOfWeek: 3 })).toEqual(
+      new Date("2026-07-22T09:00:00Z")
+    );
+    // target same weekday, later hour → later today
+    expect(computeNextScheduledAt(now, "weekly", { hour: 20, dayOfWeek: 3 })).toEqual(
+      new Date("2026-07-15T20:00:00Z")
+    );
+  });
+
+  it("monthly: uses the calendar day and rolls to next month when it has passed", () => {
+    // day 20 this month is still ahead
+    expect(computeNextScheduledAt(now, "monthly", { hour: 9, dayOfMonth: 20 })).toEqual(
+      new Date("2026-07-20T09:00:00Z")
+    );
+    // day 10 already passed → next month
+    expect(computeNextScheduledAt(now, "monthly", { hour: 9, dayOfMonth: 10 })).toEqual(
+      new Date("2026-08-10T09:00:00Z")
+    );
+  });
+
+  it("monthly: clamps a day-of-month beyond the month length", () => {
+    // From Feb 2027, asking for day 31 → clamped to Feb 28
+    const feb = new Date("2027-02-01T00:00:00Z");
+    expect(computeNextScheduledAt(feb, "monthly", { hour: 9, dayOfMonth: 31 })).toEqual(
+      new Date("2027-02-28T09:00:00Z")
+    );
   });
 });

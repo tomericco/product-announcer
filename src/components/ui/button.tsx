@@ -1,3 +1,4 @@
+import * as React from "react"
 import { Button as ButtonPrimitive } from "@base-ui/react/button"
 import { cva, type VariantProps } from "class-variance-authority"
 
@@ -44,11 +45,22 @@ function Button({
   className,
   variant = "default",
   size = "default",
+  nativeButton,
+  render,
   ...props
 }: ButtonPrimitive.Props & VariantProps<typeof buttonVariants>) {
+  // Base UI defaults `nativeButton` to true. When the button is rendered as a
+  // non-<button> element (e.g. a Link or <a>), that default warns and drops
+  // native button semantics — so infer false unless the render element is a
+  // real <button>. An explicit `nativeButton` prop always wins.
+  const resolvedNativeButton =
+    nativeButton ?? !(React.isValidElement(render) && render.type !== "button")
+
   return (
     <ButtonPrimitive
       data-slot="button"
+      nativeButton={resolvedNativeButton}
+      render={render}
       className={cn(buttonVariants({ variant, size, className }))}
       {...props}
     />

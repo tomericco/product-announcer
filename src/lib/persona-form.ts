@@ -1,6 +1,6 @@
-import type { Persona } from "@/db/schema";
+import type { PersonaRef } from "@/db/schema";
 
-export function parsePersonas(formData: FormData): Persona[] {
+export function parsePersonas(formData: FormData): PersonaRef[] {
   const raw = formData.get("personas");
   if (typeof raw !== "string") return [];
 
@@ -12,12 +12,19 @@ export function parsePersonas(formData: FormData): Persona[] {
   }
   if (!Array.isArray(parsed)) return [];
 
-  return parsed
-    .filter((p): p is Record<string, unknown> => typeof p === "object" && p !== null)
-    .map((p) => ({
-      name: typeof p.name === "string" ? p.name.trim() : "",
-      usage: typeof p.usage === "string" ? p.usage.trim() : "",
-      deliveredValue: typeof p.deliveredValue === "string" ? p.deliveredValue.trim() : "",
-    }))
-    .filter((p) => p.name.length > 0);
+  const result: PersonaRef[] = [];
+  for (const entry of parsed) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const obj = entry as Record<string, unknown>;
+
+    if (obj.type === "system") {
+      const key = typeof obj.key === "string" ? obj.key.trim() : "";
+      if (key) result.push({ type: "system", key });
+    } else if (obj.type === "custom") {
+      const name = typeof obj.name === "string" ? obj.name.trim() : "";
+      const brief = typeof obj.brief === "string" ? obj.brief.trim() : "";
+      if (name) result.push({ type: "custom", name, brief });
+    }
+  }
+  return result;
 }

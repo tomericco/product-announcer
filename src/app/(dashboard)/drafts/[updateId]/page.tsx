@@ -30,7 +30,7 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ up
 
   return (
     <div className="space-y-8">
-      <form action={saveDraft} className="max-w-lg space-y-4">
+      <form action={saveDraft} className="space-y-4">
         <input type="hidden" name="updateId" value={update.id} />
         <div className="space-y-2">
           <Label htmlFor="title">Title</Label>

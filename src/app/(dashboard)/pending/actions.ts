@@ -1,13 +1,15 @@
 "use server";
 
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { db } from "@/db";
-import { changeItems, scheduleConfigs } from "@/db/schema";
+import { changeItems, repos, scheduleConfigs } from "@/db/schema";
 import { requireSession } from "@/lib/session";
 import { getPendingChangeItems } from "@/lib/change-item-batch";
 import { runBatchForWorkspace, applyPostRunScheduleChoice } from "@/lib/run-schedule";
+import { getCommitDiff, listRepoCommits } from "@/lib/github";
+import { importSelectedCommits, type CommitSelection } from "@/lib/import-commits";
 
 export async function dropChangeItem(formData: FormData) {
   const session = await requireSession();
@@ -39,6 +41,90 @@ export async function runNow() {
     .where(eq(scheduleConfigs.tenantId, session.user.tenantId));
 
   redirect("/pending/schedule-choice");
+}
+
+export type ImportableCommit = {
+  repoId: string;
+  repoFullName: string;
+  sha: string;
+  message: string;
+  url: string;
+  committedAt: string | null;
+  authorName: string | null;
+  imported: boolean;
+};
+
+export async function listImportableCommits(input: {
+  repoIds: string[];
+  since?: string;
+  until?: string;
+}): Promise<{ commits: ImportableCommit[] }> {
+  const session = await requireSession();
+  if (input.repoIds.length === 0) return { commits: [] };
+
+  // Load only the caller's repos among those requested (tenant-scoped IDOR guard).
+  const ownedRepos = await db
+    .select()
+    .from(repos)
+    .where(and(eq(repos.tenantId, session.user.tenantId), inArray(repos.id, input.repoIds)));
+
+  const perRepo = await Promise.all(
+    ownedRepos.map(async (repo) => {
+      // Guard each repo's fetch so one failing repo doesn't blank out the whole
+      // "All" view — it just contributes no commits.
+      let commits;
+      try {
+        commits = await listRepoCommits(repo.githubInstallationId, repo.githubRepoFullName, repo.watchedBranch, {
+          since: input.since,
+          until: input.until,
+        });
+      } catch {
+        return [] as ImportableCommit[];
+      }
+
+      const shas = commits.map((c) => c.sha);
+      const existing = shas.length
+        ? await db
+            .select({ sha: changeItems.commitSha })
+            .from(changeItems)
+            .where(and(eq(changeItems.repoId, repo.id), inArray(changeItems.commitSha, shas)))
+        : [];
+      const importedShas = new Set(existing.map((e) => e.sha));
+
+      return commits.map((c) => ({
+        repoId: repo.id,
+        repoFullName: repo.githubRepoFullName,
+        sha: c.sha,
+        message: c.message,
+        url: c.url,
+        committedAt: c.committedAt,
+        authorName: c.authorName,
+        imported: importedShas.has(c.sha),
+      }));
+    })
+  );
+
+  const commits = perRepo.flat().sort((a, b) => {
+    const ta = a.committedAt ? Date.parse(a.committedAt) : 0;
+    const tb = b.committedAt ? Date.parse(b.committedAt) : 0;
+    return tb - ta;
+  });
+
+  return { commits };
+}
+
+export async function importCommits(input: {
+  selections: CommitSelection[];
+}): Promise<{ importedCount: number }> {
+  const session = await requireSession();
+
+  const result = await importSelectedCommits(
+    { tenantId: session.user.tenantId, selections: input.selections },
+    getCommitDiff
+  );
+
+  revalidatePath("/pending");
+  return result;
 }
 
 export async function chooseSchedule(formData: FormData) {

@@ -1,6 +1,6 @@
 import { generateObject } from "ai";
 import { z } from "zod";
-import type { changeItems, brandProfiles } from "../db/schema";
+import type { changeItems, brandProfiles, ResolvedPersona } from "../db/schema";
 
 type ChangeItemRow = typeof changeItems.$inferSelect;
 type BrandProfileRow = typeof brandProfiles.$inferSelect;
@@ -55,14 +55,14 @@ export function serializeBatchForPrompt(
   return current;
 }
 
-function buildSystemPrompt(brandProfile: BrandProfileRow): string {
+function buildSystemPrompt(brandProfile: BrandProfileRow, personas: ResolvedPersona[]): string {
   const lines = [
     "You write concise, user-facing product update announcements.",
     brandProfile.industry ? `Industry: ${brandProfile.industry}.` : null,
-    brandProfile.userPersonas.length > 0
-      ? `Audience personas: ${brandProfile.userPersonas
-          .map((p) => `${p.name} — uses it to ${p.usage}; values ${p.deliveredValue}`)
-          .join(" ")}.`
+    personas.length > 0
+      ? `Audience personas — tailor the update to appeal to each: ${personas
+          .map((p) => `${p.name}: ${p.brief}`)
+          .join(" ")}`
       : null,
     brandProfile.tone ? `Tone: ${brandProfile.tone}.` : null,
     brandProfile.readingLevel ? `Reading level: ${brandProfile.readingLevel}.` : null,
@@ -76,14 +76,15 @@ function buildSystemPrompt(brandProfile: BrandProfileRow): string {
 export async function generateUpdateDraft(
   items: ChangeItemRow[],
   brandProfile: BrandProfileRow,
-  reposById: Map<string, string>
+  reposById: Map<string, string>,
+  personas: ResolvedPersona[] = []
 ): Promise<UpdateDraft> {
   const batchText = serializeBatchForPrompt(items, reposById);
 
   const result = await generateObject({
     model: process.env.GENERATION_MODEL ?? "anthropic/claude-sonnet-4-5",
     schema: UpdateDraftSchema,
-    system: buildSystemPrompt(brandProfile),
+    system: buildSystemPrompt(brandProfile, personas),
     prompt: `Here are the changes to summarize into one product update. Format the body as Markdown (short paragraphs, and bullet lists where helpful):\n\n${batchText}`,
   });
 

@@ -8,21 +8,33 @@ function fd(personas: string | undefined): FormData {
 }
 
 describe("parsePersonas", () => {
-  it("parses valid personas, trimming fields", () => {
+  it("parses system references and custom personas, trimming fields", () => {
     const json = JSON.stringify([
-      { name: "  Eng managers ", usage: " track work ", deliveredValue: " know changes " },
+      { type: "system", key: " developer " },
+      { type: "custom", name: "  Eng managers ", brief: " track shipped work " },
     ]);
     expect(parsePersonas(fd(json))).toEqual([
-      { name: "Eng managers", usage: "track work", deliveredValue: "know changes" },
+      { type: "system", key: "developer" },
+      { type: "custom", name: "Eng managers", brief: "track shipped work" },
     ]);
   });
 
-  it("drops entries with an empty name and fills missing fields with empty strings", () => {
+  it("drops a custom persona with an empty name and a system ref with an empty key", () => {
     const json = JSON.stringify([
-      { name: "", usage: "x", deliveredValue: "y" },
-      { name: "IC devs" },
+      { type: "custom", name: "  ", brief: "y" },
+      { type: "system", key: "" },
+      { type: "custom", name: "IC devs" },
     ]);
-    expect(parsePersonas(fd(json))).toEqual([{ name: "IC devs", usage: "", deliveredValue: "" }]);
+    expect(parsePersonas(fd(json))).toEqual([{ type: "custom", name: "IC devs", brief: "" }]);
+  });
+
+  it("ignores entries with an unknown or missing type", () => {
+    const json = JSON.stringify([
+      { name: "x", usage: "y" },
+      { type: "other", key: "z" },
+      { type: "system", key: "product-manager" },
+    ]);
+    expect(parsePersonas(fd(json))).toEqual([{ type: "system", key: "product-manager" }]);
   });
 
   it("returns [] for a missing field", () => {
@@ -31,6 +43,6 @@ describe("parsePersonas", () => {
 
   it("returns [] for non-JSON or a non-array", () => {
     expect(parsePersonas(fd("not json"))).toEqual([]);
-    expect(parsePersonas(fd(JSON.stringify({ name: "x" })))).toEqual([]);
+    expect(parsePersonas(fd(JSON.stringify({ type: "custom", name: "x" })))).toEqual([]);
   });
 });

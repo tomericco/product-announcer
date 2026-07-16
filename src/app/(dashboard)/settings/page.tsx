@@ -1,24 +1,22 @@
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
-import { repos, scheduleConfigs, tenants } from "@/db/schema";
+import { repos, scheduleConfigs, tenants, systemPersonas } from "@/db/schema";
 import { requireSession } from "@/lib/session";
 import { getGithubApp, listAccessibleRepos, listRepoBranches } from "@/lib/github";
 import { getOrCreateBrandProfile } from "@/lib/brand-profile";
-import { saveWorkspaceName, saveAutoPublish, saveBrandProfile, saveWorkspaceSchedule, addSettingsRepos } from "./actions";
-import { RepoRow } from "./repo-row";
+import { saveWorkspaceName, saveAutoPublish, saveBrandProfile, removeRepo } from "./actions";
+import { AddRepoDialog } from "./add-repo-dialog";
+import { RepoBranchSelect } from "./repo-branch-select";
 import { PersonasEditor } from "./personas-editor";
+import { IndustrySelect } from "./industry-select";
+import { ScheduleForm } from "./schedule-form";
+import { ToastForm } from "./toast-form";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 
 export default async function SettingsPage() {
   const session = await requireSession();
@@ -29,6 +27,14 @@ export default async function SettingsPage() {
     .select()
     .from(scheduleConfigs)
     .where(eq(scheduleConfigs.tenantId, session.user.tenantId));
+  const personaCatalog = await db
+    .select({
+      key: systemPersonas.key,
+      name: systemPersonas.name,
+      description: systemPersonas.description,
+    })
+    .from(systemPersonas)
+    .orderBy(systemPersonas.sortOrder);
 
   let installUrl: string | null = null;
   if (!tenant?.githubInstallationId) {
@@ -39,60 +45,72 @@ export default async function SettingsPage() {
     }
   }
   const accessibleRepos = tenant?.githubInstallationId ? await listAccessibleRepos(tenant.githubInstallationId) : [];
-  const watchedBranchByFullName = new Map(tenantRepos.map((r) => [r.githubRepoFullName, r.watchedBranch]));
+  const connectedFullNames = new Set(tenantRepos.map((r) => r.githubRepoFullName));
+  const availableAccessible = accessibleRepos.filter((r) => !connectedFullNames.has(r.fullName));
+
+  // Branch lists power both the per-repo branch selector (connected repos) and the
+  // Add-repo picker (not-yet-connected repos). One guarded fetch per repo — a
+  // transient GitHub error on ONE repo must not crash the whole Settings page; it
+  // simply degrades to an empty branch list for that repo.
   const branchesByFullName = new Map<string, string[]>();
   if (tenant?.githubInstallationId) {
-    for (const r of accessibleRepos) {
-      // Guard each repo's fetch: a transient GitHub error or missing branch-list
-      // permission on ONE repo must not crash the whole Settings page (which also
-      // carries workspace name, brand profile, and schedule). The Combobox
-      // degrades to an empty list and the row still submits its default branch.
+    const fullNames = [
+      ...tenantRepos.map((r) => r.githubRepoFullName),
+      ...availableAccessible.map((r) => r.fullName),
+    ];
+    for (const fullName of fullNames) {
       try {
-        branchesByFullName.set(r.fullName, await listRepoBranches(tenant.githubInstallationId, r.fullName));
+        branchesByFullName.set(fullName, await listRepoBranches(tenant.githubInstallationId, fullName));
       } catch {
-        branchesByFullName.set(r.fullName, []);
+        branchesByFullName.set(fullName, []);
       }
     }
   }
 
+  const availableRepos = availableAccessible.map((r) => ({
+    fullName: r.fullName,
+    defaultBranch: r.defaultBranch,
+    branches: branchesByFullName.get(r.fullName) ?? [],
+  }));
+
   return (
     <div className="space-y-8">
-      <Card className="max-w-lg">
+      <Card>
         <CardHeader>
           <CardTitle>Workspace name</CardTitle>
         </CardHeader>
         <CardContent>
-          <form action={saveWorkspaceName} className="flex gap-2">
+          <ToastForm action={saveWorkspaceName} successMessage="Workspace name saved" className="flex gap-2">
             <Input name="name" defaultValue={tenant?.name ?? ""} className="flex-1" />
             <Button type="submit" variant="outline">
               Save
             </Button>
-          </form>
+          </ToastForm>
         </CardContent>
       </Card>
 
-      <Card className="max-w-lg">
+      <Card>
         <CardHeader>
           <CardTitle>Auto-publish</CardTitle>
         </CardHeader>
         <CardContent>
-          <form action={saveAutoPublish} className="space-y-3">
+          <ToastForm action={saveAutoPublish} successMessage="Auto-publish updated" className="space-y-3">
             <label className="flex items-center gap-3 text-sm">
               <Switch name="autoPublish" defaultChecked={tenant?.autoPublish ?? false} />
               Publish generated updates automatically
             </label>
-            <p className="text-sm text-muted-foreground">
+            <p className="text-xs text-muted-foreground">
               When on, generated updates are published to your webhook immediately and skip the Drafts
               review queue. Requires an active webhook — without one, updates still land in Drafts for review.
             </p>
             <Button type="submit" variant="outline">
               Save
             </Button>
-          </form>
+          </ToastForm>
         </CardContent>
       </Card>
 
-      <Card className="max-w-lg">
+      <Card>
         <CardHeader>
           <CardTitle>GitHub repos</CardTitle>
         </CardHeader>
@@ -106,95 +124,99 @@ export default async function SettingsPage() {
               <p className="text-sm text-muted-foreground">GitHub integration isn&apos;t configured yet.</p>
             )
           ) : (
-            <form action={addSettingsRepos} className="space-y-3">
-              <input type="hidden" name="repoCount" value={accessibleRepos.length} />
-              {accessibleRepos.map((repo, i) => (
-                <RepoRow
-                  key={repo.fullName}
-                  index={i}
-                  fullName={repo.fullName}
-                  branches={branchesByFullName.get(repo.fullName) ?? []}
-                  defaultBranch={watchedBranchByFullName.get(repo.fullName) ?? repo.defaultBranch}
-                  defaultChecked={watchedBranchByFullName.has(repo.fullName)}
-                />
-              ))}
-              {accessibleRepos.length === 0 && (
-                <p className="text-sm text-muted-foreground">No accessible repos found.</p>
+            <div className="space-y-4">
+              {tenantRepos.length > 0 ? (
+                <ul className="divide-y divide-border">
+                  {tenantRepos.map((repo) => (
+                    <li
+                      key={repo.id}
+                      className="flex items-center justify-between gap-3 py-2 first:pt-0 last:pb-0"
+                    >
+                      <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                        {repo.githubRepoFullName}
+                      </span>
+                      <RepoBranchSelect
+                        repoId={repo.id}
+                        currentBranch={repo.watchedBranch}
+                        branches={branchesByFullName.get(repo.githubRepoFullName) ?? []}
+                      />
+                      <ToastForm action={removeRepo} successMessage="Repo removed">
+                        <input type="hidden" name="repoId" value={repo.id} />
+                        <Button type="submit" variant="ghost" size="sm" className="text-muted-foreground">
+                          Remove
+                        </Button>
+                      </ToastForm>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-sm text-muted-foreground">No repos connected yet.</p>
               )}
-              <Button type="submit" variant="outline">
-                Save repo selection
-              </Button>
-            </form>
+              <AddRepoDialog availableRepos={availableRepos} />
+            </div>
           )}
         </CardContent>
       </Card>
 
-      <Card className="max-w-lg">
+      <Card>
         <CardHeader>
           <CardTitle>Brand profile</CardTitle>
         </CardHeader>
         <CardContent>
-          <form action={saveBrandProfile} className="space-y-4">
+          <ToastForm action={saveBrandProfile} successMessage="Brand profile saved" className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="tone">Tone</Label>
-              <Input id="tone" name="tone" defaultValue={brandProfile.tone ?? ""} />
+              <Textarea id="tone" name="tone" rows={3} defaultValue={brandProfile.tone ?? ""} />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="readingLevel">Reading level</Label>
-              <Input id="readingLevel" name="readingLevel" defaultValue={brandProfile.readingLevel ?? ""} />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="industry">Industry</Label>
-              <Input id="industry" name="industry" defaultValue={brandProfile.industry ?? ""} />
+              <Label>Industry</Label>
+              <IndustrySelect defaultValue={brandProfile.industry ?? ""} />
             </div>
             <div className="space-y-2">
               <Label>User personas</Label>
-              <PersonasEditor personas={brandProfile.userPersonas} />
+              <PersonasEditor personas={brandProfile.userPersonas} catalog={personaCatalog} />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="doList">Do (comma-separated)</Label>
-              <Input id="doList" name="doList" defaultValue={brandProfile.doList.join(", ")} />
+              <Label htmlFor="doList">Do</Label>
+              <Textarea
+                id="doList"
+                name="doList"
+                rows={3}
+                placeholder="One per line"
+                defaultValue={brandProfile.doList.join("\n")}
+              />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="dontList">Don&apos;t (comma-separated)</Label>
-              <Input id="dontList" name="dontList" defaultValue={brandProfile.dontList.join(", ")} />
+              <Label htmlFor="dontList">Don&apos;t</Label>
+              <Textarea
+                id="dontList"
+                name="dontList"
+                rows={3}
+                placeholder="One per line"
+                defaultValue={brandProfile.dontList.join("\n")}
+              />
             </div>
             <Button type="submit" variant="outline">
               Save
             </Button>
-          </form>
+          </ToastForm>
         </CardContent>
       </Card>
 
-      <Card className="max-w-lg">
+      <Card>
         <CardHeader>
-          <CardTitle>Workspace schedule</CardTitle>
+          <CardTitle>Publishing schedule</CardTitle>
         </CardHeader>
         <CardContent>
-          <form action={saveWorkspaceSchedule} className="space-y-4">
-            <div className="space-y-2">
-              <Label>Cadence</Label>
-              <Select name="cadence" defaultValue={workspaceSchedule?.cadence ?? "weekly"}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="daily">Daily</SelectItem>
-                  <SelectItem value="weekly">Weekly</SelectItem>
-                  <SelectItem value="biweekly">Every 2 weeks</SelectItem>
-                  <SelectItem value="monthly">Monthly</SelectItem>
-                  <SelectItem value="none">No fixed cadence</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="threshold">Threshold</Label>
-              <Input id="threshold" type="number" name="threshold" min={1} defaultValue={workspaceSchedule?.threshold ?? 5} />
-            </div>
-            <Button type="submit" variant="outline">
-              Save
-            </Button>
-          </form>
+          <ScheduleForm
+            defaults={{
+              cadence: workspaceSchedule?.cadence ?? "weekly",
+              threshold: workspaceSchedule?.threshold ?? null,
+              hour: workspaceSchedule?.hour ?? 9,
+              dayOfWeek: workspaceSchedule?.dayOfWeek ?? null,
+              dayOfMonth: workspaceSchedule?.dayOfMonth ?? null,
+            }}
+          />
         </CardContent>
       </Card>
     </div>

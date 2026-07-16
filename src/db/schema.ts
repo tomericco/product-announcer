@@ -1,6 +1,14 @@
 import { pgTable, pgEnum, uuid, text, timestamp, primaryKey, integer, jsonb, uniqueIndex, boolean } from "drizzle-orm/pg-core";
 
-export type Persona = { name: string; usage: string; deliveredValue: string };
+// A persona in a tenant's brand profile is either a live reference to a seeded
+// system persona (resolved against `system_personas` at read time) or a
+// self-contained custom persona the user wrote.
+export type SystemPersonaRef = { type: "system"; key: string };
+export type CustomPersona = { type: "custom"; name: string; brief: string };
+export type PersonaRef = SystemPersonaRef | CustomPersona;
+
+// The flattened shape consumed by the generation prompt and the settings UI.
+export type ResolvedPersona = { name: string; brief: string };
 
 export const tenantRoleEnum = pgEnum("tenant_role", ["owner", "member"]);
 
@@ -98,6 +106,13 @@ export const scheduleConfigs = pgTable("schedule_configs", {
     .references(() => tenants.id, { onDelete: "cascade" }),
   cadence: cadenceEnum("cadence").notNull().default("weekly"),
   threshold: integer("threshold"),
+  // Time-of-day (0-23, UTC) the scheduled update is generated. Applies to every
+  // cadence except "none".
+  hour: integer("hour").notNull().default(9),
+  // Weekday (0=Sunday … 6=Saturday) for the weekly cadence; null otherwise.
+  dayOfWeek: integer("day_of_week"),
+  // Calendar day (1-31) for the monthly cadence; null otherwise.
+  dayOfMonth: integer("day_of_month"),
   lastRunAt: timestamp("last_run_at", { withTimezone: true }),
   nextScheduledAt: timestamp("next_scheduled_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -115,9 +130,21 @@ export const brandProfiles = pgTable("brand_profiles", {
   dontList: text("dont_list").array().notNull().default([]),
   examplePhrases: text("example_phrases").array().notNull().default([]),
   industry: text("industry"),
-  userPersonas: jsonb("user_personas").$type<Persona[]>().notNull().default([]),
+  userPersonas: jsonb("user_personas").$type<PersonaRef[]>().notNull().default([]),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// Global, seeded catalog of built-in personas. Tenants reference these by `key`
+// from their brand profile; the brief steers how updates are written for them.
+export const systemPersonas = pgTable("system_personas", {
+  id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  key: text("key").notNull().unique(),
+  name: text("name").notNull(),
+  description: text("description").notNull(),
+  brief: text("brief").notNull(),
+  sortOrder: integer("sort_order").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const updates = pgTable("updates", {

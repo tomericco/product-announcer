@@ -1,9 +1,10 @@
 import { and, eq } from "drizzle-orm";
 import { db as defaultDb } from "../db";
-import { repos, scheduleConfigs, tenants, webhookConfigs, updates } from "../db/schema";
+import { repos, scheduleConfigs, tenants, webhookConfigs, updates, systemPersonas } from "../db/schema";
 import { getPendingChangeItems, claimBatchAndCreateUpdate } from "./change-item-batch";
 import { generateUpdateDraft } from "./generation";
 import { getOrCreateBrandProfile } from "./brand-profile";
+import { resolvePersonaRefs } from "./personas";
 import { shouldTriggerRun, advanceNextScheduledAt, type Cadence } from "./scheduler-decision";
 import { dispatchWebhookForUpdate } from "./webhook-delivery";
 
@@ -26,13 +27,15 @@ export async function runBatchForWorkspace(
 
   const brandProfile = await getOrCreateBrandProfile(tenantId, database);
   const reposById = await reposByIdForTenant(tenantId, database);
+  const catalog = await database.select().from(systemPersonas);
+  const personas = resolvePersonaRefs(brandProfile.userPersonas, catalog);
 
   let draft;
   try {
-    draft = await generateUpdateDraft(pending, brandProfile, reposById);
+    draft = await generateUpdateDraft(pending, brandProfile, reposById, personas);
   } catch {
     try {
-      draft = await generateUpdateDraft(pending, brandProfile, reposById);
+      draft = await generateUpdateDraft(pending, brandProfile, reposById, personas);
     } catch {
       // Both attempts failed. Leave the batch's items pending — they roll into
       // the next scheduled/threshold/manual run automatically.

@@ -31,7 +31,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
 
   return (
     <div className="flex min-h-screen">
-      <aside className="flex w-60 shrink-0 flex-col gap-1 border-r p-3">
+      <aside className="sticky top-0 flex h-screen w-60 shrink-0 flex-col gap-1 self-start overflow-y-auto border-r p-3">
         <DropdownMenu>
           <DropdownMenuTrigger render={<Button variant="ghost" className="w-full justify-between font-semibold" />}>
             {tenant?.name ?? "Workspace"}
@@ -54,7 +54,9 @@ export default async function DashboardLayout({ children }: { children: React.Re
 
         <div className="mt-auto px-2 pt-3 text-xs text-muted-foreground">{session.user.email}</div>
       </aside>
-      <main className="flex-1 p-8">{children}</main>
+      <main className="flex flex-1 flex-col p-8">
+        <div className="mx-auto flex w-full max-w-4xl flex-1 flex-col">{children}</div>
+      </main>
     </div>
   );
 }

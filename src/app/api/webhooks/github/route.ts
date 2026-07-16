@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { verifyGithubSignature } from "@/lib/github-webhook";
 import { ingestMergedPullRequest } from "@/lib/ingest-pull-request";
 import { ingestPush } from "@/lib/ingest-push";
-import { getGithubApp } from "@/lib/github";
+import { getCommitDiff } from "@/lib/github";
 
 export async function POST(request: NextRequest) {
   const rawBody = await request.text();
@@ -50,15 +50,7 @@ export async function POST(request: NextRequest) {
             timestamp: c.timestamp,
           })),
         },
-        async (owner, repoName, sha) => {
-          const installationOctokit = await getGithubApp().getInstallationOctokit(Number(installationId));
-          const { data: commit } = await installationOctokit.rest.repos.getCommit({
-            owner,
-            repo: repoName,
-            ref: sha,
-          });
-          return (commit.files ?? []).map((f) => f.patch ?? "").join("\n");
-        }
+        (owner, repoName, sha) => getCommitDiff(installationId, `${owner}/${repoName}`, sha)
       );
     }
   } catch (error) {
