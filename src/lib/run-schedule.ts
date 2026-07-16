@@ -1,10 +1,11 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db as defaultDb } from "../db";
-import { repos, scheduleConfigs } from "../db/schema";
+import { repos, scheduleConfigs, tenants, webhookConfigs, updates } from "../db/schema";
 import { getPendingChangeItems, claimBatchAndCreateUpdate } from "./change-item-batch";
 import { generateUpdateDraft } from "./generation";
 import { getOrCreateBrandProfile } from "./brand-profile";
 import { shouldTriggerRun, advanceNextScheduledAt, type Cadence } from "./scheduler-decision";
+import { dispatchWebhookForUpdate } from "./webhook-delivery";
 
 type ChangeItemRow = Awaited<ReturnType<typeof getPendingChangeItems>>[number];
 
@@ -43,8 +44,27 @@ export async function runBatchForWorkspace(
     { tenantId, changeItemIds: pending.map((p) => p.id), draft },
     database
   );
+  if (!update) return false;
 
-  return update !== null;
+  // Auto-publish: only when the workspace opted in AND an active webhook
+  // exists — otherwise the update stays a draft for review (a publish with no
+  // delivery would go nowhere).
+  const [tenant] = await database.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1);
+  const [activeWebhook] = await database
+    .select()
+    .from(webhookConfigs)
+    .where(and(eq(webhookConfigs.tenantId, tenantId), eq(webhookConfigs.active, true)))
+    .limit(1);
+
+  if (tenant?.autoPublish && activeWebhook) {
+    await database
+      .update(updates)
+      .set({ status: "published", publishedAt: new Date() })
+      .where(eq(updates.id, update.id));
+    await dispatchWebhookForUpdate(update.id, database);
+  }
+
+  return true;
 }
 
 export async function runSchedulerTick(now: Date, database: typeof defaultDb = defaultDb): Promise<void> {
