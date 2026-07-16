@@ -3,10 +3,18 @@ import { eq } from "drizzle-orm";
 import { db } from "../../src/db";
 import { tenants, repos, changeItems } from "../../src/db/schema";
 import { importSelectedCommits } from "../../src/lib/import-commits";
+import type { EnrichChangeItem } from "../../src/lib/enrich-change-item";
 
 const NAME = "Import Commits Test Tenant";
 
 describe("importSelectedCommits", () => {
+  const fakeEnrich: EnrichChangeItem = async (input) => ({
+    userFacing: input.commitMessage !== "chore: lint",
+    impactSummary: input.commitMessage !== "chore: lint" ? "does a user thing" : null,
+    suggestedCategory: input.commitMessage !== "chore: lint" ? "improved" : null,
+    confidence: 0.7,
+  });
+
   afterEach(async () => {
     await db.delete(tenants).where(eq(tenants.name, NAME));
   });
@@ -35,10 +43,11 @@ describe("importSelectedCommits", () => {
         tenantId: tenant.id,
         selections: [
           { repoId: repo.id, sha: "aaa111", message: "fix timeout", url: "https://x/aaa111", committedAt: "2026-07-01T00:00:00Z" },
-          { repoId: repo.id, sha: "bbb222", message: "tweak logs", url: "https://x/bbb222", committedAt: "2026-07-02T00:00:00Z" },
+          { repoId: repo.id, sha: "bbb222", message: "chore: lint", url: "https://x/bbb222", committedAt: "2026-07-02T00:00:00Z" },
         ],
       },
-      getCommitDiff
+      getCommitDiff,
+      fakeEnrich
     );
 
     expect(result.importedCount).toBe(2);
@@ -48,6 +57,16 @@ describe("importSelectedCommits", () => {
     expect(items[0]).toMatchObject({ sourceType: "commit", status: "pending" });
     expect(items.every((i) => i.diff?.includes("added a line"))).toBe(true);
     expect(getCommitDiff).toHaveBeenCalledTimes(2);
+    const facing = items.find((i) => i.commitSha === "aaa111")!;
+    const nonFacing = items.find((i) => i.commitSha === "bbb222")!;
+    expect(facing.userFacing).toBe(true);
+    expect(facing.impactSummary).toBe("does a user thing");
+    expect(facing.suggestedCategory).toBe("improved");
+    expect(facing.enrichmentConfidence).toBeCloseTo(0.7);
+    expect(facing.enrichedAt).toBeInstanceOf(Date);
+    expect(nonFacing.userFacing).toBe(false);
+    expect(nonFacing.impactSummary).toBeNull();
+    expect(nonFacing.suggestedCategory).toBeNull();
   });
 
   it("is idempotent: re-importing an already-imported commit inserts nothing", async () => {
@@ -57,8 +76,8 @@ describe("importSelectedCommits", () => {
       { repoId: repo.id, sha: "aaa111", message: "fix", url: "https://x/aaa111", committedAt: "2026-07-01T00:00:00Z" },
     ];
 
-    const first = await importSelectedCommits({ tenantId: tenant.id, selections }, getCommitDiff);
-    const second = await importSelectedCommits({ tenantId: tenant.id, selections }, getCommitDiff);
+    const first = await importSelectedCommits({ tenantId: tenant.id, selections }, getCommitDiff, fakeEnrich);
+    const second = await importSelectedCommits({ tenantId: tenant.id, selections }, getCommitDiff, fakeEnrich);
 
     expect(first.importedCount).toBe(1);
     expect(second.importedCount).toBe(0);
@@ -78,7 +97,8 @@ describe("importSelectedCommits", () => {
           { repoId: repo.id, sha: "aaa111", message: "fix", url: "https://x/aaa111", committedAt: null },
         ],
       },
-      getCommitDiff
+      getCommitDiff,
+      fakeEnrich
     );
 
     expect(result.importedCount).toBe(0);
