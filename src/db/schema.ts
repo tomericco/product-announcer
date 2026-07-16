@@ -1,4 +1,4 @@
-import { pgTable, pgEnum, uuid, text, timestamp, primaryKey, integer, jsonb, uniqueIndex, boolean } from "drizzle-orm/pg-core";
+import { pgTable, pgEnum, uuid, text, timestamp, primaryKey, integer, jsonb, uniqueIndex, boolean, real } from "drizzle-orm/pg-core";
 
 // A persona in a tenant's brand profile is either a live reference to a seeded
 // system persona (resolved against `system_personas` at read time) or a
@@ -46,6 +46,9 @@ export const tenantMembers = pgTable(
 
 export const sourceTypeEnum = pgEnum("source_type", ["pr", "commit"]);
 export const changeItemStatusEnum = pgEnum("change_item_status", ["pending", "batched", "excluded"]);
+export const cadenceEnum = pgEnum("cadence", ["daily", "weekly", "biweekly", "monthly", "none"]);
+export const updateStatusEnum = pgEnum("update_status", ["draft", "approved", "published", "rejected"]);
+export const updateCategoryEnum = pgEnum("update_category", ["new", "improved", "fixed"]);
 
 export const repos = pgTable("repos", {
   id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
@@ -87,16 +90,18 @@ export const changeItems = pgTable(
     commitUrl: text("commit_url"),
     committedAt: timestamp("committed_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    // enrichment (sub-project A): classifier output, null until enriched
+    userFacing: boolean("user_facing"),
+    impactSummary: text("impact_summary"),
+    suggestedCategory: updateCategoryEnum("suggested_category"),
+    enrichmentConfidence: real("enrichment_confidence"),
+    enrichedAt: timestamp("enriched_at", { withTimezone: true }),
   },
   (table) => [
     uniqueIndex("change_items_repo_pr_unique").on(table.repoId, table.prNumber),
     uniqueIndex("change_items_repo_commit_unique").on(table.repoId, table.commitSha),
   ]
 );
-
-export const cadenceEnum = pgEnum("cadence", ["daily", "weekly", "biweekly", "monthly", "none"]);
-export const updateStatusEnum = pgEnum("update_status", ["draft", "approved", "published", "rejected"]);
-export const updateCategoryEnum = pgEnum("update_category", ["new", "improved", "fixed"]);
 
 export const scheduleConfigs = pgTable("schedule_configs", {
   id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
