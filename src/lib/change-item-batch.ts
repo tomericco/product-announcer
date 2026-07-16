@@ -72,3 +72,15 @@ export async function claimBatchAndCreateUpdate(
     return update;
   });
 }
+
+/**
+ * The distinct, non-null `suggestedCategory` values across a batch of change items,
+ * in first-seen order. Feeds category-aware example selection.
+ */
+export function batchCategories(items: { suggestedCategory: string | null }[]): string[] {
+  const seen = new Set<string>();
+  for (const item of items) {
+    if (item.suggestedCategory !== null) seen.add(item.suggestedCategory);
+  }
+  return [...seen];
+}

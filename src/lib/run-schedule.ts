@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { db as defaultDb } from "../db";
 import { repos, scheduleConfigs, tenants, webhookConfigs, updates, systemPersonas, systemUpdateExamples } from "../db/schema";
-import { getPendingChangeItems, getBatchableChangeItems, claimBatchAndCreateUpdate } from "./change-item-batch";
+import { getPendingChangeItems, getBatchableChangeItems, claimBatchAndCreateUpdate, batchCategories } from "./change-item-batch";
 import { generateUpdateDraft } from "./generation";
 import { getOrCreateBrandProfile } from "./brand-profile";
 import { resolvePersonaRefs, systemPersonaKeys } from "./personas";
@@ -35,6 +35,7 @@ export async function runBatchForWorkspace(
   const examples = selectExamples(allExamples, {
     industry: brandProfile.industry,
     personaKeys: systemPersonaKeys(brandProfile.userPersonas),
+    categories: batchCategories(pending),
   });
 
   let draft;

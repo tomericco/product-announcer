@@ -2,7 +2,12 @@ import { describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../src/db";
 import { tenants, repos, changeItems, updates } from "../../src/db/schema";
-import { getPendingChangeItems, getBatchableChangeItems, claimBatchAndCreateUpdate } from "../../src/lib/change-item-batch";
+import {
+  getPendingChangeItems,
+  getBatchableChangeItems,
+  claimBatchAndCreateUpdate,
+  batchCategories,
+} from "../../src/lib/change-item-batch";
 
 describe("change-item-batch", () => {
   afterEach(async () => {
@@ -109,5 +114,22 @@ describe("change-item-batch", () => {
     expect(update).toBeNull();
     const allUpdates = await db.select().from(updates).where(eq(updates.tenantId, tenant.id));
     expect(allUpdates).toHaveLength(0);
+  });
+});
+
+describe("batchCategories", () => {
+  it("returns the distinct non-null suggested categories in first-seen order", () => {
+    const items = [
+      { suggestedCategory: "new" },
+      { suggestedCategory: null },
+      { suggestedCategory: "improved" },
+      { suggestedCategory: "new" },
+    ];
+    expect(batchCategories(items)).toEqual(["new", "improved"]);
+  });
+
+  it("returns an empty array when there are no categories", () => {
+    expect(batchCategories([])).toEqual([]);
+    expect(batchCategories([{ suggestedCategory: null }])).toEqual([]);
   });
 });
