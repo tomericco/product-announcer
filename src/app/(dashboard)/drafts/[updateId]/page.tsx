@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { db } from "@/db";
 import { updates } from "@/db/schema";
 import { requireSession } from "@/lib/session";
+import { reviewStatusLabel } from "@/lib/review-status";
 import { saveDraft, approveDraft, rejectDraft } from "../actions";
 import { PreviewDialog } from "./preview-dialog";
 import { Button } from "@/components/ui/button";
@@ -30,6 +31,19 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ up
 
   return (
     <div className="space-y-8">
+      {reviewStatusLabel(update.reviewStatus) && (
+        <div className="rounded-lg border border-border p-4">
+          <p className="text-sm font-medium">{reviewStatusLabel(update.reviewStatus)}</p>
+          {update.reviewStatus === "failed" && update.reviewIssues.length > 0 && (
+            <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-muted-foreground">
+              {update.reviewIssues.map((issue, i) => (
+                <li key={i}>{issue}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
       <form action={saveDraft} className="space-y-4">
         <input type="hidden" name="updateId" value={update.id} />
         <div className="space-y-2">

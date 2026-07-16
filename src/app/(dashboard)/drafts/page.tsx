@@ -7,6 +7,7 @@ import { requireSession } from "@/lib/session";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { reviewStatusLabel } from "@/lib/review-status";
 import {
   EmptyState,
   EmptyStateIcon,
@@ -55,7 +56,14 @@ export default async function DraftsPage() {
               <Link href={`/drafts/${d.id}`} className="font-medium hover:underline">
                 {d.title}
               </Link>
-              <Badge variant="secondary">{d.category}</Badge>
+              <div className="flex items-center gap-2">
+                {reviewStatusLabel(d.reviewStatus) && (
+                  <Badge variant={d.reviewStatus === "failed" ? "destructive" : "outline"}>
+                    {reviewStatusLabel(d.reviewStatus)}
+                  </Badge>
+                )}
+                <Badge variant="secondary">{d.category}</Badge>
+              </div>
             </CardContent>
           </Card>
         ))}
