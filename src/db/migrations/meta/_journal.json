@@ -50,6 +50,13 @@
       "when": 1784139601903,
       "tag": "0006_majestic_tusk",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1784188601428,
+      "tag": "0007_public_radioactive_man",
+      "breakpoints": true
     }
   ]
 }

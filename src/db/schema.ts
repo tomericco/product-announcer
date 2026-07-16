@@ -1,5 +1,7 @@
 import { pgTable, pgEnum, uuid, text, timestamp, primaryKey, integer, jsonb, uniqueIndex, boolean } from "drizzle-orm/pg-core";
 
+export type Persona = { name: string; usage: string; deliveredValue: string };
+
 export const tenantRoleEnum = pgEnum("tenant_role", ["owner", "member"]);
 
 export const tenants = pgTable("tenants", {
@@ -7,6 +9,7 @@ export const tenants = pgTable("tenants", {
   name: text("name").notNull(),
   githubInstallationId: text("github_installation_id"),
   onboardingCompletedAt: timestamp("onboarding_completed_at", { withTimezone: true }),
+  autoPublish: boolean("auto_publish").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -112,7 +115,7 @@ export const brandProfiles = pgTable("brand_profiles", {
   dontList: text("dont_list").array().notNull().default([]),
   examplePhrases: text("example_phrases").array().notNull().default([]),
   industry: text("industry"),
-  userPersonas: text("user_personas").array().notNull().default([]),
+  userPersonas: jsonb("user_personas").$type<Persona[]>().notNull().default([]),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
