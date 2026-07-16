@@ -7,7 +7,7 @@ vi.mock("ai", () => ({
 import { generateObject } from "ai";
 import { eq } from "drizzle-orm";
 import { db } from "../../src/db";
-import { tenants, repos, changeItems, updates, scheduleConfigs } from "../../src/db/schema";
+import { tenants, repos, changeItems, updates, scheduleConfigs, brandProfiles } from "../../src/db/schema";
 import { runBatchForWorkspace, runSchedulerTick, applyPostRunScheduleChoice } from "../../src/lib/run-schedule";
 import { getPendingChangeItems } from "../../src/lib/change-item-batch";
 import { advanceNextScheduledAt } from "../../src/lib/scheduler-decision";
@@ -109,6 +109,29 @@ describe("run-schedule (workspace-level)", () => {
     expect(await db.select().from(updates).where(eq(updates.tenantId, tenant.id))).toHaveLength(1);
     const [config] = await db.select().from(scheduleConfigs).where(eq(scheduleConfigs.tenantId, tenant.id));
     expect(config.nextScheduledAt).toEqual(future);
+  });
+
+  it("selects matching seeded examples and injects them into the generation prompt", async () => {
+    const { tenant, repoA } = await seed();
+    // Brand profile whose industry + system persona match the seeded devtools/developer examples.
+    await db.insert(brandProfiles).values({
+      tenantId: tenant.id,
+      industry: "Developer Tools",
+      userPersonas: [{ type: "system", key: "developer" }],
+    });
+    await db.insert(changeItems).values({
+      tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "a",
+    });
+    vi.mocked(generateObject).mockResolvedValue({
+      object: { title: "T", body: "B", category: "new" },
+    } as never);
+
+    const pending = await getPendingChangeItems(tenant.id);
+    await runBatchForWorkspace(tenant.id, pending);
+
+    const system = vi.mocked(generateObject).mock.calls.at(-1)![0].system as string;
+    expect(system).toContain("mirror their structure");
+    expect(system).toContain("Ship webhooks with the new Events API"); // seeded devtools-developer-new title
   });
 
   it("applyPostRunScheduleChoice('skip') advances the workspace schedule from its current value", async () => {
