@@ -4,13 +4,14 @@ import { repos, scheduleConfigs, tenants } from "@/db/schema";
 import { requireSession } from "@/lib/session";
 import { getGithubApp, listAccessibleRepos, listRepoBranches } from "@/lib/github";
 import { getOrCreateBrandProfile } from "@/lib/brand-profile";
-import { saveWorkspaceName, saveBrandProfile, saveWorkspaceSchedule, addSettingsRepos } from "./actions";
+import { saveWorkspaceName, saveAutoPublish, saveBrandProfile, saveWorkspaceSchedule, addSettingsRepos } from "./actions";
 import { RepoRow } from "./repo-row";
 import { PersonasEditor } from "./personas-editor";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -63,6 +64,27 @@ export default async function SettingsPage() {
         <CardContent>
           <form action={saveWorkspaceName} className="flex gap-2">
             <Input name="name" defaultValue={tenant?.name ?? ""} className="flex-1" />
+            <Button type="submit" variant="outline">
+              Save
+            </Button>
+          </form>
+        </CardContent>
+      </Card>
+
+      <Card className="max-w-lg">
+        <CardHeader>
+          <CardTitle>Auto-publish</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <form action={saveAutoPublish} className="space-y-3">
+            <label className="flex items-center gap-3 text-sm">
+              <Switch name="autoPublish" defaultChecked={tenant?.autoPublish ?? false} />
+              Publish generated updates automatically
+            </label>
+            <p className="text-sm text-muted-foreground">
+              When on, generated updates are published to your webhook immediately and skip the Drafts
+              review queue. Requires an active webhook — without one, updates still land in Drafts for review.
+            </p>
             <Button type="submit" variant="outline">
               Save
             </Button>

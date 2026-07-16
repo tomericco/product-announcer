@@ -29,6 +29,13 @@ export async function saveWorkspaceName(formData: FormData) {
   revalidatePath("/settings");
 }
 
+export async function saveAutoPublish(formData: FormData) {
+  const session = await requireSession();
+  const autoPublish = formData.get("autoPublish") === "on";
+  await db.update(tenants).set({ autoPublish }).where(eq(tenants.id, session.user.tenantId));
+  revalidatePath("/settings");
+}
+
 export async function addSettingsRepos(formData: FormData) {
   const session = await requireSession();
   const [tenant] = await db.select().from(tenants).where(eq(tenants.id, session.user.tenantId)).limit(1);
