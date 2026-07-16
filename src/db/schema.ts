@@ -48,6 +48,7 @@ export const sourceTypeEnum = pgEnum("source_type", ["pr", "commit"]);
 export const changeItemStatusEnum = pgEnum("change_item_status", ["pending", "batched", "excluded"]);
 export const cadenceEnum = pgEnum("cadence", ["daily", "weekly", "biweekly", "monthly", "none"]);
 export const updateStatusEnum = pgEnum("update_status", ["draft", "approved", "published", "rejected"]);
+export const reviewStatusEnum = pgEnum("review_status", ["passed", "revised", "failed", "error"]);
 export const updateCategoryEnum = pgEnum("update_category", ["new", "improved", "fixed"]);
 
 export const repos = pgTable("repos", {
@@ -180,6 +181,9 @@ export const updates = pgTable("updates", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   publishedAt: timestamp("published_at", { withTimezone: true }),
   editedBy: uuid("edited_by").references(() => users.id),
+  reviewStatus: reviewStatusEnum("review_status"),
+  reviewIssues: jsonb("review_issues").$type<string[]>().notNull().default([]),
+  reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
 });
 
 export const webhookDeliveryStatusEnum = pgEnum("webhook_delivery_status", ["pending", "success", "failed"]);

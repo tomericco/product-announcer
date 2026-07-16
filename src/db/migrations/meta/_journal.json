@@ -85,6 +85,13 @@
       "when": 1784222674282,
       "tag": "0011_dear_legion",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1784237732075,
+      "tag": "0012_hard_reavers",
+      "breakpoints": true
     }
   ]
 }
