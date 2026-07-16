@@ -10,6 +10,7 @@ import { advanceNextScheduledAt, type Cadence } from "@/lib/scheduler-decision";
 import { addSelectedRepos } from "@/lib/repo-sync";
 import { parseRepoSelections } from "@/lib/repo-selection-form";
 import { listRepoBranches } from "@/lib/github";
+import { parsePersonas } from "@/lib/persona-form";
 
 function splitCsv(value: FormDataEntryValue | null): string[] {
   if (!value || typeof value !== "string") return [];
@@ -59,7 +60,7 @@ export async function saveBrandProfile(formData: FormData) {
       tone: (formData.get("tone") as string) || null,
       readingLevel: (formData.get("readingLevel") as string) || null,
       industry: (formData.get("industry") as string) || null,
-      userPersonas: splitCsv(formData.get("userPersonas")),
+      userPersonas: parsePersonas(formData),
       doList: splitCsv(formData.get("doList")),
       dontList: splitCsv(formData.get("dontList")),
       updatedAt: new Date(),

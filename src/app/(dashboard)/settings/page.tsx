@@ -6,6 +6,7 @@ import { getGithubApp, listAccessibleRepos, listRepoBranches } from "@/lib/githu
 import { getOrCreateBrandProfile } from "@/lib/brand-profile";
 import { saveWorkspaceName, saveBrandProfile, saveWorkspaceSchedule, addSettingsRepos } from "./actions";
 import { RepoRow } from "./repo-row";
+import { PersonasEditor } from "./personas-editor";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -125,8 +126,8 @@ export default async function SettingsPage() {
               <Input id="industry" name="industry" defaultValue={brandProfile.industry ?? ""} />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="userPersonas">User personas (comma-separated)</Label>
-              <Input id="userPersonas" name="userPersonas" defaultValue={brandProfile.userPersonas.join(", ")} />
+              <Label>User personas</Label>
+              <PersonasEditor personas={brandProfile.userPersonas} />
             </div>
             <div className="space-y-2">
               <Label htmlFor="doList">Do (comma-separated)</Label>
