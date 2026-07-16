@@ -1,9 +1,10 @@
 import { generateObject } from "ai";
 import { z } from "zod";
-import type { changeItems, brandProfiles, ResolvedPersona } from "../db/schema";
+import type { changeItems, brandProfiles, ResolvedPersona, systemUpdateExamples } from "../db/schema";
 
 type ChangeItemRow = typeof changeItems.$inferSelect;
 type BrandProfileRow = typeof brandProfiles.$inferSelect;
+type ExampleRow = typeof systemUpdateExamples.$inferSelect;
 
 export const UpdateDraftSchema = z.object({
   title: z.string(),
@@ -55,7 +56,15 @@ export function serializeBatchForPrompt(
   return current;
 }
 
-function buildSystemPrompt(brandProfile: BrandProfileRow, personas: ResolvedPersona[]): string {
+function renderExample(example: ExampleRow): string {
+  return `Example (${example.category}):\nTitle: ${example.title}\nBody:\n${example.body}`;
+}
+
+function buildSystemPrompt(
+  brandProfile: BrandProfileRow,
+  personas: ResolvedPersona[],
+  examples: ExampleRow[]
+): string {
   const lines = [
     "You write concise, user-facing product update announcements.",
     brandProfile.industry ? `Industry: ${brandProfile.industry}.` : null,
@@ -70,21 +79,30 @@ function buildSystemPrompt(brandProfile: BrandProfileRow, personas: ResolvedPers
     brandProfile.dontList.length > 0 ? `Avoid: ${brandProfile.dontList.join("; ")}.` : null,
   ].filter((line): line is string => Boolean(line));
 
-  return lines.join(" ");
+  const base = lines.join(" ");
+  if (examples.length === 0) return base;
+
+  const block = [
+    "Here are example updates for a similar audience — mirror their structure, depth, and voice; do not reuse their wording or specifics:",
+    ...examples.map(renderExample),
+  ].join("\n\n");
+
+  return `${base}\n\n${block}`;
 }
 
 export async function generateUpdateDraft(
   items: ChangeItemRow[],
   brandProfile: BrandProfileRow,
   reposById: Map<string, string>,
-  personas: ResolvedPersona[] = []
+  personas: ResolvedPersona[] = [],
+  examples: ExampleRow[] = []
 ): Promise<UpdateDraft> {
   const batchText = serializeBatchForPrompt(items, reposById);
 
   const result = await generateObject({
     model: process.env.GENERATION_MODEL ?? "anthropic/claude-sonnet-4-5",
     schema: UpdateDraftSchema,
-    system: buildSystemPrompt(brandProfile, personas),
+    system: buildSystemPrompt(brandProfile, personas, examples),
     prompt: `Here are the changes to summarize into one product update. Format the body as Markdown (short paragraphs, and bullet lists where helpful):\n\n${batchText}`,
   });
 

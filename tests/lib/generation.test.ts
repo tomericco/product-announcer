@@ -110,4 +110,41 @@ describe("generateUpdateDraft", () => {
     expect(callArgs.prompt).toContain("acme/web");
     expect(callArgs.prompt).toContain("Add dark mode");
   });
+
+  it("injects an examples block into the system prompt when examples are provided", async () => {
+    vi.mocked(generateObject).mockResolvedValue({
+      object: { title: "x", body: "y", category: "new" },
+    } as never);
+
+    const items = [prItem()] as never;
+    const brandProfile = {
+      tone: null, readingLevel: null, doList: [], dontList: [], examplePhrases: [], industry: null, userPersonas: [],
+    } as never;
+    const examples = [
+      { id: "1", key: "devtools-developer-new", industry: "Developer Tools", personaKey: "developer", category: "improved", title: "Cursor pagination", body: "Use next_cursor.", sortOrder: 0, createdAt: new Date() },
+    ] as never;
+
+    await generateUpdateDraft(items, brandProfile, REPOS, [], examples);
+
+    const system = vi.mocked(generateObject).mock.calls.at(-1)![0].system as string;
+    expect(system).toContain("mirror their structure");
+    expect(system).toContain("Example (improved):");
+    expect(system).toContain("Cursor pagination");
+    expect(system).toContain("Use next_cursor.");
+  });
+
+  it("omits the examples block when no examples are provided", async () => {
+    vi.mocked(generateObject).mockResolvedValue({
+      object: { title: "x", body: "y", category: "new" },
+    } as never);
+    const brandProfile = {
+      tone: null, readingLevel: null, doList: [], dontList: [], examplePhrases: [], industry: null, userPersonas: [],
+    } as never;
+
+    await generateUpdateDraft([prItem()] as never, brandProfile, REPOS, []);
+
+    const system = vi.mocked(generateObject).mock.calls.at(-1)![0].system as string;
+    expect(system).not.toContain("Example (");
+    expect(system).not.toContain("mirror their structure");
+  });
 });
