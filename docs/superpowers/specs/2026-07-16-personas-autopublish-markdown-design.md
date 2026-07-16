@@ -7,7 +7,7 @@
 
 Three product enhancements, delivered together:
 
-1. **Structured user personas** — replace the flat comma-separated `userPersonas` (`text[]`) in the Brand Profile with a list of structured personas, each with a **name**, a **usage** description (how they should use the product), and a **value** description (what they get from it). The richer personas feed the AI generation prompt.
+1. **Structured user personas** — replace the flat comma-separated `userPersonas` (`text[]`) in the Brand Profile with a list of structured personas, each with a **name**, a **usage** description (how they should use the product), and a **deliveredValue** description (what they get from it). The richer personas feed the AI generation prompt.
 2. **Auto-publish workspace setting** — a toggle that publishes a generated update immediately (fires the webhook) and skips the Drafts review queue. When on but **no active webhook** exists, the update falls back to a normal draft (so nothing publishes with no delivery and no review).
 3. **Markdown draft editor** — the draft body is edited with a full markdown editor (toolbar + live preview) instead of a plain textarea; the in-app preview renders markdown; the AI generates markdown-formatted bodies.
 
@@ -33,10 +33,10 @@ userPersonas: jsonb("user_personas").$type<Persona[]>().notNull().default([]),
 where the shared type is:
 
 ```typescript
-export type Persona = { name: string; usage: string; value: string };
+export type Persona = { name: string; usage: string; deliveredValue: string };
 ```
 
-(`Persona` lives in `src/db/schema.ts` and is imported where needed.) `usage` = "how they should use the product"; `value` = "what they're getting from the product".
+(`Persona` lives in `src/db/schema.ts` and is imported where needed.) `usage` = "how they should use the product"; `deliveredValue` = "what they're getting from the product".
 
 ### Parsing helper
 
@@ -45,7 +45,7 @@ A pure `parsePersonas(formData: FormData): Persona[]` in `src/lib/persona-form.t
 ### Settings UI
 
 A client component `PersonasEditor` (`src/app/(dashboard)/settings/personas-editor.tsx`, `"use client"`) inside the Brand Profile card:
-- Renders one card per persona: a `name` `Input`, a `usage` `Textarea`, a `value` `Textarea`, and a **Remove** button.
+- Renders one card per persona: a `name` `Input`, a `usage` `Textarea`, a `deliveredValue` `Textarea`, and a **Remove** button.
 - An **Add persona** button appends an empty persona.
 - Holds the personas array in local state and serializes it into a hidden `<input name="personas">` (JSON) so `saveBrandProfile` receives it via `parsePersonas`.
 - Initialized from the saved `brandProfile.userPersonas`.
@@ -59,12 +59,12 @@ A client component `PersonasEditor` (`src/app/(dashboard)/settings/personas-edit
 ```typescript
 brandProfile.userPersonas.length > 0
   ? `Audience personas: ${brandProfile.userPersonas
-      .map((p) => `${p.name} — uses it to ${p.usage}; values ${p.value}`)
+      .map((p) => `${p.name} — uses it to ${p.usage}; values ${p.deliveredValue}`)
       .join(" ")}.`
   : null,
 ```
 
-(Empty `usage`/`value` are tolerated — the line still reads acceptably; the parse helper already dropped nameless personas.)
+(Empty `usage`/`deliveredValue` are tolerated — the line still reads acceptably; the parse helper already dropped nameless personas.)
 
 ---
 
