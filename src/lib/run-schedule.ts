@@ -8,6 +8,7 @@ import { resolvePersonaRefs, systemPersonaKeys } from "./personas";
 import { selectExamples } from "./select-examples";
 import { shouldTriggerRun, advanceNextScheduledAt, type Cadence } from "./scheduler-decision";
 import { dispatchWebhookForUpdate } from "./webhook-delivery";
+import { reviewAndReconcile } from "./review-draft";
 
 type ChangeItemRow = Awaited<ReturnType<typeof getPendingChangeItems>>[number];
 
@@ -51,15 +52,23 @@ export async function runBatchForWorkspace(
     }
   }
 
+  const review = await reviewAndReconcile(draft, brandProfile);
+
   const update = await claimBatchAndCreateUpdate(
-    { tenantId, changeItemIds: pending.map((p) => p.id), draft },
+    {
+      tenantId,
+      changeItemIds: pending.map((p) => p.id),
+      draft: review.finalDraft,
+      review: { status: review.status, issues: review.issues },
+    },
     database
   );
   if (!update) return false;
 
-  // Auto-publish: only when the workspace opted in AND an active webhook
-  // exists — otherwise the update stays a draft for review (a publish with no
-  // delivery would go nowhere).
+  // Auto-publish: only when the workspace opted in, an active webhook
+  // exists, AND the review passed/revised — otherwise the update stays a
+  // draft for review (a publish with no delivery would go nowhere, and a
+  // failed/errored review must never ship unattended).
   const [tenant] = await database.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1);
   const [activeWebhook] = await database
     .select()
@@ -67,7 +76,8 @@ export async function runBatchForWorkspace(
     .where(and(eq(webhookConfigs.tenantId, tenantId), eq(webhookConfigs.active, true)))
     .limit(1);
 
-  if (tenant?.autoPublish && activeWebhook) {
+  const reviewPassed = review.status === "passed" || review.status === "revised";
+  if (tenant?.autoPublish && activeWebhook && reviewPassed) {
     await database
       .update(updates)
       .set({ status: "published", publishedAt: new Date() })

@@ -1,8 +1,9 @@
-import { describe, it, expect, afterEach, vi } from "vitest";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 
 vi.mock("ai", () => ({
   generateObject: vi.fn(),
 }));
+vi.mock("../../src/lib/review-draft", () => ({ reviewAndReconcile: vi.fn() }));
 
 import { generateObject } from "ai";
 import { eq } from "drizzle-orm";
@@ -11,10 +12,14 @@ import { tenants, repos, changeItems, updates, scheduleConfigs, brandProfiles } 
 import { runBatchForWorkspace, runSchedulerTick, applyPostRunScheduleChoice } from "../../src/lib/run-schedule";
 import { getPendingChangeItems } from "../../src/lib/change-item-batch";
 import { advanceNextScheduledAt } from "../../src/lib/scheduler-decision";
+import { reviewAndReconcile } from "../../src/lib/review-draft";
 
 const TENANT = "Run Batch Test Tenant";
 
 describe("run-schedule (workspace-level)", () => {
+  beforeEach(() => {
+    vi.mocked(reviewAndReconcile).mockImplementation(async (draft) => ({ finalDraft: draft, status: "passed", issues: [] }));
+  });
   afterEach(async () => {
     await db.delete(tenants).where(eq(tenants.name, TENANT));
     vi.mocked(generateObject).mockReset();

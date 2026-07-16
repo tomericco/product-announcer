@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 
 vi.mock("ai", () => ({ generateObject: vi.fn() }));
+vi.mock("../../src/lib/review-draft", () => ({ reviewAndReconcile: vi.fn() }));
 
 import { generateObject } from "ai";
 import { eq } from "drizzle-orm";
@@ -8,12 +9,14 @@ import { db } from "../../src/db";
 import { tenants, repos, changeItems, updates, webhookConfigs, webhookDeliveries } from "../../src/db/schema";
 import { runBatchForWorkspace } from "../../src/lib/run-schedule";
 import { getPendingChangeItems } from "../../src/lib/change-item-batch";
+import { reviewAndReconcile } from "../../src/lib/review-draft";
 
 const NAME = "Auto Publish Test Tenant";
 
 describe("runBatchForWorkspace auto-publish", () => {
   beforeEach(() => {
     vi.stubGlobal("fetch", vi.fn());
+    vi.mocked(reviewAndReconcile).mockImplementation(async (draft) => ({ finalDraft: draft, status: "passed", issues: [] }));
   });
   afterEach(async () => {
     vi.unstubAllGlobals();
@@ -59,6 +62,34 @@ describe("runBatchForWorkspace auto-publish", () => {
 
     const [update] = await db.select().from(updates).where(eq(updates.tenantId, tenant.id));
     expect(update.status).toBe("draft");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("stays a draft (no publish) when the review fails, even with autoPublish + webhook", async () => {
+    const tenant = await seed(true);
+    await db.insert(webhookConfigs).values({ tenantId: tenant.id, url: "https://example.com/hook", secret: "s" });
+    vi.mocked(reviewAndReconcile).mockImplementation(async (draft) => ({ finalDraft: draft, status: "failed", issues: ["too salesy"] }));
+
+    const pending = await getPendingChangeItems(tenant.id);
+    await runBatchForWorkspace(tenant.id, pending);
+
+    const [update] = await db.select().from(updates).where(eq(updates.tenantId, tenant.id));
+    expect(update.status).toBe("draft");
+    expect(update.reviewStatus).toBe("failed");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("stays a draft (no publish) when the review errors", async () => {
+    const tenant = await seed(true);
+    await db.insert(webhookConfigs).values({ tenantId: tenant.id, url: "https://example.com/hook", secret: "s" });
+    vi.mocked(reviewAndReconcile).mockImplementation(async (draft) => ({ finalDraft: draft, status: "error", issues: [] }));
+
+    const pending = await getPendingChangeItems(tenant.id);
+    await runBatchForWorkspace(tenant.id, pending);
+
+    const [update] = await db.select().from(updates).where(eq(updates.tenantId, tenant.id));
+    expect(update.status).toBe("draft");
+    expect(update.reviewStatus).toBe("error");
     expect(fetch).not.toHaveBeenCalled();
   });
 });
