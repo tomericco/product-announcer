@@ -54,6 +54,29 @@ describe("runBatchForWorkspace auto-publish", () => {
     expect(deliveries).toHaveLength(1);
   });
 
+  it("publishes the revised draft (not the original) when the review revises it, and still fires the webhook", async () => {
+    const tenant = await seed(true);
+    await db.insert(webhookConfigs).values({ tenantId: tenant.id, url: "https://example.com/hook", secret: "s" });
+    vi.mocked(fetch).mockResolvedValue({ ok: true } as Response);
+    vi.mocked(reviewAndReconcile).mockImplementation(async () => ({
+      finalDraft: { title: "Revised title", body: "Revised body", category: "new" },
+      status: "revised",
+      issues: [],
+    }));
+
+    const pending = await getPendingChangeItems(tenant.id);
+    await runBatchForWorkspace(tenant.id, pending);
+
+    const [update] = await db.select().from(updates).where(eq(updates.tenantId, tenant.id));
+    expect(update.status).toBe("published");
+    expect(update.reviewStatus).toBe("revised");
+    expect(update.title).toBe("Revised title");
+    expect(update.body).toBe("Revised body");
+    const deliveries = await db.select().from(webhookDeliveries).where(eq(webhookDeliveries.updateId, update.id));
+    expect(deliveries).toHaveLength(1);
+    expect(fetch).toHaveBeenCalled();
+  });
+
   it("stays a draft when autoPublish is on but there is no active webhook", async () => {
     const tenant = await seed(true);
 
