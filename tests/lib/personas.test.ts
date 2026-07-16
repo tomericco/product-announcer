@@ -39,6 +39,19 @@ describe("resolvePersonaRefs", () => {
       { name: "Developer", brief: "cares about APIs" },
     ]);
   });
+
+  it("carries the system persona description for system refs and leaves it unset for custom refs", () => {
+    const catalogWithDesc = [
+      { key: "developer", name: "Developer", brief: "cares about APIs", description: "Engineers who integrate" },
+    ];
+    expect(resolvePersonaRefs([{ type: "system", key: "developer" }], catalogWithDesc)).toEqual([
+      { name: "Developer", brief: "cares about APIs", description: "Engineers who integrate" },
+    ]);
+
+    const [custom] = resolvePersonaRefs([{ type: "custom", name: "Ops", brief: "runs infra" }], catalogWithDesc);
+    expect(custom).toEqual({ name: "Ops", brief: "runs infra" });
+    expect(custom.description).toBeUndefined();
+  });
 });
 
 describe("systemPersonaKeys", () => {

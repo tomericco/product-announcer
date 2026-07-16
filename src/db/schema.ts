@@ -8,7 +8,7 @@ export type CustomPersona = { type: "custom"; name: string; brief: string };
 export type PersonaRef = SystemPersonaRef | CustomPersona;
 
 // The flattened shape consumed by the generation prompt and the settings UI.
-export type ResolvedPersona = { name: string; brief: string };
+export type ResolvedPersona = { name: string; brief: string; description?: string };
 
 export const tenantRoleEnum = pgEnum("tenant_role", ["owner", "member"]);
 

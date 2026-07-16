@@ -1,6 +1,6 @@
 import type { PersonaRef, ResolvedPersona } from "@/db/schema";
 
-type CatalogEntry = { key: string; name: string; brief: string };
+type CatalogEntry = { key: string; name: string; brief: string; description?: string };
 
 /**
  * Flattens a brand profile's persona references into the `{ name, brief }` shape
@@ -17,7 +17,7 @@ export function resolvePersonaRefs(refs: PersonaRef[], catalog: CatalogEntry[]):
       if (ref.name.trim().length > 0) resolved.push({ name: ref.name, brief: ref.brief });
     } else {
       const sys = byKey.get(ref.key);
-      if (sys) resolved.push({ name: sys.name, brief: sys.brief });
+      if (sys) resolved.push({ name: sys.name, brief: sys.brief, description: sys.description });
     }
   }
 
