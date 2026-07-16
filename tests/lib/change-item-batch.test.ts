@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../src/db";
 import { tenants, repos, changeItems, updates } from "../../src/db/schema";
-import { getPendingChangeItems, claimBatchAndCreateUpdate } from "../../src/lib/change-item-batch";
+import { getPendingChangeItems, getBatchableChangeItems, claimBatchAndCreateUpdate } from "../../src/lib/change-item-batch";
 
 describe("change-item-batch", () => {
   afterEach(async () => {
@@ -33,6 +33,21 @@ describe("change-item-batch", () => {
     const pending = await getPendingChangeItems(tenant.id);
     expect(pending).toHaveLength(2);
     expect(pending.map((p) => p.prTitle).sort()).toEqual(["a", "b"]);
+  });
+
+  it("getBatchableChangeItems excludes non-facing items but keeps facing and un-enriched (null)", async () => {
+    const { tenant, repoA } = await seed();
+    await db.insert(changeItems).values([
+      { tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "facing", userFacing: true },
+      { tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "pending", prNumber: 2, prTitle: "non-facing", userFacing: false },
+      { tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "pending", prNumber: 3, prTitle: "unenriched" }, // userFacing null
+    ]);
+
+    const batchable = await getBatchableChangeItems(tenant.id);
+    expect(batchable.map((p) => p.prTitle).sort()).toEqual(["facing", "unenriched"]);
+
+    const all = await getPendingChangeItems(tenant.id);
+    expect(all.map((p) => p.prTitle).sort()).toEqual(["facing", "non-facing", "unenriched"]);
   });
 
   it("claimBatchAndCreateUpdate creates one cross-repo Update (repoId null) and marks items batched", async () => {

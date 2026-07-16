@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { db as defaultDb } from "../db";
 import { repos, scheduleConfigs, tenants, webhookConfigs, updates, systemPersonas } from "../db/schema";
-import { getPendingChangeItems, claimBatchAndCreateUpdate } from "./change-item-batch";
+import { getPendingChangeItems, getBatchableChangeItems, claimBatchAndCreateUpdate } from "./change-item-batch";
 import { generateUpdateDraft } from "./generation";
 import { getOrCreateBrandProfile } from "./brand-profile";
 import { resolvePersonaRefs } from "./personas";
@@ -75,7 +75,7 @@ export async function runSchedulerTick(now: Date, database: typeof defaultDb = d
 
   for (const config of configs) {
     try {
-      const pending = await getPendingChangeItems(config.tenantId, database);
+      const pending = await getBatchableChangeItems(config.tenantId, database);
 
       const reason = shouldTriggerRun(
         {

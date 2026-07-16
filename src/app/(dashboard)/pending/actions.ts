@@ -6,7 +6,7 @@ import { revalidatePath } from "next/cache";
 import { db } from "@/db";
 import { changeItems, repos, scheduleConfigs } from "@/db/schema";
 import { requireSession } from "@/lib/session";
-import { getPendingChangeItems } from "@/lib/change-item-batch";
+import { getBatchableChangeItems } from "@/lib/change-item-batch";
 import { runBatchForWorkspace, applyPostRunScheduleChoice } from "@/lib/run-schedule";
 import { getCommitDiff, listRepoCommits } from "@/lib/github";
 import { importSelectedCommits, type CommitSelection } from "@/lib/import-commits";
@@ -28,7 +28,7 @@ export async function dropChangeItem(formData: FormData) {
 export async function runNow() {
   const session = await requireSession();
 
-  const pending = await getPendingChangeItems(session.user.tenantId);
+  const pending = await getBatchableChangeItems(session.user.tenantId);
   if (pending.length === 0) {
     revalidatePath("/pending");
     return;

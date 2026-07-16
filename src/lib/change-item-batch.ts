@@ -1,4 +1,4 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull, or } from "drizzle-orm";
 import { db as defaultDb } from "../db";
 import { changeItems, updates } from "../db/schema";
 
@@ -13,6 +13,29 @@ export async function getPendingChangeItems(
     .select()
     .from(changeItems)
     .where(and(eq(changeItems.tenantId, tenantId), eq(changeItems.status, "pending")))
+    .orderBy(changeItems.createdAt);
+}
+
+/**
+ * Pending items eligible for a generation batch: excludes items the enricher
+ * classified as non-user-facing (`user_facing = false`). Keeps `true` and
+ * `null` — a null means "not yet enriched" and is treated as user-facing so a
+ * classifier gap never silently drops a change.
+ */
+export async function getBatchableChangeItems(
+  tenantId: string,
+  database: typeof defaultDb = defaultDb
+): Promise<ChangeItemRow[]> {
+  return database
+    .select()
+    .from(changeItems)
+    .where(
+      and(
+        eq(changeItems.tenantId, tenantId),
+        eq(changeItems.status, "pending"),
+        or(isNull(changeItems.userFacing), eq(changeItems.userFacing, true))
+      )
+    )
     .orderBy(changeItems.createdAt);
 }
 
