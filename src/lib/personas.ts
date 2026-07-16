@@ -23,3 +23,12 @@ export function resolvePersonaRefs(refs: PersonaRef[], catalog: CatalogEntry[]):
 
   return resolved;
 }
+
+/**
+ * The `key` of each system persona ref on a brand profile, in order. Custom
+ * personas have no key and are ignored — only system personas participate in
+ * example matching.
+ */
+export function systemPersonaKeys(refs: PersonaRef[]): string[] {
+  return refs.filter((r): r is Extract<PersonaRef, { type: "system" }> => r.type === "system").map((r) => r.key);
+}

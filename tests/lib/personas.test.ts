@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolvePersonaRefs } from "../../src/lib/personas";
+import { resolvePersonaRefs, systemPersonaKeys } from "../../src/lib/personas";
 
 const catalog = [
   { key: "developer", name: "Developer", brief: "cares about APIs" },
@@ -38,5 +38,21 @@ describe("resolvePersonaRefs", () => {
       { name: "Founders", brief: "big picture" },
       { name: "Developer", brief: "cares about APIs" },
     ]);
+  });
+});
+
+describe("systemPersonaKeys", () => {
+  it("returns keys of system refs and ignores custom refs", () => {
+    const keys = systemPersonaKeys([
+      { type: "system", key: "developer" },
+      { type: "custom", name: "Ops", brief: "runs infra" },
+      { type: "system", key: "product-manager" },
+    ]);
+    expect(keys).toEqual(["developer", "product-manager"]);
+  });
+
+  it("returns an empty array for no refs or only custom refs", () => {
+    expect(systemPersonaKeys([])).toEqual([]);
+    expect(systemPersonaKeys([{ type: "custom", name: "Ops", brief: "x" }])).toEqual([]);
   });
 });
