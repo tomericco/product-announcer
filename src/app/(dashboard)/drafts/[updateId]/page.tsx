@@ -7,8 +7,8 @@ import { saveDraft, approveDraft, rejectDraft } from "../actions";
 import { PreviewDialog } from "./preview-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
+import { DraftBodyEditor } from "./draft-body-editor";
 import {
   Select,
   SelectContent,
@@ -37,8 +37,8 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ up
           <Input id="title" name="title" defaultValue={update.title} />
         </div>
         <div className="space-y-2">
-          <Label htmlFor="body">Body</Label>
-          <Textarea id="body" name="body" defaultValue={update.body} rows={8} />
+          <Label>Body</Label>
+          <DraftBodyEditor defaultValue={update.body} />
         </div>
         <div className="space-y-2">
           <Label>Category</Label>

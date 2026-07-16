@@ -1,5 +1,6 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -11,6 +12,10 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+
+const Markdown = dynamic(() => import("@uiw/react-md-editor").then((m) => m.default.Markdown), {
+  ssr: false,
+});
 
 export function PreviewDialog({
   updateId,
@@ -37,7 +42,9 @@ export function PreviewDialog({
             {category}
           </Badge>
           <h2 className="text-lg font-semibold">{title}</h2>
-          <p className="whitespace-pre-wrap text-sm text-muted-foreground">{body}</p>
+          <div data-color-mode="light" className="text-sm">
+            <Markdown source={body} />
+          </div>
         </div>
         <DialogFooter>
           <DialogClose render={<Button variant="outline">Close</Button>} />

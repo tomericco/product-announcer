@@ -84,7 +84,7 @@ export async function generateUpdateDraft(
     model: process.env.GENERATION_MODEL ?? "anthropic/claude-sonnet-4-5",
     schema: UpdateDraftSchema,
     system: buildSystemPrompt(brandProfile),
-    prompt: `Here are the changes to summarize into one product update:\n\n${batchText}`,
+    prompt: `Here are the changes to summarize into one product update. Format the body as Markdown (short paragraphs, and bullet lists where helpful):\n\n${batchText}`,
   });
 
   return result.object;
