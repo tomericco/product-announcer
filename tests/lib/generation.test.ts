@@ -93,7 +93,9 @@ describe("generateUpdateDraft", () => {
       dontList: ["no jargon"],
       examplePhrases: [],
       industry: "B2B SaaS",
-      userPersonas: ["engineering managers"],
+      userPersonas: [
+        { name: "engineering managers", usage: "track shipped work", deliveredValue: "know what changed" },
+      ],
     } as never;
 
     const draft = await generateUpdateDraft(items, brandProfile, REPOS);
@@ -102,6 +104,7 @@ describe("generateUpdateDraft", () => {
 
     const callArgs = vi.mocked(generateObject).mock.calls[0][0];
     expect(callArgs.system).toContain("Industry: B2B SaaS.");
+    expect(callArgs.system).toContain("Audience personas: engineering managers");
     expect(callArgs.prompt).toContain("acme/web");
     expect(callArgs.prompt).toContain("Add dark mode");
   });

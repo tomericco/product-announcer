@@ -59,7 +59,11 @@ function buildSystemPrompt(brandProfile: BrandProfileRow): string {
   const lines = [
     "You write concise, user-facing product update announcements.",
     brandProfile.industry ? `Industry: ${brandProfile.industry}.` : null,
-    brandProfile.userPersonas.length > 0 ? `Audience: ${brandProfile.userPersonas.join(", ")}.` : null,
+    brandProfile.userPersonas.length > 0
+      ? `Audience personas: ${brandProfile.userPersonas
+          .map((p) => `${p.name} — uses it to ${p.usage}; values ${p.deliveredValue}`)
+          .join(" ")}.`
+      : null,
     brandProfile.tone ? `Tone: ${brandProfile.tone}.` : null,
     brandProfile.readingLevel ? `Reading level: ${brandProfile.readingLevel}.` : null,
     brandProfile.doList.length > 0 ? `Do: ${brandProfile.doList.join("; ")}.` : null,
