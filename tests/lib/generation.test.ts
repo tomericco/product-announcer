@@ -1,5 +1,4 @@
 import { describe, it, expect, vi } from "vitest";
-import { serializeBatchForPrompt } from "../../src/lib/generation";
 
 type FakeChangeItem = {
   id: string;
@@ -47,30 +46,6 @@ const REPOS = new Map([
   ["repo_web", "acme/web"],
   ["repo_api", "acme/api"],
 ]);
-
-describe("serializeBatchForPrompt", () => {
-  it("prefixes each item with its source repo", () => {
-    const result = serializeBatchForPrompt([prItem(), commitItem()] as never, REPOS);
-
-    expect(result).toContain('1. [acme/web · PR #1] "Add dark mode" — Adds a toggle.');
-    expect(result).toContain('2. [acme/api · commit abcdef1] "fix export timeout" — diff --git a/x b/x\n+fix');
-  });
-
-  it("drops diffs starting with the largest when the batch exceeds maxChars, keeping every item", () => {
-    const bigDiff = "x".repeat(1000);
-    const smallDiff = "y".repeat(10);
-    const items = [
-      commitItem({ id: "big", repoId: "repo_api", commitSha: "1111111111111", commitMessage: "big change", diff: bigDiff }),
-      commitItem({ id: "small", repoId: "repo_api", commitSha: "2222222222222", commitMessage: "small change", diff: smallDiff }),
-    ];
-
-    const result = serializeBatchForPrompt(items as never, REPOS, 120);
-
-    expect(result).not.toContain(bigDiff);
-    expect(result).toContain("big change");
-    expect(result).toContain("small change");
-  });
-});
 
 vi.mock("ai", () => ({
   generateObject: vi.fn(),

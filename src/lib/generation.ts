@@ -1,6 +1,7 @@
 import { generateObject } from "ai";
 import { z } from "zod";
 import type { changeItems, brandProfiles, ResolvedPersona, systemUpdateExamples } from "../db/schema";
+import { composePrompt } from "./compose-prompt";
 
 type ChangeItemRow = typeof changeItems.$inferSelect;
 type BrandProfileRow = typeof brandProfiles.$inferSelect;
@@ -14,82 +15,6 @@ export const UpdateDraftSchema = z.object({
 
 export type UpdateDraft = z.infer<typeof UpdateDraftSchema>;
 
-const DEFAULT_MAX_PROMPT_CHARS = 24000;
-
-function formatChangeItem(
-  item: ChangeItemRow,
-  index: number,
-  includeDiff: boolean,
-  reposById: Map<string, string>
-): string {
-  const repo = reposById.get(item.repoId) ?? "unknown";
-  if (item.sourceType === "pr") {
-    return `${index + 1}. [${repo} · PR #${item.prNumber}] "${item.prTitle}" — ${item.prDescription ?? ""}`;
-  }
-  const shortSha = item.commitSha?.slice(0, 7) ?? "unknown";
-  const diffPart = includeDiff && item.diff ? ` — ${item.diff}` : "";
-  return `${index + 1}. [${repo} · commit ${shortSha}] "${item.commitMessage}"${diffPart}`;
-}
-
-export function serializeBatchForPrompt(
-  items: ChangeItemRow[],
-  reposById: Map<string, string>,
-  maxChars = DEFAULT_MAX_PROMPT_CHARS
-): string {
-  const includeDiffFlags = items.map(() => true);
-
-  const render = () => items.map((item, i) => formatChangeItem(item, i, includeDiffFlags[i], reposById)).join("\n");
-
-  let current = render();
-  if (current.length <= maxChars) return current;
-
-  const byDiffSizeDesc = items
-    .map((item, index) => ({ index, diffLength: item.diff?.length ?? 0 }))
-    .sort((a, b) => b.diffLength - a.diffLength);
-
-  for (const { index, diffLength } of byDiffSizeDesc) {
-    if (current.length <= maxChars || diffLength === 0) break;
-    includeDiffFlags[index] = false;
-    current = render();
-  }
-
-  return current;
-}
-
-function renderExample(example: ExampleRow): string {
-  return `Example (${example.category}):\nTitle: ${example.title}\nBody:\n${example.body}`;
-}
-
-function buildSystemPrompt(
-  brandProfile: BrandProfileRow,
-  personas: ResolvedPersona[],
-  examples: ExampleRow[]
-): string {
-  const lines = [
-    "You write concise, user-facing product update announcements.",
-    brandProfile.industry ? `Industry: ${brandProfile.industry}.` : null,
-    personas.length > 0
-      ? `Audience personas — tailor the update to appeal to each: ${personas
-          .map((p) => `${p.name}: ${p.brief}`)
-          .join(" ")}`
-      : null,
-    brandProfile.tone ? `Tone: ${brandProfile.tone}.` : null,
-    brandProfile.readingLevel ? `Reading level: ${brandProfile.readingLevel}.` : null,
-    brandProfile.doList.length > 0 ? `Do: ${brandProfile.doList.join("; ")}.` : null,
-    brandProfile.dontList.length > 0 ? `Avoid: ${brandProfile.dontList.join("; ")}.` : null,
-  ].filter((line): line is string => Boolean(line));
-
-  const base = lines.join(" ");
-  if (examples.length === 0) return base;
-
-  const block = [
-    "Here are example updates for a similar audience — mirror their structure, depth, and voice; do not reuse their wording or specifics:",
-    ...examples.map(renderExample),
-  ].join("\n\n");
-
-  return `${base}\n\n${block}`;
-}
-
 export async function generateUpdateDraft(
   items: ChangeItemRow[],
   brandProfile: BrandProfileRow,
@@ -97,13 +22,13 @@ export async function generateUpdateDraft(
   personas: ResolvedPersona[] = [],
   examples: ExampleRow[] = []
 ): Promise<UpdateDraft> {
-  const batchText = serializeBatchForPrompt(items, reposById);
+  const { system, prompt } = composePrompt({ items, brandProfile, reposById, personas, examples });
 
   const result = await generateObject({
     model: process.env.GENERATION_MODEL ?? "anthropic/claude-sonnet-4-5",
     schema: UpdateDraftSchema,
-    system: buildSystemPrompt(brandProfile, personas, examples),
-    prompt: `Here are the changes to summarize into one product update. Format the body as Markdown (short paragraphs, and bullet lists where helpful):\n\n${batchText}`,
+    system,
+    prompt,
   });
 
   return result.object;
