@@ -1,6 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { db as defaultDb } from "../db";
 import { repos, changeItems } from "../db/schema";
+import { enrichChangeItem, type EnrichChangeItem } from "./enrich-change-item";
 
 export type MergedPullRequestInput = {
   installationId: string;
@@ -15,6 +16,7 @@ export type MergedPullRequestInput = {
 
 export async function ingestMergedPullRequest(
   input: MergedPullRequestInput,
+  enrich: EnrichChangeItem = enrichChangeItem,
   database: typeof defaultDb = defaultDb
 ): Promise<void> {
   const [repo] = await database
@@ -28,6 +30,13 @@ export async function ingestMergedPullRequest(
   if (!repo || !repo.sourceTypes.includes("pr")) return;
   if (input.baseBranch !== repo.watchedBranch) return;
 
+  const enrichment = await enrich({
+    sourceType: "pr",
+    repoName: input.repoFullName,
+    prTitle: input.prTitle,
+    prDescription: input.prDescription,
+  });
+
   await database
     .insert(changeItems)
     .values({
@@ -39,6 +48,11 @@ export async function ingestMergedPullRequest(
       prDescription: input.prDescription,
       prUrl: input.prUrl,
       mergedAt: input.mergedAt,
+      userFacing: enrichment.userFacing,
+      impactSummary: enrichment.impactSummary,
+      suggestedCategory: enrichment.suggestedCategory,
+      enrichmentConfidence: enrichment.confidence,
+      enrichedAt: new Date(),
     })
     .onConflictDoNothing();
 }

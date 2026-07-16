@@ -2,6 +2,8 @@ import { and, eq } from "drizzle-orm";
 import { db as defaultDb } from "../db";
 import { repos, changeItems } from "../db/schema";
 import { truncateDiff } from "./github";
+import { mapWithConcurrency } from "./concurrency";
+import { enrichChangeItem, type EnrichChangeItem } from "./enrich-change-item";
 
 export type PushInput = {
   installationId: string;
@@ -12,9 +14,12 @@ export type PushInput = {
 
 export type GetCommitDiff = (owner: string, repo: string, sha: string) => Promise<string>;
 
+const ENRICH_CONCURRENCY = 5;
+
 export async function ingestPush(
   input: PushInput,
   getCommitDiff: GetCommitDiff,
+  enrich: EnrichChangeItem = enrichChangeItem,
   database: typeof defaultDb = defaultDb
 ): Promise<void> {
   const [repo] = await database
@@ -30,8 +35,14 @@ export async function ingestPush(
 
   const [owner, repoName] = input.repoFullName.split("/");
 
-  for (const commit of input.commits) {
-    const rawDiff = await getCommitDiff(owner, repoName, commit.id);
+  await mapWithConcurrency(input.commits, ENRICH_CONCURRENCY, async (commit) => {
+    const diff = truncateDiff(await getCommitDiff(owner, repoName, commit.id));
+    const enrichment = await enrich({
+      sourceType: "commit",
+      repoName: input.repoFullName,
+      commitMessage: commit.message,
+      diff,
+    });
 
     await database
       .insert(changeItems)
@@ -43,8 +54,13 @@ export async function ingestPush(
         commitMessage: commit.message,
         commitUrl: commit.url,
         committedAt: new Date(commit.timestamp),
-        diff: truncateDiff(rawDiff),
+        diff,
+        userFacing: enrichment.userFacing,
+        impactSummary: enrichment.impactSummary,
+        suggestedCategory: enrichment.suggestedCategory,
+        enrichmentConfidence: enrichment.confidence,
+        enrichedAt: new Date(),
       })
       .onConflictDoNothing();
-  }
+  });
 }

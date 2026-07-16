@@ -3,6 +3,14 @@ import { eq } from "drizzle-orm";
 import { db } from "../../src/db";
 import { tenants, repos, changeItems } from "../../src/db/schema";
 import { ingestPush } from "../../src/lib/ingest-push";
+import type { EnrichChangeItem } from "../../src/lib/enrich-change-item";
+
+const fakeEnrich: EnrichChangeItem = async (input) => ({
+  userFacing: input.commitMessage !== "tweak logging",
+  impactSummary: input.commitMessage !== "tweak logging" ? "user benefit" : null,
+  suggestedCategory: input.commitMessage !== "tweak logging" ? "fixed" : null,
+  confidence: 0.6,
+});
 
 describe("ingestPush", () => {
   afterEach(async () => {
@@ -34,7 +42,8 @@ describe("ingestPush", () => {
           { id: "def456", message: "tweak logging", url: "https://github.com/acme/no-prs/commit/def456", timestamp: "2026-07-01T00:05:00Z" },
         ],
       },
-      getCommitDiff
+      getCommitDiff,
+      fakeEnrich
     );
 
     const items = await db.select().from(changeItems).where(eq(changeItems.repoId, repo.id));
@@ -43,6 +52,14 @@ describe("ingestPush", () => {
     expect(items[0]).toMatchObject({ sourceType: "commit", status: "pending" });
     expect(items[0].diff).toContain("added a line");
     expect(getCommitDiff).toHaveBeenCalledTimes(2);
+
+    const fix = items.find((i) => i.commitSha === "abc123")!;
+    const log = items.find((i) => i.commitSha === "def456")!;
+    expect(fix.userFacing).toBe(true);
+    expect(fix.impactSummary).toBe("user benefit");
+    expect(fix.suggestedCategory).toBe("fixed");
+    expect(fix.enrichmentConfidence).toBeCloseTo(0.6);
+    expect(log.userFacing).toBe(false);
   });
 
   it("is idempotent: ingesting the same push twice does not double the commit count", async () => {
@@ -70,8 +87,8 @@ describe("ingestPush", () => {
       ],
     };
 
-    await ingestPush(input, getCommitDiff);
-    await ingestPush(input, getCommitDiff);
+    await ingestPush(input, getCommitDiff, fakeEnrich);
+    await ingestPush(input, getCommitDiff, fakeEnrich);
 
     const items = await db.select().from(changeItems).where(eq(changeItems.repoId, repo.id));
     expect(items).toHaveLength(2);
@@ -100,7 +117,8 @@ describe("ingestPush", () => {
         ref: "refs/heads/feature-branch",
         commits: [{ id: "abc123", message: "wip", url: "https://x", timestamp: "2026-07-01T00:00:00Z" }],
       },
-      getCommitDiff
+      getCommitDiff,
+      fakeEnrich
     );
 
     const items = await db.select().from(changeItems).where(eq(changeItems.repoId, repo.id));
@@ -127,7 +145,8 @@ describe("ingestPush", () => {
         ref: "refs/heads/main",
         commits: [{ id: "abc123", message: "wip", url: "https://x", timestamp: "2026-07-01T00:00:00Z" }],
       },
-      getCommitDiff
+      getCommitDiff,
+      fakeEnrich
     );
 
     expect(getCommitDiff).not.toHaveBeenCalled();
