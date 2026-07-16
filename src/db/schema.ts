@@ -152,6 +152,20 @@ export const systemPersonas = pgTable("system_personas", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+// Global, seeded catalog of example product updates. Selected at generation time
+// by industry/persona match and injected into the prompt as few-shot exemplars.
+export const systemUpdateExamples = pgTable("system_update_examples", {
+  id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  key: text("key").notNull().unique(),
+  industry: text("industry"),
+  personaKey: text("persona_key"),
+  category: updateCategoryEnum("category").notNull(),
+  title: text("title").notNull(),
+  body: text("body").notNull(),
+  sortOrder: integer("sort_order").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const updates = pgTable("updates", {
   id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
   tenantId: uuid("tenant_id")
