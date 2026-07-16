@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 
 vi.mock("ai", () => ({ generateObject: vi.fn() }));
 
@@ -32,7 +32,10 @@ describe("buildEnrichmentPrompt", () => {
 });
 
 describe("enrichChangeItem", () => {
-  beforeEach(() => vi.mocked(generateObject).mockReset());
+  // Reset AFTER each test, not before: resetting a mock in beforeEach makes
+  // vitest surface an awaited-and-caught rejection as an unhandled error,
+  // spuriously failing the fail-open test even though the module catches it.
+  afterEach(() => vi.mocked(generateObject).mockReset());
 
   it("maps a user-facing model result through", async () => {
     vi.mocked(generateObject).mockResolvedValue({
