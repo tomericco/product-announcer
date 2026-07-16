@@ -174,7 +174,7 @@ ON CONFLICT ("key") DO NOTHING;
 - [ ] **Step 6: Apply the migration**
 
 Run: `npm run db:migrate`
-Expected: table created and 13 example rows inserted.
+Expected: table created and 14 example rows inserted.
 
 - [ ] **Step 7: Run test to verify it passes**
 
@@ -667,7 +667,7 @@ git commit -m "feat: select and inject examples during batch generation"
 ## Self-Review
 
 **Spec coverage:**
-- Data model (`system_update_examples` + seed migration, ~12–16 examples, every row matchable) → Task 1 (13 examples seeded). ✓
+- Data model (`system_update_examples` + seed migration, ~12–16 examples, every row matchable) → Task 1 (14 examples seeded). ✓
 - `selectExamples` strict scorer (industry/persona match, score ranking, sort_order tiebreak, cap 3, empty on no match, case-insensitive industry) → Task 3. ✓
 - `systemPersonaKeys` criteria helper → Task 2. ✓
 - Generation wiring (`examples` param, `buildSystemPrompt` block, `Example (<category>):` label, lead-in line) → Task 4. ✓
@@ -681,4 +681,4 @@ git commit -m "feat: select and inject examples during batch generation"
 
 **Ordering:** Task 1 first. Tasks 2, 3, 4 depend only on Task 1 (2 needs nothing from 1; 3 and 4 need the `ExampleRow` type) and are mutually independent. Task 5 needs 1–4. So: 1 → {2, 3, 4} → 5.
 
-**Note:** The spec says "~12–16 examples"; this plan seeds **13**, satisfying the "at least 12" test assertion and the spec's range.
+**Note:** The spec says "~12–16 examples"; this plan seeds **14**, satisfying the "at least 12" test assertion and the spec's range.
