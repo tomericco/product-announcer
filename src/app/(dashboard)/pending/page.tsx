@@ -6,7 +6,8 @@ import { repos, scheduleConfigs } from "@/db/schema";
 import { requireSession } from "@/lib/session";
 import { getPendingChangeItems } from "@/lib/change-item-batch";
 import { formatScheduleDistance } from "@/lib/format-schedule";
-import { dropChangeItem, runNow } from "./actions";
+import { changeItemFacingState } from "@/lib/change-item-display";
+import { dropChangeItem, runNow, includeChangeItem } from "./actions";
 import { ImportCommitsDialog } from "./import-commits-dialog";
 import { NextPublishTime } from "./next-publish-time";
 import { Button } from "@/components/ui/button";
@@ -126,8 +127,10 @@ export default async function PendingPage() {
               const change = (isPr ? item.prTitle : item.commitMessage) ?? "—";
               const url = isPr ? item.prUrl : item.commitUrl;
               const when = isPr ? item.mergedAt : item.committedAt;
+              const facingState = changeItemFacingState(item);
+              const isNonFacing = facingState === "non-facing";
               return (
-                <TableRow key={item.id}>
+                <TableRow key={item.id} className={isNonFacing ? "opacity-60" : undefined}>
                   <TableCell className="pl-4">
                     <Badge variant="outline">{repoNameById.get(item.repoId) ?? "unknown"}</Badge>
                   </TableCell>
@@ -141,6 +144,16 @@ export default async function PendingPage() {
                         change
                       )}
                     </div>
+                    {facingState === "non-facing" && (
+                      <Badge variant="outline" className="mt-1 text-muted-foreground">
+                        Not user-facing
+                      </Badge>
+                    )}
+                    {facingState === "low-confidence" && (
+                      <Badge variant="outline" className="mt-1 text-muted-foreground">
+                        Low confidence
+                      </Badge>
+                    )}
                   </TableCell>
                   <TableCell>
                     <Badge variant="secondary">{isPr ? "PR" : "Commit"}</Badge>
@@ -149,12 +162,22 @@ export default async function PendingPage() {
                     {when ? when.toLocaleDateString() : "—"}
                   </TableCell>
                   <TableCell className="pr-4 text-right">
-                    <form action={dropChangeItem}>
-                      <input type="hidden" name="changeItemId" value={item.id} />
-                      <Button type="submit" variant="ghost" size="sm" className="text-muted-foreground">
-                        Drop
-                      </Button>
-                    </form>
+                    <div className="flex items-center justify-end gap-1">
+                      {isNonFacing && (
+                        <form action={includeChangeItem}>
+                          <input type="hidden" name="changeItemId" value={item.id} />
+                          <Button type="submit" variant="ghost" size="sm">
+                            Include
+                          </Button>
+                        </form>
+                      )}
+                      <form action={dropChangeItem}>
+                        <input type="hidden" name="changeItemId" value={item.id} />
+                        <Button type="submit" variant="ghost" size="sm" className="text-muted-foreground">
+                          Drop
+                        </Button>
+                      </form>
+                    </div>
                   </TableCell>
                 </TableRow>
               );

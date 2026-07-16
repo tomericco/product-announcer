@@ -25,6 +25,20 @@ export async function dropChangeItem(formData: FormData) {
   revalidatePath("/pending");
 }
 
+export async function includeChangeItem(formData: FormData) {
+  const session = await requireSession();
+  const changeItemId = formData.get("changeItemId") as string;
+
+  // Force-include: the user is overriding the classifier. Scope to the caller's
+  // tenant so a caller can only ever flip their own rows.
+  await db
+    .update(changeItems)
+    .set({ userFacing: true })
+    .where(and(eq(changeItems.id, changeItemId), eq(changeItems.tenantId, session.user.tenantId)));
+
+  revalidatePath("/pending");
+}
+
 export async function runNow() {
   const session = await requireSession();
 
