@@ -4,8 +4,8 @@ import { redirect } from "next/navigation";
 import { ChevronsUpDown } from "lucide-react";
 import { db } from "@/db";
 import { tenants } from "@/db/schema";
-import { requireSession } from "@/lib/session";
-import { isOnboardingComplete } from "@/lib/onboarding";
+import { requireSession } from "@/lib/workspace/session";
+import { isOnboardingComplete } from "@/lib/workspace/onboarding";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import {

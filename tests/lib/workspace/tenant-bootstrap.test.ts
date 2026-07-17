@@ -1,8 +1,8 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
-import { db } from "../../src/db";
-import { users, tenants, tenantMembers } from "../../src/db/schema";
-import { getOrCreateTenantForUser } from "../../src/lib/tenant-bootstrap";
+import { db } from "../../../src/db";
+import { users, tenants, tenantMembers } from "../../../src/db/schema";
+import { getOrCreateTenantForUser } from "../../../src/lib/workspace/tenant-bootstrap";
 
 describe("getOrCreateTenantForUser", () => {
   const githubId = "test-github-12345";

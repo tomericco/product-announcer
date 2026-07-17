@@ -4,12 +4,12 @@ import { and, eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { db } from "@/db";
 import { brandProfiles, repos, scheduleConfigs, tenants } from "@/db/schema";
-import { requireSession } from "@/lib/session";
-import { getOrCreateBrandProfile } from "@/lib/brand-profile";
+import { requireSession } from "@/lib/workspace/session";
+import { getOrCreateBrandProfile } from "@/lib/workspace/brand-profile";
 import { computeNextScheduledAt, type Cadence } from "@/lib/scheduler-decision";
-import { addSelectedRepos } from "@/lib/repo-sync";
+import { addSelectedRepos } from "@/lib/workspace/repo-sync";
 import { listRepoBranches } from "@/lib/integrations/github/github";
-import { parsePersonas } from "@/lib/persona-form";
+import { parsePersonas } from "@/lib/workspace/persona-form";
 
 function splitList(value: FormDataEntryValue | null): string[] {
   if (!value || typeof value !== "string") return [];

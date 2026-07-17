@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import type { Session } from "next-auth";
-import { hasValidSession } from "../../src/lib/session";
+import { hasValidSession } from "../../../src/lib/workspace/session";
 
 describe("hasValidSession", () => {
   it("returns false for a null session", () => {

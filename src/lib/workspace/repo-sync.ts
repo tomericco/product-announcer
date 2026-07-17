@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
-import { db as defaultDb } from "../db";
-import { repos } from "../db/schema";
+import { db as defaultDb } from "@/db";
+import { repos } from "@/db/schema";
 
 export async function addSelectedRepos(
   tenantId: string,

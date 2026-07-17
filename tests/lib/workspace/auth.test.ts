@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-vi.mock("../../src/lib/tenant-bootstrap", () => ({
+vi.mock("../../../src/lib/workspace/tenant-bootstrap", () => ({
   getOrCreateTenantForUser: vi.fn(),
 }));
 
-import { authOptions } from "../../src/lib/auth";
-import { getOrCreateTenantForUser } from "../../src/lib/tenant-bootstrap";
+import { authOptions } from "../../../src/lib/workspace/auth";
+import { getOrCreateTenantForUser } from "../../../src/lib/workspace/tenant-bootstrap";
 
 describe("authOptions.callbacks.jwt", () => {
   beforeEach(() => {

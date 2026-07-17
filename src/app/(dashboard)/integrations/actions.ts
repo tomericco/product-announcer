@@ -4,7 +4,7 @@ import { eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { db } from "@/db";
 import { webhookConfigs } from "@/db/schema";
-import { requireSession } from "@/lib/session";
+import { requireSession } from "@/lib/workspace/session";
 
 export async function saveWebhookConfig(formData: FormData) {
   const session = await requireSession();

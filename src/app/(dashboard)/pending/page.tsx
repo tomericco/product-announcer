@@ -3,7 +3,7 @@ import Link from "next/link";
 import { FolderGit2, Inbox, ArrowRight } from "lucide-react";
 import { db } from "@/db";
 import { repos, scheduleConfigs } from "@/db/schema";
-import { requireSession } from "@/lib/session";
+import { requireSession } from "@/lib/workspace/session";
 import { getPendingChangeItems } from "@/lib/change-item-batch";
 import { formatScheduleDistance } from "@/lib/format-schedule";
 import { changeItemFacingState } from "@/lib/change-item-display";

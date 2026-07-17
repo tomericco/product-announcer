@@ -1,9 +1,9 @@
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { repos, scheduleConfigs, tenants, systemPersonas } from "@/db/schema";
-import { requireSession } from "@/lib/session";
+import { requireSession } from "@/lib/workspace/session";
 import { getGithubApp, listAccessibleRepos, listRepoBranches } from "@/lib/integrations/github/github";
-import { getOrCreateBrandProfile } from "@/lib/brand-profile";
+import { getOrCreateBrandProfile } from "@/lib/workspace/brand-profile";
 import { saveWorkspaceName, saveAutoPublish, saveBrandProfile, removeRepo } from "./actions";
 import { AddRepoDialog } from "./add-repo-dialog";
 import { RepoBranchSelect } from "./repo-branch-select";

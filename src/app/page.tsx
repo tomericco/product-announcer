@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
-import { requireSession } from "@/lib/session";
-import { isOnboardingComplete } from "@/lib/onboarding";
+import { requireSession } from "@/lib/workspace/session";
+import { isOnboardingComplete } from "@/lib/workspace/onboarding";
 
 export default async function HomePage() {
   const session = await requireSession();

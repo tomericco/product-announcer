@@ -1,8 +1,8 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
-import { db } from "../../src/db";
-import { tenants, repos } from "../../src/db/schema";
-import { addSelectedRepos } from "../../src/lib/repo-sync";
+import { db } from "../../../src/db";
+import { tenants, repos } from "../../../src/db/schema";
+import { addSelectedRepos } from "../../../src/lib/workspace/repo-sync";
 
 describe("addSelectedRepos", () => {
   afterEach(async () => {

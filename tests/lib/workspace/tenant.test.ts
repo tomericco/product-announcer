@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { deriveDefaultTenantName } from "../../src/lib/tenant";
+import { deriveDefaultTenantName } from "../../../src/lib/workspace/tenant";
 
 describe("deriveDefaultTenantName", () => {
   it("capitalizes the domain label and appends Workspace", () => {

@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
-import { db as defaultDb } from "../db";
-import { brandProfiles } from "../db/schema";
+import { db as defaultDb } from "@/db";
+import { brandProfiles } from "@/db/schema";
 
 export async function getOrCreateBrandProfile(
   tenantId: string,

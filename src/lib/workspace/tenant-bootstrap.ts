@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
-import { db as defaultDb } from "../db";
-import { tenants, tenantMembers, users } from "../db/schema";
+import { db as defaultDb } from "@/db";
+import { tenants, tenantMembers, users } from "@/db/schema";
 import { deriveDefaultTenantName } from "./tenant";
 
 export type SessionTenantInfo = {

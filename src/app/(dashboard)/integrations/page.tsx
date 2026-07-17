@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { webhookConfigs } from "@/db/schema";
-import { requireSession } from "@/lib/session";
+import { requireSession } from "@/lib/workspace/session";
 import { saveWebhookConfig } from "./actions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";

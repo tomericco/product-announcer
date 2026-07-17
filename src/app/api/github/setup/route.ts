@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { tenants } from "@/db/schema";
-import { requireSession } from "@/lib/session";
+import { requireSession } from "@/lib/workspace/session";
 
 export async function GET(request: NextRequest) {
   const session = await requireSession();

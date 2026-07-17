@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolvePersonaRefs, systemPersonaKeys } from "../../src/lib/personas";
+import { resolvePersonaRefs, systemPersonaKeys } from "../../../src/lib/workspace/personas";
 
 const catalog = [
   { key: "developer", name: "Developer", brief: "cares about APIs" },

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parsePersonas } from "../../src/lib/persona-form";
+import { parsePersonas } from "../../../src/lib/workspace/persona-form";
 
 function fd(personas: string | undefined): FormData {
   const f = new FormData();

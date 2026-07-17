@@ -3,7 +3,7 @@ import Link from "next/link";
 import { FileText, ArrowRight } from "lucide-react";
 import { db } from "@/db";
 import { updates } from "@/db/schema";
-import { requireSession } from "@/lib/session";
+import { requireSession } from "@/lib/workspace/session";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";

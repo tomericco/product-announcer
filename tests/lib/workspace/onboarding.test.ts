@@ -1,8 +1,8 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
-import { db } from "../../src/db";
-import { tenants } from "../../src/db/schema";
-import { isOnboardingComplete, markOnboardingComplete } from "../../src/lib/onboarding";
+import { db } from "../../../src/db";
+import { tenants } from "../../../src/db/schema";
+import { isOnboardingComplete, markOnboardingComplete } from "../../../src/lib/workspace/onboarding";
 
 describe("onboarding gate", () => {
   afterEach(async () => {

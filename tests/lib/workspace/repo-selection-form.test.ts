@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseRepoSelections } from "../../src/lib/repo-selection-form";
+import { parseRepoSelections } from "../../../src/lib/workspace/repo-selection-form";
 
 function buildFormData(entries: Record<string, string>): FormData {
   const formData = new FormData();

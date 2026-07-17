@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
-import { db as defaultDb } from "../db";
-import { tenants } from "../db/schema";
+import { db as defaultDb } from "@/db";
+import { tenants } from "@/db/schema";
 
 export async function isOnboardingComplete(
   tenantId: string,

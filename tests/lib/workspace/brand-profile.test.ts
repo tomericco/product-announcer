@@ -1,8 +1,8 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
-import { db } from "../../src/db";
-import { tenants, brandProfiles } from "../../src/db/schema";
-import { getOrCreateBrandProfile } from "../../src/lib/brand-profile";
+import { db } from "../../../src/db";
+import { tenants, brandProfiles } from "../../../src/db/schema";
+import { getOrCreateBrandProfile } from "../../../src/lib/workspace/brand-profile";
 
 describe("getOrCreateBrandProfile", () => {
   afterEach(async () => {
