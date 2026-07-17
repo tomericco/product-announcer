@@ -29,6 +29,16 @@ export async function importBrandStyleForTenant(
   if ("error" in scraped) return { ok: false, reason: scraped.error };
 
   const derived = await analyze(scraped.text);
+  const isEmptyDerivation =
+    derived.tone === null &&
+    derived.readingLevel === null &&
+    derived.industry === null &&
+    derived.updatesStyleSummary === null &&
+    derived.doList.length === 0 &&
+    derived.dontList.length === 0 &&
+    derived.examplePhrases.length === 0;
+  if (isEmptyDerivation) return { ok: false, reason: "analysis-empty" };
+
   const profile = await getOrCreateBrandProfile(tenantId, database);
 
   await database

@@ -8,7 +8,7 @@ import { requireSession } from "@/lib/workspace/session";
 import { advanceNextScheduledAt, type Cadence } from "@/lib/scheduling/scheduler-decision";
 import { addSelectedRepos } from "@/lib/workspace/repo-sync";
 import { parseRepoSelections } from "@/lib/workspace/repo-selection-form";
-import { markOnboardingComplete } from "@/lib/workspace/onboarding";
+import { isOnboardingComplete, markOnboardingComplete } from "@/lib/workspace/onboarding";
 import { listRepoBranches } from "@/lib/integrations/github/github";
 import { importBrandStyleForTenant } from "@/lib/workspace/brand-import";
 
@@ -59,6 +59,8 @@ export async function skipOnboarding() {
 
 export async function importBrandStyle(formData: FormData) {
   const session = await requireSession();
+  if (await isOnboardingComplete(session.user.tenantId)) redirect("/pending");
+
   const url = (formData.get("updatesPageUrl") as string)?.trim();
   if (!url) redirect("/onboarding");
 

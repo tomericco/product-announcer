@@ -125,6 +125,23 @@ describe("fetchUpdatesPageText", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  it("returns fetch-failed (not a throw) when the body stream rejects mid-read", async () => {
+    const reader = {
+      read: () => Promise.reject(new DOMException("The operation was aborted.", "AbortError")),
+      cancel: () => Promise.resolve(),
+    };
+    const fakeBody = { getReader: () => reader } as unknown as ReadableStream<Uint8Array>;
+    const fakeResponse = {
+      status: 200,
+      ok: true,
+      headers: new Headers({ "content-type": "text/html" }),
+      body: fakeBody,
+    } as unknown as Response;
+    const fetchImpl = vi.fn().mockResolvedValue(fakeResponse);
+    const result = await fetchUpdatesPageText("https://acme.com/changelog", { fetchImpl: fetchImpl as never, resolveHost: publicResolve });
+    expect(result).toEqual({ error: "fetch-failed" });
+  });
+
   it("caps the body read at MAX_BYTES instead of trusting content-length or fully buffering", async () => {
     // No content-length header is set on this Response, so the fast-path
     // check can't reject it up front; the streaming reader must still cap

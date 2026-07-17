@@ -169,10 +169,17 @@ export async function fetchUpdatesPageText(
       // since content-length can be absent, wrong, or lied about. The abort
       // timer above stays live through this read (cleared in `finally`
       // below), so a slow/stalled body still gets aborted at TIMEOUT_MS.
-      const html = await readBodyCapped(res, MAX_BYTES);
-      const text = htmlToText(html).slice(0, MAX_TEXT_CHARS);
-      if (text.length < MIN_TEXT_CHARS) return { error: "insufficient-content" };
-      return { text };
+      // A mid-stream abort or connection reset throws out of readBodyCapped
+      // (AbortError / network error), so this must be caught too — otherwise
+      // it escapes fetchUpdatesPageText instead of yielding a clean result.
+      try {
+        const html = await readBodyCapped(res, MAX_BYTES);
+        const text = htmlToText(html).slice(0, MAX_TEXT_CHARS);
+        if (text.length < MIN_TEXT_CHARS) return { error: "insufficient-content" };
+        return { text };
+      } catch {
+        return { error: "fetch-failed" };
+      }
     } finally {
       clearTimeout(timer);
     }

@@ -32,6 +32,21 @@ describe("importBrandStyleForTenant", () => {
     expect(profile.updatesPageUrl).toBe("https://acme.com/changelog");
   });
 
+  it("writes nothing and reports analysis-empty when the derived profile is entirely empty", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: NAME }).returning();
+
+    const result = await importBrandStyleForTenant(tenant.id, "https://acme.com/changelog", {
+      scrape: async () => ({ text: "changelog text" }),
+      analyze: async () => ({
+        tone: null, readingLevel: null, doList: [], dontList: [], examplePhrases: [], industry: null, updatesStyleSummary: null,
+      }),
+    });
+
+    expect(result).toEqual({ ok: false, reason: "analysis-empty" });
+    const [profile] = await db.select().from(brandProfiles).where(eq(brandProfiles.tenantId, tenant.id));
+    expect(profile).toBeUndefined();
+  });
+
   it("writes nothing and reports the reason on a scrape error", async () => {
     const [tenant] = await db.insert(tenants).values({ name: NAME }).returning();
 
