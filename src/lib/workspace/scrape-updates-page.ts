@@ -50,6 +50,44 @@ async function hostIsPublic(hostname: string, resolveHost: ResolveHost): Promise
   return ips.length > 0 && ips.every((ip) => !isPrivateIp(ip));
 }
 
+/**
+ * Reads a response body as a stream, stopping as soon as more than `maxBytes`
+ * have been read. This is a hard cap independent of any `content-length`
+ * header, so a server that lies about (or omits) content-length can't force
+ * unbounded buffering. Runs under the caller's abort signal/timeout.
+ */
+async function readBodyCapped(res: Response, maxBytes: number): Promise<string> {
+  const body = res.body;
+  if (!body) return "";
+
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (total <= maxBytes) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value && value.byteLength > 0) {
+        total += value.byteLength;
+        chunks.push(value);
+      }
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+
+  const size = Math.min(total, maxBytes);
+  const combined = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    if (offset >= size) break;
+    const take = Math.min(chunk.byteLength, size - offset);
+    combined.set(chunk.subarray(0, take), offset);
+    offset += take;
+  }
+  return new TextDecoder().decode(combined);
+}
+
 export function htmlToText(html: string): string {
   return html
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
@@ -92,36 +130,42 @@ export async function fetchUpdatesPageText(
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
-    let res: Response;
     try {
-      res = await fetchImpl(current.toString(), { redirect: "manual", signal: controller.signal, headers: { accept: "text/html" } });
-    } catch {
-      return { error: "fetch-failed" };
+      let res: Response;
+      try {
+        res = await fetchImpl(current.toString(), { redirect: "manual", signal: controller.signal, headers: { accept: "text/html" } });
+      } catch {
+        return { error: "fetch-failed" };
+      }
+
+      if (res.status >= 300 && res.status < 400) {
+        const location = res.headers.get("location");
+        if (!location) return { error: "fetch-failed" };
+        try {
+          current = new URL(location, current);
+        } catch {
+          return { error: "invalid-url" };
+        }
+        continue;
+      }
+
+      if (!res.ok) return { error: "fetch-failed" };
+
+      const contentType = res.headers.get("content-type") ?? "";
+      if (!contentType.includes("text/html") && !contentType.includes("text/plain")) return { error: "fetch-failed" };
+      if (Number(res.headers.get("content-length") ?? "0") > MAX_BYTES) return { error: "fetch-failed" };
+
+      // Hard cap the body read itself (not just this fast-path check above),
+      // since content-length can be absent, wrong, or lied about. The abort
+      // timer above stays live through this read (cleared in `finally`
+      // below), so a slow/stalled body still gets aborted at TIMEOUT_MS.
+      const html = await readBodyCapped(res, MAX_BYTES);
+      const text = htmlToText(html).slice(0, MAX_TEXT_CHARS);
+      if (text.length < MIN_TEXT_CHARS) return { error: "insufficient-content" };
+      return { text };
     } finally {
       clearTimeout(timer);
     }
-
-    if (res.status >= 300 && res.status < 400) {
-      const location = res.headers.get("location");
-      if (!location) return { error: "fetch-failed" };
-      try {
-        current = new URL(location, current);
-      } catch {
-        return { error: "invalid-url" };
-      }
-      continue;
-    }
-
-    if (!res.ok) return { error: "fetch-failed" };
-
-    const contentType = res.headers.get("content-type") ?? "";
-    if (!contentType.includes("text/html") && !contentType.includes("text/plain")) return { error: "fetch-failed" };
-    if (Number(res.headers.get("content-length") ?? "0") > MAX_BYTES) return { error: "fetch-failed" };
-
-    const html = (await res.text()).slice(0, MAX_BYTES);
-    const text = htmlToText(html).slice(0, MAX_TEXT_CHARS);
-    if (text.length < MIN_TEXT_CHARS) return { error: "insufficient-content" };
-    return { text };
   }
 
   return { error: "fetch-failed" }; // too many redirects
