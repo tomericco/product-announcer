@@ -8,7 +8,7 @@ import { changeItems, repos, scheduleConfigs } from "@/db/schema";
 import { requireSession } from "@/lib/session";
 import { getBatchableChangeItems } from "@/lib/change-item-batch";
 import { runBatchForWorkspace, applyPostRunScheduleChoice } from "@/lib/run-schedule";
-import { getCommitDiff, listRepoCommits } from "@/lib/github";
+import { getCommitDiff, listRepoCommits } from "@/lib/integrations/github/github";
 import { importSelectedCommits, type CommitSelection } from "@/lib/import-commits";
 
 export async function dropChangeItem(formData: FormData) {

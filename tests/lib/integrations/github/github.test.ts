@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { vi } from "vitest";
-import { truncateDiff, listRepoBranches, getGithubApp } from "../../src/lib/github";
+import { truncateDiff, listRepoBranches, getGithubApp } from "../../../../src/lib/integrations/github/github";
 
 describe("truncateDiff", () => {
   it("returns short diffs unchanged", () => {

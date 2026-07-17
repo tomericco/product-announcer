@@ -8,7 +8,7 @@ import { requireSession } from "@/lib/session";
 import { getOrCreateBrandProfile } from "@/lib/brand-profile";
 import { computeNextScheduledAt, type Cadence } from "@/lib/scheduler-decision";
 import { addSelectedRepos } from "@/lib/repo-sync";
-import { listRepoBranches } from "@/lib/github";
+import { listRepoBranches } from "@/lib/integrations/github/github";
 import { parsePersonas } from "@/lib/persona-form";
 
 function splitList(value: FormDataEntryValue | null): string[] {

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { sign } from "@octokit/webhooks-methods";
-import { verifyGithubSignature } from "../../src/lib/github-webhook";
+import { verifyGithubSignature } from "../../../../src/lib/integrations/github/github-webhook";
 
 describe("verifyGithubSignature", () => {
   const originalSecret = process.env.GITHUB_WEBHOOK_SECRET;

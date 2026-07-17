@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { verifyGithubSignature } from "@/lib/github-webhook";
+import { verifyGithubSignature } from "@/lib/integrations/github/github-webhook";
 import { ingestMergedPullRequest } from "@/lib/ingest-pull-request";
 import { ingestPush } from "@/lib/ingest-push";
-import { getCommitDiff } from "@/lib/github";
+import { getCommitDiff } from "@/lib/integrations/github/github";
 
 export async function POST(request: NextRequest) {
   const rawBody = await request.text();

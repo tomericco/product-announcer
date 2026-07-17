@@ -9,7 +9,7 @@ import { advanceNextScheduledAt, type Cadence } from "@/lib/scheduler-decision";
 import { addSelectedRepos } from "@/lib/repo-sync";
 import { parseRepoSelections } from "@/lib/repo-selection-form";
 import { markOnboardingComplete } from "@/lib/onboarding";
-import { listRepoBranches } from "@/lib/github";
+import { listRepoBranches } from "@/lib/integrations/github/github";
 
 export async function addOnboardingRepos(formData: FormData) {
   const session = await requireSession();

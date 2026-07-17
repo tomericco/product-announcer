@@ -3,7 +3,7 @@ import { redirect } from "next/navigation";
 import { db } from "@/db";
 import { repos, tenants } from "@/db/schema";
 import { requireSession } from "@/lib/session";
-import { getGithubApp, listAccessibleRepos, listRepoBranches } from "@/lib/github";
+import { getGithubApp, listAccessibleRepos, listRepoBranches } from "@/lib/integrations/github/github";
 import { isOnboardingComplete } from "@/lib/onboarding";
 import { addOnboardingRepos, saveOnboardingSchedule, skipOnboarding, saveWorkspaceName } from "./actions";
 import { RepoRow } from "@/app/(dashboard)/settings/repo-row";
