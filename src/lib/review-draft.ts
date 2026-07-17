@@ -5,26 +5,59 @@ import type { UpdateDraft } from "./generation";
 
 type BrandProfileRow = typeof brandProfiles.$inferSelect;
 
-export const ReviewResultSchema = z.object({
+export const ReviewCritiqueSchema = z.object({
   compliant: z.boolean(),
   issues: z.array(z.string()),
-  revised: z.object({ title: z.string(), body: z.string() }).nullable(),
 });
+export type ReviewCritique = z.infer<typeof ReviewCritiqueSchema>;
 
-export type ReviewResult = z.infer<typeof ReviewResultSchema>;
+export const RevisionSchema = z.object({
+  title: z.string(),
+  body: z.string(),
+});
+export type Revision = z.infer<typeof RevisionSchema>;
 
 export type ReviewStatus = "passed" | "revised" | "failed" | "error";
 export type ReviewOutcome = { finalDraft: UpdateDraft; status: ReviewStatus; issues: string[] };
 
+const DEFAULT_MAX_ROUNDS = 2;
+
+function reviewModel(): string {
+  return process.env.REVIEW_MODEL ?? "anthropic/claude-sonnet-4-5";
+}
+
+// Default when unset; any non-positive/invalid value clamps to 0 (pure gate).
+function reviewMaxRounds(): number {
+  const raw = process.env.REVIEW_MAX_ROUNDS;
+  if (raw === undefined) return DEFAULT_MAX_ROUNDS;
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+// One retry on error; a second failure propagates to the caller.
+async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch {
+    return await fn();
+  }
+}
+
 const REVIEW_SYSTEM = [
   "You are a brand-compliance reviewer for product update announcements.",
   "Check the draft against the brand requirements.",
-  "If it fully complies, set compliant true, issues [], revised null.",
-  "If it violates any requirement, set compliant false, list the specific issues, and provide a revised",
-  "title and body that fix them while keeping the same facts.",
+  "If it fully complies, set compliant true and issues [].",
+  "If it violates any requirement, set compliant false and list the specific issues to fix.",
+  "Do not rewrite the draft — only critique it.",
 ].join(" ");
 
-export function buildReviewPrompt(draft: UpdateDraft, brandProfile: BrandProfileRow): string {
+const REVISION_SYSTEM = [
+  "You are a product-update editor.",
+  "Rewrite the draft to fix the listed brand-compliance issues while keeping the same facts.",
+  "Return only the revised title and body.",
+].join(" ");
+
+function brandRubric(brandProfile: BrandProfileRow): string {
   const rules = [
     brandProfile.tone ? `Tone: ${brandProfile.tone}.` : null,
     brandProfile.readingLevel ? `Reading level: ${brandProfile.readingLevel}.` : null,
@@ -33,53 +66,67 @@ export function buildReviewPrompt(draft: UpdateDraft, brandProfile: BrandProfile
     brandProfile.examplePhrases.length > 0 ? `Preferred phrasing: ${brandProfile.examplePhrases.join("; ")}.` : null,
   ].filter((line): line is string => Boolean(line));
 
-  const rubric = rules.length > 0 ? rules.join(" ") : "No specific brand requirements are configured.";
-  return `Brand requirements:\n${rubric}\n\nDraft to review:\nTitle: ${draft.title}\nBody:\n${draft.body}`;
+  return rules.length > 0 ? rules.join(" ") : "No specific brand requirements are configured.";
 }
 
-export async function reviewDraft(draft: UpdateDraft, brandProfile: BrandProfileRow): Promise<ReviewResult> {
+export function buildReviewPrompt(draft: UpdateDraft, brandProfile: BrandProfileRow): string {
+  return `Brand requirements:\n${brandRubric(brandProfile)}\n\nDraft to review:\nTitle: ${draft.title}\nBody:\n${draft.body}`;
+}
+
+export function buildRevisionPrompt(draft: UpdateDraft, issues: string[], brandProfile: BrandProfileRow): string {
+  const list = issues.map((issue) => `- ${issue}`).join("\n");
+  return `Brand requirements:\n${brandRubric(brandProfile)}\n\nDraft to revise:\nTitle: ${draft.title}\nBody:\n${draft.body}\n\nFix these issues:\n${list}`;
+}
+
+export async function reviewDraft(draft: UpdateDraft, brandProfile: BrandProfileRow): Promise<ReviewCritique> {
   const result = await generateObject({
-    model: process.env.REVIEW_MODEL ?? "anthropic/claude-sonnet-4-5",
-    schema: ReviewResultSchema,
+    model: reviewModel(),
+    schema: ReviewCritiqueSchema,
     system: REVIEW_SYSTEM,
     prompt: buildReviewPrompt(draft, brandProfile),
   });
   return result.object;
 }
 
+export async function reviseDraft(
+  draft: UpdateDraft,
+  issues: string[],
+  brandProfile: BrandProfileRow
+): Promise<UpdateDraft> {
+  const result = await generateObject({
+    model: reviewModel(),
+    schema: RevisionSchema,
+    system: REVISION_SYSTEM,
+    prompt: buildRevisionPrompt(draft, issues, brandProfile),
+  });
+  return { title: result.object.title, body: result.object.body, category: draft.category };
+}
+
 /**
- * Reviews a draft against brand requirements and reconciles the outcome:
- * passed (compliant first try), revised (rewritten and now compliant), failed
- * (still non-compliant after one rewrite), or error (review unavailable after a
- * retry — fail-safe, held as draft). The first review is retried once on error;
- * the re-review of a revision is a single call.
+ * Feedback-remediation loop. Critiques the draft; if non-compliant, revises it
+ * from the specific issues and re-reviews, iterating up to REVIEW_MAX_ROUNDS
+ * (default 2). Outcomes: passed (compliant first review), revised (compliant
+ * after ≥1 round), failed (still non-compliant at the cap — holds the last
+ * revision + last issues), error (a review/revise call failed after its retry —
+ * holds the most recent draft, fail-safe). Every call is retried once on error.
  */
 export async function reviewAndReconcile(draft: UpdateDraft, brandProfile: BrandProfileRow): Promise<ReviewOutcome> {
-  let first: ReviewResult;
+  const rounds = reviewMaxRounds();
+  let current = draft;
+
   try {
-    first = await reviewDraft(draft, brandProfile);
-  } catch {
-    try {
-      first = await reviewDraft(draft, brandProfile);
-    } catch {
-      return { finalDraft: draft, status: "error", issues: [] };
+    let critique = await withRetry(() => reviewDraft(current, brandProfile));
+    if (critique.compliant) return { finalDraft: current, status: "passed", issues: [] };
+
+    for (let round = 0; round < rounds; round++) {
+      current = await withRetry(() => reviseDraft(current, critique.issues, brandProfile));
+      critique = await withRetry(() => reviewDraft(current, brandProfile));
+      if (critique.compliant) return { finalDraft: current, status: "revised", issues: [] };
     }
-  }
 
-  if (first.compliant) return { finalDraft: draft, status: "passed", issues: [] };
-  if (!first.revised) return { finalDraft: draft, status: "failed", issues: first.issues };
-
-  const revisedDraft: UpdateDraft = { title: first.revised.title, body: first.revised.body, category: draft.category };
-
-  let second: ReviewResult;
-  try {
-    second = await reviewDraft(revisedDraft, brandProfile);
+    return { finalDraft: current, status: "failed", issues: critique.issues };
   } catch {
-    // Re-review failed; keep the revision but hold it (can't confirm compliance).
-    return { finalDraft: revisedDraft, status: "failed", issues: first.issues };
+    // A review/revise call failed after its retry — hold the most recent draft.
+    return { finalDraft: current, status: "error", issues: [] };
   }
-
-  return second.compliant
-    ? { finalDraft: revisedDraft, status: "revised", issues: [] }
-    : { finalDraft: revisedDraft, status: "failed", issues: second.issues };
 }
