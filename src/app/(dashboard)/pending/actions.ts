@@ -7,7 +7,7 @@ import { db } from "@/db";
 import { changeItems, repos, scheduleConfigs } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { getBatchableChangeItems } from "@/lib/change-items/change-item-batch";
-import { runBatchForWorkspace, applyPostRunScheduleChoice } from "@/lib/run-schedule";
+import { runBatchForWorkspace, applyPostRunScheduleChoice } from "@/lib/scheduling/run-schedule";
 import { getCommitDiff, listRepoCommits } from "@/lib/integrations/github/github";
 import { importSelectedCommits, type CommitSelection } from "@/lib/change-items/import-commits";
 

@@ -6,7 +6,7 @@ import { db } from "@/db";
 import { brandProfiles, repos, scheduleConfigs, tenants } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { getOrCreateBrandProfile } from "@/lib/workspace/brand-profile";
-import { computeNextScheduledAt, type Cadence } from "@/lib/scheduler-decision";
+import { computeNextScheduledAt, type Cadence } from "@/lib/scheduling/scheduler-decision";
 import { addSelectedRepos } from "@/lib/workspace/repo-sync";
 import { listRepoBranches } from "@/lib/integrations/github/github";
 import { parsePersonas } from "@/lib/workspace/persona-form";

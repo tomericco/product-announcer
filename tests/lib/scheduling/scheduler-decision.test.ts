@@ -3,7 +3,7 @@ import {
   shouldTriggerRun,
   advanceNextScheduledAt,
   computeNextScheduledAt,
-} from "../../src/lib/scheduler-decision";
+} from "../../../src/lib/scheduling/scheduler-decision";
 
 describe("shouldTriggerRun", () => {
   const now = new Date("2026-07-13T12:00:00Z");

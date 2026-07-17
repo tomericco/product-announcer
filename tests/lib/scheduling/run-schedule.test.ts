@@ -3,16 +3,16 @@ import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 vi.mock("ai", () => ({
   generateObject: vi.fn(),
 }));
-vi.mock("../../src/lib/ai/review-draft", () => ({ reviewAndReconcile: vi.fn() }));
+vi.mock("../../../src/lib/ai/review-draft", () => ({ reviewAndReconcile: vi.fn() }));
 
 import { generateObject } from "ai";
 import { eq } from "drizzle-orm";
-import { db } from "../../src/db";
-import { tenants, repos, changeItems, updates, scheduleConfigs, brandProfiles } from "../../src/db/schema";
-import { runBatchForWorkspace, runSchedulerTick, applyPostRunScheduleChoice } from "../../src/lib/run-schedule";
-import { getPendingChangeItems } from "../../src/lib/change-items/change-item-batch";
-import { advanceNextScheduledAt } from "../../src/lib/scheduler-decision";
-import { reviewAndReconcile } from "../../src/lib/ai/review-draft";
+import { db } from "../../../src/db";
+import { tenants, repos, changeItems, updates, scheduleConfigs, brandProfiles } from "../../../src/db/schema";
+import { runBatchForWorkspace, runSchedulerTick, applyPostRunScheduleChoice } from "../../../src/lib/scheduling/run-schedule";
+import { getPendingChangeItems } from "../../../src/lib/change-items/change-item-batch";
+import { advanceNextScheduledAt } from "../../../src/lib/scheduling/scheduler-decision";
+import { reviewAndReconcile } from "../../../src/lib/ai/review-draft";
 
 const TENANT = "Run Batch Test Tenant";
 

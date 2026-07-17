@@ -5,7 +5,7 @@ import { redirect } from "next/navigation";
 import { db } from "@/db";
 import { scheduleConfigs, tenants } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
-import { advanceNextScheduledAt, type Cadence } from "@/lib/scheduler-decision";
+import { advanceNextScheduledAt, type Cadence } from "@/lib/scheduling/scheduler-decision";
 import { addSelectedRepos } from "@/lib/workspace/repo-sync";
 import { parseRepoSelections } from "@/lib/workspace/repo-selection-form";
 import { markOnboardingComplete } from "@/lib/workspace/onboarding";

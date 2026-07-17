@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { formatScheduleDistance } from "../../src/lib/format-schedule";
+import { formatScheduleDistance } from "../../../src/lib/scheduling/format-schedule";
 
 describe("formatScheduleDistance", () => {
   const now = new Date("2026-07-15T12:00:00Z");

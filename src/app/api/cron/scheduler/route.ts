@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { runSchedulerTick } from "@/lib/run-schedule";
+import { runSchedulerTick } from "@/lib/scheduling/run-schedule";
 import { retryFailedWebhookDeliveries } from "@/lib/publishing/webhook-delivery";
 
 export async function GET(request: NextRequest) {

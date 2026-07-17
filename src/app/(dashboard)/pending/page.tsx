@@ -5,7 +5,7 @@ import { db } from "@/db";
 import { repos, scheduleConfigs } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { getPendingChangeItems } from "@/lib/change-items/change-item-batch";
-import { formatScheduleDistance } from "@/lib/format-schedule";
+import { formatScheduleDistance } from "@/lib/scheduling/format-schedule";
 import { changeItemFacingState } from "@/lib/change-items/change-item-display";
 import { dropChangeItem, runNow, includeChangeItem } from "./actions";
 import { ImportCommitsDialog } from "./import-commits-dialog";
