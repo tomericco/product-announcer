@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { runSchedulerTick } from "@/lib/run-schedule";
-import { retryFailedWebhookDeliveries } from "@/lib/webhook-delivery";
+import { retryFailedWebhookDeliveries } from "@/lib/publishing/webhook-delivery";
 
 export async function GET(request: NextRequest) {
   const authHeader = request.headers.get("authorization");

@@ -7,7 +7,7 @@ import { getOrCreateBrandProfile } from "./brand-profile";
 import { resolvePersonaRefs, systemPersonaKeys } from "./personas";
 import { selectExamples } from "@/lib/ai/select-examples";
 import { shouldTriggerRun, advanceNextScheduledAt, type Cadence } from "./scheduler-decision";
-import { dispatchWebhookForUpdate } from "./webhook-delivery";
+import { dispatchWebhookForUpdate } from "@/lib/publishing/webhook-delivery";
 import { reviewAndReconcile } from "@/lib/ai/review-draft";
 
 type ChangeItemRow = Awaited<ReturnType<typeof getPendingChangeItems>>[number];

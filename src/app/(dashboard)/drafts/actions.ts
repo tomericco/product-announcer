@@ -6,7 +6,7 @@ import { redirect } from "next/navigation";
 import { db } from "@/db";
 import { updates } from "@/db/schema";
 import { requireSession } from "@/lib/session";
-import { dispatchWebhookForUpdate } from "@/lib/webhook-delivery";
+import { dispatchWebhookForUpdate } from "@/lib/publishing/webhook-delivery";
 
 async function loadOwnedDraft(tenantId: string, updateId: string) {
   const [update] = await db

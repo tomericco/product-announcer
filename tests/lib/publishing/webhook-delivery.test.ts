@@ -1,8 +1,8 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { db } from "../../src/db";
-import { tenants, repos, updates, webhookConfigs, webhookDeliveries } from "../../src/db/schema";
-import { dispatchWebhookForUpdate, retryFailedWebhookDeliveries } from "../../src/lib/webhook-delivery";
+import { db } from "../../../src/db";
+import { tenants, repos, updates, webhookConfigs, webhookDeliveries } from "../../../src/db/schema";
+import { dispatchWebhookForUpdate, retryFailedWebhookDeliveries } from "../../../src/lib/publishing/webhook-delivery";
 
 describe("webhook-delivery", () => {
   beforeEach(() => {

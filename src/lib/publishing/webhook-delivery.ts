@@ -1,7 +1,7 @@
 import { createHmac } from "node:crypto";
 import { and, eq, lt } from "drizzle-orm";
-import { db as defaultDb } from "../db";
-import { webhookConfigs, webhookDeliveries, updates } from "../db/schema";
+import { db as defaultDb } from "@/db";
+import { webhookConfigs, webhookDeliveries, updates } from "@/db/schema";
 
 const MAX_ATTEMPTS = 3;
 
