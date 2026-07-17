@@ -115,6 +115,7 @@ export async function saveBrandProfile(formData: FormData) {
       userPersonas: parsePersonas(formData),
       doList: splitList(formData.get("doList")),
       dontList: splitList(formData.get("dontList")),
+      updatesStyleSummary: (formData.get("updatesStyleSummary") as string) || null,
       updatedAt: new Date(),
     })
     .where(eq(brandProfiles.id, profile.id));

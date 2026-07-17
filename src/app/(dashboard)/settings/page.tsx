@@ -196,6 +196,28 @@ export default async function SettingsPage() {
                 defaultValue={brandProfile.dontList.join("\n")}
               />
             </div>
+            <div className="space-y-2">
+              <Label htmlFor="updatesStyleSummary">Updates page style summary</Label>
+              <Textarea
+                id="updatesStyleSummary"
+                name="updatesStyleSummary"
+                rows={3}
+                defaultValue={brandProfile.updatesStyleSummary ?? ""}
+              />
+              {brandProfile.updatesPageUrl && (
+                <p className="text-xs text-muted-foreground">
+                  Imported from{" "}
+                  <a
+                    href={brandProfile.updatesPageUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="underline"
+                  >
+                    your changelog
+                  </a>
+                </p>
+              )}
+            </div>
             <Button type="submit" variant="outline">
               Save
             </Button>
