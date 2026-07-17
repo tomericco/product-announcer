@@ -52,7 +52,7 @@ vi.mock("ai", () => ({
 }));
 
 import { generateObject } from "ai";
-import { generateUpdateDraft } from "../../src/lib/generation";
+import { generateUpdateDraft } from "../../../src/lib/ai/generation";
 
 describe("generateUpdateDraft", () => {
   it("passes the repo-tagged batch and brand profile into the prompt, and returns the object", async () => {

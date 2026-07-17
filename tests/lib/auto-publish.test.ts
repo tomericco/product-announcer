@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 
 vi.mock("ai", () => ({ generateObject: vi.fn() }));
-vi.mock("../../src/lib/review-draft", () => ({ reviewAndReconcile: vi.fn() }));
+vi.mock("../../src/lib/ai/review-draft", () => ({ reviewAndReconcile: vi.fn() }));
 
 import { generateObject } from "ai";
 import { eq } from "drizzle-orm";
@@ -9,7 +9,7 @@ import { db } from "../../src/db";
 import { tenants, repos, changeItems, updates, webhookConfigs, webhookDeliveries } from "../../src/db/schema";
 import { runBatchForWorkspace } from "../../src/lib/run-schedule";
 import { getPendingChangeItems } from "../../src/lib/change-item-batch";
-import { reviewAndReconcile } from "../../src/lib/review-draft";
+import { reviewAndReconcile } from "../../src/lib/ai/review-draft";
 
 const NAME = "Auto Publish Test Tenant";
 

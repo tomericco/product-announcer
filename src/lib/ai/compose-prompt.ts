@@ -1,4 +1,4 @@
-import type { changeItems, brandProfiles, ResolvedPersona, systemUpdateExamples } from "../db/schema";
+import type { changeItems, brandProfiles, ResolvedPersona, systemUpdateExamples } from "@/db/schema";
 
 type ChangeItemRow = typeof changeItems.$inferSelect;
 type BrandProfileRow = typeof brandProfiles.$inferSelect;

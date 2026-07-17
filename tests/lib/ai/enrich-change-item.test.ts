@@ -3,7 +3,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 vi.mock("ai", () => ({ generateObject: vi.fn() }));
 
 import { generateObject } from "ai";
-import { buildEnrichmentPrompt, enrichChangeItem } from "../../src/lib/enrich-change-item";
+import { buildEnrichmentPrompt, enrichChangeItem } from "../../../src/lib/ai/enrich-change-item";
 
 describe("buildEnrichmentPrompt", () => {
   it("includes commit message and diff for commit-sourced items", () => {

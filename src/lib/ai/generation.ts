@@ -1,6 +1,6 @@
 import { generateObject } from "ai";
 import { z } from "zod";
-import type { changeItems, brandProfiles, ResolvedPersona, systemUpdateExamples } from "../db/schema";
+import type { changeItems, brandProfiles, ResolvedPersona, systemUpdateExamples } from "@/db/schema";
 import { composePrompt } from "./compose-prompt";
 
 type ChangeItemRow = typeof changeItems.$inferSelect;

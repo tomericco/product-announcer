@@ -1,4 +1,4 @@
-import type { systemUpdateExamples } from "../db/schema";
+import type { systemUpdateExamples } from "@/db/schema";
 
 export type ExampleRow = typeof systemUpdateExamples.$inferSelect;
 

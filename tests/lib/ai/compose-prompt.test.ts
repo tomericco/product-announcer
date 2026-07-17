@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { serializeBatch, buildSystemPrompt } from "../../src/lib/compose-prompt";
+import { serializeBatch, buildSystemPrompt } from "../../../src/lib/ai/compose-prompt";
 
 type FakeChangeItem = {
   id: string; repoId: string; sourceType: "pr" | "commit";

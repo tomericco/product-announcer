@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import { db } from "@/db";
 import { updates } from "@/db/schema";
 import { requireSession } from "@/lib/session";
-import { reviewStatusLabel } from "@/lib/review-status";
+import { reviewStatusLabel } from "@/lib/ai/review-status";
 import { saveDraft, approveDraft, rejectDraft } from "../actions";
 import { PreviewDialog } from "./preview-dialog";
 import { Button } from "@/components/ui/button";

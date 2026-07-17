@@ -1,6 +1,6 @@
 import { generateObject } from "ai";
 import { z } from "zod";
-import type { brandProfiles } from "../db/schema";
+import type { brandProfiles } from "@/db/schema";
 import type { UpdateDraft } from "./generation";
 
 type BrandProfileRow = typeof brandProfiles.$inferSelect;

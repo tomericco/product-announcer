@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 vi.mock("ai", () => ({ generateObject: vi.fn() }));
 
 import { generateObject } from "ai";
-import { buildReviewPrompt, buildRevisionPrompt, reviewAndReconcile } from "../../src/lib/review-draft";
+import { buildReviewPrompt, buildRevisionPrompt, reviewAndReconcile } from "../../../src/lib/ai/review-draft";
 
 const draft = { title: "Big news!!!", body: "Buy now.", category: "new" as const };
 const brand = { tone: "calm", readingLevel: "simple", doList: ["be factual"], dontList: ["hype"], examplePhrases: ["ship"], industry: null, userPersonas: [] };

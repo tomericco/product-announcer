@@ -7,7 +7,7 @@ import { requireSession } from "@/lib/session";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { reviewStatusLabel } from "@/lib/review-status";
+import { reviewStatusLabel } from "@/lib/ai/review-status";
 import {
   EmptyState,
   EmptyStateIcon,

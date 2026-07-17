@@ -3,7 +3,7 @@ import { db as defaultDb } from "../db";
 import { repos, changeItems } from "../db/schema";
 import { truncateDiff } from "./github";
 import { mapWithConcurrency } from "./concurrency";
-import { enrichChangeItem, type EnrichChangeItem } from "./enrich-change-item";
+import { enrichChangeItem, type EnrichChangeItem } from "@/lib/ai/enrich-change-item";
 
 export type PushInput = {
   installationId: string;

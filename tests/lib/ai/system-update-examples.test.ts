@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { eq } from "drizzle-orm";
-import { db } from "../../src/db";
-import { systemUpdateExamples } from "../../src/db/schema";
+import { db } from "../../../src/db";
+import { systemUpdateExamples } from "../../../src/db/schema";
 
 describe("system_update_examples seed", () => {
   it("seeds a matchable catalog of at least 12 examples", async () => {

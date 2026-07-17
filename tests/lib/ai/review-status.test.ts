@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { reviewStatusLabel } from "../../src/lib/review-status";
+import { reviewStatusLabel } from "../../../src/lib/ai/review-status";
 
 describe("reviewStatusLabel", () => {
   it("labels the actionable statuses", () => {

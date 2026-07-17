@@ -1,7 +1,7 @@
 import { and, eq, inArray, isNull, or } from "drizzle-orm";
 import { db as defaultDb } from "../db";
 import { changeItems, updates } from "../db/schema";
-import type { ReviewStatus } from "./review-draft";
+import type { ReviewStatus } from "@/lib/ai/review-draft";
 
 type ChangeItemRow = typeof changeItems.$inferSelect;
 type UpdateRow = typeof updates.$inferSelect;

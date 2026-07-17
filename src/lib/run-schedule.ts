@@ -2,13 +2,13 @@ import { and, eq } from "drizzle-orm";
 import { db as defaultDb } from "../db";
 import { repos, scheduleConfigs, tenants, webhookConfigs, updates, systemPersonas, systemUpdateExamples } from "../db/schema";
 import { getPendingChangeItems, getBatchableChangeItems, claimBatchAndCreateUpdate, batchCategories } from "./change-item-batch";
-import { generateUpdateDraft } from "./generation";
+import { generateUpdateDraft } from "@/lib/ai/generation";
 import { getOrCreateBrandProfile } from "./brand-profile";
 import { resolvePersonaRefs, systemPersonaKeys } from "./personas";
-import { selectExamples } from "./select-examples";
+import { selectExamples } from "@/lib/ai/select-examples";
 import { shouldTriggerRun, advanceNextScheduledAt, type Cadence } from "./scheduler-decision";
 import { dispatchWebhookForUpdate } from "./webhook-delivery";
-import { reviewAndReconcile } from "./review-draft";
+import { reviewAndReconcile } from "@/lib/ai/review-draft";
 
 type ChangeItemRow = Awaited<ReturnType<typeof getPendingChangeItems>>[number];
 

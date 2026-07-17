@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { selectExamples } from "../../src/lib/select-examples";
-import type { systemUpdateExamples } from "../../src/db/schema";
+import { selectExamples } from "../../../src/lib/ai/select-examples";
+import type { systemUpdateExamples } from "../../../src/db/schema";
 
 type ExampleRow = typeof systemUpdateExamples.$inferSelect;
 

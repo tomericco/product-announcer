@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import { db } from "../../src/db";
 import { tenants, repos, changeItems } from "../../src/db/schema";
 import { importSelectedCommits } from "../../src/lib/import-commits";
-import type { EnrichChangeItem } from "../../src/lib/enrich-change-item";
+import type { EnrichChangeItem } from "../../src/lib/ai/enrich-change-item";
 
 const NAME = "Import Commits Test Tenant";
 

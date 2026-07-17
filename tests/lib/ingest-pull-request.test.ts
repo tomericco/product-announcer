@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import { db } from "../../src/db";
 import { tenants, repos, changeItems } from "../../src/db/schema";
 import { ingestMergedPullRequest } from "../../src/lib/ingest-pull-request";
-import type { EnrichChangeItem } from "../../src/lib/enrich-change-item";
+import type { EnrichChangeItem } from "../../src/lib/ai/enrich-change-item";
 
 const fakeEnrich: EnrichChangeItem = async (input) => ({
   userFacing: true,
