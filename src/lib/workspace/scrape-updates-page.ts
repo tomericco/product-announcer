@@ -39,6 +39,16 @@ function isPrivateIp(ip: string): boolean {
   return true; // unrecognized → treat as blocked
 }
 
+// Blocks IP literals, encoded IPs (new URL normalizes octal/decimal/hex to
+// dotted-decimal before this check), redirect-to-private (re-validated per hop),
+// and hostnames that resolve to any private/loopback/link-local/CGNAT/ULA IP.
+//
+// KNOWN RESIDUAL (accepted for now, revisit): this is a check-then-fetch, and
+// Node's fetch resolves DNS again independently — so an attacker controlling
+// their domain's DNS could pass this check with a public IP and have fetch
+// connect to a private one (DNS rebinding / TOCTOU). Fully closing it needs IP
+// pinning (connect to the exact validated IP via a custom undici dispatcher,
+// preserving Host + TLS servername). Tracked as a follow-up hardening task.
 async function hostIsPublic(hostname: string, resolveHost: ResolveHost): Promise<boolean> {
   if (isIP(hostname)) return !isPrivateIp(hostname);
   let ips: string[];

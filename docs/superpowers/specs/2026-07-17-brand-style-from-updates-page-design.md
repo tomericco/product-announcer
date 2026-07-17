@@ -123,3 +123,9 @@ is extended to persist the new field.
 2. **Onboarding analysis overwrites the brand profile** — safe because the profile is
    freshly-defaulted during onboarding; there is no re-analysis path from Settings to clobber
    later manual edits.
+3. **DNS-rebinding (TOCTOU) residual in the scraper** — the SSRF guard validates the resolved
+   host, but Node's `fetch` resolves DNS again independently, so an attacker controlling their
+   domain's DNS could pass the check and connect to a private IP. Accepted for now: the guard
+   blocks IP literals, encoded IPs, redirect-to-private, and DNS-resolves-to-private; rebinding
+   requires a determined attacker racing DNS against a one-shot onboarding scrape. Full closure
+   (IP pinning via a custom undici dispatcher) is tracked as a follow-up hardening task.
