@@ -69,4 +69,11 @@ describe("buildSystemPrompt", () => {
     expect(withoutDesc).toContain("Ops: runs infra");
     expect(withoutDesc).not.toContain("Ops (");
   });
+
+  it("includes the house-style line when updatesStyleSummary is set, omits it otherwise", () => {
+    const withSummary = buildSystemPrompt({ ...baseBrand, updatesStyleSummary: "Short bullets, one per change." } as never, [], []);
+    expect(withSummary).toContain("Match the house style of their existing updates: Short bullets, one per change.");
+    const without = buildSystemPrompt({ ...baseBrand, updatesStyleSummary: null } as never, [], []);
+    expect(without).not.toContain("Match the house style");
+  });
 });

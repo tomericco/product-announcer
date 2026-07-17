@@ -75,6 +75,9 @@ export function buildSystemPrompt(
     brandProfile.examplePhrases.length > 0
       ? `Prefer this vocabulary and phrasing where natural: ${brandProfile.examplePhrases.join("; ")}.`
       : null,
+    brandProfile.updatesStyleSummary
+      ? `Match the house style of their existing updates: ${brandProfile.updatesStyleSummary}.`
+      : null,
   ].filter((line): line is string => Boolean(line));
 
   const base = lines.join(" ");
