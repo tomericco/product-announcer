@@ -1,9 +1,9 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
-import { db } from "../../src/db";
-import { tenants, repos, changeItems } from "../../src/db/schema";
-import { ingestMergedPullRequest } from "../../src/lib/ingest-pull-request";
-import type { EnrichChangeItem } from "../../src/lib/ai/enrich-change-item";
+import { db } from "../../../src/db";
+import { tenants, repos, changeItems } from "../../../src/db/schema";
+import { ingestMergedPullRequest } from "../../../src/lib/change-items/ingest-pull-request";
+import type { EnrichChangeItem } from "../../../src/lib/ai/enrich-change-item";
 
 const fakeEnrich: EnrichChangeItem = async (input) => ({
   userFacing: true,

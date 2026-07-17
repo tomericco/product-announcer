@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
-import { db } from "../../src/db";
-import { tenants, repos, changeItems } from "../../src/db/schema";
+import { db } from "../../../src/db";
+import { tenants, repos, changeItems } from "../../../src/db/schema";
 
 const NAME = "Enrichment Columns Test Tenant";
 

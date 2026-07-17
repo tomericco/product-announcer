@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
-import { db as defaultDb } from "../db";
-import { repos, changeItems } from "../db/schema";
+import { db as defaultDb } from "@/db";
+import { repos, changeItems } from "@/db/schema";
 import { enrichChangeItem, type EnrichChangeItem } from "@/lib/ai/enrich-change-item";
 
 export type MergedPullRequestInput = {

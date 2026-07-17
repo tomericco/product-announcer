@@ -10,7 +10,7 @@ import { eq } from "drizzle-orm";
 import { db } from "../../src/db";
 import { tenants, repos, changeItems, updates, scheduleConfigs, brandProfiles } from "../../src/db/schema";
 import { runBatchForWorkspace, runSchedulerTick, applyPostRunScheduleChoice } from "../../src/lib/run-schedule";
-import { getPendingChangeItems } from "../../src/lib/change-item-batch";
+import { getPendingChangeItems } from "../../src/lib/change-items/change-item-batch";
 import { advanceNextScheduledAt } from "../../src/lib/scheduler-decision";
 import { reviewAndReconcile } from "../../src/lib/ai/review-draft";
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { changeItemFacingState } from "../../src/lib/change-item-display";
+import { changeItemFacingState } from "../../../src/lib/change-items/change-item-display";
 
 describe("changeItemFacingState", () => {
   it("is non-facing when userFacing is false", () => {

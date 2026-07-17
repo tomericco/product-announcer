@@ -8,7 +8,7 @@ import { eq } from "drizzle-orm";
 import { db } from "../../src/db";
 import { tenants, repos, changeItems, updates, webhookConfigs, webhookDeliveries } from "../../src/db/schema";
 import { runBatchForWorkspace } from "../../src/lib/run-schedule";
-import { getPendingChangeItems } from "../../src/lib/change-item-batch";
+import { getPendingChangeItems } from "../../src/lib/change-items/change-item-batch";
 import { reviewAndReconcile } from "../../src/lib/ai/review-draft";
 
 const NAME = "Auto Publish Test Tenant";

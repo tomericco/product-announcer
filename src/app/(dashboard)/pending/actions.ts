@@ -6,10 +6,10 @@ import { revalidatePath } from "next/cache";
 import { db } from "@/db";
 import { changeItems, repos, scheduleConfigs } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
-import { getBatchableChangeItems } from "@/lib/change-item-batch";
+import { getBatchableChangeItems } from "@/lib/change-items/change-item-batch";
 import { runBatchForWorkspace, applyPostRunScheduleChoice } from "@/lib/run-schedule";
 import { getCommitDiff, listRepoCommits } from "@/lib/integrations/github/github";
-import { importSelectedCommits, type CommitSelection } from "@/lib/import-commits";
+import { importSelectedCommits, type CommitSelection } from "@/lib/change-items/import-commits";
 
 export async function dropChangeItem(formData: FormData) {
   const session = await requireSession();

@@ -1,9 +1,9 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { db } from "../../src/db";
-import { tenants, repos, changeItems } from "../../src/db/schema";
-import { ingestPush } from "../../src/lib/ingest-push";
-import type { EnrichChangeItem } from "../../src/lib/ai/enrich-change-item";
+import { db } from "../../../src/db";
+import { tenants, repos, changeItems } from "../../../src/db/schema";
+import { ingestPush } from "../../../src/lib/change-items/ingest-push";
+import type { EnrichChangeItem } from "../../../src/lib/ai/enrich-change-item";
 
 const fakeEnrich: EnrichChangeItem = async (input) => ({
   userFacing: input.commitMessage !== "tweak logging",

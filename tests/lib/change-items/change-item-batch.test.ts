@@ -1,13 +1,13 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
-import { db } from "../../src/db";
-import { tenants, repos, changeItems, updates } from "../../src/db/schema";
+import { db } from "../../../src/db";
+import { tenants, repos, changeItems, updates } from "../../../src/db/schema";
 import {
   getPendingChangeItems,
   getBatchableChangeItems,
   claimBatchAndCreateUpdate,
   batchCategories,
-} from "../../src/lib/change-item-batch";
+} from "../../../src/lib/change-items/change-item-batch";
 
 describe("change-item-batch", () => {
   afterEach(async () => {
