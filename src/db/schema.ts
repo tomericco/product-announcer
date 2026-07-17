@@ -136,6 +136,8 @@ export const brandProfiles = pgTable("brand_profiles", {
   dontList: text("dont_list").array().notNull().default([]),
   examplePhrases: text("example_phrases").array().notNull().default([]),
   industry: text("industry"),
+  updatesPageUrl: text("updates_page_url"),
+  updatesStyleSummary: text("updates_style_summary"),
   userPersonas: jsonb("user_personas").$type<PersonaRef[]>().notNull().default([]),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

@@ -92,6 +92,13 @@
       "when": 1784237732075,
       "tag": "0012_hard_reavers",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1784309177546,
+      "tag": "0013_mean_stellaris",
+      "breakpoints": true
     }
   ]
 }

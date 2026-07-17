@@ -1,0 +1,28 @@
+import { describe, it, expect, afterEach } from "vitest";
+import { eq } from "drizzle-orm";
+import { db } from "../../../src/db";
+import { tenants, brandProfiles } from "../../../src/db/schema";
+
+const NAME = "Brand Columns Test Tenant";
+
+describe("brand_profiles updates-page columns", () => {
+  afterEach(async () => {
+    await db.delete(tenants).where(eq(tenants.name, NAME));
+  });
+
+  it("defaults the new columns to null and round-trips values", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: NAME }).returning();
+
+    const [defaulted] = await db.insert(brandProfiles).values({ tenantId: tenant.id }).returning();
+    expect(defaulted.updatesPageUrl).toBeNull();
+    expect(defaulted.updatesStyleSummary).toBeNull();
+
+    const [updated] = await db
+      .update(brandProfiles)
+      .set({ updatesPageUrl: "https://acme.com/changelog", updatesStyleSummary: "Short, punchy, one bullet per change." })
+      .where(eq(brandProfiles.id, defaulted.id))
+      .returning();
+    expect(updated.updatesPageUrl).toBe("https://acme.com/changelog");
+    expect(updated.updatesStyleSummary).toBe("Short, punchy, one bullet per change.");
+  });
+});
