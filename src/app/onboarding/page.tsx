@@ -5,7 +5,13 @@ import { repos, tenants } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { getGithubApp, listAccessibleRepos, listRepoBranches } from "@/lib/integrations/github/github";
 import { isOnboardingComplete } from "@/lib/workspace/onboarding";
-import { addOnboardingRepos, saveOnboardingSchedule, skipOnboarding, saveWorkspaceName } from "./actions";
+import {
+  addOnboardingRepos,
+  saveOnboardingSchedule,
+  skipOnboarding,
+  saveWorkspaceName,
+  importBrandStyle,
+} from "./actions";
 import { RepoRow } from "@/app/(dashboard)/settings/repo-row";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -19,9 +25,14 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
-export default async function OnboardingPage() {
+export default async function OnboardingPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ brandImport?: string }>;
+}) {
   const session = await requireSession();
   if (await isOnboardingComplete(session.user.tenantId)) redirect("/pending");
+  const { brandImport } = await searchParams;
 
   const [tenant] = await db.select().from(tenants).where(eq(tenants.id, session.user.tenantId)).limit(1);
   const tenantRepos = await db.select().from(repos).where(eq(repos.tenantId, session.user.tenantId));
@@ -74,6 +85,32 @@ export default async function OnboardingPage() {
               Save
             </Button>
           </form>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Import your brand style (optional)</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <p className="text-sm text-muted-foreground">
+            Paste the URL of your existing changelog or &ldquo;what&apos;s new&rdquo; page and we&apos;ll set up your
+            brand style automatically. You can refine it later in Settings.
+          </p>
+          <form action={importBrandStyle} className="flex gap-2">
+            <Input name="updatesPageUrl" type="url" placeholder="https://yourproduct.com/changelog" className="flex-1" />
+            <Button type="submit" variant="outline">
+              Import
+            </Button>
+          </form>
+          {brandImport === "success" && (
+            <p className="text-sm text-emerald-600">Brand style imported — refine it anytime in Settings.</p>
+          )}
+          {brandImport === "failed" && (
+            <p className="text-sm text-muted-foreground">
+              We couldn&apos;t read that page — you can set your brand style in Settings.
+            </p>
+          )}
         </CardContent>
       </Card>
 

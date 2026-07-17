@@ -10,6 +10,7 @@ import { addSelectedRepos } from "@/lib/workspace/repo-sync";
 import { parseRepoSelections } from "@/lib/workspace/repo-selection-form";
 import { markOnboardingComplete } from "@/lib/workspace/onboarding";
 import { listRepoBranches } from "@/lib/integrations/github/github";
+import { importBrandStyleForTenant } from "@/lib/workspace/brand-import";
 
 export async function addOnboardingRepos(formData: FormData) {
   const session = await requireSession();
@@ -54,6 +55,15 @@ export async function skipOnboarding() {
   const session = await requireSession();
   await markOnboardingComplete(session.user.tenantId);
   redirect("/pending");
+}
+
+export async function importBrandStyle(formData: FormData) {
+  const session = await requireSession();
+  const url = (formData.get("updatesPageUrl") as string)?.trim();
+  if (!url) redirect("/onboarding");
+
+  const result = await importBrandStyleForTenant(session.user.tenantId, url);
+  redirect(result.ok ? "/onboarding?brandImport=success" : "/onboarding?brandImport=failed");
 }
 
 export async function saveWorkspaceName(formData: FormData) {
