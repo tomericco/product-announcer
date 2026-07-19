@@ -114,6 +114,10 @@ export const scheduleConfigs = pgTable("schedule_configs", {
     .references(() => tenants.id, { onDelete: "cascade" }),
   cadence: cadenceEnum("cadence").notNull().default("weekly"),
   threshold: integer("threshold"),
+  // Whether the threshold trigger is active. Off by default so a bulk import
+  // doesn't auto-generate a draft ahead of the scheduled cadence; the threshold
+  // number above is retained regardless, so re-enabling restores it.
+  thresholdEnabled: boolean("threshold_enabled").notNull().default(false),
   // Time-of-day (0-23, UTC) the scheduled update is generated. Applies to every
   // cadence except "none".
   hour: integer("hour").notNull().default(9),
