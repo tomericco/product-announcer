@@ -64,6 +64,7 @@ export function ScheduleForm({
   const [dayOfWeek, setDayOfWeek] = useState(String(defaults.dayOfWeek ?? 1));
   const [dayOfMonth, setDayOfMonth] = useState(String(defaults.dayOfMonth ?? 1));
   const [thresholdEnabled, setThresholdEnabled] = useState(defaults.thresholdEnabled);
+  const [threshold, setThreshold] = useState(String(defaults.threshold ?? 5));
 
   async function handleSave(formData: FormData) {
     await saveWorkspaceSchedule(formData);
@@ -155,7 +156,7 @@ export function ScheduleForm({
           <Switch
             name="thresholdEnabled"
             checked={thresholdEnabled}
-            onCheckedChange={(checked) => setThresholdEnabled(checked as boolean)}
+            onCheckedChange={(checked) => setThresholdEnabled(checked)}
           />
           Publish early when changes pile up
         </label>
@@ -163,14 +164,21 @@ export function ScheduleForm({
           When on, generate an update as soon as at least this many changes are pending, without
           waiting for the next scheduled run.
         </p>
+        <Label htmlFor="threshold" className="sr-only">
+          Number of pending changes that triggers an early update
+        </Label>
         <Input
           id="threshold"
           type="number"
-          name="threshold"
           min={1}
-          defaultValue={defaults.threshold ?? 5}
+          value={threshold}
+          onChange={(e) => setThreshold(e.target.value)}
           disabled={!thresholdEnabled}
         />
+        {/* Always submit the threshold value, even while the visible input is
+            disabled — a disabled control is omitted from FormData, which would
+            null out the stored threshold on save. */}
+        <input type="hidden" name="threshold" value={threshold} />
       </div>
 
       <Button type="submit" variant="outline">
