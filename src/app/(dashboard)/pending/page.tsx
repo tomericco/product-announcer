@@ -4,11 +4,12 @@ import { FolderGit2, Inbox, ArrowRight } from "lucide-react";
 import { db } from "@/db";
 import { repos, scheduleConfigs } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
-import { getTrackedChangeItems } from "@/lib/change-items/change-item-batch";
+import { getBatchableChangeItems, getTrackedChangeItems } from "@/lib/change-items/change-item-batch";
 import { formatScheduleDistance } from "@/lib/scheduling/format-schedule";
 import { changeItemFacingState, ignoredReasonLabel } from "@/lib/change-items/change-item-display";
-import { dropChangeItem, runNow, includeChangeItem } from "./actions";
+import { dropChangeItem, includeChangeItem } from "./actions";
 import { ImportCommitsDialog } from "./import-commits-dialog";
+import { DraftUpdateDialog } from "./draft-update-dialog";
 import { NextPublishTime } from "./next-publish-time";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -76,6 +77,17 @@ export default async function PendingPage() {
     return ta - tb;
   });
   const pendingCount = tracked.filter((t) => t.status === "pending").length;
+
+  const batchable = await getBatchableChangeItems(session.user.tenantId);
+  const batchableWhens = batchable
+    .map((b) => (b.sourceType === "pr" ? b.mergedAt : b.committedAt))
+    .filter((d): d is Date => d instanceof Date)
+    .sort((a, b) => a.getTime() - b.getTime());
+  const draftPreview = {
+    count: batchable.length,
+    earliest: batchableWhens[0]?.toISOString() ?? null,
+    latest: batchableWhens.at(-1)?.toISOString() ?? null,
+  };
 
   const nextRelative = config?.nextScheduledAt ? formatScheduleDistance(config.nextScheduledAt) : null;
   const nextAbsolute = config?.nextScheduledAt ? config.nextScheduledAt.toLocaleString() : null;
@@ -217,9 +229,7 @@ export default async function PendingPage() {
                     {pendingCount} pending
                     {config?.thresholdEnabled && config?.threshold ? ` / ${config.threshold} threshold` : ""}
                   </p>
-                  <form action={runNow}>
-                    <Button type="submit">Draft update now</Button>
-                  </form>
+                  <DraftUpdateDialog preview={draftPreview} />
                 </div>
               </TableCell>
             </TableRow>
