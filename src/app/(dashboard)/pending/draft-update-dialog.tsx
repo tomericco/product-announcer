@@ -16,6 +16,26 @@ import {
 type Phase = "preview" | "progress" | "error" | "success";
 type StepStatus = "pending" | "active" | "done";
 
+// Minimum time a step stays visible before the next transition, so a fast
+// backend doesn't flicker the steps past. It's a floor, not a fixed delay —
+// steps whose real work already took longer are not padded.
+const MIN_STEP_MS = 1000;
+
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) return resolve();
+    const timer = setTimeout(resolve, ms);
+    signal.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+      { once: true }
+    );
+  });
+}
+
 export function DraftUpdateDialog({
   preview,
 }: {
@@ -28,6 +48,7 @@ export function DraftUpdateDialog({
   const [error, setError] = useState("");
   const [updateId, setUpdateId] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const lastTransitionRef = useRef(0);
 
   function reset() {
     abortRef.current?.abort();
@@ -54,10 +75,32 @@ export function DraftUpdateDialog({
     }
   }
 
+  // Applies an event, but keeps each step on screen for at least MIN_STEP_MS.
+  // A step becoming active renders immediately and anchors the clock; a step
+  // finishing (and the terminal done/error) waits out the remainder of the
+  // minimum so the transition doesn't flicker. Detail refinements update live.
+  async function pacedApply(event: DraftProgressEvent, ac: AbortController) {
+    if (event.type === "detail") {
+      apply(event);
+      return;
+    }
+    if (event.type === "step" && event.status === "start") {
+      apply(event);
+      lastTransitionRef.current = Date.now();
+      return;
+    }
+    const wait = MIN_STEP_MS - (Date.now() - lastTransitionRef.current);
+    if (wait > 0) await sleep(wait, ac.signal);
+    if (ac.signal.aborted) return;
+    apply(event);
+    lastTransitionRef.current = Date.now();
+  }
+
   async function create() {
     reset();
     const ac = new AbortController();
     abortRef.current = ac;
+    lastTransitionRef.current = Date.now();
     setPhase("progress");
     try {
       const res = await fetch("/api/pending/draft", { method: "POST", signal: ac.signal });
@@ -79,10 +122,10 @@ export function DraftUpdateDialog({
         const lines = buffer.split("\n");
         buffer = lines.pop() ?? "";
         for (const line of lines) {
-          if (line.trim() && !ac.signal.aborted) apply(JSON.parse(line) as DraftProgressEvent);
+          if (line.trim() && !ac.signal.aborted) await pacedApply(JSON.parse(line) as DraftProgressEvent, ac);
         }
       }
-      if (buffer.trim() && !ac.signal.aborted) apply(JSON.parse(buffer) as DraftProgressEvent);
+      if (buffer.trim() && !ac.signal.aborted) await pacedApply(JSON.parse(buffer) as DraftProgressEvent, ac);
     } catch (e) {
       if (ac.signal.aborted) return;
       setError(e instanceof Error ? e.message : "Something went wrong.");
