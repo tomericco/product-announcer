@@ -18,7 +18,7 @@ export function NavLinks() {
     <nav className="flex flex-col gap-1">
       {NAV.map((item) => {
         // Highlight the item for its own route and any nested route under it
-        // (e.g. /pending/schedule-choice keeps "Pending" active).
+        // (e.g. /drafts/[updateId] keeps "Drafts" active).
         const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
         return (
           <Button

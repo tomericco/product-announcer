@@ -1,13 +1,10 @@
 "use server";
 
 import { and, eq, inArray, ne } from "drizzle-orm";
-import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { db } from "@/db";
-import { changeItems, repos, scheduleConfigs } from "@/db/schema";
+import { changeItems, repos } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
-import { getBatchableChangeItems } from "@/lib/change-items/change-item-batch";
-import { runBatchForWorkspace, applyPostRunScheduleChoice } from "@/lib/scheduling/run-schedule";
 import { getCommitDiff, listRepoCommits } from "@/lib/integrations/github/github";
 import { importSelectedCommits, type CommitSelection } from "@/lib/change-items/import-commits";
 
@@ -37,24 +34,6 @@ export async function includeChangeItem(formData: FormData) {
     .where(and(eq(changeItems.id, changeItemId), eq(changeItems.tenantId, session.user.tenantId)));
 
   revalidatePath("/pending");
-}
-
-export async function runNow() {
-  const session = await requireSession();
-
-  const pending = await getBatchableChangeItems(session.user.tenantId);
-  if (pending.length === 0) {
-    revalidatePath("/pending");
-    return;
-  }
-
-  await runBatchForWorkspace(session.user.tenantId, pending);
-  await db
-    .update(scheduleConfigs)
-    .set({ lastRunAt: new Date() })
-    .where(eq(scheduleConfigs.tenantId, session.user.tenantId));
-
-  redirect("/pending/schedule-choice");
 }
 
 export type ImportableCommit = {
@@ -147,13 +126,4 @@ export async function importCommits(input: {
 
   revalidatePath("/pending");
   return result;
-}
-
-export async function chooseSchedule(formData: FormData) {
-  const session = await requireSession();
-  const choice = formData.get("choice") as "keep" | "skip";
-
-  await applyPostRunScheduleChoice(session.user.tenantId, choice);
-
-  redirect("/pending");
 }

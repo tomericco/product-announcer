@@ -9,7 +9,7 @@ import { generateObject } from "ai";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
 import { tenants, repos, changeItems, updates, scheduleConfigs, brandProfiles } from "../../../src/db/schema";
-import { runBatchForWorkspace, runSchedulerTick, applyPostRunScheduleChoice } from "../../../src/lib/scheduling/run-schedule";
+import { runBatchForWorkspace, runSchedulerTick } from "../../../src/lib/scheduling/run-schedule";
 import { getPendingChangeItems } from "../../../src/lib/change-items/change-item-batch";
 import { advanceNextScheduledAt } from "../../../src/lib/scheduling/scheduler-decision";
 import { reviewAndReconcile } from "../../../src/lib/ai/review-draft";
@@ -137,17 +137,6 @@ describe("run-schedule (workspace-level)", () => {
     const system = vi.mocked(generateObject).mock.calls.at(-1)![0].system as string;
     expect(system).toContain("mirror their structure");
     expect(system).toContain("Ship webhooks with the new Events API"); // seeded devtools-developer-new title
-  });
-
-  it("applyPostRunScheduleChoice('skip') advances the workspace schedule from its current value", async () => {
-    const { tenant } = await seed();
-    const anchor = new Date("2026-07-10T00:00:00Z");
-    await db.insert(scheduleConfigs).values({ tenantId: tenant.id, cadence: "weekly", nextScheduledAt: anchor });
-
-    await applyPostRunScheduleChoice(tenant.id, "skip");
-
-    const [config] = await db.select().from(scheduleConfigs).where(eq(scheduleConfigs.tenantId, tenant.id));
-    expect(config.nextScheduledAt).toEqual(advanceNextScheduledAt(anchor, "weekly"));
   });
 
   it("runBatchForWorkspace emits ordered progress events and a done event on success", async () => {
