@@ -218,16 +218,16 @@ export function ImportCommitsDialog({ repos }: { repos: ImportRepo[] }) {
             onChange={(e) => setSearch(e.target.value)}
           />
           <div className="space-y-1">
-            <Label htmlFor="before" className="text-xs text-muted-foreground">
-              Before
-            </Label>
-            <Input id="before" type="date" className="w-40" value={before} onChange={(e) => setBefore(e.target.value)} />
-          </div>
-          <div className="space-y-1">
             <Label htmlFor="after" className="text-xs text-muted-foreground">
               After
             </Label>
             <Input id="after" type="date" className="w-40" value={after} onChange={(e) => setAfter(e.target.value)} />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="before" className="text-xs text-muted-foreground">
+              Before
+            </Label>
+            <Input id="before" type="date" className="w-40" value={before} onChange={(e) => setBefore(e.target.value)} />
           </div>
         </div>
 

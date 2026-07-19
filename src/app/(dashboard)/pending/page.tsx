@@ -215,7 +215,7 @@ export default async function PendingPage() {
                     )}
                     {" · "}
                     {pendingCount} pending
-                    {config?.threshold ? ` / ${config.threshold} threshold` : ""}
+                    {config?.thresholdEnabled && config?.threshold ? ` / ${config.threshold} threshold` : ""}
                   </p>
                   <form action={runNow}>
                     <Button type="submit">Draft update now</Button>
