@@ -104,7 +104,7 @@ describe("run-schedule (workspace-level)", () => {
       tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "a",
     });
     const future = new Date("2026-08-01T00:00:00Z");
-    await db.insert(scheduleConfigs).values({ tenantId: tenant.id, cadence: "weekly", threshold: 1, nextScheduledAt: future });
+    await db.insert(scheduleConfigs).values({ tenantId: tenant.id, cadence: "weekly", threshold: 1, thresholdEnabled: true, nextScheduledAt: future });
     vi.mocked(generateObject).mockResolvedValue({
       object: { title: "T", body: "B", category: "new" },
     } as never);
