@@ -75,12 +75,13 @@ payload omits parents):
 
 ### 4. Per-commit classification
 
-For each enumerated commit, in this **precedence order** (chosen to do the least work):
+For each enumerated commit, in this **precedence order**:
 
-1. **Merge commit** (`parents.length >= 2`) → record as **ignored**, reason `merge_commit`.
-   No diff fetch, no PR check, no enrichment.
-2. **Belongs to a merged PR** (`getCommitPulls(sha)` reports an associated **merged** PR) →
-   **drop** (not stored); the PR is its own rich item.
+1. **Belongs to a merged PR** (`getCommitPulls(sha)` reports an associated **merged** PR) →
+   **drop** (not stored); the PR is its own rich item. This runs first so a PR's **merge
+   commit** is dropped along with the rest of its commits — never shown as ignored.
+2. **Merge commit with no associated PR** (`parents.length >= 2`, e.g. a local merge pushed
+   directly) → record as **ignored**, reason `merge_commit`. No diff fetch, no enrichment.
 3. **Empty diff** — fetch the diff; if it is empty (nothing changed) → record as **ignored**,
    reason `empty_diff`. No enrichment.
 4. **Otherwise** → enrich the diff and store as a normal **pending** commit change item
@@ -88,10 +89,6 @@ For each enumerated commit, in this **precedence order** (chosen to do the least
 
 `onConflictDoNothing` on `(repoId, commitSha)` still guards webhook re-delivery for every
 stored row (pending and ignored alike).
-
-Note: a PR merged with a *merge commit* shows its merge commit as `ignored · merge commit`
-(step 1 precedes the PR drop), while its branch commits are dropped as PR-associated (step 2)
-— accepted, per the "empty-diff + merge only" scope.
 
 ### 5. Data model
 
@@ -135,10 +132,11 @@ New client fns in `integrations/github/github.ts`:
 ### 8. Testing
 
 - **`ingestPush`** (injected fakes for all deps): a substantive direct commit → enriched
-  `pending`; a merge commit → `ignored/merge_commit` (no enrich); an empty-diff commit →
-  `ignored/empty_diff` (no enrich); a merged-PR commit → dropped (not stored); a mixed batch;
-  the classification precedence (merge beats PR-drop beats empty); `≥20`/compare enumeration;
-  branch mismatch → nothing; re-delivery deduped; over-cap truncation logs + processes the cap.
+  `pending`; a **non-PR** merge commit → `ignored/merge_commit` (no enrich); an empty-diff
+  commit → `ignored/empty_diff` (no enrich); a merged-PR commit **including a PR merge commit**
+  → dropped (not stored); a mixed batch; the classification precedence (PR-drop beats merge
+  beats empty); `≥20`/compare enumeration; branch mismatch → nothing; re-delivery deduped;
+  over-cap truncation logs + processes the cap.
 - **GitHub client fns** (mocked octokit): compare pagination + cap + parents; `commits/{sha}/pulls`
   merged-vs-open discrimination.
 - **Data model**: round-trip an `ignored` row with `ignored_reason`.
@@ -161,9 +159,7 @@ New client fns in `integrations/github/github.ts`:
    mitigated by logging + the manual "Import commits" recovery path.
 2. **Over-cap pushes (>250 commits) are truncated with a logged breadcrumb** — rare bulk
    events; recoverable via manual import.
-3. **One `commits/{sha}/pulls` call per non-merge commit** (plus the diff fetch for non-merge,
-   non-PR commits) — the cost of accurate, strategy-agnostic dedup + empty-diff detection;
-   affordable now that push processing runs after the response with capped concurrency.
-4. **A PR merge commit appears as `ignored · merge commit`** even though its PR is also its own
-   item — mild redundancy accepted in exchange for the simple "merge commits are always shown"
-   rule.
+3. **One `commits/{sha}/pulls` call per commit** (PR-association is checked first, so it runs
+   for every commit; plus a diff fetch for non-PR, non-merge commits) — the cost of accurate,
+   strategy-agnostic dedup + empty-diff detection; affordable now that push processing runs
+   after the response with capped concurrency.
