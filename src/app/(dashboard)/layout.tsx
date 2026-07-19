@@ -14,13 +14,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-
-const NAV = [
-  { href: "/pending", label: "Pending" },
-  { href: "/drafts", label: "Drafts" },
-  { href: "/history", label: "History" },
-  { href: "/integrations", label: "Integrations" },
-];
+import { NavLinks } from "./nav-links";
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
   const session = await requireSession();
@@ -44,13 +38,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
 
         <Separator className="my-2" />
 
-        <nav className="flex flex-col gap-1">
-          {NAV.map((item) => (
-            <Button key={item.href} variant="ghost" className="justify-start font-normal" render={<Link href={item.href} />}>
-              {item.label}
-            </Button>
-          ))}
-        </nav>
+        <NavLinks />
 
         <div className="mt-auto px-2 pt-3 text-xs text-muted-foreground">{session.user.email}</div>
       </aside>
