@@ -5,6 +5,7 @@ import { tenants, repos, changeItems, updates } from "../../../src/db/schema";
 import {
   getPendingChangeItems,
   getBatchableChangeItems,
+  getTrackedChangeItems,
   claimBatchAndCreateUpdate,
   batchCategories,
 } from "../../../src/lib/change-items/change-item-batch";
@@ -53,6 +54,20 @@ describe("change-item-batch", () => {
 
     const all = await getPendingChangeItems(tenant.id);
     expect(all.map((p) => p.prTitle).sort()).toEqual(["facing", "non-facing", "unenriched"]);
+  });
+
+  it("getTrackedChangeItems returns pending and ignored items, excluding batched/excluded", async () => {
+    const { tenant, repoA } = await seed();
+    await db.insert(changeItems).values([
+      { tenantId: tenant.id, repoId: repoA.id, sourceType: "commit", status: "pending", commitSha: "p1", commitMessage: "p" },
+      { tenantId: tenant.id, repoId: repoA.id, sourceType: "commit", status: "ignored", ignoredReason: "merge_commit", commitSha: "i1", commitMessage: "m" },
+      { tenantId: tenant.id, repoId: repoA.id, sourceType: "commit", status: "excluded", commitSha: "x1", commitMessage: "x" },
+    ]);
+    const tracked = await getTrackedChangeItems(tenant.id);
+    expect(tracked.map((t) => t.commitSha).sort()).toEqual(["i1", "p1"]);
+    // generation still excludes ignored:
+    const batchable = await getBatchableChangeItems(tenant.id);
+    expect(batchable.map((b) => b.commitSha)).toEqual(["p1"]);
   });
 
   it("claimBatchAndCreateUpdate creates one cross-repo Update (repoId null) and marks items batched", async () => {

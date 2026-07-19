@@ -4,9 +4,9 @@ import { FolderGit2, Inbox, ArrowRight } from "lucide-react";
 import { db } from "@/db";
 import { repos, scheduleConfigs } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
-import { getPendingChangeItems } from "@/lib/change-items/change-item-batch";
+import { getTrackedChangeItems } from "@/lib/change-items/change-item-batch";
 import { formatScheduleDistance } from "@/lib/scheduling/format-schedule";
-import { changeItemFacingState } from "@/lib/change-items/change-item-display";
+import { changeItemFacingState, ignoredReasonLabel } from "@/lib/change-items/change-item-display";
 import { dropChangeItem, runNow, includeChangeItem } from "./actions";
 import { ImportCommitsDialog } from "./import-commits-dialog";
 import { NextPublishTime } from "./next-publish-time";
@@ -67,12 +67,13 @@ export default async function PendingPage() {
     .select()
     .from(scheduleConfigs)
     .where(eq(scheduleConfigs.tenantId, session.user.tenantId));
-  const pending = await getPendingChangeItems(session.user.tenantId);
+  const tracked = await getTrackedChangeItems(session.user.tenantId);
+  const pendingCount = tracked.filter((t) => t.status === "pending").length;
 
   const nextRelative = config?.nextScheduledAt ? formatScheduleDistance(config.nextScheduledAt) : null;
   const nextAbsolute = config?.nextScheduledAt ? config.nextScheduledAt.toLocaleString() : null;
 
-  if (pending.length === 0) {
+  if (tracked.length === 0) {
     return (
       <div className="flex flex-1 items-center justify-center">
         <EmptyState>
@@ -107,7 +108,7 @@ export default async function PendingPage() {
         <div>
           <h1 className="text-xl font-semibold">Pending changes</h1>
           <p className="text-sm text-muted-foreground">
-            {pending.length} change{pending.length === 1 ? "" : "s"} waiting to be announced.
+            {pendingCount} change{pendingCount === 1 ? "" : "s"} waiting to be announced.
           </p>
         </div>
         <ImportCommitsDialog repos={importRepos} />
@@ -127,15 +128,16 @@ export default async function PendingPage() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {pending.map((item) => {
+            {tracked.map((item) => {
               const isPr = item.sourceType === "pr";
               const change = (isPr ? item.prTitle : item.commitMessage) ?? "—";
               const url = isPr ? item.prUrl : item.commitUrl;
               const when = isPr ? item.mergedAt : item.committedAt;
               const facingState = changeItemFacingState(item);
               const isNonFacing = facingState === "non-facing";
+              const isIgnored = item.status === "ignored";
               return (
-                <TableRow key={item.id} className={isNonFacing ? "opacity-60" : undefined}>
+                <TableRow key={item.id} className={isNonFacing || isIgnored ? "opacity-60" : undefined}>
                   <TableCell className="pl-4">
                     <Badge variant="outline">{repoNameById.get(item.repoId) ?? "unknown"}</Badge>
                   </TableCell>
@@ -149,16 +151,19 @@ export default async function PendingPage() {
                         change
                       )}
                     </div>
-                    {facingState === "non-facing" && (
+                    {isIgnored ? (
+                      <Badge variant="outline" className="mt-1 text-muted-foreground">
+                        Ignored · {ignoredReasonLabel(item.ignoredReason)}
+                      </Badge>
+                    ) : facingState === "non-facing" ? (
                       <Badge variant="outline" className="mt-1 text-muted-foreground">
                         Not user-facing
                       </Badge>
-                    )}
-                    {facingState === "low-confidence" && (
+                    ) : facingState === "low-confidence" ? (
                       <Badge variant="outline" className="mt-1 text-muted-foreground">
                         Low confidence
                       </Badge>
-                    )}
+                    ) : null}
                   </TableCell>
                   <TableCell>
                     <Badge variant="secondary">{isPr ? "PR" : "Commit"}</Badge>
@@ -167,22 +172,24 @@ export default async function PendingPage() {
                     {when ? when.toLocaleDateString() : "—"}
                   </TableCell>
                   <TableCell className="pr-4 text-right">
-                    <div className="flex items-center justify-end gap-1">
-                      {isNonFacing && (
-                        <form action={includeChangeItem}>
+                    {!isIgnored && (
+                      <div className="flex items-center justify-end gap-1">
+                        {isNonFacing && (
+                          <form action={includeChangeItem}>
+                            <input type="hidden" name="changeItemId" value={item.id} />
+                            <Button type="submit" variant="ghost" size="sm">
+                              Include
+                            </Button>
+                          </form>
+                        )}
+                        <form action={dropChangeItem}>
                           <input type="hidden" name="changeItemId" value={item.id} />
-                          <Button type="submit" variant="ghost" size="sm">
-                            Include
+                          <Button type="submit" variant="ghost" size="sm" className="text-muted-foreground">
+                            Drop
                           </Button>
                         </form>
-                      )}
-                      <form action={dropChangeItem}>
-                        <input type="hidden" name="changeItemId" value={item.id} />
-                        <Button type="submit" variant="ghost" size="sm" className="text-muted-foreground">
-                          Drop
-                        </Button>
-                      </form>
-                    </div>
+                      </div>
+                    )}
                   </TableCell>
                 </TableRow>
               );
@@ -200,7 +207,7 @@ export default async function PendingPage() {
                       <span className="font-medium text-foreground">not scheduled</span>
                     )}
                     {" · "}
-                    {pending.length} pending
+                    {pendingCount} pending
                     {config?.threshold ? ` / ${config.threshold} threshold` : ""}
                   </p>
                   <form action={runNow}>

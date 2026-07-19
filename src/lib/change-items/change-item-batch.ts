@@ -40,6 +40,22 @@ export async function getBatchableChangeItems(
     .orderBy(changeItems.createdAt);
 }
 
+/**
+ * The tracked-list query for the Pending page: pending items (actionable) plus
+ * ignored ones (merge/empty commits, shown dimmed for transparency). Excludes
+ * batched/excluded. Generation uses getBatchableChangeItems, which is pending-only.
+ */
+export async function getTrackedChangeItems(
+  tenantId: string,
+  database: typeof defaultDb = defaultDb
+): Promise<ChangeItemRow[]> {
+  return database
+    .select()
+    .from(changeItems)
+    .where(and(eq(changeItems.tenantId, tenantId), inArray(changeItems.status, ["pending", "ignored"])))
+    .orderBy(changeItems.createdAt);
+}
+
 export type DraftInput = { title: string; body: string; category: "new" | "improved" | "fixed" };
 
 export async function claimBatchAndCreateUpdate(

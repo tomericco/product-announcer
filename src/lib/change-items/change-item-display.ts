@@ -18,3 +18,14 @@ export function changeItemFacingState(item: {
   }
   return "facing";
 }
+
+export function ignoredReasonLabel(reason: "merge_commit" | "empty_diff" | null): string | null {
+  switch (reason) {
+    case "merge_commit":
+      return "merge commit";
+    case "empty_diff":
+      return "empty diff";
+    default:
+      return null;
+  }
+}
