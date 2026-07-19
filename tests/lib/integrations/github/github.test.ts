@@ -76,11 +76,21 @@ describe("listPushCommits", () => {
   });
 
   it("enumerates the compare range with parents", async () => {
+    const rawCommits = [
+      { sha: "c1", html_url: "https://x/c1", commit: { message: "feat", author: { date: "2026-07-01T00:00:00Z" } }, parents: [{ sha: "p1" }] },
+      { sha: "m1", html_url: "https://x/m1", commit: { message: "Merge", author: { date: "2026-07-02T00:00:00Z" } }, parents: [{ sha: "p1" }, { sha: "p2" }] },
+    ];
     const fakeOctokit = {
-      paginate: vi.fn().mockResolvedValue([
-        { sha: "c1", html_url: "https://x/c1", commit: { message: "feat", author: { date: "2026-07-01T00:00:00Z" } }, parents: [{ sha: "p1" }] },
-        { sha: "m1", html_url: "https://x/m1", commit: { message: "Merge", author: { date: "2026-07-02T00:00:00Z" } }, parents: [{ sha: "p1" }, { sha: "p2" }] },
-      ]),
+      // A realistic compare PAGE shape has a top-level `url` alongside `commits`
+      // (which is why octokit's paginate normalizer can't auto-reduce it). The
+      // mock must actually invoke the passed mapFn against that page shape, so
+      // that if someone drops the mapFn from listPushCommits, this test breaks
+      // instead of silently passing raw compare objects through `.map`.
+      paginate: vi
+        .fn()
+        .mockImplementation(async (_endpoint: unknown, _params: unknown, mapFn: (r: unknown) => unknown) =>
+          mapFn({ data: { url: "https://x/compare", commits: rawCommits } })
+        ),
       rest: { repos: { compareCommitsWithBasehead: "COMPARE_ENDPOINT" } },
     };
     const spy = vi.spyOn(getGithubApp(), "getInstallationOctokit").mockResolvedValue(fakeOctokit as never);

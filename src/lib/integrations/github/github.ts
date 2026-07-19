@@ -144,17 +144,39 @@ export async function listPushCommits(
   const [owner, repo] = repoFullName.split("/");
   const installationOctokit = await getGithubApp().getInstallationOctokit(Number(installationId));
 
-  // Use the route-string form rather than `installationOctokit.rest.repos.compareCommitsWithBasehead`
-  // directly: the plugin's PaginatingEndpoints registration for this route types the paginated
-  // result as the `commits` array itself, whereas the request-object + mapFn overload can't infer
-  // `response.data.commits` (the compare response has multiple array-valued `data` keys — `commits`
-  // and `files` — which defeats the map-callback overload's key inference).
-  const commits = await installationOctokit.paginate("GET /repos/{owner}/{repo}/compare/{basehead}", {
-    owner,
-    repo,
-    basehead: `${range.before}...${range.after}`,
-    per_page: 100,
-  });
+  // Must use the map-callback form: the compare-commits response has a top-level `url`
+  // field, so `@octokit/plugin-paginate-rest`'s normalizer does NOT reduce each page to
+  // its `commits` array automatically (unlike e.g. listBranches). Without an explicit
+  // mapFn, `paginate` would return the whole compare objects (one per page) instead of
+  // individual commits, breaking the `.map` below. The response `data` has two
+  // array-valued keys (`commits` and `files`), which defeats inference on the mapFn
+  // parameter — annotate it explicitly rather than dropping it.
+  const commits = await installationOctokit.paginate(
+    installationOctokit.rest.repos.compareCommitsWithBasehead,
+    {
+      owner,
+      repo,
+      basehead: `${range.before}...${range.after}`,
+      per_page: 100,
+    },
+    (response) =>
+      (
+        response as unknown as {
+          data: {
+            commits: Array<{
+              sha: string;
+              html_url: string;
+              commit: {
+                message: string;
+                author?: { date?: string } | null;
+                committer?: { date?: string } | null;
+              };
+              parents: Array<{ sha: string }>;
+            }>;
+          };
+        }
+      ).data.commits
+  );
 
   const mapped: PushCommit[] = commits.map((c) => ({
     sha: c.sha,
