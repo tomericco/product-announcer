@@ -8,6 +8,7 @@ import { saveWorkspaceName, saveAutoPublish, saveBrandProfile, removeRepo } from
 import { AddRepoDialog } from "./add-repo-dialog";
 import { RepoBranchSelect } from "./repo-branch-select";
 import { PersonasEditor } from "./personas-editor";
+import { BrandStyleImport } from "./brand-style-import";
 import { IndustrySelect } from "./industry-select";
 import { ScheduleForm } from "./schedule-form";
 import { ToastForm } from "./toast-form";
@@ -162,7 +163,8 @@ export default async function SettingsPage() {
         <CardHeader>
           <CardTitle>Brand profile</CardTitle>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
+          <BrandStyleImport defaultUrl={brandProfile.updatesPageUrl ?? ""} />
           <ToastForm action={saveBrandProfile} successMessage="Brand profile saved" className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="tone">Tone</Label>

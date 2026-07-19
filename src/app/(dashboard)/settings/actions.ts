@@ -6,6 +6,7 @@ import { db } from "@/db";
 import { brandProfiles, repos, scheduleConfigs, tenants } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { getOrCreateBrandProfile } from "@/lib/workspace/brand-profile";
+import { importBrandStyleForTenant } from "@/lib/workspace/brand-import";
 import { computeNextScheduledAt, type Cadence } from "@/lib/scheduling/scheduler-decision";
 import { addSelectedRepos } from "@/lib/workspace/repo-sync";
 import { listRepoBranches } from "@/lib/integrations/github/github";
@@ -121,6 +122,22 @@ export async function saveBrandProfile(formData: FormData) {
     .where(eq(brandProfiles.id, profile.id));
 
   revalidatePath("/settings");
+}
+
+/**
+ * Re-derives the brand style from a public updates page (the same extraction used
+ * in onboarding) and overwrites the brand profile. Called from the Settings brand
+ * card, which confirms first since this replaces manual edits. Returns the outcome
+ * so the client can show inline feedback.
+ */
+export async function importBrandStyleFromUrl(url: string): Promise<{ ok: boolean; reason?: string }> {
+  const session = await requireSession();
+  const trimmed = url.trim();
+  if (!trimmed) return { ok: false, reason: "empty" };
+
+  const result = await importBrandStyleForTenant(session.user.tenantId, trimmed);
+  if (result.ok) revalidatePath("/settings");
+  return result;
 }
 
 function parseIntOrNull(value: FormDataEntryValue | null): number | null {
