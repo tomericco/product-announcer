@@ -68,6 +68,13 @@ export default async function PendingPage() {
     .from(scheduleConfigs)
     .where(eq(scheduleConfigs.tenantId, session.user.tenantId));
   const tracked = await getTrackedChangeItems(session.user.tenantId);
+  // Show the oldest change first, by when it landed (PR merge time / commit time);
+  // items without a timestamp sort last.
+  tracked.sort((a, b) => {
+    const ta = (a.sourceType === "pr" ? a.mergedAt : a.committedAt)?.getTime() ?? Infinity;
+    const tb = (b.sourceType === "pr" ? b.mergedAt : b.committedAt)?.getTime() ?? Infinity;
+    return ta - tb;
+  });
   const pendingCount = tracked.filter((t) => t.status === "pending").length;
 
   const nextRelative = config?.nextScheduledAt ? formatScheduleDistance(config.nextScheduledAt) : null;
