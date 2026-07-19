@@ -87,25 +87,32 @@ export async function ingestPush(input: PushInput, deps: IngestPushDeps = {}): P
   });
 
   await mapWithConcurrency(commits, ENRICH_CONCURRENCY, async (commit) => {
-    // 1. Belongs to a merged PR → drop (the PR is its own rich item).
-    const pulls = await commitPulls(input.installationId, input.repoFullName, commit.sha);
-    if (pulls.some((p) => p.merged)) return;
+    try {
+      // 1. Belongs to a merged PR → drop (the PR is its own rich item).
+      const pulls = await commitPulls(input.installationId, input.repoFullName, commit.sha);
+      if (pulls.some((p) => p.merged)) return;
 
-    // 2. Merge commit with no associated PR → ignored (no diff, no enrichment).
-    if (commit.parents.length >= 2) {
-      await insertCommit(database, repo, commit, { status: "ignored", ignoredReason: "merge_commit", diff: null, enrichment: null });
-      return;
+      // 2. Merge commit with no associated PR → ignored (no diff, no enrichment).
+      if (commit.parents.length >= 2) {
+        await insertCommit(database, repo, commit, { status: "ignored", ignoredReason: "merge_commit", diff: null, enrichment: null });
+        return;
+      }
+
+      // 3. Empty diff → ignored (no enrichment).
+      const diff = truncateDiff(await commitDiff(input.installationId, input.repoFullName, commit.sha));
+      if (diff.trim() === "") {
+        await insertCommit(database, repo, commit, { status: "ignored", ignoredReason: "empty_diff", diff, enrichment: null });
+        return;
+      }
+
+      // 4. Substantive → enrich + pending.
+      const enrichment = await enrich({ sourceType: "commit", repoName: input.repoFullName, commitMessage: commit.message, diff });
+      await insertCommit(database, repo, commit, { status: "pending", ignoredReason: null, diff, enrichment });
+    } catch (error) {
+      // One bad commit (flaky API call, transient error) must not abort the whole
+      // push via `Promise.all` inside `mapWithConcurrency` and abandon the
+      // untouched tail — log and move on, the rest of the push still ingests.
+      console.error(`[ingest-push] failed commit ${commit.sha} in ${input.repoFullName}:`, error);
     }
-
-    // 3. Empty diff → ignored (no enrichment).
-    const diff = truncateDiff(await commitDiff(input.installationId, input.repoFullName, commit.sha));
-    if (diff.trim() === "") {
-      await insertCommit(database, repo, commit, { status: "ignored", ignoredReason: "empty_diff", diff, enrichment: null });
-      return;
-    }
-
-    // 4. Substantive → enrich + pending.
-    const enrichment = await enrich({ sourceType: "commit", repoName: input.repoFullName, commitMessage: commit.message, diff });
-    await insertCommit(database, repo, commit, { status: "pending", ignoredReason: null, diff, enrichment });
   });
 }

@@ -131,7 +131,16 @@ export async function listPushCommits(
 ): Promise<PushCommit[]> {
   // New-branch push: no base commit to compare against — fall back to the payload
   // commits (which carry no parent info, so none are classified as merge commits).
+  // GitHub caps the webhook payload's `commits` array at 20; a push that hits that
+  // cap on a brand-new branch may have dropped earlier commits with no compare base
+  // available to enumerate them, so leave a breadcrumb.
   if (!range.before || ZERO_SHA_RE.test(range.before)) {
+    if (range.payloadCommits.length >= 20) {
+      console.warn(
+        `[ingest-push] new-branch push for ${repoFullName} (...${range.after}): ` +
+          `${range.payloadCommits.length} payload commits — GitHub's payload cap may have truncated earlier commits, no compare base to enumerate`
+      );
+    }
     return range.payloadCommits.map((c) => ({
       sha: c.id,
       message: c.message,
@@ -144,41 +153,46 @@ export async function listPushCommits(
   const [owner, repo] = repoFullName.split("/");
   const installationOctokit = await getGithubApp().getInstallationOctokit(Number(installationId));
 
-  // Must use the map-callback form: the compare-commits response has a top-level `url`
-  // field, so `@octokit/plugin-paginate-rest`'s normalizer does NOT reduce each page to
-  // its `commits` array automatically (unlike e.g. listBranches). Without an explicit
-  // mapFn, `paginate` would return the whole compare objects (one per page) instead of
-  // individual commits, breaking the `.map` below. The response `data` has two
-  // array-valued keys (`commits` and `files`), which defeats inference on the mapFn
-  // parameter — annotate it explicitly rather than dropping it.
-  const commits = await installationOctokit.paginate(
+  type RawCommit = {
+    sha: string;
+    html_url: string;
+    commit: {
+      message: string;
+      author?: { date?: string } | null;
+      committer?: { date?: string } | null;
+    };
+    parents: Array<{ sha: string }>;
+  };
+
+  // Use `paginate.iterator` (rather than `paginate()`) so we can read `total_commits`
+  // off each raw page envelope: it's the API's TRUE count of commits in the range,
+  // separate from — and not reducible from — the `commits` array itself, which
+  // `paginate()`'s mapFn form (see extraction below) discards along with the rest of
+  // the envelope. `total_commits` is constant across pages (it describes the whole
+  // comparison), so the last page's value wins.
+  //
+  // The compare-commits response has a top-level `url` field, so a bare accumulation
+  // of `response.data` would NOT be individual commits — must still extract
+  // `.data.commits` per page, same precaution as the old mapFn form, to avoid
+  // silently collecting whole compare envelopes instead of commits.
+  let totalCommits = 0;
+  const rawCommits: RawCommit[] = [];
+  const iterator = installationOctokit.paginate.iterator(
     installationOctokit.rest.repos.compareCommitsWithBasehead,
     {
       owner,
       repo,
       basehead: `${range.before}...${range.after}`,
       per_page: 100,
-    },
-    (response) =>
-      (
-        response as unknown as {
-          data: {
-            commits: Array<{
-              sha: string;
-              html_url: string;
-              commit: {
-                message: string;
-                author?: { date?: string } | null;
-                committer?: { date?: string } | null;
-              };
-              parents: Array<{ sha: string }>;
-            }>;
-          };
-        }
-      ).data.commits
+    }
   );
+  for await (const response of iterator) {
+    const data = (response as unknown as { data: { total_commits: number; commits: RawCommit[] } }).data;
+    totalCommits = data.total_commits;
+    rawCommits.push(...data.commits);
+  }
 
-  const mapped: PushCommit[] = commits.map((c) => ({
+  const mapped: PushCommit[] = rawCommits.map((c) => ({
     sha: c.sha,
     message: c.commit.message,
     url: c.html_url,
@@ -186,7 +200,20 @@ export async function listPushCommits(
     parents: (c.parents ?? []).map((p) => p.sha),
   }));
 
-  return capPushCommits(mapped, MAX_PUSH_COMMITS, { repoFullName, before: range.before, after: range.after });
+  const result = capPushCommits(mapped, MAX_PUSH_COMMITS, { repoFullName, before: range.before, after: range.after });
+
+  // Real truncation detection: GitHub's compare API itself caps the `commits` array
+  // (regardless of pagination) well below `total_commits` for large ranges, so
+  // `capPushCommits`'s own over-cap check rarely fires in practice. Compare against
+  // the authoritative `total_commits` instead.
+  if (totalCommits > result.length) {
+    console.warn(
+      `[ingest-push] truncated push for ${repoFullName} ${range.before}...${range.after}: ` +
+        `total_commits=${totalCommits}, processed=${result.length}, skipped=${totalCommits - result.length}`
+    );
+  }
+
+  return result;
 }
 
 export async function getCommitPulls(

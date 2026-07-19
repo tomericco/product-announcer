@@ -81,16 +81,19 @@ describe("listPushCommits", () => {
       { sha: "m1", html_url: "https://x/m1", commit: { message: "Merge", author: { date: "2026-07-02T00:00:00Z" } }, parents: [{ sha: "p1" }, { sha: "p2" }] },
     ];
     const fakeOctokit = {
-      // A realistic compare PAGE shape has a top-level `url` alongside `commits`
-      // (which is why octokit's paginate normalizer can't auto-reduce it). The
-      // mock must actually invoke the passed mapFn against that page shape, so
-      // that if someone drops the mapFn from listPushCommits, this test breaks
-      // instead of silently passing raw compare objects through `.map`.
-      paginate: vi
-        .fn()
-        .mockImplementation(async (_endpoint: unknown, _params: unknown, mapFn: (r: unknown) => unknown) =>
-          mapFn({ data: { url: "https://x/compare", commits: rawCommits } })
+      // `paginate.iterator` yields raw page envelopes (unreduced), which is how
+      // `listPushCommits` reads `total_commits` off the envelope. A realistic
+      // compare PAGE shape has a top-level `url` alongside `commits` (which is why
+      // octokit's `paginate()` normalizer can't auto-reduce it) — the mock mirrors
+      // that shape so a regression that starts trusting `response.data` wholesale
+      // instead of `.data.commits` would break this test.
+      paginate: {
+        iterator: vi.fn().mockReturnValue(
+          (async function* () {
+            yield { data: { url: "https://x/compare", total_commits: rawCommits.length, commits: rawCommits } };
+          })()
         ),
+      },
       rest: { repos: { compareCommitsWithBasehead: "COMPARE_ENDPOINT" } },
     };
     const spy = vi.spyOn(getGithubApp(), "getInstallationOctokit").mockResolvedValue(fakeOctokit as never);
@@ -102,6 +105,38 @@ describe("listPushCommits", () => {
       { sha: "m1", parents: ["p1", "p2"] },
     ]);
     spy.mockRestore();
+  });
+
+  it("logs a truncation breadcrumb when total_commits exceeds the commits actually returned", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const rawCommits = [
+      { sha: "c1", html_url: "https://x/c1", commit: { message: "feat", author: { date: "2026-07-01T00:00:00Z" } }, parents: [{ sha: "p1" }] },
+    ];
+    const fakeOctokit = {
+      // The compare API caps the returned `commits` array well below the true
+      // range size for large pushes; `total_commits` on the page envelope is the
+      // only place that true count is reported. Here it's far larger than the
+      // single commit actually returned, simulating that truncation.
+      paginate: {
+        iterator: vi.fn().mockReturnValue(
+          (async function* () {
+            yield { data: { url: "https://x/compare", total_commits: 400, commits: rawCommits } };
+          })()
+        ),
+      },
+      rest: { repos: { compareCommitsWithBasehead: "COMPARE_ENDPOINT" } },
+    };
+    const spy = vi.spyOn(getGithubApp(), "getInstallationOctokit").mockResolvedValue(fakeOctokit as never);
+
+    const result = await listPushCommits("1", "acme/x", { before: "b0", after: "b1", payloadCommits: [] });
+
+    expect(result).toHaveLength(1);
+    expect(warn).toHaveBeenCalledOnce();
+    expect(warn.mock.calls[0][0]).toMatch(/total_commits=400/);
+    expect(warn.mock.calls[0][0]).toMatch(/processed=1/);
+    expect(warn.mock.calls[0][0]).toMatch(/skipped=399/);
+    spy.mockRestore();
+    warn.mockRestore();
   });
 });
 

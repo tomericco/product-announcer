@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
 import { tenants, repos, changeItems } from "../../../src/db/schema";
@@ -92,6 +92,29 @@ describe("ingestPush classification", () => {
     });
     expect(listed).toBe(false);
     expect(await db.select().from(changeItems).where(eq(changeItems.tenantId, tenant.id))).toHaveLength(0);
+  });
+
+  it("isolates a per-commit failure: the other commit in the batch still ingests", async () => {
+    const { tenant } = await seed();
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    await ingestPush(baseInput, {
+      listPushCommits: async () => [
+        commit({ sha: "bad1", parents: ["p1"] }),
+        commit({ sha: "good1", parents: ["p1"] }),
+      ],
+      getCommitPulls: noPulls,
+      getCommitDiff: async (installationId, repoFullName, sha) => {
+        if (sha === "bad1") throw new Error("transient GitHub API failure");
+        return "diff --git a/x b/x\n+real change";
+      },
+      enrich: enrichAllFacing,
+    });
+    const rows = await db.select().from(changeItems).where(eq(changeItems.tenantId, tenant.id));
+    expect(rows.map((r) => r.commitSha)).toEqual(["good1"]);
+    expect(rows[0]).toMatchObject({ status: "pending", ignoredReason: null, userFacing: true });
+    expect(errorSpy).toHaveBeenCalledOnce();
+    expect(errorSpy.mock.calls[0][0]).toMatch(/bad1/);
+    errorSpy.mockRestore();
   });
 
   it("is idempotent on re-delivery (onConflictDoNothing)", async () => {
