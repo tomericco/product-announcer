@@ -4,6 +4,7 @@ export type ScheduleState = {
   cadence: Cadence;
   nextScheduledAt: Date | null;
   threshold: number | null;
+  thresholdEnabled: boolean;
   pendingCount: number;
 };
 
@@ -17,7 +18,10 @@ export function shouldTriggerRun(state: ScheduleState, now: Date): TriggerReason
   if (cadenceDue) return "cadence";
 
   const thresholdMet =
-    state.threshold !== null && state.threshold > 0 && state.pendingCount >= state.threshold;
+    state.thresholdEnabled &&
+    state.threshold !== null &&
+    state.threshold > 0 &&
+    state.pendingCount >= state.threshold;
   if (thresholdMet) return "threshold";
 
   return null;

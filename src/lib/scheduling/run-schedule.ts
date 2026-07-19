@@ -100,6 +100,7 @@ export async function runSchedulerTick(now: Date, database: typeof defaultDb = d
           cadence: config.cadence,
           nextScheduledAt: config.nextScheduledAt,
           threshold: config.threshold,
+          thresholdEnabled: config.thresholdEnabled,
           pendingCount: pending.length,
         },
         now

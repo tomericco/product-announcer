@@ -10,7 +10,7 @@ describe("shouldTriggerRun", () => {
 
   it("returns null when there is nothing pending, even if the cadence deadline passed", () => {
     const result = shouldTriggerRun(
-      { cadence: "weekly", nextScheduledAt: new Date("2026-07-01T00:00:00Z"), threshold: 5, pendingCount: 0 },
+      { cadence: "weekly", nextScheduledAt: new Date("2026-07-01T00:00:00Z"), threshold: 5, thresholdEnabled: true, pendingCount: 0 },
       now
     );
     expect(result).toBeNull();
@@ -18,7 +18,7 @@ describe("shouldTriggerRun", () => {
 
   it("returns 'cadence' when the deadline has passed and something is pending", () => {
     const result = shouldTriggerRun(
-      { cadence: "weekly", nextScheduledAt: new Date("2026-07-01T00:00:00Z"), threshold: 5, pendingCount: 1 },
+      { cadence: "weekly", nextScheduledAt: new Date("2026-07-01T00:00:00Z"), threshold: 5, thresholdEnabled: false, pendingCount: 1 },
       now
     );
     expect(result).toBe("cadence");
@@ -26,31 +26,47 @@ describe("shouldTriggerRun", () => {
 
   it("returns null when the cadence deadline has not passed and the threshold isn't met", () => {
     const result = shouldTriggerRun(
-      { cadence: "weekly", nextScheduledAt: new Date("2026-07-20T00:00:00Z"), threshold: 5, pendingCount: 2 },
+      { cadence: "weekly", nextScheduledAt: new Date("2026-07-20T00:00:00Z"), threshold: 5, thresholdEnabled: true, pendingCount: 2 },
       now
     );
     expect(result).toBeNull();
   });
 
-  it("returns 'threshold' when the pending count meets it, even if the cadence deadline hasn't passed", () => {
+  it("returns 'threshold' when enabled and the pending count meets it, even before the cadence deadline", () => {
     const result = shouldTriggerRun(
-      { cadence: "weekly", nextScheduledAt: new Date("2026-07-20T00:00:00Z"), threshold: 5, pendingCount: 5 },
+      { cadence: "weekly", nextScheduledAt: new Date("2026-07-20T00:00:00Z"), threshold: 5, thresholdEnabled: true, pendingCount: 5 },
       now
     );
     expect(result).toBe("threshold");
   });
 
-  it("ignores nextScheduledAt entirely when cadence is 'none'", () => {
+  it("does NOT fire the threshold when disabled, even if the pending count meets it", () => {
     const result = shouldTriggerRun(
-      { cadence: "none", nextScheduledAt: new Date("2026-01-01T00:00:00Z"), threshold: 5, pendingCount: 3 },
+      { cadence: "weekly", nextScheduledAt: new Date("2026-07-20T00:00:00Z"), threshold: 5, thresholdEnabled: false, pendingCount: 999 },
       now
     );
     expect(result).toBeNull();
   });
 
-  it("treats a null/zero threshold as 'threshold trigger disabled'", () => {
+  it("still fires the cadence regardless of the threshold toggle being off", () => {
     const result = shouldTriggerRun(
-      { cadence: "weekly", nextScheduledAt: new Date("2026-07-20T00:00:00Z"), threshold: null, pendingCount: 999 },
+      { cadence: "weekly", nextScheduledAt: new Date("2026-07-01T00:00:00Z"), threshold: 5, thresholdEnabled: false, pendingCount: 1 },
+      now
+    );
+    expect(result).toBe("cadence");
+  });
+
+  it("ignores nextScheduledAt entirely when cadence is 'none'", () => {
+    const result = shouldTriggerRun(
+      { cadence: "none", nextScheduledAt: new Date("2026-01-01T00:00:00Z"), threshold: 5, thresholdEnabled: true, pendingCount: 3 },
+      now
+    );
+    expect(result).toBeNull();
+  });
+
+  it("treats a null/zero threshold as disabled even when the toggle is on", () => {
+    const result = shouldTriggerRun(
+      { cadence: "weekly", nextScheduledAt: new Date("2026-07-20T00:00:00Z"), threshold: null, thresholdEnabled: true, pendingCount: 999 },
       now
     );
     expect(result).toBeNull();
