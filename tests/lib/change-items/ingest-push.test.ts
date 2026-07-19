@@ -13,7 +13,7 @@ function commit(over: Partial<PushCommit> = {}): PushCommit {
 }
 
 const enrichAllFacing: EnrichChangeItem = async () => ({ userFacing: true, impactSummary: "does a thing", suggestedCategory: "improved", confidence: 0.9 });
-const noPulls = async () => [] as Array<{ number: number; merged: boolean }>;
+const noPulls = async () => [] as Array<{ number: number; merged: boolean; baseRef: string }>;
 
 describe("ingestPush classification", () => {
   afterEach(async () => {
@@ -75,12 +75,25 @@ describe("ingestPush classification", () => {
     const { tenant } = await seed();
     await ingestPush(baseInput, {
       listPushCommits: async () => [commit({ sha: "prmerge", parents: ["p1", "p2"] }), commit({ sha: "prsquash", parents: ["p1"] })],
-      getCommitPulls: async () => [{ number: 42, merged: true }],
+      getCommitPulls: async () => [{ number: 42, merged: true, baseRef: "main" }],
       getCommitDiff: async () => "diff",
       enrich: enrichAllFacing,
     });
     const rows = await db.select().from(changeItems).where(eq(changeItems.tenantId, tenant.id));
     expect(rows).toHaveLength(0);
+  });
+
+  it("does not drop a commit whose merged PR targeted a non-watched base branch (branch promotion)", async () => {
+    const { tenant } = await seed();
+    await ingestPush(baseInput, {
+      listPushCommits: async () => [commit({ sha: "promoted1", parents: ["p1"] })],
+      getCommitPulls: async () => [{ number: 99, merged: true, baseRef: "develop" }],
+      getCommitDiff: async () => "diff --git a/x b/x\n+real change",
+      enrich: enrichAllFacing,
+    });
+    const rows = await db.select().from(changeItems).where(eq(changeItems.tenantId, tenant.id));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ status: "pending", ignoredReason: null, commitSha: "promoted1", userFacing: true });
   });
 
   it("ignores pushes to a non-watched branch", async () => {

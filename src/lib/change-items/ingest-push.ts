@@ -88,9 +88,13 @@ export async function ingestPush(input: PushInput, deps: IngestPushDeps = {}): P
 
   await mapWithConcurrency(commits, ENRICH_CONCURRENCY, async (commit) => {
     try {
-      // 1. Belongs to a merged PR → drop (the PR is its own rich item).
+      // 1. Belongs to a PR merged into the watched branch → drop (the PR is its own
+      // rich item). A PR merged into a different branch (e.g. GitFlow promotion
+      // commits whose PR targeted `develop`, later fast-forwarded/merged onto
+      // `main`) must NOT be dropped here — it has no corresponding PR item on the
+      // watched branch, so it falls through to classification like a direct commit.
       const pulls = await commitPulls(input.installationId, input.repoFullName, commit.sha);
-      if (pulls.some((p) => p.merged)) return;
+      if (pulls.some((p) => p.merged && p.baseRef === repo.watchedBranch)) return;
 
       // 2. Merge commit with no associated PR → ignored (no diff, no enrichment).
       if (commit.parents.length >= 2) {

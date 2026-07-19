@@ -220,7 +220,7 @@ export async function getCommitPulls(
   installationId: string,
   repoFullName: string,
   sha: string
-): Promise<Array<{ number: number; merged: boolean }>> {
+): Promise<Array<{ number: number; merged: boolean; baseRef: string }>> {
   const [owner, repo] = repoFullName.split("/");
   const installationOctokit = await getGithubApp().getInstallationOctokit(Number(installationId));
   const { data } = await installationOctokit.rest.repos.listPullRequestsAssociatedWithCommit({
@@ -228,5 +228,5 @@ export async function getCommitPulls(
     repo,
     commit_sha: sha,
   });
-  return data.map((pr) => ({ number: pr.number, merged: pr.merged_at != null }));
+  return data.map((pr) => ({ number: pr.number, merged: pr.merged_at != null, baseRef: pr.base.ref }));
 }

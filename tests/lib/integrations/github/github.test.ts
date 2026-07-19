@@ -141,18 +141,21 @@ describe("listPushCommits", () => {
 });
 
 describe("getCommitPulls", () => {
-  it("maps associated PRs to merged flags", async () => {
+  it("maps associated PRs to merged flags and base branch", async () => {
     const fakeOctokit = {
       rest: { repos: { listPullRequestsAssociatedWithCommit: vi.fn().mockResolvedValue({ data: [
-        { number: 7, merged_at: "2026-07-01T00:00:00Z" },
-        { number: 8, merged_at: null },
+        { number: 7, merged_at: "2026-07-01T00:00:00Z", base: { ref: "main" } },
+        { number: 8, merged_at: null, base: { ref: "develop" } },
       ] }) } },
     };
     const spy = vi.spyOn(getGithubApp(), "getInstallationOctokit").mockResolvedValue(fakeOctokit as never);
 
     const result = await getCommitPulls("1", "acme/x", "c1");
 
-    expect(result).toEqual([{ number: 7, merged: true }, { number: 8, merged: false }]);
+    expect(result).toEqual([
+      { number: 7, merged: true, baseRef: "main" },
+      { number: 8, merged: false, baseRef: "develop" },
+    ]);
     spy.mockRestore();
   });
 });
