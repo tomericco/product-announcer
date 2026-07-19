@@ -2,6 +2,7 @@ import { generateObject } from "ai";
 import { z } from "zod";
 import type { brandProfiles } from "@/db/schema";
 import type { UpdateDraft } from "./generation";
+import { resolveModel } from "./model";
 
 type BrandProfileRow = typeof brandProfiles.$inferSelect;
 
@@ -22,8 +23,8 @@ export type ReviewOutcome = { finalDraft: UpdateDraft; status: ReviewStatus; iss
 
 const DEFAULT_MAX_ROUNDS = 2;
 
-function reviewModel(): string {
-  return process.env.REVIEW_MODEL ?? "anthropic/claude-sonnet-4-5";
+function reviewModel() {
+  return resolveModel(process.env.REVIEW_MODEL ?? "anthropic/claude-sonnet-4-5");
 }
 
 // Default when unset; any non-positive/invalid value clamps to 0 (pure gate).

@@ -1,5 +1,6 @@
 import { generateObject } from "ai";
 import { z } from "zod";
+import { resolveModel } from "./model";
 
 export type EnrichmentResult = {
   userFacing: boolean;
@@ -48,7 +49,7 @@ export function buildEnrichmentPrompt(input: EnrichmentInput): string {
 export const enrichChangeItem: EnrichChangeItem = async (input) => {
   try {
     const { object } = await generateObject({
-      model: process.env.ENRICHMENT_MODEL ?? "anthropic/claude-haiku-4-5",
+      model: resolveModel(process.env.ENRICHMENT_MODEL ?? "anthropic/claude-haiku-4-5"),
       schema: EnrichmentSchema,
       system: ENRICHMENT_SYSTEM,
       prompt: buildEnrichmentPrompt(input),

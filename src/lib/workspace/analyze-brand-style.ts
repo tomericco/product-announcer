@@ -1,5 +1,6 @@
 import { generateObject } from "ai";
 import { z } from "zod";
+import { resolveModel } from "@/lib/ai/model";
 
 export const DerivedBrandProfileSchema = z.object({
   tone: z.string().nullable(),
@@ -32,7 +33,7 @@ export function buildAnalysisPrompt(pageText: string): string {
 export async function analyzeBrandStyle(pageText: string): Promise<DerivedBrandProfile> {
   try {
     const { object } = await generateObject({
-      model: process.env.ONBOARDING_ANALYSIS_MODEL ?? "anthropic/claude-sonnet-4-5",
+      model: resolveModel(process.env.ONBOARDING_ANALYSIS_MODEL ?? "anthropic/claude-sonnet-4-5"),
       schema: DerivedBrandProfileSchema,
       system: ANALYSIS_SYSTEM,
       prompt: buildAnalysisPrompt(pageText),
