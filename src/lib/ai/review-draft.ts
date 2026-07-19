@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { brandProfiles } from "@/db/schema";
 import type { UpdateDraft } from "./generation";
 import { resolveModel } from "./model";
+import type { OnDraftProgress } from "@/lib/scheduling/draft-progress";
 
 type BrandProfileRow = typeof brandProfiles.$inferSelect;
 
@@ -111,16 +112,23 @@ export async function reviseDraft(
  * revision + last issues), error (a review/revise call failed after its retry —
  * holds the most recent draft, fail-safe). Every call is retried once on error.
  */
-export async function reviewAndReconcile(draft: UpdateDraft, brandProfile: BrandProfileRow): Promise<ReviewOutcome> {
+export async function reviewAndReconcile(
+  draft: UpdateDraft,
+  brandProfile: BrandProfileRow,
+  onProgress?: OnDraftProgress
+): Promise<ReviewOutcome> {
   const rounds = reviewMaxRounds();
   let current = draft;
 
   try {
+    onProgress?.({ type: "detail", text: "Reviewing (round 1)" });
     let critique = await withRetry(() => reviewDraft(current, brandProfile));
     if (critique.compliant) return { finalDraft: current, status: "passed", issues: [] };
 
     for (let round = 0; round < rounds; round++) {
+      onProgress?.({ type: "detail", text: "Revising" });
       current = await withRetry(() => reviseDraft(current, critique.issues, brandProfile));
+      onProgress?.({ type: "detail", text: `Reviewing (round ${round + 2})` });
       critique = await withRetry(() => reviewDraft(current, brandProfile));
       if (critique.compliant) return { finalDraft: current, status: "revised", issues: [] };
     }

@@ -9,6 +9,7 @@ import { selectExamples } from "@/lib/ai/select-examples";
 import { shouldTriggerRun, advanceNextScheduledAt, type Cadence } from "./scheduler-decision";
 import { dispatchWebhookForUpdate } from "@/lib/publishing/webhook-delivery";
 import { reviewAndReconcile } from "@/lib/ai/review-draft";
+import type { OnDraftProgress } from "./draft-progress";
 
 type ChangeItemRow = Awaited<ReturnType<typeof getPendingChangeItems>>[number];
 
@@ -23,37 +24,45 @@ async function reposByIdForTenant(
 export async function runBatchForWorkspace(
   tenantId: string,
   pending: ChangeItemRow[],
-  database: typeof defaultDb = defaultDb
+  database: typeof defaultDb = defaultDb,
+  onProgress?: OnDraftProgress
 ): Promise<boolean> {
   if (pending.length === 0) return false;
 
+  onProgress?.({ type: "step", key: "preparing", status: "start" });
   const brandProfile = await getOrCreateBrandProfile(tenantId, database);
   const reposById = await reposByIdForTenant(tenantId, database);
   const catalog = await database.select().from(systemPersonas);
   const personas = resolvePersonaRefs(brandProfile.userPersonas, catalog);
-
   const allExamples = await database.select().from(systemUpdateExamples);
   const examples = selectExamples(allExamples, {
     industry: brandProfile.industry,
     personaKeys: systemPersonaKeys(brandProfile.userPersonas),
     categories: batchCategories(pending),
   });
+  onProgress?.({ type: "step", key: "preparing", status: "done" });
 
+  onProgress?.({ type: "step", key: "generating", status: "start" });
   let draft;
   try {
     draft = await generateUpdateDraft(pending, brandProfile, reposById, personas, examples);
   } catch {
     try {
       draft = await generateUpdateDraft(pending, brandProfile, reposById, personas, examples);
-    } catch {
+    } catch (err) {
       // Both attempts failed. Leave the batch's items pending — they roll into
       // the next scheduled/threshold/manual run automatically.
+      onProgress?.({ type: "error", message: err instanceof Error ? err.message : String(err) });
       return false;
     }
   }
+  onProgress?.({ type: "step", key: "generating", status: "done" });
 
-  const review = await reviewAndReconcile(draft, brandProfile);
+  onProgress?.({ type: "step", key: "reviewing", status: "start" });
+  const review = await reviewAndReconcile(draft, brandProfile, onProgress);
+  onProgress?.({ type: "step", key: "reviewing", status: "done" });
 
+  onProgress?.({ type: "step", key: "saving", status: "start" });
   const update = await claimBatchAndCreateUpdate(
     {
       tenantId,
@@ -63,12 +72,14 @@ export async function runBatchForWorkspace(
     },
     database
   );
-  if (!update) return false;
+  if (!update) {
+    onProgress?.({ type: "error", message: "No changes were available to draft." });
+    return false;
+  }
+  onProgress?.({ type: "step", key: "saving", status: "done" });
 
-  // Auto-publish: only when the workspace opted in, an active webhook
-  // exists, AND the review passed/revised — otherwise the update stays a
-  // draft for review (a publish with no delivery would go nowhere, and a
-  // failed/errored review must never ship unattended).
+  // Auto-publish: only when the workspace opted in, an active webhook exists, AND
+  // the review passed/revised — otherwise the update stays a draft for review.
   const [tenant] = await database.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1);
   const [activeWebhook] = await database
     .select()
@@ -85,6 +96,7 @@ export async function runBatchForWorkspace(
     await dispatchWebhookForUpdate(update.id, database);
   }
 
+  onProgress?.({ type: "done", updateId: update.id });
   return true;
 }
 

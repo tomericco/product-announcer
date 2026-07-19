@@ -149,4 +149,50 @@ describe("run-schedule (workspace-level)", () => {
     const [config] = await db.select().from(scheduleConfigs).where(eq(scheduleConfigs.tenantId, tenant.id));
     expect(config.nextScheduledAt).toEqual(advanceNextScheduledAt(anchor, "weekly"));
   });
+
+  it("runBatchForWorkspace emits ordered progress events and a done event on success", async () => {
+    const { tenant, repoA } = await seed();
+    await db.insert(changeItems).values({
+      tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "a",
+    });
+    vi.mocked(generateObject).mockResolvedValue({
+      object: { title: "T", body: "B", category: "new" },
+    } as never);
+
+    const events: import("../../../src/lib/scheduling/draft-progress").DraftProgressEvent[] = [];
+    const pending = await getPendingChangeItems(tenant.id);
+    const created = await runBatchForWorkspace(tenant.id, pending, db, (e) => events.push(e));
+
+    expect(created).toBe(true);
+    // step start/done pairs in order, then a terminal done with the update id
+    const steps = events.filter((e) => e.type === "step");
+    expect(steps.map((e) => `${(e as { key: string }).key}:${(e as { status: string }).status}`)).toEqual([
+      "preparing:start", "preparing:done",
+      "generating:start", "generating:done",
+      "reviewing:start", "reviewing:done",
+      "saving:start", "saving:done",
+    ]);
+    const done = events.at(-1);
+    expect(done?.type).toBe("done");
+    const [row] = await db.select().from(updates).where(eq(updates.tenantId, tenant.id));
+    expect(done).toEqual({ type: "done", updateId: row.id });
+  });
+
+  it("runBatchForWorkspace emits an error event (not done) when generation fails twice", async () => {
+    const { tenant, repoA } = await seed();
+    await db.insert(changeItems).values({
+      tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "flaky",
+    });
+    vi.mocked(generateObject).mockRejectedValue(new Error("model unavailable"));
+
+    const events: import("../../../src/lib/scheduling/draft-progress").DraftProgressEvent[] = [];
+    const pending = await getPendingChangeItems(tenant.id);
+    const created = await runBatchForWorkspace(tenant.id, pending, db, (e) => events.push(e));
+
+    expect(created).toBe(false);
+    expect(events.some((e) => e.type === "done")).toBe(false);
+    const err = events.find((e) => e.type === "error");
+    expect(err).toBeTruthy();
+    expect((err as { message: string }).message).toContain("model unavailable");
+  });
 });
