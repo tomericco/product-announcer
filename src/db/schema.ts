@@ -45,7 +45,8 @@ export const tenantMembers = pgTable(
 );
 
 export const sourceTypeEnum = pgEnum("source_type", ["pr", "commit"]);
-export const changeItemStatusEnum = pgEnum("change_item_status", ["pending", "batched", "excluded"]);
+export const changeItemStatusEnum = pgEnum("change_item_status", ["pending", "batched", "excluded", "ignored"]);
+export const ignoredReasonEnum = pgEnum("ignored_reason", ["merge_commit", "empty_diff"]);
 export const cadenceEnum = pgEnum("cadence", ["daily", "weekly", "biweekly", "monthly", "none"]);
 export const updateStatusEnum = pgEnum("update_status", ["draft", "approved", "published", "rejected"]);
 export const reviewStatusEnum = pgEnum("review_status", ["passed", "revised", "failed", "error"]);
@@ -75,6 +76,7 @@ export const changeItems = pgTable(
       .references(() => repos.id, { onDelete: "cascade" }),
     sourceType: sourceTypeEnum("source_type").notNull(),
     status: changeItemStatusEnum("status").notNull().default("pending"),
+    ignoredReason: ignoredReasonEnum("ignored_reason"),
     updateId: uuid("update_id").references(() => updates.id),
     excludedAt: timestamp("excluded_at", { withTimezone: true }),
     excludedBy: uuid("excluded_by").references(() => users.id),

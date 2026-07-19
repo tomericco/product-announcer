@@ -99,6 +99,13 @@
       "when": 1784309177546,
       "tag": "0013_mean_stellaris",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1784452593299,
+      "tag": "0014_faulty_namorita",
+      "breakpoints": true
     }
   ]
 }
