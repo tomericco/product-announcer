@@ -41,7 +41,7 @@ export async function saveOnboardingSchedule(formData: FormData) {
 
   await db
     .insert(scheduleConfigs)
-    .values({ tenantId: session.user.tenantId, cadence, threshold, nextScheduledAt })
+    .values({ tenantId: session.user.tenantId, cadence, threshold, thresholdEnabled: false, nextScheduledAt })
     .onConflictDoUpdate({
       target: scheduleConfigs.tenantId,
       set: { cadence, threshold, nextScheduledAt },

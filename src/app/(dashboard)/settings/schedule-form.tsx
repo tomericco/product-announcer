@@ -6,6 +6,7 @@ import { saveWorkspaceSchedule } from "./actions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -52,6 +53,7 @@ export function ScheduleForm({
   defaults: {
     cadence: string;
     threshold: number | null;
+    thresholdEnabled: boolean;
     hour: number;
     dayOfWeek: number | null;
     dayOfMonth: number | null;
@@ -61,6 +63,7 @@ export function ScheduleForm({
   const [hour, setHour] = useState(String(defaults.hour));
   const [dayOfWeek, setDayOfWeek] = useState(String(defaults.dayOfWeek ?? 1));
   const [dayOfMonth, setDayOfMonth] = useState(String(defaults.dayOfMonth ?? 1));
+  const [thresholdEnabled, setThresholdEnabled] = useState(defaults.thresholdEnabled);
 
   async function handleSave(formData: FormData) {
     await saveWorkspaceSchedule(formData);
@@ -148,12 +151,26 @@ export function ScheduleForm({
       )}
 
       <div className="space-y-2">
-        <Label htmlFor="threshold">Threshold</Label>
+        <label className="flex items-center gap-3 text-sm font-medium">
+          <Switch
+            name="thresholdEnabled"
+            checked={thresholdEnabled}
+            onCheckedChange={(checked) => setThresholdEnabled(checked as boolean)}
+          />
+          Publish early when changes pile up
+        </label>
         <p className="text-xs text-muted-foreground">
-          Generate an update early once at least this many changes are pending, without waiting for
-          the next scheduled run.
+          When on, generate an update as soon as at least this many changes are pending, without
+          waiting for the next scheduled run.
         </p>
-        <Input id="threshold" type="number" name="threshold" min={1} defaultValue={defaults.threshold ?? 5} />
+        <Input
+          id="threshold"
+          type="number"
+          name="threshold"
+          min={1}
+          defaultValue={defaults.threshold ?? 5}
+          disabled={!thresholdEnabled}
+        />
       </div>
 
       <Button type="submit" variant="outline">

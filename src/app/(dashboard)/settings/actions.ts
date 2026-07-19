@@ -153,6 +153,7 @@ export async function saveWorkspaceSchedule(formData: FormData) {
   const threshold = thresholdRaw ? Number(thresholdRaw) : null;
 
   const hour = Math.min(23, Math.max(0, parseIntOrNull(formData.get("hour")) ?? 9));
+  const thresholdEnabled = formData.get("thresholdEnabled") === "on";
   // Day-of-week is meaningful for the weekly and biweekly cadences, day-of-month
   // for the monthly cadence — store null for the others so the data stays honest.
   const dayOfWeek =
@@ -166,7 +167,7 @@ export async function saveWorkspaceSchedule(formData: FormData) {
       ? null
       : computeNextScheduledAt(new Date(), cadence, { hour, dayOfWeek, dayOfMonth });
 
-  const values = { cadence, threshold, hour, dayOfWeek, dayOfMonth, nextScheduledAt };
+  const values = { cadence, threshold, thresholdEnabled, hour, dayOfWeek, dayOfMonth, nextScheduledAt };
 
   // onConflictDoUpdate (not a plain insert) so a concurrent first-time save can't
   // violate the one-per-tenant unique constraint — matches saveOnboardingSchedule.

@@ -223,6 +223,7 @@ export default async function SettingsPage() {
             defaults={{
               cadence: workspaceSchedule?.cadence ?? "weekly",
               threshold: workspaceSchedule?.threshold ?? null,
+              thresholdEnabled: workspaceSchedule?.thresholdEnabled ?? false,
               hour: workspaceSchedule?.hour ?? 9,
               dayOfWeek: workspaceSchedule?.dayOfWeek ?? null,
               dayOfMonth: workspaceSchedule?.dayOfMonth ?? null,
