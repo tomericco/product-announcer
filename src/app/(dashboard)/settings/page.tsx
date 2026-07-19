@@ -206,19 +206,6 @@ export default async function SettingsPage() {
                 rows={3}
                 defaultValue={brandProfile.updatesStyleSummary ?? ""}
               />
-              {brandProfile.updatesPageUrl && (
-                <p className="text-xs text-muted-foreground">
-                  Imported from{" "}
-                  <a
-                    href={brandProfile.updatesPageUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="underline"
-                  >
-                    your changelog
-                  </a>
-                </p>
-              )}
             </div>
             <Button type="submit" variant="outline">
               Save
