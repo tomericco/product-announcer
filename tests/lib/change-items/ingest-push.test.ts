@@ -1,154 +1,104 @@
-import { describe, it, expect, afterEach, vi } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
 import { tenants, repos, changeItems } from "../../../src/db/schema";
 import { ingestPush } from "../../../src/lib/change-items/ingest-push";
+import type { PushCommit } from "../../../src/lib/integrations/github/github";
 import type { EnrichChangeItem } from "../../../src/lib/ai/enrich-change-item";
 
-const fakeEnrich: EnrichChangeItem = async (input) => ({
-  userFacing: input.commitMessage !== "tweak logging",
-  impactSummary: input.commitMessage !== "tweak logging" ? "user benefit" : null,
-  suggestedCategory: input.commitMessage !== "tweak logging" ? "fixed" : null,
-  confidence: 0.6,
-});
+const NAME = "Push Ingest Test Tenant";
 
-describe("ingestPush", () => {
+function commit(over: Partial<PushCommit> = {}): PushCommit {
+  return { sha: "s1", message: "m", url: "https://x/s1", committedAt: "2026-07-01T00:00:00Z", parents: ["p1"], ...over };
+}
+
+const enrichAllFacing: EnrichChangeItem = async () => ({ userFacing: true, impactSummary: "does a thing", suggestedCategory: "improved", confidence: 0.9 });
+const noPulls = async () => [] as Array<{ number: number; merged: boolean }>;
+
+describe("ingestPush classification", () => {
   afterEach(async () => {
-    await db.delete(tenants).where(eq(tenants.name, "Push Ingest Test Tenant"));
+    await db.delete(tenants).where(eq(tenants.name, NAME));
   });
 
-  it("creates one commit-sourced ChangeItem per commit, with diff attached", async () => {
-    const [tenant] = await db.insert(tenants).values({ name: "Push Ingest Test Tenant" }).returning();
+  async function seed() {
+    const [tenant] = await db.insert(tenants).values({ name: NAME }).returning();
     const [repo] = await db
       .insert(repos)
-      .values({
-        tenantId: tenant.id,
-        githubRepoFullName: "acme/no-prs",
-        githubInstallationId: "90002",
-        watchedBranch: "main",
-        sourceTypes: ["commit"],
-      })
+      .values({ tenantId: tenant.id, githubRepoFullName: "acme/x", githubInstallationId: "90", watchedBranch: "main", sourceTypes: ["pr"] })
       .returning();
+    return { tenant, repo };
+  }
 
-    const getCommitDiff = vi.fn().mockResolvedValue("diff --git a/x b/x\n+added a line");
+  const baseInput = { installationId: "90", repoFullName: "acme/x", ref: "refs/heads/main", before: "b0", after: "b1", payloadCommits: [] };
 
-    await ingestPush(
-      {
-        installationId: "90002",
-        repoFullName: "acme/no-prs",
-        ref: "refs/heads/main",
-        commits: [
-          { id: "abc123", message: "fix export timeout", url: "https://github.com/acme/no-prs/commit/abc123", timestamp: "2026-07-01T00:00:00Z" },
-          { id: "def456", message: "tweak logging", url: "https://github.com/acme/no-prs/commit/def456", timestamp: "2026-07-01T00:05:00Z" },
-        ],
-      },
-      getCommitDiff,
-      fakeEnrich
-    );
-
-    const items = await db.select().from(changeItems).where(eq(changeItems.repoId, repo.id));
-    expect(items).toHaveLength(2);
-    expect(items.map((i) => i.commitSha).sort()).toEqual(["abc123", "def456"]);
-    expect(items[0]).toMatchObject({ sourceType: "commit", status: "pending" });
-    expect(items[0].diff).toContain("added a line");
-    expect(getCommitDiff).toHaveBeenCalledTimes(2);
-
-    const fix = items.find((i) => i.commitSha === "abc123")!;
-    const log = items.find((i) => i.commitSha === "def456")!;
-    expect(fix.userFacing).toBe(true);
-    expect(fix.impactSummary).toBe("user benefit");
-    expect(fix.suggestedCategory).toBe("fixed");
-    expect(fix.enrichmentConfidence).toBeCloseTo(0.6);
-    expect(log.userFacing).toBe(false);
-  });
-
-  it("is idempotent: ingesting the same push twice does not double the commit count", async () => {
-    const [tenant] = await db.insert(tenants).values({ name: "Push Ingest Test Tenant" }).returning();
-    const [repo] = await db
-      .insert(repos)
-      .values({
-        tenantId: tenant.id,
-        githubRepoFullName: "acme/no-prs",
-        githubInstallationId: "90002",
-        watchedBranch: "main",
-        sourceTypes: ["commit"],
-      })
-      .returning();
-
-    const getCommitDiff = vi.fn().mockResolvedValue("diff --git a/x b/x\n+added a line");
-
-    const input = {
-      installationId: "90002",
-      repoFullName: "acme/no-prs",
-      ref: "refs/heads/main",
-      commits: [
-        { id: "abc123", message: "fix export timeout", url: "https://github.com/acme/no-prs/commit/abc123", timestamp: "2026-07-01T00:00:00Z" },
-        { id: "def456", message: "tweak logging", url: "https://github.com/acme/no-prs/commit/def456", timestamp: "2026-07-01T00:05:00Z" },
-      ],
-    };
-
-    await ingestPush(input, getCommitDiff, fakeEnrich);
-    await ingestPush(input, getCommitDiff, fakeEnrich);
-
-    const items = await db.select().from(changeItems).where(eq(changeItems.repoId, repo.id));
-    expect(items).toHaveLength(2);
-    expect(items.map((i) => i.commitSha).sort()).toEqual(["abc123", "def456"]);
-  });
-
-  it("ignores pushes to a branch other than the watched one", async () => {
-    const [tenant] = await db.insert(tenants).values({ name: "Push Ingest Test Tenant" }).returning();
-    const [repo] = await db
-      .insert(repos)
-      .values({
-        tenantId: tenant.id,
-        githubRepoFullName: "acme/no-prs",
-        githubInstallationId: "90002",
-        watchedBranch: "main",
-        sourceTypes: ["commit"],
-      })
-      .returning();
-
-    const getCommitDiff = vi.fn();
-
-    await ingestPush(
-      {
-        installationId: "90002",
-        repoFullName: "acme/no-prs",
-        ref: "refs/heads/feature-branch",
-        commits: [{ id: "abc123", message: "wip", url: "https://x", timestamp: "2026-07-01T00:00:00Z" }],
-      },
-      getCommitDiff,
-      fakeEnrich
-    );
-
-    const items = await db.select().from(changeItems).where(eq(changeItems.repoId, repo.id));
-    expect(items).toHaveLength(0);
-    expect(getCommitDiff).not.toHaveBeenCalled();
-  });
-
-  it("does nothing for a repo whose sourceTypes doesn't include 'commit'", async () => {
-    const [tenant] = await db.insert(tenants).values({ name: "Push Ingest Test Tenant" }).returning();
-    await db.insert(repos).values({
-      tenantId: tenant.id,
-      githubRepoFullName: "acme/pr-only",
-      githubInstallationId: "90002",
-      watchedBranch: "main",
-      sourceTypes: ["pr"],
+  it("enriches a substantive direct commit as pending", async () => {
+    const { tenant } = await seed();
+    await ingestPush(baseInput, {
+      listPushCommits: async () => [commit({ sha: "feat1", parents: ["p1"] })],
+      getCommitPulls: noPulls,
+      getCommitDiff: async () => "diff --git a/x b/x\n+real change",
+      enrich: enrichAllFacing,
     });
+    const [row] = await db.select().from(changeItems).where(eq(changeItems.tenantId, tenant.id));
+    expect(row).toMatchObject({ status: "pending", ignoredReason: null, commitSha: "feat1", userFacing: true, suggestedCategory: "improved" });
+  });
 
-    const getCommitDiff = vi.fn();
+  it("ignores a non-PR merge commit without fetching a diff or enriching", async () => {
+    const { tenant } = await seed();
+    let diffCalls = 0;
+    await ingestPush(baseInput, {
+      listPushCommits: async () => [commit({ sha: "merge1", parents: ["p1", "p2"] })],
+      getCommitPulls: noPulls,
+      getCommitDiff: async () => { diffCalls++; return "x"; },
+      enrich: enrichAllFacing,
+    });
+    const [row] = await db.select().from(changeItems).where(eq(changeItems.tenantId, tenant.id));
+    expect(row).toMatchObject({ status: "ignored", ignoredReason: "merge_commit", commitSha: "merge1", userFacing: null });
+    expect(diffCalls).toBe(0);
+  });
 
-    await ingestPush(
-      {
-        installationId: "90002",
-        repoFullName: "acme/pr-only",
-        ref: "refs/heads/main",
-        commits: [{ id: "abc123", message: "wip", url: "https://x", timestamp: "2026-07-01T00:00:00Z" }],
-      },
-      getCommitDiff,
-      fakeEnrich
-    );
+  it("ignores an empty-diff commit without enriching", async () => {
+    const { tenant } = await seed();
+    let enrichCalls = 0;
+    await ingestPush(baseInput, {
+      listPushCommits: async () => [commit({ sha: "empty1", parents: ["p1"] })],
+      getCommitPulls: noPulls,
+      getCommitDiff: async () => "   ",
+      enrich: async (x) => { enrichCalls++; return enrichAllFacing(x); },
+    });
+    const [row] = await db.select().from(changeItems).where(eq(changeItems.tenantId, tenant.id));
+    expect(row).toMatchObject({ status: "ignored", ignoredReason: "empty_diff", commitSha: "empty1" });
+    expect(enrichCalls).toBe(0);
+  });
 
-    expect(getCommitDiff).not.toHaveBeenCalled();
+  it("drops a commit associated with a merged PR (including a merge commit)", async () => {
+    const { tenant } = await seed();
+    await ingestPush(baseInput, {
+      listPushCommits: async () => [commit({ sha: "prmerge", parents: ["p1", "p2"] }), commit({ sha: "prsquash", parents: ["p1"] })],
+      getCommitPulls: async () => [{ number: 42, merged: true }],
+      getCommitDiff: async () => "diff",
+      enrich: enrichAllFacing,
+    });
+    const rows = await db.select().from(changeItems).where(eq(changeItems.tenantId, tenant.id));
+    expect(rows).toHaveLength(0);
+  });
+
+  it("ignores pushes to a non-watched branch", async () => {
+    const { tenant } = await seed();
+    let listed = false;
+    await ingestPush({ ...baseInput, ref: "refs/heads/feature" }, {
+      listPushCommits: async () => { listed = true; return []; },
+      getCommitPulls: noPulls, getCommitDiff: async () => "x", enrich: enrichAllFacing,
+    });
+    expect(listed).toBe(false);
+    expect(await db.select().from(changeItems).where(eq(changeItems.tenantId, tenant.id))).toHaveLength(0);
+  });
+
+  it("is idempotent on re-delivery (onConflictDoNothing)", async () => {
+    const { tenant } = await seed();
+    const deps = { listPushCommits: async () => [commit({ sha: "dup1" })], getCommitPulls: noPulls, getCommitDiff: async () => "real", enrich: enrichAllFacing };
+    await ingestPush(baseInput, deps);
+    await ingestPush(baseInput, deps);
+    expect(await db.select().from(changeItems).where(eq(changeItems.tenantId, tenant.id))).toHaveLength(1);
   });
 });

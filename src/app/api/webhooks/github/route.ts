@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { verifyGithubSignature } from "@/lib/integrations/github/github-webhook";
 import { ingestMergedPullRequest } from "@/lib/change-items/ingest-pull-request";
 import { ingestPush } from "@/lib/change-items/ingest-push";
-import { getCommitDiff } from "@/lib/integrations/github/github";
 
 export async function POST(request: NextRequest) {
   const rawBody = await request.text();
@@ -37,21 +36,19 @@ export async function POST(request: NextRequest) {
     }
 
     if (event === "push") {
-      const installationId = String(payload.installation.id);
-      await ingestPush(
-        {
-          installationId,
-          repoFullName: payload.repository.full_name,
-          ref: payload.ref,
-          commits: payload.commits.map((c: { id: string; message: string; url: string; timestamp: string }) => ({
-            id: c.id,
-            message: c.message,
-            url: c.url,
-            timestamp: c.timestamp,
-          })),
-        },
-        (owner, repoName, sha) => getCommitDiff(installationId, `${owner}/${repoName}`, sha)
-      );
+      await ingestPush({
+        installationId: String(payload.installation.id),
+        repoFullName: payload.repository.full_name,
+        ref: payload.ref,
+        before: payload.before,
+        after: payload.after,
+        payloadCommits: payload.commits.map((c: { id: string; message: string; url: string; timestamp: string }) => ({
+          id: c.id,
+          message: c.message,
+          url: c.url,
+          timestamp: c.timestamp,
+        })),
+      });
     }
   } catch (error) {
     console.error("Error processing GitHub webhook:", error);
