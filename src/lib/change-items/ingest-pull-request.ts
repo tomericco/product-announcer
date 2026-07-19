@@ -27,7 +27,7 @@ export async function ingestMergedPullRequest(
     )
     .limit(1);
 
-  if (!repo || !repo.sourceTypes.includes("pr")) return;
+  if (!repo) return;
   if (input.baseBranch !== repo.watchedBranch) return;
 
   const enrichment = await enrich({

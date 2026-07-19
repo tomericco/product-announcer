@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { verifyGithubSignature } from "@/lib/integrations/github/github-webhook";
 import { ingestMergedPullRequest } from "@/lib/change-items/ingest-pull-request";
 import { ingestPush } from "@/lib/change-items/ingest-push";
@@ -36,7 +36,7 @@ export async function POST(request: NextRequest) {
     }
 
     if (event === "push") {
-      await ingestPush({
+      const pushInput = {
         installationId: String(payload.installation.id),
         repoFullName: payload.repository.full_name,
         ref: payload.ref,
@@ -48,6 +48,13 @@ export async function POST(request: NextRequest) {
           url: c.url,
           timestamp: c.timestamp,
         })),
+      };
+      after(async () => {
+        try {
+          await ingestPush(pushInput);
+        } catch (error) {
+          console.error("Deferred push ingestion failed:", error);
+        }
       });
     }
   } catch (error) {

@@ -90,7 +90,7 @@ describe("ingestMergedPullRequest", () => {
     expect(items).toHaveLength(0);
   });
 
-  it("does nothing for a repo whose sourceTypes doesn't include 'pr'", async () => {
+  it("ingests a merged PR regardless of the repo's sourceTypes", async () => {
     const [tenant] = await db.insert(tenants).values({ name: "PR Ingest Test Tenant" }).returning();
     const [repo] = await db
       .insert(repos)
@@ -109,7 +109,7 @@ describe("ingestMergedPullRequest", () => {
         repoFullName: "acme/commit-only",
         baseBranch: "main",
         prNumber: 1,
-        prTitle: "Should be ignored",
+        prTitle: "Should still be ingested",
         prDescription: "",
         prUrl: "https://github.com/acme/commit-only/pull/1",
         mergedAt: new Date(),
@@ -118,7 +118,12 @@ describe("ingestMergedPullRequest", () => {
     );
 
     const items = await db.select().from(changeItems).where(eq(changeItems.repoId, repo.id));
-    expect(items).toHaveLength(0);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      sourceType: "pr",
+      prNumber: 1,
+      prTitle: "Should still be ingested",
+    });
   });
 
   it("is idempotent: ingesting the same merged PR twice creates only one ChangeItem", async () => {
