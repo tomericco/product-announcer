@@ -69,7 +69,6 @@ export default async function PendingPage() {
     .where(eq(scheduleConfigs.tenantId, session.user.tenantId));
   const pending = await getPendingChangeItems(session.user.tenantId);
 
-  const nextScheduled = config?.nextScheduledAt ? config.nextScheduledAt.toLocaleString() : "not scheduled";
   const nextRelative = config?.nextScheduledAt ? formatScheduleDistance(config.nextScheduledAt) : null;
   const nextAbsolute = config?.nextScheduledAt ? config.nextScheduledAt.toLocaleString() : null;
 
@@ -83,7 +82,13 @@ export default async function PendingPage() {
           <EmptyStateTitle>You&apos;re all caught up</EmptyStateTitle>
           <EmptyStateDescription>
             New merged PRs and pushed commits from your watched repos land here automatically. Next
-            scheduled update: {nextScheduled}.
+            scheduled update:{" "}
+            {nextRelative && nextAbsolute ? (
+              <NextPublishTime relative={nextRelative} absolute={nextAbsolute} />
+            ) : (
+              "not scheduled"
+            )}
+            .
           </EmptyStateDescription>
           <EmptyStateActions>
             <ImportCommitsDialog repos={importRepos} />
