@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef } from "react";
 import Link from "next/link";
 import { Loader2, Check, Circle, AlertCircle } from "lucide-react";
 import { DRAFT_STEPS, type DraftProgressEvent, type DraftStepKey } from "@/lib/scheduling/draft-progress";
@@ -27,8 +27,11 @@ export function DraftUpdateDialog({
   const [detail, setDetail] = useState("");
   const [error, setError] = useState("");
   const [updateId, setUpdateId] = useState<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   function reset() {
+    abortRef.current?.abort();
+    abortRef.current = null;
     setPhase("preview");
     setStatuses(initialStatuses());
     setDetail("");
@@ -53,29 +56,35 @@ export function DraftUpdateDialog({
 
   async function create() {
     reset();
+    const ac = new AbortController();
+    abortRef.current = ac;
     setPhase("progress");
     try {
-      const res = await fetch("/api/pending/draft", { method: "POST" });
+      const res = await fetch("/api/pending/draft", { method: "POST", signal: ac.signal });
       if (!res.ok || !res.body) {
-        setError(res.status === 401 ? "Your session expired — please sign in again." : "Failed to start draft creation.");
-        setPhase("error");
+        if (!ac.signal.aborted) {
+          setError(res.status === 401 ? "Your session expired — please sign in again." : "Failed to start draft creation.");
+          setPhase("error");
+        }
         return;
       }
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
       for (;;) {
+        if (ac.signal.aborted) break;
         const { done, value } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split("\n");
         buffer = lines.pop() ?? "";
         for (const line of lines) {
-          if (line.trim()) apply(JSON.parse(line) as DraftProgressEvent);
+          if (line.trim() && !ac.signal.aborted) apply(JSON.parse(line) as DraftProgressEvent);
         }
       }
-      if (buffer.trim()) apply(JSON.parse(buffer) as DraftProgressEvent);
+      if (buffer.trim() && !ac.signal.aborted) apply(JSON.parse(buffer) as DraftProgressEvent);
     } catch (e) {
+      if (ac.signal.aborted) return;
       setError(e instanceof Error ? e.message : "Something went wrong.");
       setPhase("error");
     }
