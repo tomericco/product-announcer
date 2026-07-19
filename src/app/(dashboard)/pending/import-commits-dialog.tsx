@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Download, ExternalLink } from "lucide-react";
 import { listImportableCommits, importCommits, type ImportableCommit } from "./actions";
 import type { CommitSelection } from "@/lib/change-items/import-commits";
@@ -37,6 +37,12 @@ export function ImportCommitsDialog({ repos }: { repos: ImportRepo[] }) {
   const [after, setAfter] = useState("");
   const [before, setBefore] = useState("");
   const [selected, setSelected] = useState<Map<string, CommitSelection>>(new Map());
+  // The last commit whose checkbox was clicked — the anchor for shift-click range
+  // selection. Stored by key (not index) so it survives filtering/reordering.
+  const [anchorKey, setAnchorKey] = useState<string | null>(null);
+  // Whether shift was held for the click that's about to fire onChange. Captured
+  // in onClick (which has the modifier) and read in onChange (which doesn't).
+  const shiftHeldRef = useRef(false);
   const [submitting, setSubmitting] = useState(false);
 
   const repoIds = activeTab === ALL ? repos.map((r) => r.id) : [activeTab];
@@ -67,6 +73,7 @@ export function ImportCommitsDialog({ repos }: { repos: ImportRepo[] }) {
 
   function reset() {
     setSelected(new Map());
+    setAnchorKey(null);
     setSearch("");
     setAfter("");
     setBefore("");
@@ -89,6 +96,47 @@ export function ImportCommitsDialog({ repos }: { repos: ImportRepo[] }) {
         });
       return next;
     });
+  }
+
+  // Select (or deselect) every non-imported commit between two positions in the
+  // visible list, inclusive. The whole range takes the state the clicked commit is
+  // toggling toward, so shift-click "extends" the last action across the range.
+  function selectRange(fromIndex: number, toIndex: number) {
+    const lo = Math.min(fromIndex, toIndex);
+    const hi = Math.max(fromIndex, toIndex);
+    const clicked = visible[toIndex];
+    const target = !selected.has(selectionKey(clicked.repoId, clicked.sha));
+    setSelected((prev) => {
+      const next = new Map(prev);
+      for (let i = lo; i <= hi; i++) {
+        const c = visible[i];
+        if (c.imported) continue;
+        const key = selectionKey(c.repoId, c.sha);
+        if (target)
+          next.set(key, { repoId: c.repoId, sha: c.sha, message: c.message, url: c.url, committedAt: c.committedAt });
+        else next.delete(key);
+      }
+      return next;
+    });
+  }
+
+  // Single source of truth for a checkbox activation (mouse or keyboard). On a
+  // shift-click with a valid anchor it selects the whole range (including the
+  // clicked item); otherwise it toggles the one commit. Runs in onChange — not
+  // onClick + preventDefault — so it works even when the click lands on the label
+  // and is forwarded to the input.
+  function onCheckboxChange(commit: ImportableCommit, index: number) {
+    const key = selectionKey(commit.repoId, commit.sha);
+    const anchorIndex =
+      shiftHeldRef.current && anchorKey
+        ? visible.findIndex((c) => selectionKey(c.repoId, c.sha) === anchorKey)
+        : -1;
+
+    if (anchorIndex !== -1) selectRange(anchorIndex, index);
+    else toggle(commit);
+
+    setAnchorKey(key);
+    shiftHeldRef.current = false;
   }
 
   async function onImport() {
@@ -193,6 +241,7 @@ export function ImportCommitsDialog({ repos }: { repos: ImportRepo[] }) {
               onChange={toggleAll}
             />
             Select all{selectable.length > 0 ? ` (${selectable.length})` : ""}
+            <span className="ml-auto text-xs font-normal text-muted-foreground">Shift-click to select a range</span>
           </label>
           {loading ? (
             <p className="p-4 text-sm text-muted-foreground">Loading commits…</p>
@@ -202,7 +251,7 @@ export function ImportCommitsDialog({ repos }: { repos: ImportRepo[] }) {
             <p className="p-4 text-sm text-muted-foreground">No commits found.</p>
           ) : (
             <ul className="divide-y divide-border">
-              {visible.map((commit) => {
+              {visible.map((commit, index) => {
                 const key = selectionKey(commit.repoId, commit.sha);
                 const checked = commit.imported || selected.has(key);
                 return (
@@ -218,7 +267,10 @@ export function ImportCommitsDialog({ repos }: { repos: ImportRepo[] }) {
                         className="mt-0.5 size-4 rounded border-input"
                         checked={checked}
                         disabled={commit.imported}
-                        onChange={() => toggle(commit)}
+                        onClick={(e) => {
+                          shiftHeldRef.current = e.shiftKey;
+                        }}
+                        onChange={() => onCheckboxChange(commit, index)}
                       />
                       <span className="min-w-0 flex-1 space-y-1">
                         <span className="block truncate font-medium">{commit.message.split("\n")[0]}</span>
