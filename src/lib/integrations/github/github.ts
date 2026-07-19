@@ -93,3 +93,91 @@ export function truncateDiff(diff: string, maxLines = 200): string {
   const remaining = lines.length - maxLines;
   return [...kept, `… (truncated, ${remaining} more lines)`].join("\n");
 }
+
+const ZERO_SHA_RE = /^0+$/;
+const MAX_PUSH_COMMITS = 250;
+
+export type PushCommit = {
+  sha: string;
+  message: string;
+  url: string;
+  committedAt: string | null;
+  parents: string[];
+};
+
+// Caps the per-push commit list, logging a breadcrumb when it truncates so the
+// dropped range is discoverable (recoverable via manual import).
+export function capPushCommits<T>(
+  commits: T[],
+  cap: number,
+  ctx: { repoFullName: string; before: string; after: string }
+): T[] {
+  if (commits.length <= cap) return commits;
+  console.warn(
+    `[ingest-push] truncated push for ${ctx.repoFullName} ${ctx.before}...${ctx.after}: ` +
+      `${commits.length} commits, processing first ${cap}, skipping ${commits.length - cap}`
+  );
+  return commits.slice(0, cap);
+}
+
+export async function listPushCommits(
+  installationId: string,
+  repoFullName: string,
+  range: {
+    before: string;
+    after: string;
+    payloadCommits: Array<{ id: string; message: string; url: string; timestamp: string }>;
+  }
+): Promise<PushCommit[]> {
+  // New-branch push: no base commit to compare against — fall back to the payload
+  // commits (which carry no parent info, so none are classified as merge commits).
+  if (!range.before || ZERO_SHA_RE.test(range.before)) {
+    return range.payloadCommits.map((c) => ({
+      sha: c.id,
+      message: c.message,
+      url: c.url,
+      committedAt: c.timestamp,
+      parents: [],
+    }));
+  }
+
+  const [owner, repo] = repoFullName.split("/");
+  const installationOctokit = await getGithubApp().getInstallationOctokit(Number(installationId));
+
+  // Use the route-string form rather than `installationOctokit.rest.repos.compareCommitsWithBasehead`
+  // directly: the plugin's PaginatingEndpoints registration for this route types the paginated
+  // result as the `commits` array itself, whereas the request-object + mapFn overload can't infer
+  // `response.data.commits` (the compare response has multiple array-valued `data` keys — `commits`
+  // and `files` — which defeats the map-callback overload's key inference).
+  const commits = await installationOctokit.paginate("GET /repos/{owner}/{repo}/compare/{basehead}", {
+    owner,
+    repo,
+    basehead: `${range.before}...${range.after}`,
+    per_page: 100,
+  });
+
+  const mapped: PushCommit[] = commits.map((c) => ({
+    sha: c.sha,
+    message: c.commit.message,
+    url: c.html_url,
+    committedAt: c.commit.author?.date ?? c.commit.committer?.date ?? null,
+    parents: (c.parents ?? []).map((p) => p.sha),
+  }));
+
+  return capPushCommits(mapped, MAX_PUSH_COMMITS, { repoFullName, before: range.before, after: range.after });
+}
+
+export async function getCommitPulls(
+  installationId: string,
+  repoFullName: string,
+  sha: string
+): Promise<Array<{ number: number; merged: boolean }>> {
+  const [owner, repo] = repoFullName.split("/");
+  const installationOctokit = await getGithubApp().getInstallationOctokit(Number(installationId));
+  const { data } = await installationOctokit.rest.repos.listPullRequestsAssociatedWithCommit({
+    owner,
+    repo,
+    commit_sha: sha,
+  });
+  return data.map((pr) => ({ number: pr.number, merged: pr.merged_at != null }));
+}
