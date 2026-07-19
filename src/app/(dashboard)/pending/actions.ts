@@ -1,6 +1,6 @@
 "use server";
 
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, ne } from "drizzle-orm";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { db } from "@/db";
@@ -97,11 +97,19 @@ export async function listImportableCommits(input: {
       }
 
       const shas = commits.map((c) => c.sha);
+      // A dropped commit keeps an `excluded` change_item row; don't count those as
+      // imported, so it shows up here as re-importable again.
       const existing = shas.length
         ? await db
             .select({ sha: changeItems.commitSha })
             .from(changeItems)
-            .where(and(eq(changeItems.repoId, repo.id), inArray(changeItems.commitSha, shas)))
+            .where(
+              and(
+                eq(changeItems.repoId, repo.id),
+                inArray(changeItems.commitSha, shas),
+                ne(changeItems.status, "excluded")
+              )
+            )
         : [];
       const importedShas = new Set(existing.map((e) => e.sha));
 

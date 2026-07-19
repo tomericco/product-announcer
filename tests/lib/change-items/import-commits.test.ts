@@ -85,6 +85,32 @@ describe("importSelectedCommits", () => {
     expect(items).toHaveLength(1);
   });
 
+  it("resurrects a dropped (excluded) commit back to pending on re-import", async () => {
+    const { tenant, repo } = await seedRepo(["commit"]);
+    const getCommitDiff = vi.fn().mockResolvedValue("diff --git a/x b/x\n+line");
+    const selections = [
+      { repoId: repo.id, sha: "aaa111", message: "fix timeout", url: "https://x/aaa111", committedAt: "2026-07-01T00:00:00Z" },
+    ];
+
+    const first = await importSelectedCommits({ tenantId: tenant.id, selections }, getCommitDiff, fakeEnrich);
+    expect(first.importedCount).toBe(1);
+
+    // Drop it (what dropChangeItem does).
+    await db
+      .update(changeItems)
+      .set({ status: "excluded", excludedAt: new Date() })
+      .where(eq(changeItems.repoId, repo.id));
+
+    // Re-importing resurrects the same row to pending and clears the exclusion.
+    const second = await importSelectedCommits({ tenantId: tenant.id, selections }, getCommitDiff, fakeEnrich);
+    expect(second.importedCount).toBe(1);
+
+    const items = await db.select().from(changeItems).where(eq(changeItems.repoId, repo.id));
+    expect(items).toHaveLength(1); // resurrected in place, not duplicated
+    expect(items[0].status).toBe("pending");
+    expect(items[0].excludedAt).toBeNull();
+  });
+
   it("skips repos that don't belong to the tenant (IDOR guard)", async () => {
     const { repo } = await seedRepo(["pr"]);
     const [otherTenant] = await db.insert(tenants).values({ name: NAME }).returning();

@@ -27,8 +27,10 @@ const ENRICH_CONCURRENCY = 5;
  * Unlike push ingestion, this ignores the repo's configured `sourceTypes` — the
  * user is explicitly choosing these commits. Each repo is loaded tenant-scoped
  * (IDOR guard), the diff is fetched and the commit enriched per item (capped
- * concurrency), and inserts use onConflictDoNothing so re-importing an
- * already-imported commit is a no-op. Returns how many commits were newly inserted.
+ * concurrency). On conflict: a previously-dropped (`excluded`) commit is
+ * resurrected back to `pending` with fresh content/enrichment; an already-active
+ * (pending/batched/…) commit is left untouched. Returns how many commits were
+ * newly imported or resurrected.
  */
 export async function importSelectedCommits(
   input: { tenantId: string; selections: CommitSelection[] },
@@ -64,27 +66,39 @@ export async function importSelectedCommits(
         diff,
       });
 
-      const inserted = await database
+      const committedAt = selection.committedAt ? new Date(selection.committedAt) : null;
+      const enrichedFields = {
+        commitMessage: selection.message,
+        commitUrl: selection.url,
+        committedAt,
+        diff,
+        userFacing: enrichment.userFacing,
+        impactSummary: enrichment.impactSummary,
+        suggestedCategory: enrichment.suggestedCategory,
+        enrichmentConfidence: enrichment.confidence,
+        enrichedAt: new Date(),
+      };
+
+      const upserted = await database
         .insert(changeItems)
         .values({
           tenantId: input.tenantId,
           repoId: repo.id,
           sourceType: "commit",
           commitSha: selection.sha,
-          commitMessage: selection.message,
-          commitUrl: selection.url,
-          committedAt: selection.committedAt ? new Date(selection.committedAt) : null,
-          diff,
-          userFacing: enrichment.userFacing,
-          impactSummary: enrichment.impactSummary,
-          suggestedCategory: enrichment.suggestedCategory,
-          enrichmentConfidence: enrichment.confidence,
-          enrichedAt: new Date(),
+          ...enrichedFields,
         })
-        .onConflictDoNothing()
+        // Re-importing a dropped commit resurrects it to pending (clearing the
+        // exclusion) with fresh content; a still-active row is not touched, so the
+        // returned-rows count only reflects genuine (re)imports.
+        .onConflictDoUpdate({
+          target: [changeItems.repoId, changeItems.commitSha],
+          set: { status: "pending", excludedAt: null, excludedBy: null, ...enrichedFields },
+          setWhere: eq(changeItems.status, "excluded"),
+        })
         .returning({ id: changeItems.id });
 
-      return inserted.length;
+      return upserted.length;
     });
 
     importedCount += insertedCounts.reduce((a, b) => a + b, 0);
