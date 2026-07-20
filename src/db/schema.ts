@@ -220,3 +220,19 @@ export const webhookDeliveries = pgTable("webhook_deliveries", {
   lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+export const llmUsage = pgTable("llm_usage", {
+  id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  tenantId: uuid("tenant_id")
+    .notNull()
+    .references(() => tenants.id, { onDelete: "cascade" }),
+  // Plain text, not an enum: this list will grow, and Postgres has no DROP VALUE.
+  operation: text("operation").notNull(),
+  model: text("model").notNull(),
+  // Nullable: the SDK types these as `number | undefined`, and a provider that
+  // omits a count shouldn't cost us the row.
+  inputTokens: integer("input_tokens"),
+  outputTokens: integer("output_tokens"),
+  totalTokens: integer("total_tokens"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
