@@ -17,16 +17,28 @@ async function loadOwnedDraft(tenantId: string, updateId: string) {
   return update;
 }
 
+// If the WYSIWYG editor fails to parse the stored Markdown (e.g. a fenced
+// code block, table, or image it doesn't recognize), it can render blank and
+// submit an empty/whitespace-only body on the next keystroke. Guard against
+// clobbering a real body with that empty state: only accept a submitted body
+// that is blank when the draft didn't already have real content.
+function resolveBody(submittedBody: string, existingBody: string) {
+  if (submittedBody.trim().length === 0 && existingBody.trim().length > 0) {
+    return existingBody;
+  }
+  return submittedBody;
+}
+
 export async function saveDraft(formData: FormData) {
   const session = await requireSession();
   const updateId = formData.get("updateId") as string;
-  await loadOwnedDraft(session.user.tenantId, updateId);
+  const existing = await loadOwnedDraft(session.user.tenantId, updateId);
 
   await db
     .update(updates)
     .set({
       title: formData.get("title") as string,
-      body: formData.get("body") as string,
+      body: resolveBody(formData.get("body") as string, existing.body),
       editedBy: session.user.id,
     })
     .where(eq(updates.id, updateId));
@@ -37,9 +49,21 @@ export async function saveDraft(formData: FormData) {
 export async function approveDraft(formData: FormData) {
   const session = await requireSession();
   const updateId = formData.get("updateId") as string;
-  await loadOwnedDraft(session.user.tenantId, updateId);
+  const existing = await loadOwnedDraft(session.user.tenantId, updateId);
 
-  await db.update(updates).set({ status: "published", publishedAt: new Date() }).where(eq(updates.id, updateId));
+  // Persist whatever title/body the user currently sees before publishing,
+  // so approving doesn't silently discard unsaved edits in favor of the
+  // last-saved DB copy.
+  await db
+    .update(updates)
+    .set({
+      title: formData.get("title") as string,
+      body: resolveBody(formData.get("body") as string, existing.body),
+      editedBy: session.user.id,
+      status: "published",
+      publishedAt: new Date(),
+    })
+    .where(eq(updates.id, updateId));
 
   await dispatchWebhookForUpdate(updateId);
 

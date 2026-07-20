@@ -46,16 +46,20 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ up
           <Label>Body</Label>
           <DraftBodyEditor defaultValue={update.body} />
         </div>
-        <Button type="submit" variant="outline">
-          Save changes
-        </Button>
+        <div className="flex items-center gap-4">
+          <Button type="submit" variant="outline">
+            Save changes
+          </Button>
+          {/* formAction overrides the form's default action (saveDraft) for this
+              button only, so approving submits the same title/body the user is
+              currently looking at instead of whatever was last saved to the DB. */}
+          <Button type="submit" formAction={approveDraft}>
+            Approve &amp; publish
+          </Button>
+        </div>
       </form>
 
       <div className="flex items-center gap-4">
-        <form action={approveDraft}>
-          <input type="hidden" name="updateId" value={update.id} />
-          <Button type="submit">Approve &amp; publish</Button>
-        </form>
         <form action={rejectDraft}>
           <input type="hidden" name="updateId" value={update.id} />
           <Button type="submit" variant="ghost" className="text-muted-foreground">
