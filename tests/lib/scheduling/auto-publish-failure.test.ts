@@ -17,8 +17,14 @@ import { getPendingChangeItems } from "../../../src/lib/change-items/change-item
 import { reviewAndReconcile } from "../../../src/lib/ai/review-draft";
 import { dispatchWebhookForUpdate } from "../../../src/lib/publishing/webhook-delivery";
 import type { DraftProgressEvent } from "../../../src/lib/scheduling/draft-progress";
+import { encryptSecret } from "../../../src/lib/credentials/encryption";
 
 const NAME = "Auto Publish Failure Test Tenant";
+
+const encryptedSecret = () => {
+  const p = encryptSecret("s");
+  return { secretCiphertext: p.ciphertext, secretIv: p.iv, secretAuthTag: p.authTag };
+};
 
 describe("runBatchForWorkspace when auto-publish fails after the draft is saved", () => {
   beforeEach(() => {
@@ -47,7 +53,7 @@ describe("runBatchForWorkspace when auto-publish fails after the draft is saved"
     await db.insert(changeItems).values({
       tenantId: tenant.id, repoId: repo.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "a",
     });
-    await db.insert(webhookConfigs).values({ tenantId: tenant.id, url: "https://example.com/hook", secret: "s" });
+    await db.insert(webhookConfigs).values({ tenantId: tenant.id, url: "https://example.com/hook", ...encryptedSecret() });
 
     vi.mocked(dispatchWebhookForUpdate).mockRejectedValue(new Error("webhook exploded"));
 

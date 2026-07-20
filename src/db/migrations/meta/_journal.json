@@ -141,6 +141,13 @@
       "when": 1784554571560,
       "tag": "0019_needy_bucky",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1784559878070,
+      "tag": "0020_tan_wild_child",
+      "breakpoints": true
     }
   ]
 }

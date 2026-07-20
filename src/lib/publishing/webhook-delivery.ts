@@ -2,11 +2,20 @@ import { createHmac } from "node:crypto";
 import { and, eq, lt } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
 import { webhookConfigs, webhookDeliveries, updates } from "@/db/schema";
+import { decryptSecret } from "@/lib/credentials/encryption";
 
 const MAX_ATTEMPTS = 3;
 
 function signPayload(secret: string, payload: string): string {
   return `sha256=${createHmac("sha256", secret).update(payload).digest("hex")}`;
+}
+
+function configSecret(config: typeof webhookConfigs.$inferSelect): string {
+  return decryptSecret({
+    ciphertext: config.secretCiphertext,
+    iv: config.secretIv,
+    authTag: config.secretAuthTag,
+  });
 }
 
 function buildPayload(update: typeof updates.$inferSelect) {
@@ -71,7 +80,7 @@ export async function dispatchWebhookForUpdate(
       .values({ updateId: update.id, webhookConfigId: config.id })
       .returning();
 
-    const succeeded = await attemptDelivery(config.url, config.secret, buildPayload(update));
+    const succeeded = await attemptDelivery(config.url, configSecret(config), buildPayload(update));
 
     await database
       .update(webhookDeliveries)
@@ -103,7 +112,7 @@ export async function retryFailedWebhookDeliveries(database: typeof defaultDb = 
       // configs.
       if (!config || !config.active || !update) continue;
 
-      const succeeded = await attemptDelivery(config.url, config.secret, buildPayload(update));
+      const succeeded = await attemptDelivery(config.url, configSecret(config), buildPayload(update));
 
       await database
         .update(webhookDeliveries)

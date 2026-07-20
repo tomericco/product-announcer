@@ -3,6 +3,13 @@ import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
 import { tenants, repos, updates, webhookConfigs, webhookDeliveries } from "../../../src/db/schema";
 import { dispatchWebhookForUpdate, retryFailedWebhookDeliveries } from "../../../src/lib/publishing/webhook-delivery";
+import { encryptSecret } from "../../../src/lib/credentials/encryption";
+
+const SECRET = "s3cr3t";
+const encryptedSecret = () => {
+  const p = encryptSecret(SECRET);
+  return { secretCiphertext: p.ciphertext, secretIv: p.iv, secretAuthTag: p.authTag };
+};
 
 describe("webhook-delivery", () => {
   beforeEach(() => {
@@ -36,7 +43,7 @@ describe("webhook-delivery", () => {
 
   it("records a successful delivery and signs the payload", async () => {
     const { tenant, update } = await seed();
-    await db.insert(webhookConfigs).values({ tenantId: tenant.id, url: "https://example.com/hook", secret: "s3cr3t" });
+    await db.insert(webhookConfigs).values({ tenantId: tenant.id, url: "https://example.com/hook", ...encryptedSecret() });
 
     vi.mocked(fetch).mockResolvedValue({ ok: true } as Response);
 
@@ -54,7 +61,7 @@ describe("webhook-delivery", () => {
 
   it("records a failed delivery without throwing when the endpoint errors", async () => {
     const { tenant, update } = await seed();
-    await db.insert(webhookConfigs).values({ tenantId: tenant.id, url: "https://example.com/hook", secret: "s3cr3t" });
+    await db.insert(webhookConfigs).values({ tenantId: tenant.id, url: "https://example.com/hook", ...encryptedSecret() });
 
     vi.mocked(fetch).mockRejectedValue(new Error("timeout"));
 
@@ -78,7 +85,7 @@ describe("webhook-delivery", () => {
     const { tenant, update } = await seed();
     const [config] = await db
       .insert(webhookConfigs)
-      .values({ tenantId: tenant.id, url: "https://example.com/hook", secret: "s3cr3t" })
+      .values({ tenantId: tenant.id, url: "https://example.com/hook", ...encryptedSecret() })
       .returning();
     await db.insert(webhookDeliveries).values({
       updateId: update.id,
@@ -100,7 +107,7 @@ describe("webhook-delivery", () => {
     const { tenant, update } = await seed();
     const [config] = await db
       .insert(webhookConfigs)
-      .values({ tenantId: tenant.id, url: "https://example.com/hook", secret: "s3cr3t" })
+      .values({ tenantId: tenant.id, url: "https://example.com/hook", ...encryptedSecret() })
       .returning();
     await db.insert(webhookDeliveries).values({
       updateId: update.id,
@@ -133,7 +140,7 @@ describe("webhook-delivery", () => {
     const { tenant, update } = await seed();
     const [config] = await db
       .insert(webhookConfigs)
-      .values({ tenantId: tenant.id, url: "https://example.com/hook", secret: "s3cr3t", active: false })
+      .values({ tenantId: tenant.id, url: "https://example.com/hook", ...encryptedSecret(), active: false })
       .returning();
     await db.insert(webhookDeliveries).values({
       updateId: update.id,

@@ -2,6 +2,12 @@ import { describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../src/db";
 import { tenants, repos, updates, webhookConfigs, webhookDeliveries } from "../../src/db/schema";
+import { encryptSecret } from "../../src/lib/credentials/encryption";
+
+const encryptedSecret = () => {
+  const p = encryptSecret("s3cr3t");
+  return { secretCiphertext: p.ciphertext, secretIv: p.iv, secretAuthTag: p.authTag };
+};
 
 describe("publish/integrations schema", () => {
   afterEach(async () => {
@@ -20,7 +26,7 @@ describe("publish/integrations schema", () => {
       .returning();
     const [config] = await db
       .insert(webhookConfigs)
-      .values({ tenantId: tenant.id, url: "https://example.com", secret: "s3cr3t" })
+      .values({ tenantId: tenant.id, url: "https://example.com", ...encryptedSecret() })
       .returning();
 
     const [delivery] = await db

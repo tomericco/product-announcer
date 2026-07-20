@@ -208,7 +208,9 @@ export const webhookConfigs = pgTable("webhook_configs", {
     .unique()
     .references(() => tenants.id, { onDelete: "cascade" }),
   url: text("url").notNull(),
-  secret: text("secret").notNull(),
+  secretCiphertext: text("secret_ciphertext").notNull(),
+  secretIv: text("secret_iv").notNull(),
+  secretAuthTag: text("secret_auth_tag").notNull(),
   active: boolean("active").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });

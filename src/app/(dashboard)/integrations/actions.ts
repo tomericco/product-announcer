@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import { db } from "@/db";
 import { webhookConfigs } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
+import { encryptSecret } from "@/lib/credentials/encryption";
 
 export async function saveWebhookConfig(formData: FormData) {
   const session = await requireSession();
@@ -18,10 +19,35 @@ export async function saveWebhookConfig(formData: FormData) {
     .where(eq(webhookConfigs.tenantId, session.user.tenantId))
     .limit(1);
 
+  // The form is write-only: an empty secret on an existing config means
+  // "leave it alone", not "set it to empty".
+  const encrypted = secret ? encryptSecret(secret) : null;
+
   if (existing) {
-    await db.update(webhookConfigs).set({ url, secret, active }).where(eq(webhookConfigs.id, existing.id));
+    await db
+      .update(webhookConfigs)
+      .set({
+        url,
+        active,
+        ...(encrypted
+          ? {
+              secretCiphertext: encrypted.ciphertext,
+              secretIv: encrypted.iv,
+              secretAuthTag: encrypted.authTag,
+            }
+          : {}),
+      })
+      .where(eq(webhookConfigs.id, existing.id));
   } else {
-    await db.insert(webhookConfigs).values({ tenantId: session.user.tenantId, url, secret, active });
+    if (!encrypted) throw new Error("A secret is required to create a webhook config");
+    await db.insert(webhookConfigs).values({
+      tenantId: session.user.tenantId,
+      url,
+      active,
+      secretCiphertext: encrypted.ciphertext,
+      secretIv: encrypted.iv,
+      secretAuthTag: encrypted.authTag,
+    });
   }
 
   revalidatePath("/integrations");

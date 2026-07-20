@@ -31,7 +31,13 @@ export default async function IntegrationsPage() {
               </div>
               <div className="space-y-2">
                 <Label htmlFor="secret">Secret</Label>
-                <Input id="secret" type="text" name="secret" defaultValue={config?.secret ?? ""} required />
+                <Input
+                  id="secret"
+                  type="password"
+                  name="secret"
+                  placeholder={config ? "Saved — leave blank to keep" : ""}
+                  required={!config}
+                />
               </div>
               <label className="flex items-center gap-2 text-sm">
                 <input
