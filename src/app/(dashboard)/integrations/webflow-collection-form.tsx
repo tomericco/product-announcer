@@ -4,6 +4,7 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { saveWebflowCollection } from "./actions";
 import type { WebflowCollection } from "@/lib/integrations/webflow/client";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import {
@@ -14,8 +15,18 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
-export function WebflowCollectionForm({ collections }: { collections: WebflowCollection[] }) {
-  const [collectionId, setCollectionId] = useState(collections[0]?.id ?? "");
+export function WebflowCollectionForm({
+  collections,
+  currentCollectionId,
+}: {
+  collections: WebflowCollection[];
+  // Same rationale as WebflowSiteForm's currentSiteId: undefined during
+  // first-time setup, populated when reused from "Change collection" so the
+  // picker opens on what is actually wired up rather than defaulting to
+  // whatever sorts first and silently overwriting the mapping on confirm.
+  currentCollectionId?: string | null;
+}) {
+  const [collectionId, setCollectionId] = useState(currentCollectionId ?? collections[0]?.id ?? "");
   const [submitting, setSubmitting] = useState(false);
 
   const selectedName = collections.find((c) => c.id === collectionId)?.displayName ?? "";
@@ -53,7 +64,14 @@ export function WebflowCollectionForm({ collections }: { collections: WebflowCol
           <SelectContent>
             {collections.map((collection) => (
               <SelectItem key={collection.id} value={collection.id}>
-                {collection.displayName}
+                <span className="flex items-center gap-2">
+                  {collection.displayName}
+                  {collection.id === currentCollectionId && (
+                    <Badge variant="secondary" className="pointer-events-none">
+                      Current
+                    </Badge>
+                  )}
+                </span>
               </SelectItem>
             ))}
           </SelectContent>

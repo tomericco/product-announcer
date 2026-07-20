@@ -5,11 +5,15 @@ import { db } from "../../../../src/db";
 import { tenants, webflowConnections, type WebflowFieldMapping } from "../../../../src/db/schema";
 
 // Token decryption is exercised in the credentials tests; stub it here so
-// these cases stay focused on delivery behavior.
+// these cases stay focused on delivery behavior. `decryptSecret` is a vi.fn()
+// (not a plain arrow function) so individual tests can override it for one
+// call via mockImplementationOnce — see the decrypt-failure test below.
 vi.mock("../../../../src/lib/credentials/encryption", () => ({
   encryptSecret: () => ({ ciphertext: "", iv: "", authTag: "" }),
-  decryptSecret: () => "tok",
+  decryptSecret: vi.fn(() => "tok"),
 }));
+
+import { decryptSecret } from "../../../../src/lib/credentials/encryption";
 
 const SCHEMA = {
   id: "c1",
@@ -65,6 +69,12 @@ describe("webflowDestination.deliver", () => {
   beforeEach(() => {
     process.env.CREDENTIALS_ENCRYPTION_KEY = "a".repeat(64);
     vi.stubGlobal("fetch", vi.fn());
+    // restoreAllMocks() in the afterEach below resets decryptSecret's
+    // mockImplementationOnce overrides but also clears its default
+    // implementation (it's a bare vi.fn(), not a spy on a real module, so
+    // "restore" has no original to fall back to) — reinstate the default
+    // here so every test starts from a working decrypt.
+    vi.mocked(decryptSecret).mockReturnValue("tok");
   });
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -276,6 +286,24 @@ describe("webflowDestination.deliver", () => {
     expect(result.status).toBe("retryable");
   });
 
+  it("returns permanent, not retryable, when the stored token cannot be decrypted, and never calls fetch", async () => {
+    // A rotated/misconfigured CREDENTIALS_ENCRYPTION_KEY (or a corrupted row)
+    // makes decryptSecret throw. That can't be fixed by retrying, so the sweep
+    // must not classify it the same as a network error — it must never even
+    // reach the network call. Mirrors webhook.ts's identical decrypt guard.
+    vi.mocked(decryptSecret).mockImplementationOnce(() => {
+      throw new Error("Unsupported state or unable to authenticate data");
+    });
+
+    const result = await webflowDestination.deliver(update, connection(), null, db);
+
+    expect(result).toEqual({
+      status: "permanent",
+      error: "Could not decrypt the Webflow token. Check CREDENTIALS_ENCRYPTION_KEY.",
+    });
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+  });
+
   it("returns permanent for an empty body without calling Webflow", async () => {
     const result = await webflowDestination.deliver(
       { ...(update as Record<string, unknown>), body: "   " } as never,
@@ -327,6 +355,10 @@ describe("webflowDestination.deliver — needs_reauth status writes", () => {
   beforeEach(() => {
     process.env.CREDENTIALS_ENCRYPTION_KEY = "a".repeat(64);
     vi.stubGlobal("fetch", vi.fn());
+    // See the identical comment in the describe block above: restoreAllMocks()
+    // clears decryptSecret's default implementation, so it must be reinstated
+    // before every test.
+    vi.mocked(decryptSecret).mockReturnValue("tok");
   });
 
   afterEach(async () => {

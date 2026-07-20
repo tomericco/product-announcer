@@ -112,17 +112,37 @@ export async function saveWebflowToken(formData: FormData) {
 export async function saveWebflowSite(formData: FormData) {
   const session = await requireSession();
   const siteId = requiredField(formData, "siteId");
+  const siteName = requiredField(formData, "siteName");
+
+  const [connection] = await db
+    .select()
+    .from(webflowConnections)
+    .where(eq(webflowConnections.tenantId, session.user.tenantId))
+    .limit(1);
+  if (!connection) throw new Error("No Webflow connection");
+
+  // Re-selecting the SAME site (e.g. opening "Change site" just to check
+  // what's wired up, then confirming without changing anything) must be a
+  // no-op. Without this guard the write below runs unconditionally and its
+  // cascade — nulling collectionId/collectionName and wiping fieldMapping —
+  // fires even though nothing actually changed, destroying a hand-tuned
+  // mapping for no reason.
+  if (connection.siteId === siteId) {
+    revalidatePath("/integrations");
+    return;
+  }
+
   await db
     .update(webflowConnections)
     .set({
       siteId,
-      siteName: formData.get("siteName") as string,
+      siteName,
       // Changing site invalidates the collection and its mapping.
       collectionId: null,
       collectionName: null,
       fieldMapping: {},
     })
-    .where(eq(webflowConnections.tenantId, session.user.tenantId));
+    .where(eq(webflowConnections.id, connection.id));
   revalidatePath("/integrations");
 }
 
@@ -176,6 +196,15 @@ export async function saveWebflowCollection(formData: FormData) {
     .where(eq(webflowConnections.tenantId, session.user.tenantId))
     .limit(1);
   if (!connection) throw new Error("No Webflow connection");
+
+  // Re-selecting the SAME collection must be a no-op, for the identical
+  // reason as saveWebflowSite above: without this guard, confirming the
+  // picker on an unchanged value would still re-suggest and overwrite the
+  // user's hand-tuned fieldMapping with a fresh suggestMapping() result.
+  if (connection.collectionId === collectionId) {
+    revalidatePath("/integrations");
+    return;
+  }
 
   const token = decryptSecret({
     ciphertext: connection.tokenCiphertext,

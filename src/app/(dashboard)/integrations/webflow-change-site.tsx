@@ -12,7 +12,13 @@ import { Button } from "@/components/ui/button";
 // Site API token once, that's a trap for a mis-click. This re-shows the
 // existing WebflowSiteForm on demand; saving it runs saveWebflowSite, which
 // already clears the (now-invalid) collection and mapping.
-export function WebflowChangeSite({ currentSiteName }: { currentSiteName: string | null }) {
+export function WebflowChangeSite({
+  currentSiteId,
+  currentSiteName,
+}: {
+  currentSiteId: string;
+  currentSiteName: string | null;
+}) {
   const [sites, setSites] = useState<WebflowSite[] | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -25,7 +31,10 @@ export function WebflowChangeSite({ currentSiteName }: { currentSiteName: string
             Cancel
           </Button>
         </div>
-        <WebflowSiteForm sites={sites} />
+        {/* Pre-select the site this tenant is actually connected to — not
+            whatever sorts first — so confirming without changing anything
+            can't wipe the collection and its mapping. */}
+        <WebflowSiteForm sites={sites} currentSiteId={currentSiteId} />
       </div>
     );
   }

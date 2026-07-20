@@ -11,7 +11,13 @@ import { Button } from "@/components/ui/button";
 // WebflowCollectionForm on demand instead of forcing a full disconnect.
 // Saving runs saveWebflowCollection, which already re-suggests the mapping
 // for the newly picked collection.
-export function WebflowChangeCollection({ currentCollectionName }: { currentCollectionName: string | null }) {
+export function WebflowChangeCollection({
+  currentCollectionId,
+  currentCollectionName,
+}: {
+  currentCollectionId: string;
+  currentCollectionName: string | null;
+}) {
   const [collections, setCollections] = useState<WebflowCollection[] | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -24,7 +30,10 @@ export function WebflowChangeCollection({ currentCollectionName }: { currentColl
             Cancel
           </Button>
         </div>
-        <WebflowCollectionForm collections={collections} />
+        {/* Pre-select the collection this tenant is actually connected to —
+            not whatever sorts first — so confirming without changing
+            anything can't overwrite the hand-tuned field mapping. */}
+        <WebflowCollectionForm collections={collections} currentCollectionId={currentCollectionId} />
       </div>
     );
   }

@@ -26,8 +26,13 @@ import { WebflowChangeCollection } from "./webflow-change-collection";
 // rendering regardless of what happens here.
 function describeError(error: unknown): string {
   if (error instanceof WebflowApiError) {
-    if (error.status === 401) {
-      return "Webflow rejected the stored token (401 Unauthorized). Reconnect your Webflow account below.";
+    // Kept in sync with webflow.ts's isAuthFailure: both 401 (revoked token)
+    // and 403 (app uninstalled / insufficient scope) are reconnect-worthy —
+    // Webflow issues no refresh token, so neither can self-heal by retrying.
+    if (error.status === 401 || error.status === 403) {
+      return `Webflow rejected the stored token (${error.status} ${
+        error.status === 401 ? "Unauthorized" : "Forbidden"
+      }). Reconnect your Webflow account below.`;
     }
     const details = error.validationDetails.length > 0 ? ` ${error.validationDetails.join(" ")}` : "";
     return `${error.message}${details}`;
@@ -142,7 +147,9 @@ async function renderStep(connection: Connection | undefined) {
     // must collapse back to the summary line rather than keep showing the
     // now-stale picker it had fetched, and revalidatePath() re-renders this
     // server component in place without otherwise remounting its children.
-    const changeSite = <WebflowChangeSite key={connection.siteId} currentSiteName={connection.siteName} />;
+    const changeSite = (
+      <WebflowChangeSite key={connection.siteId} currentSiteId={connection.siteId} currentSiteName={connection.siteName} />
+    );
     try {
       const collections = await listCollections(token, connection.siteId);
       return (
@@ -167,9 +174,15 @@ async function renderStep(connection: Connection | undefined) {
   // API token once, so disconnecting means generating a brand-new one).
   // Same key rationale as step 3, plus collectionId so "Change collection"
   // also collapses back to its summary line after a successful save.
-  const changeSite = <WebflowChangeSite key={connection.siteId} currentSiteName={connection.siteName} />;
+  const changeSite = (
+    <WebflowChangeSite key={connection.siteId} currentSiteId={connection.siteId} currentSiteName={connection.siteName} />
+  );
   const changeCollection = (
-    <WebflowChangeCollection key={connection.collectionId} currentCollectionName={connection.collectionName} />
+    <WebflowChangeCollection
+      key={connection.collectionId}
+      currentCollectionId={connection.collectionId}
+      currentCollectionName={connection.collectionName}
+    />
   );
 
   let collection: WebflowCollectionDetail;

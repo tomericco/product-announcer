@@ -120,13 +120,26 @@ export const webflowDestination: Destination<WebflowConnection> = {
 
     const live = connection.publishMode === "live";
 
+    // A decrypt failure (rotated/misconfigured CREDENTIALS_ENCRYPTION_KEY) can't be
+    // fixed by retrying, and must not be logged identically to a network timeout.
+    // Decrypt outside and before the network-call try block so a decrypt failure is
+    // never caught there and misclassified as retryable — see webhook.ts's
+    // identical guard for the same reasoning.
+    let token: string;
     try {
-      const token = decryptSecret({
+      token = decryptSecret({
         ciphertext: connection.tokenCiphertext,
         iv: connection.tokenIv,
         authTag: connection.tokenAuthTag,
       });
+    } catch {
+      return {
+        status: "permanent",
+        error: "Could not decrypt the Webflow token. Check CREDENTIALS_ENCRYPTION_KEY.",
+      };
+    }
 
+    try {
       // Re-fetch the schema rather than trusting the stored mapping: a field
       // deleted in Webflow since setup would otherwise 400 with no explanation.
       const collection = await getCollection(token, connection.collectionId);

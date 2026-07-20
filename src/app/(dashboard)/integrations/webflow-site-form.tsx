@@ -4,6 +4,7 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { saveWebflowSite } from "./actions";
 import type { WebflowSite } from "@/lib/integrations/webflow/client";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import {
@@ -14,8 +15,20 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
-export function WebflowSiteForm({ sites }: { sites: WebflowSite[] }) {
-  const [siteId, setSiteId] = useState(sites[0]?.id ?? "");
+export function WebflowSiteForm({
+  sites,
+  currentSiteId,
+}: {
+  sites: WebflowSite[];
+  // Undefined during first-time setup (no site chosen yet) — the picker then
+  // has nothing to default to and falls back to the first entry. When this
+  // component is reused from "Change site" on an already-connected tenant,
+  // it must open pre-selected on what is actually wired up, not on whatever
+  // happens to sort first — confirming the wrong pre-selection silently
+  // wipes the collection and its field mapping.
+  currentSiteId?: string | null;
+}) {
+  const [siteId, setSiteId] = useState(currentSiteId ?? sites[0]?.id ?? "");
   const [submitting, setSubmitting] = useState(false);
 
   const selectedName = sites.find((s) => s.id === siteId)?.displayName ?? "";
@@ -53,7 +66,14 @@ export function WebflowSiteForm({ sites }: { sites: WebflowSite[] }) {
           <SelectContent>
             {sites.map((site) => (
               <SelectItem key={site.id} value={site.id}>
-                {site.displayName}
+                <span className="flex items-center gap-2">
+                  {site.displayName}
+                  {site.id === currentSiteId && (
+                    <Badge variant="secondary" className="pointer-events-none">
+                      Current
+                    </Badge>
+                  )}
+                </span>
               </SelectItem>
             ))}
           </SelectContent>
