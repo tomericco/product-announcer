@@ -1,5 +1,10 @@
 import { anthropic } from "@ai-sdk/anthropic";
 
+/** Strips a gateway-style "anthropic/" prefix: "anthropic/claude-sonnet-4-5" -> "claude-sonnet-4-5". */
+export function modelId(spec: string): string {
+  return spec.startsWith("anthropic/") ? spec.slice("anthropic/".length) : spec;
+}
+
 /**
  * Resolves a configured model spec to a concrete Anthropic model, calling the
  * Anthropic API directly via @ai-sdk/anthropic (billed against ANTHROPIC_API_KEY)
@@ -9,11 +14,6 @@ import { anthropic } from "@ai-sdk/anthropic";
  * ("claude-sonnet-4-5"); a leading "anthropic/" is stripped so the existing
  * GENERATION_MODEL / ENRICHMENT_MODEL / etc. env values keep working unchanged.
  */
-/** Strips a gateway-style "anthropic/" prefix: "anthropic/claude-sonnet-4-5" -> "claude-sonnet-4-5". */
-export function modelId(spec: string): string {
-  return spec.startsWith("anthropic/") ? spec.slice("anthropic/".length) : spec;
-}
-
 export function resolveModel(spec: string) {
   return anthropic(modelId(spec));
 }
