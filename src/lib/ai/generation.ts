@@ -11,7 +11,6 @@ type ExampleRow = typeof systemUpdateExamples.$inferSelect;
 export const UpdateDraftSchema = z.object({
   title: z.string(),
   body: z.string(),
-  category: z.enum(["new", "improved", "fixed"]),
 });
 
 export type UpdateDraft = z.infer<typeof UpdateDraftSchema>;

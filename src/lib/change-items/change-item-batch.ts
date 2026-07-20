@@ -56,7 +56,7 @@ export async function getTrackedChangeItems(
     .orderBy(changeItems.createdAt);
 }
 
-export type DraftInput = { title: string; body: string; category: "new" | "improved" | "fixed" };
+export type DraftInput = { title: string; body: string };
 
 export async function claimBatchAndCreateUpdate(
   input: {
@@ -84,7 +84,6 @@ export async function claimBatchAndCreateUpdate(
         tenantId: input.tenantId,
         title: input.draft.title,
         body: input.draft.body,
-        category: input.draft.category,
         sourceItems: claimedIds,
         ...(input.review
           ? { reviewStatus: input.review.status, reviewIssues: input.review.issues, reviewedAt: new Date() }

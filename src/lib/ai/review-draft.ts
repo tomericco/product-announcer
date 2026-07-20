@@ -101,7 +101,7 @@ export async function reviseDraft(
     system: REVISION_SYSTEM,
     prompt: buildRevisionPrompt(draft, issues, brandProfile),
   });
-  return { title: result.object.title, body: result.object.body, category: draft.category };
+  return { title: result.object.title, body: result.object.body };
 }
 
 /**

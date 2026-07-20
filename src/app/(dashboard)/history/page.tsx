@@ -2,7 +2,6 @@ import { and, desc, eq } from "drizzle-orm";
 import { db } from "@/db";
 import { updates } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
-import { Badge } from "@/components/ui/badge";
 import {
   Table,
   TableBody,
@@ -28,7 +27,6 @@ export default async function HistoryPage() {
         <TableHeader>
           <TableRow>
             <TableHead>Title</TableHead>
-            <TableHead>Category</TableHead>
             <TableHead>Sent</TableHead>
           </TableRow>
         </TableHeader>
@@ -36,15 +34,12 @@ export default async function HistoryPage() {
           {sentUpdates.map((u) => (
             <TableRow key={u.id}>
               <TableCell>{u.title}</TableCell>
-              <TableCell>
-                <Badge variant="secondary">{u.category}</Badge>
-              </TableCell>
               <TableCell>{u.publishedAt?.toLocaleDateString()}</TableCell>
             </TableRow>
           ))}
           {sentUpdates.length === 0 && (
             <TableRow>
-              <TableCell colSpan={3} className="text-muted-foreground">
+              <TableCell colSpan={2} className="text-muted-foreground">
                 No announcements sent yet.
               </TableCell>
             </TableRow>

@@ -83,7 +83,7 @@ describe("change-item-batch", () => {
     const update = await claimBatchAndCreateUpdate({
       tenantId: tenant.id,
       changeItemIds: inserted.map((i) => i.id),
-      draft: { title: "T", body: "B", category: "new" },
+      draft: { title: "T", body: "B" },
     });
 
     expect(update).not.toBeNull();
@@ -107,7 +107,7 @@ describe("change-item-batch", () => {
     const update = await claimBatchAndCreateUpdate({
       tenantId: tenant.id,
       changeItemIds: [stillPending.id, alreadyBatched.id],
-      draft: { title: "T", body: "B", category: "new" },
+      draft: { title: "T", body: "B" },
     });
 
     expect(update!.sourceItems).toEqual([stillPending.id]);
@@ -123,7 +123,7 @@ describe("change-item-batch", () => {
     const update = await claimBatchAndCreateUpdate({
       tenantId: tenant.id,
       changeItemIds: [item.id],
-      draft: { title: "T", body: "B", category: "new" },
+      draft: { title: "T", body: "B" },
     });
 
     expect(update).toBeNull();
@@ -141,7 +141,7 @@ describe("change-item-batch", () => {
     const update = await claimBatchAndCreateUpdate({
       tenantId: tenant.id,
       changeItemIds: [item.id],
-      draft: { title: "T", body: "B", category: "new" },
+      draft: { title: "T", body: "B" },
       review: { status: "failed", issues: ["too salesy"] },
     });
 

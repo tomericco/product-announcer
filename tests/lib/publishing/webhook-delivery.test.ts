@@ -27,7 +27,6 @@ describe("webhook-delivery", () => {
         repoId: repo.id,
         title: "T",
         body: "B",
-        category: "new",
         status: "published",
         sourceItems: [],
       })

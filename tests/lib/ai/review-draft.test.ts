@@ -5,7 +5,7 @@ vi.mock("ai", () => ({ generateObject: vi.fn() }));
 import { generateObject } from "ai";
 import { buildReviewPrompt, buildRevisionPrompt, reviewAndReconcile } from "../../../src/lib/ai/review-draft";
 
-const draft = { title: "Big news!!!", body: "Buy now.", category: "new" as const };
+const draft = { title: "Big news!!!", body: "Buy now." };
 const brand = { tone: "calm", readingLevel: "simple", doList: ["be factual"], dontList: ["hype"], examplePhrases: ["ship"], industry: null, userPersonas: [] };
 
 function ok(object: unknown) { return { object } as never; }
@@ -57,7 +57,7 @@ describe("reviewAndReconcile", () => {
       .mockResolvedValueOnce(critique(true));                   // review 2
     const out = await reviewAndReconcile(draft, brand as never);
     expect(out.status).toBe("revised");
-    expect(out.finalDraft).toEqual({ title: "News", body: "We shipped X.", category: "new" });
+    expect(out.finalDraft).toEqual({ title: "News", body: "We shipped X." });
     expect(out.issues).toEqual([]);
     expect(generateObject).toHaveBeenCalledTimes(3);
   });
@@ -71,7 +71,7 @@ describe("reviewAndReconcile", () => {
       .mockResolvedValueOnce(critique(true));                  // review 3
     const out = await reviewAndReconcile(draft, brand as never);
     expect(out.status).toBe("revised");
-    expect(out.finalDraft).toEqual({ title: "R2", body: "b2", category: "new" });
+    expect(out.finalDraft).toEqual({ title: "R2", body: "b2" });
     expect(generateObject).toHaveBeenCalledTimes(5);
   });
 
@@ -85,7 +85,7 @@ describe("reviewAndReconcile", () => {
     const out = await reviewAndReconcile(draft, brand as never);
     expect(out.status).toBe("failed");
     expect(out.issues).toEqual(["nope"]);
-    expect(out.finalDraft).toEqual({ title: "R2", body: "b2", category: "new" });
+    expect(out.finalDraft).toEqual({ title: "R2", body: "b2" });
     expect(generateObject).toHaveBeenCalledTimes(5);
   });
 
@@ -105,7 +105,7 @@ describe("reviewAndReconcile", () => {
       .mockResolvedValueOnce(critique(false, ["still"])); // review 2
     const out = await reviewAndReconcile(draft, brand as never);
     expect(out.status).toBe("failed");
-    expect(out.finalDraft).toEqual({ title: "R1", body: "b1", category: "new" });
+    expect(out.finalDraft).toEqual({ title: "R1", body: "b1" });
     expect(generateObject).toHaveBeenCalledTimes(3);
   });
 

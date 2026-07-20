@@ -9,13 +9,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { DraftBodyEditor } from "./draft-body-editor";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 
 export default async function DraftDetailPage({ params }: { params: Promise<{ updateId: string }> }) {
   const session = await requireSession();
@@ -52,19 +45,6 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ up
         <div className="space-y-2">
           <Label>Body</Label>
           <DraftBodyEditor defaultValue={update.body} />
-        </div>
-        <div className="space-y-2">
-          <Label>Category</Label>
-          <Select name="category" defaultValue={update.category}>
-            <SelectTrigger className="w-40">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="new">New</SelectItem>
-              <SelectItem value="improved">Improved</SelectItem>
-              <SelectItem value="fixed">Fixed</SelectItem>
-            </SelectContent>
-          </Select>
         </div>
         <Button type="submit" variant="outline">
           Save changes

@@ -16,7 +16,7 @@ describe("publish/integrations schema", () => {
       .returning();
     const [update] = await db
       .insert(updates)
-      .values({ tenantId: tenant.id, repoId: repo.id, title: "T", body: "B", category: "new", sourceItems: [] })
+      .values({ tenantId: tenant.id, repoId: repo.id, title: "T", body: "B", sourceItems: [] })
       .returning();
     const [config] = await db
       .insert(webhookConfigs)

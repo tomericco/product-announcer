@@ -183,7 +183,6 @@ export const updates = pgTable("updates", {
   repoId: uuid("repo_id").references(() => repos.id, { onDelete: "cascade" }),
   title: text("title").notNull(),
   body: text("body").notNull(),
-  category: updateCategoryEnum("category").notNull(),
   status: updateStatusEnum("status").notNull().default("draft"),
   sourceItems: jsonb("source_items").$type<string[]>().notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

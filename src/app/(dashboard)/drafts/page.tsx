@@ -62,7 +62,6 @@ export default async function DraftsPage() {
                     {reviewStatusLabel(d.reviewStatus)}
                   </Badge>
                 )}
-                <Badge variant="secondary">{d.category}</Badge>
               </div>
             </CardContent>
           </Card>

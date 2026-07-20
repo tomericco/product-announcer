@@ -15,7 +15,6 @@ function buildPayload(update: typeof updates.$inferSelect) {
     tenantId: update.tenantId,
     title: update.title,
     body: update.body,
-    category: update.category,
     status: update.status,
     sourceItems: update.sourceItems,
     createdAt: update.createdAt,

@@ -59,7 +59,7 @@ describe("runBatchForWorkspace auto-publish", () => {
     await db.insert(webhookConfigs).values({ tenantId: tenant.id, url: "https://example.com/hook", secret: "s" });
     vi.mocked(fetch).mockResolvedValue({ ok: true } as Response);
     vi.mocked(reviewAndReconcile).mockImplementation(async () => ({
-      finalDraft: { title: "Revised title", body: "Revised body", category: "new" },
+      finalDraft: { title: "Revised title", body: "Revised body" },
       status: "revised",
       issues: [],
     }));

@@ -27,7 +27,6 @@ describe("scheduler/generation schema", () => {
         repoId: repo.id,
         title: "Test update",
         body: "Body",
-        category: "improved",
         sourceItems: [],
       })
       .returning();
@@ -53,7 +52,7 @@ describe("scheduler/generation schema", () => {
 
     const [update] = await db
       .insert(updates)
-      .values({ tenantId: tenant.id, title: "T", body: "B", category: "new", sourceItems: [] })
+      .values({ tenantId: tenant.id, title: "T", body: "B", sourceItems: [] })
       .returning();
     expect(update.repoId).toBeNull();
 

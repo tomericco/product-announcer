@@ -27,7 +27,6 @@ export async function saveDraft(formData: FormData) {
     .set({
       title: formData.get("title") as string,
       body: formData.get("body") as string,
-      category: formData.get("category") as "new" | "improved" | "fixed",
       editedBy: session.user.id,
     })
     .where(eq(updates.id, updateId));
