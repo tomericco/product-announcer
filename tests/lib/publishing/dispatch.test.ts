@@ -1,7 +1,15 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, repos, updates, webhookConfigs, deliveryAttempts } from "../../../src/db/schema";
+import {
+  tenants,
+  repos,
+  updates,
+  webhookConfigs,
+  webflowConnections,
+  deliveryAttempts,
+  type WebflowFieldMapping,
+} from "../../../src/db/schema";
 import { dispatchAllDestinations, retryFailedDeliveries } from "../../../src/lib/publishing/dispatch";
 import { encryptSecret } from "../../../src/lib/credentials/encryption";
 
@@ -10,6 +18,24 @@ const encryptedSecret = () => {
   const p = encryptSecret(SECRET);
   return { secretCiphertext: p.ciphertext, secretIv: p.iv, secretAuthTag: p.authTag };
 };
+
+const encryptedToken = () => {
+  const p = encryptSecret("wf-tok");
+  return { tokenCiphertext: p.ciphertext, tokenIv: p.iv, tokenAuthTag: p.authTag };
+};
+
+const WEBFLOW_SCHEMA = {
+  id: "c1",
+  displayName: "Blog",
+  slug: "blog",
+  fields: [{ id: "f1", slug: "name", displayName: "Name", type: "PlainText", isRequired: true }],
+};
+
+const webflowMapping: WebflowFieldMapping = { name: { source: "title" } };
+
+function jsonResponse(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+}
 
 describe("dispatch", () => {
   beforeEach(() => {
@@ -98,6 +124,41 @@ describe("dispatch", () => {
     const [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.updateId, update.id));
     expect(delivery.status).toBe("success");
     expect(delivery.attempts).toBe(2);
+  });
+
+  it("retryFailedDeliveries retries a failed Webflow delivery under the attempt cap", async () => {
+    // retryFailedDeliveries was generalized from webhook-only to loop over all
+    // registered destinations. Every other test in this describe block only
+    // seeds a webhook row, so nothing proves the sweep actually reaches the
+    // Webflow destination. This test is that proof.
+    const { tenant, update } = await seed();
+    await db.insert(webflowConnections).values({
+      tenantId: tenant.id,
+      ...encryptedToken(),
+      siteId: "s1",
+      collectionId: "c1",
+      fieldMapping: webflowMapping,
+      publishMode: "draft",
+      status: "active",
+    });
+    await db.insert(deliveryAttempts).values({
+      updateId: update.id,
+      destination: "webflow",
+      status: "failed",
+      attempts: 1,
+    });
+
+    // A successful Webflow delivery is two fetch calls: fetch the collection
+    // schema, then create (or update) the item.
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(WEBFLOW_SCHEMA)).mockResolvedValueOnce(jsonResponse({ id: "item1" }, 202));
+
+    await retryFailedDeliveries();
+
+    const [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.updateId, update.id));
+    expect(delivery.status).toBe("success");
+    expect(delivery.attempts).toBe(2);
+    expect(delivery.externalId).toBe("item1");
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
 
   it("retryFailedDeliveries skips deliveries that already hit the attempt cap", async () => {
