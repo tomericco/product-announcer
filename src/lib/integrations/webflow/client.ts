@@ -34,16 +34,38 @@ export class WebflowApiError extends Error {
 }
 
 async function request<T>(token: string, path: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(`${BASE_URL}${path}`, {
-    ...init,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      accept: "application/json",
-      ...(init.body ? { "content-type": "application/json" } : {}),
-      ...(init.headers ?? {}),
-    },
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-  });
+  const method = init.method ?? "GET";
+  let response: Response;
+  try {
+    response = await fetch(`${BASE_URL}${path}`, {
+      ...init,
+      headers: {
+        accept: "application/json",
+        ...(init.body ? { "content-type": "application/json" } : {}),
+        // Caller-supplied headers spread BEFORE Authorization so a caller
+        // can never override the Bearer token, even though `request` isn't
+        // exported today and nothing passes `init.headers` yet.
+        ...(init.headers ?? {}),
+        Authorization: `Bearer ${token}`,
+      },
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+  } catch (error) {
+    const name = (error as { name?: string } | undefined)?.name;
+    if (name === "TimeoutError" || name === "AbortError") {
+      // Deliberately a plain Error, NOT a WebflowApiError. A later task
+      // classifies failures by `instanceof WebflowApiError` + status code,
+      // treating any other error type as retryable by default. A timeout
+      // must be retried, so giving it a synthetic status (0/408/504) here
+      // would misroute it into the permanent-failure branch. Do not "fix"
+      // this into a WebflowApiError.
+      throw new Error(`Webflow ${method} ${path} timed out after ${REQUEST_TIMEOUT_MS}ms`);
+    }
+    // Any other fetch rejection (DNS failure, connection reset, etc.) keeps
+    // its own message and, like the timeout above, stays a plain Error so it
+    // also classifies as retryable.
+    throw error;
+  }
 
   if (!response.ok) {
     // Webflow returns {message, code, details:[{param, description}]}; a body
@@ -53,11 +75,12 @@ async function request<T>(token: string, path: string, init: RequestInit = {}): 
       details?: { param?: string; description?: string }[];
     };
     const retryAfter = response.headers.get("retry-after");
+    const retryAfterSeconds = retryAfter === null ? NaN : Number(retryAfter);
     throw new WebflowApiError(
       response.status,
       body.message ?? `Webflow returned HTTP ${response.status}`,
       (body.details ?? []).map((d) => d.description ?? "").filter(Boolean),
-      retryAfter ? Number(retryAfter) * 1000 : undefined
+      Number.isFinite(retryAfterSeconds) ? retryAfterSeconds * 1000 : undefined
     );
   }
 

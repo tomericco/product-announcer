@@ -4,6 +4,7 @@ import {
   listCollections,
   getCollection,
   createItem,
+  updateItem,
   WebflowApiError,
 } from "../../../../src/lib/integrations/webflow/client";
 
@@ -95,5 +96,65 @@ describe("webflow client", () => {
   it("throws on 401", async () => {
     vi.mocked(fetch).mockResolvedValue(jsonResponse({ message: "Unauthorized" }, { status: 401 }));
     await expect(listSites("bad")).rejects.toMatchObject({ status: 401 });
+  });
+
+  it("patches the staged item endpoint when live is false", async () => {
+    vi.mocked(fetch).mockResolvedValue(jsonResponse({ id: "item1" }, { status: 202 }));
+    const result = await updateItem(
+      "tok",
+      "c1",
+      "item1",
+      { isDraft: true, fieldData: { name: "T", slug: "t" } },
+      false
+    );
+    expect(result.id).toBe("item1");
+    const [url, init] = vi.mocked(fetch).mock.calls[0];
+    expect(url).toBe("https://api.webflow.com/v2/collections/c1/items/item1");
+    expect(init?.method).toBe("PATCH");
+    expect(init?.body).toBe(JSON.stringify({ isDraft: true, fieldData: { name: "T", slug: "t" } }));
+  });
+
+  it("patches the live item endpoint when live is true", async () => {
+    vi.mocked(fetch).mockResolvedValue(jsonResponse({ id: "item1" }, { status: 202 }));
+    await updateItem("tok", "c1", "item1", { isDraft: false, fieldData: { name: "T", slug: "t" } }, true);
+    const [url, init] = vi.mocked(fetch).mock.calls[0];
+    expect(url).toBe("https://api.webflow.com/v2/collections/c1/items/item1/live");
+    expect(init?.method).toBe("PATCH");
+  });
+
+  it("throws WebflowApiError with status 404 when the item no longer exists", async () => {
+    vi.mocked(fetch).mockResolvedValue(jsonResponse({ message: "Not Found" }, { status: 404 }));
+    const error = await updateItem("tok", "c1", "missing-item", { isDraft: true, fieldData: {} }, false).catch(
+      (e) => e as WebflowApiError
+    );
+    expect(error).toBeInstanceOf(WebflowApiError);
+    expect((error as WebflowApiError).status).toBe(404);
+  });
+
+  it("treats a non-numeric Retry-After as absent rather than NaN", async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      jsonResponse({ message: "Too Many Requests" }, { status: 429, headers: { "retry-after": "abc" } })
+    );
+    const error = await listSites("tok").catch((e) => e as WebflowApiError);
+    expect(error).toBeInstanceOf(WebflowApiError);
+    expect((error as WebflowApiError).status).toBe(429);
+    expect((error as WebflowApiError).retryAfterMs).toBeUndefined();
+  });
+
+  it("wraps a fetch timeout in a plain Error naming the method, path, and timeout", async () => {
+    const timeoutError = new DOMException("The operation was aborted due to timeout", "TimeoutError");
+    vi.mocked(fetch).mockRejectedValue(timeoutError);
+    const error = await listSites("tok").catch((e) => e as Error);
+    expect(error).not.toBeInstanceOf(WebflowApiError);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe("Webflow GET /v2/sites timed out after 10000ms");
+  });
+
+  it("keeps a non-timeout fetch rejection as its own plain Error", async () => {
+    const dnsError = new TypeError("fetch failed: getaddrinfo ENOTFOUND api.webflow.com");
+    vi.mocked(fetch).mockRejectedValue(dnsError);
+    const error = await listSites("tok").catch((e) => e as Error);
+    expect(error).not.toBeInstanceOf(WebflowApiError);
+    expect(error).toBe(dnsError);
   });
 });
