@@ -258,3 +258,41 @@ export const llmUsage = pgTable("llm_usage", {
   totalTokens: integer("total_tokens"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+export const webflowAuthTypeEnum = pgEnum("webflow_auth_type", ["site_token", "oauth"]);
+export const webflowPublishModeEnum = pgEnum("webflow_publish_mode", ["draft", "live"]);
+export const webflowConnectionStatusEnum = pgEnum("webflow_connection_status", [
+  "active",
+  "needs_reauth",
+  "misconfigured",
+]);
+
+// Keyed by Webflow field *slug*, not id, so renaming a field's display name in
+// Webflow does not break the mapping.
+export type WebflowFieldMapping = Record<
+  string,
+  | { source: "title" | "body" | "slug" | "publishedAt" | "empty" }
+  | { source: "static"; value: string }
+>;
+
+export const webflowConnections = pgTable("webflow_connections", {
+  id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  tenantId: uuid("tenant_id")
+    .notNull()
+    .unique()
+    .references(() => tenants.id, { onDelete: "cascade" }),
+  authType: webflowAuthTypeEnum("auth_type").notNull().default("site_token"),
+  tokenCiphertext: text("token_ciphertext").notNull(),
+  tokenIv: text("token_iv").notNull(),
+  tokenAuthTag: text("token_auth_tag").notNull(),
+  // Null until the user completes the corresponding wizard step.
+  siteId: text("site_id"),
+  siteName: text("site_name"),
+  collectionId: text("collection_id"),
+  collectionName: text("collection_name"),
+  fieldMapping: jsonb("field_mapping").$type<WebflowFieldMapping>().notNull().default({}),
+  publishMode: webflowPublishModeEnum("publish_mode").notNull().default("draft"),
+  status: webflowConnectionStatusEnum("status").notNull().default("active"),
+  lastValidatedAt: timestamp("last_validated_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});

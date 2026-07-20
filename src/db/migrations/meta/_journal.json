@@ -155,6 +155,13 @@
       "when": 1784560698252,
       "tag": "0021_faithful_skaar",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1784562554372,
+      "tag": "0022_shocking_prima",
+      "breakpoints": true
     }
   ]
 }
