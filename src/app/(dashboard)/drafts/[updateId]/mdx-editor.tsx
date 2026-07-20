@@ -1,7 +1,7 @@
 "use client";
 
 import "@mdxeditor/editor/style.css";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   MDXEditor,
   headingsPlugin,
@@ -48,6 +48,94 @@ const CODE_BLOCK_LANGUAGES = {
   md: "Markdown",
   "": "Plain text",
 };
+
+type SurfaceMode = "hidden" | "selection" | "insert";
+
+function useSelectionSurface(hostRef: React.RefObject<HTMLDivElement | null>) {
+  const [mode, setMode] = useState<SurfaceMode>("hidden");
+  const [pos, setPos] = useState({ top: 0, left: 0 });
+
+  useEffect(() => {
+    function update() {
+      const host = hostRef.current;
+      const parent = host?.offsetParent as HTMLElement | null;
+      const content = parent?.querySelector<HTMLElement>(".mdx-content");
+      const sel = window.getSelection();
+      if (!host || !parent || !content || !sel || sel.rangeCount === 0 || !sel.anchorNode || !content.contains(sel.anchorNode)) {
+        setMode("hidden");
+        return;
+      }
+      const parentRect = parent.getBoundingClientRect();
+      const range = sel.getRangeAt(0);
+
+      if (!sel.isCollapsed) {
+        const r = range.getBoundingClientRect();
+        setPos({ top: r.top - parentRect.top, left: r.left - parentRect.left + r.width / 2 });
+        setMode("selection");
+        return;
+      }
+
+      // Collapsed caret: only offer the insert menu on an EMPTY block.
+      let node: Node | null = sel.anchorNode;
+      while (node && node.parentElement !== content) node = node.parentElement;
+      const block = node as HTMLElement | null;
+      if (block && !block.textContent?.trim()) {
+        const r = block.getBoundingClientRect();
+        setPos({ top: r.top - parentRect.top, left: r.left - parentRect.left });
+        setMode("insert");
+      } else {
+        setMode("hidden");
+      }
+    }
+
+    document.addEventListener("selectionchange", update);
+    window.addEventListener("resize", update);
+    window.addEventListener("scroll", update, true);
+    return () => {
+      document.removeEventListener("selectionchange", update);
+      window.removeEventListener("resize", update);
+      window.removeEventListener("scroll", update, true);
+    };
+  }, [hostRef]);
+
+  return { mode, pos };
+}
+
+function EditorSurfaces() {
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  const { mode, pos } = useSelectionSurface(hostRef);
+
+  return (
+    <>
+      <div className="flex w-full justify-end border-b border-border px-1 py-1">
+        <SourceToggle />
+      </div>
+
+      {/* Anchor: not visible itself; gives the hook an offsetParent to measure against. */}
+      <div ref={hostRef} className="mdx-surface-anchor" />
+
+      <div
+        className="mdx-surface mdx-surface-selection"
+        data-open={mode === "selection"}
+        style={{ top: pos.top, left: pos.left }}
+      >
+        <BoldItalicUnderlineToggles />
+        <BlockTypeSelect />
+        <ListsToggle />
+        <CreateLink />
+      </div>
+
+      <div
+        className="mdx-surface mdx-surface-insert"
+        data-open={mode === "insert"}
+        style={{ top: pos.top, left: pos.left }}
+      >
+        <InsertImage />
+        <InsertCodeBlock />
+      </div>
+    </>
+  );
+}
 
 function SourceToggle() {
   const viewMode = useCellValue(viewMode$);
@@ -107,19 +195,8 @@ export default function MdxEditor({
           diffSourcePlugin({ viewMode: "rich-text" }),
           markdownShortcutPlugin(),
           toolbarPlugin({
-            toolbarContents: () => (
-              <>
-                <div className="flex w-full justify-end border-b border-border px-1 py-1">
-                  <SourceToggle />
-                </div>
-                <BoldItalicUnderlineToggles />
-                <BlockTypeSelect />
-                <ListsToggle />
-                <CreateLink />
-                <InsertImage />
-                <InsertCodeBlock />
-              </>
-            ),
+            toolbarClassName: "mdx-toolbar-host",
+            toolbarContents: () => <EditorSurfaces />,
           }),
         ]}
       />

@@ -212,3 +212,53 @@
   border-top: 1px solid var(--border);
   margin: 1.5rem 0;
 }
+
+/* Specificity note: @mdxeditor's own `._toolbarRoot_*` rule (shipped in
+   @mdxeditor/editor/dist/style.css) sets `overflow-x: auto; position: sticky`
+   on this same element, at the same (single-class) specificity. Because that
+   stylesheet is emitted in a separate, lazily-loaded chunk that (per a
+   `next build` check of .next/static/chunks/*.css) lands AFTER globals.css
+   in the cascade, a plain `.mdx-toolbar-host { overflow: visible }` rule can
+   lose to it -- which would clip the floating surfaces below (overflow-x:
+   auto with overflow-y unset computes to overflow-y: auto too, per the CSS
+   overflow spec's "visible paired with non-visible" rule, turning this into
+   a scroll container that clips absolutely-positioned children extending
+   outside its box). Doubling the class selector bumps our specificity above
+   the vendor rule without depending on chunk load order.
+*/
+.mdx-toolbar-host.mdx-toolbar-host {
+  position: relative;
+  display: block;
+  overflow: visible;
+  padding: 0;
+  border: 0;
+}
+.mdx-surface-anchor {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  height: 0;
+}
+.mdx-surface {
+  position: absolute;
+  z-index: 30;
+  display: none;
+  align-items: center;
+  gap: 0.125rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--background);
+  padding: 0.25rem;
+  box-shadow: 0 6px 20px rgb(0 0 0 / 8%);
+}
+.mdx-surface[data-open="true"] {
+  display: flex;
+}
+/* Selection toolbar sits centered just above the highlighted text. */
+.mdx-surface-selection {
+  transform: translate(-50%, calc(-100% - 8px));
+}
+/* Insert menu sits on the empty line, nudged left of the caret. */
+.mdx-surface-insert {
+  transform: translate(-2px, -2px);
+}
