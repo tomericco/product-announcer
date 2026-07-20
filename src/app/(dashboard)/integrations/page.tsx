@@ -8,8 +8,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { WebflowForm } from "./webflow-form";
 
-const COMING_SOON = ["Webflow", "Customer.io", "Mailchimp", "HubSpot", "LinkedIn"];
+const COMING_SOON = ["Customer.io", "Mailchimp", "HubSpot", "LinkedIn"];
 
 export default async function IntegrationsPage() {
   const session = await requireSession();
@@ -54,6 +55,8 @@ export default async function IntegrationsPage() {
             </form>
           </CardContent>
         </Card>
+
+        <WebflowForm />
       </section>
 
       <section className="space-y-2">
