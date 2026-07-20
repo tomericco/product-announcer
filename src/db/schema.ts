@@ -92,6 +92,12 @@ export const changeItems = pgTable(
     diff: text("diff"),
     commitUrl: text("commit_url"),
     committedAt: timestamp("committed_at", { withTimezone: true }),
+    // When the commit reached the watched branch, as distinct from when it was
+    // authored (`committedAt`) — a commit can be written days before it lands.
+    // Only the push webhook knows this: GitHub's list-commits API carries no
+    // branch-landing time, so backfilled/imported commits leave it null rather
+    // than pretending the author date is a release.
+    releasedAt: timestamp("released_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     // enrichment (sub-project A): classifier output, null until enriched
     userFacing: boolean("user_facing"),

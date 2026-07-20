@@ -111,6 +111,34 @@ describe("importSelectedCommits", () => {
     expect(items[0].excludedAt).toBeNull();
   });
 
+  it("leaves releasedAt null on import, and never clobbers a push-recorded one", async () => {
+    const { tenant, repo } = await seedRepo(["commit"]);
+    const getCommitDiff = vi.fn().mockResolvedValue("diff --git a/x b/x\n+line");
+    const selections = [
+      { repoId: repo.id, sha: "aaa111", message: "fix timeout", url: "https://x/aaa111", committedAt: "2026-07-01T00:00:00Z" },
+    ];
+
+    // The list-commits API has no branch-landing time, so an import can't know it.
+    await importSelectedCommits({ tenantId: tenant.id, selections }, getCommitDiff, fakeEnrich);
+    const [imported] = await db.select().from(changeItems).where(eq(changeItems.repoId, repo.id));
+    expect(imported.releasedAt).toBeNull();
+
+    // Now simulate the row having arrived via the push webhook instead, then
+    // being dropped — a re-import must resurrect it WITHOUT erasing the real
+    // push time it already carries.
+    const pushedAt = new Date("2026-07-02T09:30:00Z");
+    await db
+      .update(changeItems)
+      .set({ status: "excluded", excludedAt: new Date(), releasedAt: pushedAt })
+      .where(eq(changeItems.repoId, repo.id));
+
+    await importSelectedCommits({ tenantId: tenant.id, selections }, getCommitDiff, fakeEnrich);
+
+    const [resurrected] = await db.select().from(changeItems).where(eq(changeItems.repoId, repo.id));
+    expect(resurrected.status).toBe("pending");
+    expect(resurrected.releasedAt).toEqual(pushedAt);
+  });
+
   it("skips repos that don't belong to the tenant (IDOR guard)", async () => {
     const { repo } = await seedRepo(["pr"]);
     const [otherTenant] = await db.insert(tenants).values({ name: NAME }).returning();

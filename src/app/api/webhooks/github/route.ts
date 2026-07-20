@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse, after } from "next/server";
-import { verifyGithubSignature } from "@/lib/integrations/github/github-webhook";
+import { verifyGithubSignature, parsePushedAt } from "@/lib/integrations/github/github-webhook";
 import { ingestMergedPullRequest } from "@/lib/change-items/ingest-pull-request";
 import { ingestPush } from "@/lib/change-items/ingest-push";
 
@@ -42,6 +42,10 @@ export async function POST(request: NextRequest) {
         ref: payload.ref,
         before: payload.before,
         after: payload.after,
+        // When the push landed. Captured here rather than in the deferred
+        // ingest, which runs after the enrichment round-trip and would read
+        // minutes late. Falls back to receipt time if GitHub omits the field.
+        pushedAt: parsePushedAt(payload.repository?.pushed_at) ?? new Date(),
         payloadCommits: payload.commits.map((c: { id: string; message: string; url: string; timestamp: string }) => ({
           id: c.id,
           message: c.message,

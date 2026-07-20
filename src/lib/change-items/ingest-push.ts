@@ -19,6 +19,11 @@ export type PushInput = {
   ref: string;
   before: string;
   after: string;
+  /**
+   * When this push landed on the branch. Captured at the webhook route, not
+   * here — ingestion is deferred behind enrichment and would read late.
+   */
+  pushedAt: Date;
   payloadCommits: Array<{ id: string; message: string; url: string; timestamp: string }>;
 };
 
@@ -41,6 +46,7 @@ async function insertCommit(
     ignoredReason: "merge_commit" | "empty_diff" | null;
     diff: string | null;
     enrichment: EnrichmentResult | null;
+    releasedAt: Date;
   }
 ): Promise<void> {
   await database
@@ -55,6 +61,7 @@ async function insertCommit(
       commitMessage: commit.message,
       commitUrl: commit.url,
       committedAt: commit.committedAt ? new Date(commit.committedAt) : null,
+      releasedAt: opts.releasedAt,
       diff: opts.diff,
       userFacing: opts.enrichment?.userFacing ?? null,
       impactSummary: opts.enrichment?.impactSummary ?? null,
@@ -98,20 +105,20 @@ export async function ingestPush(input: PushInput, deps: IngestPushDeps = {}): P
 
       // 2. Merge commit with no associated PR → ignored (no diff, no enrichment).
       if (commit.parents.length >= 2) {
-        await insertCommit(database, repo, commit, { status: "ignored", ignoredReason: "merge_commit", diff: null, enrichment: null });
+        await insertCommit(database, repo, commit, { status: "ignored", ignoredReason: "merge_commit", diff: null, enrichment: null, releasedAt: input.pushedAt });
         return;
       }
 
       // 3. Empty diff → ignored (no enrichment).
       const diff = truncateDiff(await commitDiff(input.installationId, input.repoFullName, commit.sha));
       if (diff.trim() === "") {
-        await insertCommit(database, repo, commit, { status: "ignored", ignoredReason: "empty_diff", diff, enrichment: null });
+        await insertCommit(database, repo, commit, { status: "ignored", ignoredReason: "empty_diff", diff, enrichment: null, releasedAt: input.pushedAt });
         return;
       }
 
       // 4. Substantive → enrich + pending.
       const enrichment = await enrich({ tenantId: repo.tenantId, sourceType: "commit", repoName: input.repoFullName, commitMessage: commit.message, diff });
-      await insertCommit(database, repo, commit, { status: "pending", ignoredReason: null, diff, enrichment });
+      await insertCommit(database, repo, commit, { status: "pending", ignoredReason: null, diff, enrichment, releasedAt: input.pushedAt });
     } catch (error) {
       // One bad commit (flaky API call, transient error) must not abort the whole
       // push via `Promise.all` inside `mapWithConcurrency` and abandon the

@@ -29,7 +29,8 @@ describe("ingestPush classification", () => {
     return { tenant, repo };
   }
 
-  const baseInput = { installationId: "90", repoFullName: "acme/x", ref: "refs/heads/main", before: "b0", after: "b1", payloadCommits: [] };
+  const PUSHED_AT = new Date("2026-03-04T10:00:00Z");
+  const baseInput = { installationId: "90", repoFullName: "acme/x", ref: "refs/heads/main", before: "b0", after: "b1", pushedAt: PUSHED_AT, payloadCommits: [] };
 
   it("enriches a substantive direct commit as pending", async () => {
     const { tenant } = await seed();
@@ -128,6 +129,39 @@ describe("ingestPush classification", () => {
     expect(errorSpy).toHaveBeenCalledOnce();
     expect(errorSpy.mock.calls[0][0]).toMatch(/bad1/);
     errorSpy.mockRestore();
+  });
+
+  it("records the push time as releasedAt, distinct from the commit's author date", async () => {
+    const { tenant } = await seed();
+    await ingestPush(baseInput, {
+      // Authored well before it was pushed — the two timestamps must not collapse.
+      listPushCommits: async () => [commit({ sha: "late1", parents: ["p1"], committedAt: "2026-02-01T00:00:00Z" })],
+      getCommitPulls: noPulls,
+      getCommitDiff: async () => "diff --git a/x b/x\n+real change",
+      enrich: enrichAllFacing,
+    });
+
+    const [row] = await db.select().from(changeItems).where(eq(changeItems.tenantId, tenant.id));
+    expect(row.releasedAt).toEqual(PUSHED_AT);
+    expect(row.committedAt).toEqual(new Date("2026-02-01T00:00:00Z"));
+    expect(row.releasedAt!.getTime()).toBeGreaterThan(row.committedAt!.getTime());
+  });
+
+  it("records releasedAt on ignored commits too, not just pending ones", async () => {
+    const { tenant } = await seed();
+    await ingestPush(baseInput, {
+      listPushCommits: async () => [
+        commit({ sha: "merge2", parents: ["p1", "p2"] }),
+        commit({ sha: "empty2", parents: ["p1"] }),
+      ],
+      getCommitPulls: noPulls,
+      getCommitDiff: async () => "   ",
+      enrich: enrichAllFacing,
+    });
+
+    const rows = await db.select().from(changeItems).where(eq(changeItems.tenantId, tenant.id));
+    expect(rows).toHaveLength(2);
+    expect(rows.every((r) => r.releasedAt?.getTime() === PUSHED_AT.getTime())).toBe(true);
   });
 
   it("is idempotent on re-delivery (onConflictDoNothing)", async () => {

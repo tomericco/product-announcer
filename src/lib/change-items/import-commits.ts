@@ -68,6 +68,10 @@ export async function importSelectedCommits(
       });
 
       const committedAt = selection.committedAt ? new Date(selection.committedAt) : null;
+      // Deliberately omits `releasedAt`. The list-commits API carries no
+      // branch-landing time, so an import can only ever leave it null — and
+      // including it here would wipe the real push time off a row that first
+      // arrived via the webhook. New import-only rows keep the column null.
       const enrichedFields = {
         commitMessage: selection.message,
         commitUrl: selection.url,
