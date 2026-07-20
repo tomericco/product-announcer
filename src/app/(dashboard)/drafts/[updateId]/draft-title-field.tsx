@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import { useUnsavedChanges } from "../../unsaved-changes";
 
 function autoGrow(el: HTMLTextAreaElement) {
   // Collapse first so the height can shrink when lines are removed, then fit.
@@ -17,6 +18,7 @@ function autoGrow(el: HTMLTextAreaElement) {
  */
 export function DraftTitleField({ defaultValue }: { defaultValue: string }) {
   const ref = useRef<HTMLTextAreaElement | null>(null);
+  const { markDirty } = useUnsavedChanges();
 
   // Size to the stored title on mount (the server renders it at rows=1).
   useEffect(() => {
@@ -32,7 +34,10 @@ export function DraftTitleField({ defaultValue }: { defaultValue: string }) {
       defaultValue={defaultValue}
       placeholder="Untitled"
       aria-label="Title"
-      onInput={(e) => autoGrow(e.currentTarget)}
+      onInput={(e) => {
+        autoGrow(e.currentTarget);
+        markDirty();
+      }}
       className="w-full resize-none overflow-hidden border-0 bg-transparent p-0 text-4xl font-bold leading-tight tracking-tight outline-none placeholder:text-muted-foreground/40 focus:outline-none focus-visible:outline-none"
     />
   );

@@ -1,6 +1,6 @@
 "use client";
 
-import Link from "next/link";
+import { GuardedLink } from "./unsaved-changes";
 import { usePathname } from "next/navigation";
 import { Button } from "@/components/ui/button";
 
@@ -26,7 +26,7 @@ export function NavLinks() {
             variant={active ? "secondary" : "ghost"}
             className="justify-start font-normal"
             aria-current={active ? "page" : undefined}
-            render={<Link href={item.href} />}
+            render={<GuardedLink href={item.href} />}
           >
             {item.label}
           </Button>

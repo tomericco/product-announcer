@@ -238,7 +238,9 @@ export default function MdxEditor({
   onChange,
 }: {
   markdown: string;
-  onChange: (md: string) => void;
+  // The second arg is true when the editor is normalizing the initial markdown
+  // on mount rather than reacting to a user edit.
+  onChange: (md: string, initialMarkdownNormalize: boolean) => void;
 }) {
   const [parseError, setParseError] = useState<string | null>(null);
 

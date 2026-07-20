@@ -1,5 +1,5 @@
 import { and, eq } from "drizzle-orm";
-import Link from "next/link";
+import { GuardedLink } from "../../unsaved-changes";
 import { ArrowLeft } from "lucide-react";
 import { notFound } from "next/navigation";
 import { db } from "@/db";
@@ -27,13 +27,13 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ up
 
   return (
     <div className="mx-auto w-full max-w-3xl space-y-6">
-      <Link
+      <GuardedLink
         href="/drafts"
         className="inline-flex items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground"
       >
         <ArrowLeft className="size-3.5" />
         Drafts
-      </Link>
+      </GuardedLink>
 
       {statusLabel && (
         <div className="space-y-1 text-sm text-muted-foreground">
