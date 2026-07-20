@@ -6,7 +6,7 @@ vi.mock("../../../src/lib/ai/review-draft", () => ({ reviewAndReconcile: vi.fn()
 import { generateObject } from "ai";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, repos, changeItems, updates, webhookConfigs, webhookDeliveries } from "../../../src/db/schema";
+import { tenants, repos, changeItems, updates, webhookConfigs, deliveryAttempts } from "../../../src/db/schema";
 import { runBatchForWorkspace } from "../../../src/lib/scheduling/run-schedule";
 import { getPendingChangeItems } from "../../../src/lib/change-items/change-item-batch";
 import { reviewAndReconcile } from "../../../src/lib/ai/review-draft";
@@ -56,7 +56,7 @@ describe("runBatchForWorkspace auto-publish", () => {
     const [update] = await db.select().from(updates).where(eq(updates.tenantId, tenant.id));
     expect(update.status).toBe("published");
     expect(update.publishedAt).not.toBeNull();
-    const deliveries = await db.select().from(webhookDeliveries).where(eq(webhookDeliveries.updateId, update.id));
+    const deliveries = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.updateId, update.id));
     expect(deliveries).toHaveLength(1);
   });
 
@@ -78,7 +78,7 @@ describe("runBatchForWorkspace auto-publish", () => {
     expect(update.reviewStatus).toBe("passed");
     expect(update.title).toBe("Revised title");
     expect(update.body).toBe("Revised body");
-    const deliveries = await db.select().from(webhookDeliveries).where(eq(webhookDeliveries.updateId, update.id));
+    const deliveries = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.updateId, update.id));
     expect(deliveries).toHaveLength(1);
     expect(fetch).toHaveBeenCalled();
   });

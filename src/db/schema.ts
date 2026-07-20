@@ -215,16 +215,21 @@ export const webhookConfigs = pgTable("webhook_configs", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
-export const webhookDeliveries = pgTable("webhook_deliveries", {
+export const destinationEnum = pgEnum("destination", ["webhook", "webflow"]);
+
+export const deliveryAttempts = pgTable("delivery_attempts", {
   id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
   updateId: uuid("update_id")
     .notNull()
     .references(() => updates.id, { onDelete: "cascade" }),
-  webhookConfigId: uuid("webhook_config_id")
-    .notNull()
-    .references(() => webhookConfigs.id, { onDelete: "cascade" }),
+  destination: destinationEnum("destination").notNull(),
   status: webhookDeliveryStatusEnum("status").notNull().default("pending"),
   attempts: integer("attempts").notNull().default(0),
+  // Last error, surfaced in the UI. Null on success.
+  lastError: text("last_error"),
+  // Destination-side identifier, e.g. the Webflow CMS item id, so a
+  // re-publish updates instead of duplicating.
+  externalId: text("external_id"),
   lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });

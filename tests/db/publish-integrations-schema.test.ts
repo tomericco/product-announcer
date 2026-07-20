@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../src/db";
-import { tenants, repos, updates, webhookConfigs, webhookDeliveries } from "../../src/db/schema";
+import { tenants, repos, updates, webhookConfigs, deliveryAttempts } from "../../src/db/schema";
 import { encryptSecret } from "../../src/lib/credentials/encryption";
 
 const encryptedSecret = () => {
@@ -14,7 +14,7 @@ describe("publish/integrations schema", () => {
     await db.delete(tenants).where(eq(tenants.name, "Publish Schema Test Tenant"));
   });
 
-  it("links a WebhookDelivery to a WebhookConfig and an Update", async () => {
+  it("links a DeliveryAttempt to an Update", async () => {
     const [tenant] = await db.insert(tenants).values({ name: "Publish Schema Test Tenant" }).returning();
     const [repo] = await db
       .insert(repos)
@@ -24,14 +24,14 @@ describe("publish/integrations schema", () => {
       .insert(updates)
       .values({ tenantId: tenant.id, repoId: repo.id, title: "T", body: "B", sourceItems: [] })
       .returning();
-    const [config] = await db
+    await db
       .insert(webhookConfigs)
       .values({ tenantId: tenant.id, url: "https://example.com", ...encryptedSecret() })
       .returning();
 
     const [delivery] = await db
-      .insert(webhookDeliveries)
-      .values({ updateId: update.id, webhookConfigId: config.id })
+      .insert(deliveryAttempts)
+      .values({ updateId: update.id, destination: "webhook" })
       .returning();
 
     expect(delivery.status).toBe("pending");

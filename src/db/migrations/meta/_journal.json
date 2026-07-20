@@ -148,6 +148,13 @@
       "when": 1784559878070,
       "tag": "0020_tan_wild_child",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1784560698252,
+      "tag": "0021_faithful_skaar",
+      "breakpoints": true
     }
   ]
 }

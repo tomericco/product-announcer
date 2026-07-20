@@ -1,8 +1,8 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, repos, updates, webhookConfigs, webhookDeliveries } from "../../../src/db/schema";
-import { dispatchWebhookForUpdate, retryFailedWebhookDeliveries } from "../../../src/lib/publishing/webhook-delivery";
+import { tenants, repos, updates, webhookConfigs, deliveryAttempts } from "../../../src/db/schema";
+import { dispatchAllDestinations, retryFailedDeliveries } from "../../../src/lib/publishing/dispatch";
 import { encryptSecret } from "../../../src/lib/credentials/encryption";
 
 const SECRET = "s3cr3t";
@@ -47,14 +47,14 @@ describe("webhook-delivery", () => {
 
     vi.mocked(fetch).mockResolvedValue({ ok: true } as Response);
 
-    await dispatchWebhookForUpdate(update.id);
+    await dispatchAllDestinations(update.id);
 
     const [call] = vi.mocked(fetch).mock.calls;
     expect(call[0]).toBe("https://example.com/hook");
     const headers = (call[1] as RequestInit).headers as Record<string, string>;
     expect(headers["x-product-announcer-signature"]).toMatch(/^sha256=[0-9a-f]{64}$/);
 
-    const [delivery] = await db.select().from(webhookDeliveries).where(eq(webhookDeliveries.updateId, update.id));
+    const [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.updateId, update.id));
     expect(delivery.status).toBe("success");
     expect(delivery.attempts).toBe(1);
   });
@@ -65,63 +65,57 @@ describe("webhook-delivery", () => {
 
     vi.mocked(fetch).mockRejectedValue(new Error("timeout"));
 
-    await expect(dispatchWebhookForUpdate(update.id)).resolves.not.toThrow();
+    await expect(dispatchAllDestinations(update.id)).resolves.not.toThrow();
 
-    const [delivery] = await db.select().from(webhookDeliveries).where(eq(webhookDeliveries.updateId, update.id));
+    const [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.updateId, update.id));
     expect(delivery.status).toBe("failed");
   });
 
   it("does nothing when the tenant has no active webhook config", async () => {
     const { update } = await seed();
 
-    await dispatchWebhookForUpdate(update.id);
+    await dispatchAllDestinations(update.id);
 
-    const deliveries = await db.select().from(webhookDeliveries).where(eq(webhookDeliveries.updateId, update.id));
+    const deliveries = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.updateId, update.id));
     expect(deliveries).toHaveLength(0);
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("retryFailedWebhookDeliveries retries failed deliveries under the attempt cap", async () => {
+  it("retryFailedDeliveries retries failed deliveries under the attempt cap", async () => {
     const { tenant, update } = await seed();
-    const [config] = await db
-      .insert(webhookConfigs)
-      .values({ tenantId: tenant.id, url: "https://example.com/hook", ...encryptedSecret() })
-      .returning();
-    await db.insert(webhookDeliveries).values({
+    await db.insert(webhookConfigs).values({ tenantId: tenant.id, url: "https://example.com/hook", ...encryptedSecret() }).returning();
+    await db.insert(deliveryAttempts).values({
       updateId: update.id,
-      webhookConfigId: config.id,
+      destination: "webhook",
       status: "failed",
       attempts: 1,
     });
 
     vi.mocked(fetch).mockResolvedValue({ ok: true } as Response);
 
-    await retryFailedWebhookDeliveries();
+    await retryFailedDeliveries();
 
-    const [delivery] = await db.select().from(webhookDeliveries).where(eq(webhookDeliveries.updateId, update.id));
+    const [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.updateId, update.id));
     expect(delivery.status).toBe("success");
     expect(delivery.attempts).toBe(2);
   });
 
-  it("retryFailedWebhookDeliveries skips deliveries that already hit the attempt cap", async () => {
+  it("retryFailedDeliveries skips deliveries that already hit the attempt cap", async () => {
     const { tenant, update } = await seed();
-    const [config] = await db
-      .insert(webhookConfigs)
-      .values({ tenantId: tenant.id, url: "https://example.com/hook", ...encryptedSecret() })
-      .returning();
-    await db.insert(webhookDeliveries).values({
+    await db.insert(webhookConfigs).values({ tenantId: tenant.id, url: "https://example.com/hook", ...encryptedSecret() }).returning();
+    await db.insert(deliveryAttempts).values({
       updateId: update.id,
-      webhookConfigId: config.id,
+      destination: "webhook",
       status: "failed",
       attempts: 3,
     });
 
-    await retryFailedWebhookDeliveries();
+    await retryFailedDeliveries();
 
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("dispatchWebhookForUpdate never throws, even if a DB operation fails", async () => {
+  it("dispatchAllDestinations never throws, even if a DB operation fails", async () => {
     const { update } = await seed();
 
     // A database whose first query throws simulates a DB error mid-dispatch.
@@ -133,27 +127,49 @@ describe("webhook-delivery", () => {
       },
     } as unknown as typeof db;
 
-    await expect(dispatchWebhookForUpdate(update.id, brokenDb)).resolves.not.toThrow();
+    await expect(dispatchAllDestinations(update.id, brokenDb)).resolves.not.toThrow();
   });
 
-  it("retryFailedWebhookDeliveries skips deliveries whose config was deactivated", async () => {
+  it("retryFailedDeliveries skips deliveries whose config was deactivated", async () => {
     const { tenant, update } = await seed();
-    const [config] = await db
+    await db
       .insert(webhookConfigs)
       .values({ tenantId: tenant.id, url: "https://example.com/hook", ...encryptedSecret(), active: false })
       .returning();
-    await db.insert(webhookDeliveries).values({
+    await db.insert(deliveryAttempts).values({
       updateId: update.id,
-      webhookConfigId: config.id,
+      destination: "webhook",
       status: "failed",
       attempts: 1,
     });
 
-    await retryFailedWebhookDeliveries();
+    await retryFailedDeliveries();
 
     expect(fetch).not.toHaveBeenCalled();
-    const [delivery] = await db.select().from(webhookDeliveries).where(eq(webhookDeliveries.updateId, update.id));
+    const [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.updateId, update.id));
     expect(delivery.status).toBe("failed");
     expect(delivery.attempts).toBe(1);
+  });
+
+  it("classifies a webhook secret decrypt failure as permanent and never calls fetch", async () => {
+    const { tenant, update } = await seed();
+    await db.insert(webhookConfigs).values({
+      tenantId: tenant.id,
+      url: "https://example.com/hook",
+      // Not a valid ciphertext for the configured CREDENTIALS_ENCRYPTION_KEY, so
+      // decryptSecret throws.
+      secretCiphertext: "not-valid-ciphertext",
+      secretIv: "not-valid-iv",
+      secretAuthTag: "not-valid-auth-tag",
+    });
+
+    await dispatchAllDestinations(update.id);
+
+    expect(fetch).not.toHaveBeenCalled();
+
+    const [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.updateId, update.id));
+    expect(delivery.status).toBe("failed");
+    expect(delivery.attempts).toBe(3);
+    expect(delivery.lastError).toMatch(/decrypt/i);
   });
 });

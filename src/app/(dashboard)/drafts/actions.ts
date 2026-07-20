@@ -6,7 +6,7 @@ import { redirect } from "next/navigation";
 import { db } from "@/db";
 import { updates } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
-import { dispatchWebhookForUpdate } from "@/lib/publishing/webhook-delivery";
+import { dispatchAllDestinations } from "@/lib/publishing/dispatch";
 import { releaseBatchForUpdate } from "@/lib/change-items/change-item-batch";
 
 async function loadOwnedDraft(tenantId: string, updateId: string) {
@@ -66,7 +66,7 @@ export async function approveDraft(formData: FormData) {
     })
     .where(eq(updates.id, updateId));
 
-  await dispatchWebhookForUpdate(updateId);
+  await dispatchAllDestinations(updateId);
 
   revalidatePath("/drafts");
   redirect("/drafts");
@@ -103,7 +103,7 @@ export async function publishDraft(formData: FormData) {
     .set({ status: "published", publishedAt: new Date() })
     .where(eq(updates.id, updateId));
 
-  await dispatchWebhookForUpdate(updateId);
+  await dispatchAllDestinations(updateId);
 
   revalidatePath("/drafts");
 }
