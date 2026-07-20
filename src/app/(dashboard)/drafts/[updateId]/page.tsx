@@ -8,8 +8,6 @@ import { requireSession } from "@/lib/workspace/session";
 import { reviewStatusLabel } from "@/lib/ai/review-status";
 import { saveDraft, approveDraft, rejectDraft } from "../actions";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { DraftBodyEditor } from "./draft-body-editor";
 import { DraftEditorProvider, SourceToggleButton } from "./draft-editor-context";
 
@@ -27,45 +25,45 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ up
   const statusLabel = reviewStatusLabel(update.reviewStatus);
 
   return (
-    <div className="space-y-8">
-      <div className="space-y-1">
-        <Link
-          href="/drafts"
-          className="inline-flex items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground"
-        >
-          <ArrowLeft className="size-3.5" />
-          Drafts
-        </Link>
-        <h1 className="text-xl font-semibold tracking-tight">Edit draft</h1>
-      </div>
+    <div className="mx-auto w-full max-w-3xl space-y-6">
+      <Link
+        href="/drafts"
+        className="inline-flex items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground"
+      >
+        <ArrowLeft className="size-3.5" />
+        Drafts
+      </Link>
 
       {statusLabel && (
-        <div className="rounded-lg bg-muted/50 p-4">
-          <p className="text-sm font-medium">{statusLabel}</p>
+        <p className="text-sm text-muted-foreground">
+          {statusLabel}
           {update.reviewStatus === "failed" && update.reviewIssues.length > 0 && (
-            <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-muted-foreground">
+            <span className="mt-1 block space-y-0.5">
               {update.reviewIssues.map((issue, i) => (
-                <li key={i}>{issue}</li>
+                <span key={i} className="block">
+                  &middot; {issue}
+                </span>
               ))}
-            </ul>
+            </span>
           )}
-        </div>
+        </p>
       )}
 
       <DraftEditorProvider>
-        <form action={saveDraft} className="space-y-6">
+        <form action={saveDraft} className="space-y-4">
           <input type="hidden" name="updateId" value={update.id} />
-          <div className="space-y-2">
-            <Label htmlFor="title">Title</Label>
-            <Input id="title" name="title" defaultValue={update.title} />
-          </div>
-          <div className="space-y-2">
-            <Label>Body</Label>
-            <DraftBodyEditor defaultValue={update.body} />
-          </div>
-          <div className="flex items-center justify-end gap-3 border-t border-border/60 pt-6">
+          <input
+            id="title"
+            name="title"
+            defaultValue={update.title}
+            placeholder="Untitled"
+            aria-label="Title"
+            className="w-full border-0 bg-transparent p-0 text-4xl font-bold tracking-tight outline-none placeholder:text-muted-foreground/40 focus:outline-none"
+          />
+          <DraftBodyEditor defaultValue={update.body} />
+          <div className="flex items-center gap-4 pt-4">
             <SourceToggleButton />
-            <Button type="submit" variant="outline">
+            <Button type="submit" variant="ghost">
               Save changes
             </Button>
             {/* formAction overrides the form's default action (saveDraft) for this
@@ -78,14 +76,16 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ up
         </form>
       </DraftEditorProvider>
 
-      <form
-        action={rejectDraft}
-        className="flex items-center justify-between gap-4 border-t border-border/60 pt-6"
-      >
+      <form action={rejectDraft} className="flex items-center gap-3 pt-2">
         <input type="hidden" name="updateId" value={update.id} />
-        <p className="text-sm text-muted-foreground">Not right? Reject it to take it out of the queue.</p>
-        <Button type="submit" variant="ghost" className="text-muted-foreground hover:text-destructive">
-          Reject
+        <p className="text-sm text-muted-foreground">Not right?</p>
+        <Button
+          type="submit"
+          variant="ghost"
+          size="sm"
+          className="h-auto p-0 text-sm text-muted-foreground hover:bg-transparent hover:text-destructive hover:underline"
+        >
+          Reject this draft
         </Button>
       </form>
     </div>

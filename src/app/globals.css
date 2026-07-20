@@ -145,6 +145,10 @@
   }
 }
 
+.mdx-content p {
+  line-height: 1.75;
+  margin: 0.75rem 0;
+}
 .mdx-content ul {
   list-style: disc;
   padding-left: 1.5rem;
