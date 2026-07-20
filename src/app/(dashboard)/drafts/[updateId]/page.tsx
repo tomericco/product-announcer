@@ -5,7 +5,6 @@ import { updates } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { reviewStatusLabel } from "@/lib/ai/review-status";
 import { saveDraft, approveDraft, rejectDraft } from "../actions";
-import { PreviewDialog } from "./preview-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -73,13 +72,10 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ up
       </form>
 
       <div className="flex items-center gap-4">
-        <PreviewDialog
-          updateId={update.id}
-          title={update.title}
-          body={update.body}
-          category={update.category}
-          onApprove={approveDraft}
-        />
+        <form action={approveDraft}>
+          <input type="hidden" name="updateId" value={update.id} />
+          <Button type="submit">Approve &amp; publish</Button>
+        </form>
         <form action={rejectDraft}>
           <input type="hidden" name="updateId" value={update.id} />
           <Button type="submit" variant="ghost" className="text-muted-foreground">
