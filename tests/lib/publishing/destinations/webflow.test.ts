@@ -2,6 +2,13 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { webflowDestination } from "../../../../src/lib/publishing/destinations/webflow";
 import type { WebflowFieldMapping } from "../../../../src/db/schema";
 
+// Token decryption is exercised in the credentials tests; stub it here so
+// these cases stay focused on delivery behavior.
+vi.mock("../../../../src/lib/credentials/encryption", () => ({
+  encryptSecret: () => ({ ciphertext: "", iv: "", authTag: "" }),
+  decryptSecret: () => "tok",
+}));
+
 const SCHEMA = {
   id: "c1",
   displayName: "Blog",
@@ -56,12 +63,6 @@ describe("webflowDestination.deliver", () => {
   beforeEach(() => {
     process.env.CREDENTIALS_ENCRYPTION_KEY = "a".repeat(64);
     vi.stubGlobal("fetch", vi.fn());
-    // Token decryption is exercised in the credentials tests; stub it here so
-    // these cases stay focused on delivery behavior.
-    vi.mock("../../../../src/lib/credentials/encryption", () => ({
-      encryptSecret: () => ({ ciphertext: "", iv: "", authTag: "" }),
-      decryptSecret: () => "tok",
-    }));
   });
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -116,6 +117,12 @@ describe("webflowDestination.deliver", () => {
     expect(result.status).toBe("ok");
     expect(vi.mocked(fetch).mock.calls[1][0]).toBe("https://api.webflow.com/v2/collections/c1/items/item1");
     expect(vi.mocked(fetch).mock.calls[1][1]?.method).toBe("PATCH");
+
+    // The update path must never trigger a site-wide publish either: that
+    // would deploy the customer's unrelated staged Designer changes.
+    for (const [url] of vi.mocked(fetch).mock.calls) {
+      expect(String(url)).not.toContain("/publish");
+    }
   });
 
   it("falls back to create when the known item was deleted in Webflow", async () => {
@@ -165,6 +172,41 @@ describe("webflowDestination.deliver", () => {
     expect(JSON.parse(vi.mocked(fetch).mock.calls[2][1]?.body as string).fieldData.slug).toBe("faster-search-2");
   });
 
+  it("does not let a 404-triggered create consume the slug-collision budget", async () => {
+    // The PATCH 404s (item was deleted in Webflow), so we fall back to create
+    // at the SAME slug attempt. Every create after that collides. If the 404
+    // wrongly consumed a slug-retry attempt, or `slugAttempt` were bumped
+    // before the 404 branch runs, the slug budget would silently drop from 5
+    // to 4 and the post-404 create would start at a suffix other than the
+    // base slug. Assert the exact sequence of slugs sent to prove neither
+    // happens.
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(SCHEMA));
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ message: "Not Found" }, 404));
+    const collisionResponse = () =>
+      jsonResponse(
+        {
+          message: "Validation Error",
+          details: [{ param: "slug", description: "Unique value is already in database" }],
+        },
+        400
+      );
+    for (let i = 0; i < 5; i++) {
+      vi.mocked(fetch).mockResolvedValueOnce(collisionResponse());
+    }
+
+    const result = await webflowDestination.deliver(update, connection(), "item1");
+
+    expect(result.status).toBe("permanent");
+
+    // calls[0] is the GET schema fetch; every call after that is an
+    // item write (the PATCH, then five creates) and carries a JSON body
+    // with fieldData.slug.
+    const writeCalls = vi.mocked(fetch).mock.calls.slice(1);
+    const slugsSent = writeCalls.map(([, init]) => JSON.parse((init as RequestInit).body as string).fieldData.slug);
+
+    expect(slugsSent).toEqual(["faster-search", "faster-search", "faster-search-2", "faster-search-3", "faster-search-4", "faster-search-5"]);
+  });
+
   it("gives up after exhausting slug attempts", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(SCHEMA));
     for (let i = 0; i < 5; i++) {
@@ -210,6 +252,26 @@ describe("webflowDestination.deliver", () => {
   it("returns retryable on 5xx", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ message: "Server Error" }, 503));
     expect((await webflowDestination.deliver(update, connection(), null)).status).toBe("retryable");
+  });
+
+  it("returns retryable on 408", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ message: "Request Timeout" }, 408));
+    expect((await webflowDestination.deliver(update, connection(), null)).status).toBe("retryable");
+  });
+
+  it("classifies a non-WebflowApiError (e.g. a request timeout) as retryable", async () => {
+    // The Webflow client deliberately surfaces timeouts as plain Errors, not
+    // WebflowApiError, so that classify()'s default-retryable branch catches
+    // them. Simulate the underlying fetch rejecting the way `AbortSignal.timeout`
+    // does, and confirm this layer still treats it as retryable rather than
+    // falling into the permanent branch.
+    const timeoutError = new Error("The operation was aborted due to timeout");
+    timeoutError.name = "TimeoutError";
+    vi.mocked(fetch).mockRejectedValueOnce(timeoutError);
+
+    const result = await webflowDestination.deliver(update, connection(), null);
+
+    expect(result.status).toBe("retryable");
   });
 
   it("returns permanent for an empty body without calling Webflow", async () => {

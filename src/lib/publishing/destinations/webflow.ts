@@ -54,7 +54,7 @@ function classify(error: unknown): DeliveryResult {
       const detail = error.validationDetails.join("; ") || error.message;
       return { status: "permanent", error: `Webflow rejected the item: ${detail}` };
     }
-    if (error.status === 429 || error.status >= 500) {
+    if (error.status === 429 || error.status === 408 || error.status >= 500) {
       return { status: "retryable", error: error.message };
     }
     return { status: "permanent", error: error.message };
