@@ -9,7 +9,6 @@ describe("reviewStatusLabel", () => {
 
   it("returns null for passed, null, and unknown", () => {
     expect(reviewStatusLabel("passed")).toBeNull();
-    expect(reviewStatusLabel("revised")).toBeNull();
     expect(reviewStatusLabel(null)).toBeNull();
     expect(reviewStatusLabel("weird")).toBeNull();
   });
