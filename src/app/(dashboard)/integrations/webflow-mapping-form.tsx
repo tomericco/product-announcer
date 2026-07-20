@@ -57,8 +57,27 @@ export function WebflowMappingForm({
   const [sources, setSources] = useState<Record<string, string>>(() =>
     Object.fromEntries(collection.fields.map((field) => [field.slug, initialSource(mapping, field.slug)]))
   );
+  // Controlled, like `sources` above — the static-value Input is only
+  // conditionally mounted (shown when its field's source is "static"), so an
+  // uncontrolled `defaultValue` would forget anything typed the moment the
+  // Select switches away and back and the input remounts.
+  const [staticValues, setStaticValues] = useState<Record<string, string>>(() =>
+    Object.fromEntries(collection.fields.map((field) => [field.slug, initialStatic(mapping, field.slug)]))
+  );
   const [mode, setMode] = useState(publishMode);
   const [submitting, setSubmitting] = useState(false);
+
+  // A collection with no fields has nothing to map. Saving anyway would
+  // create blank CMS items at publish time, and the sibling pickers
+  // (WebflowSiteForm, WebflowCollectionForm) already refuse their own empty
+  // case the same way.
+  if (collection.fields.length === 0) {
+    return (
+      <p className="text-sm text-muted-foreground">
+        This collection has no fields, so there is nothing to map. Choose a different collection above.
+      </p>
+    );
+  }
 
   async function handleSave(formData: FormData) {
     setSubmitting(true);
@@ -110,7 +129,10 @@ export function WebflowMappingForm({
                 <Input
                   id={`static-${field.slug}`}
                   name={`static:${field.slug}`}
-                  defaultValue={initialStatic(mapping, field.slug)}
+                  value={staticValues[field.slug] ?? ""}
+                  onChange={(event) =>
+                    setStaticValues((prev) => ({ ...prev, [field.slug]: event.target.value }))
+                  }
                   placeholder="Static value"
                 />
               </div>

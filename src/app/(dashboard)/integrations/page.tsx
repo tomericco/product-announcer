@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { webhookConfigs } from "@/db/schema";
@@ -11,6 +12,23 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { WebflowForm } from "./webflow-form";
 
 const COMING_SOON = ["Customer.io", "Mailchimp", "HubSpot", "LinkedIn"];
+
+// WebflowForm is an async Server Component that awaits a Webflow HTTP call
+// (up to a 10s timeout). Without a boundary, that await blocks this entire
+// page's render — the webhook card above would sit unrendered too. This
+// fallback keeps the same card shape so nothing jumps when it resolves.
+function WebflowFormSkeleton() {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Webflow CMS</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <p className="text-sm text-muted-foreground">Loading Webflow…</p>
+      </CardContent>
+    </Card>
+  );
+}
 
 export default async function IntegrationsPage() {
   const session = await requireSession();
@@ -56,7 +74,9 @@ export default async function IntegrationsPage() {
           </CardContent>
         </Card>
 
-        <WebflowForm />
+        <Suspense fallback={<WebflowFormSkeleton />}>
+          <WebflowForm />
+        </Suspense>
       </section>
 
       <section className="space-y-2">

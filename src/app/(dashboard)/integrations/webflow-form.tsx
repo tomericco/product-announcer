@@ -18,6 +18,8 @@ import { WebflowSiteForm } from "./webflow-site-form";
 import { WebflowCollectionForm } from "./webflow-collection-form";
 import { WebflowMappingForm } from "./webflow-mapping-form";
 import { WebflowDisconnectButton } from "./webflow-disconnect-button";
+import { WebflowChangeSite } from "./webflow-change-site";
+import { WebflowChangeCollection } from "./webflow-change-collection";
 
 // A Webflow outage or an expired token must not blank the whole integrations
 // page — the webhook card above lives on the same page and must keep
@@ -105,11 +107,24 @@ async function renderStep(connection: Connection | undefined) {
     );
   }
 
-  const token = decryptSecret({
-    ciphertext: connection.tokenCiphertext,
-    iv: connection.tokenIv,
-    authTag: connection.tokenAuthTag,
-  });
+  // A corrupted row, a rotated CREDENTIALS_ENCRYPTION_KEY, or a fresh
+  // environment missing that key all make this throw by design (see
+  // encryption.ts). There is no error boundary above this component, so an
+  // unguarded throw here would blank the whole /integrations page —
+  // including the webhook card and the Disconnect button that is the user's
+  // only way to clear the bad row. Catch it and keep Disconnect reachable.
+  let token: string;
+  try {
+    token = decryptSecret({
+      ciphertext: connection.tokenCiphertext,
+      iv: connection.tokenIv,
+      authTag: connection.tokenAuthTag,
+    });
+  } catch {
+    return (
+      <ErrorBanner message="Your Webflow connection can't be read right now (its stored credentials failed to decrypt). Disconnect below, then reconnect with a fresh Site API token." />
+    );
+  }
 
   // Step 2: connection but no site chosen yet.
   if (!connection.siteId) {
@@ -123,20 +138,51 @@ async function renderStep(connection: Connection | undefined) {
 
   // Step 3: site chosen but no collection yet.
   if (!connection.collectionId) {
+    // Keyed on siteId: after a successful "Change site" save this component
+    // must collapse back to the summary line rather than keep showing the
+    // now-stale picker it had fetched, and revalidatePath() re-renders this
+    // server component in place without otherwise remounting its children.
+    const changeSite = <WebflowChangeSite key={connection.siteId} currentSiteName={connection.siteName} />;
     try {
       const collections = await listCollections(token, connection.siteId);
-      return <WebflowCollectionForm collections={collections} />;
+      return (
+        <>
+          {changeSite}
+          <WebflowCollectionForm collections={collections} />
+        </>
+      );
     } catch (error) {
-      return <ErrorBanner message={describeError(error)} />;
+      return (
+        <>
+          {changeSite}
+          <ErrorBanner message={describeError(error)} />
+        </>
+      );
     }
   }
 
-  // Step 4: collection chosen — render the field mapping form.
+  // Step 4: collection chosen — render the field mapping form. "Change site"
+  // and "Change collection" stay available here too, so picking the wrong
+  // collection doesn't force a full disconnect (Webflow only shows a Site
+  // API token once, so disconnecting means generating a brand-new one).
+  // Same key rationale as step 3, plus collectionId so "Change collection"
+  // also collapses back to its summary line after a successful save.
+  const changeSite = <WebflowChangeSite key={connection.siteId} currentSiteName={connection.siteName} />;
+  const changeCollection = (
+    <WebflowChangeCollection key={connection.collectionId} currentCollectionName={connection.collectionName} />
+  );
+
   let collection: WebflowCollectionDetail;
   try {
     collection = await getCollection(token, connection.collectionId);
   } catch (error) {
-    return <ErrorBanner message={describeError(error)} />;
+    return (
+      <>
+        {changeSite}
+        {changeCollection}
+        <ErrorBanner message={describeError(error)} />
+      </>
+    );
   }
 
   const problems =
@@ -145,6 +191,8 @@ async function renderStep(connection: Connection | undefined) {
   return (
     <>
       <StatusBanner status={connection.status} problems={problems} />
+      {changeSite}
+      {changeCollection}
       <WebflowMappingForm
         collection={collection}
         mapping={connection.fieldMapping}
