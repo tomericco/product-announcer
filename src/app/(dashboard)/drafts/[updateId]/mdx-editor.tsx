@@ -261,6 +261,9 @@ export default function MdxEditor({
         }}
         className="w-full"
         contentEditableClassName="mdx-content min-h-[65vh]"
+        // Styled node rather than a bare string so it matches the title's
+        // placeholder regardless of the editor's own default styling.
+        placeholder={<span className="text-muted-foreground/40">Update body</span>}
         plugins={[
           headingsPlugin(),
           listsPlugin(),

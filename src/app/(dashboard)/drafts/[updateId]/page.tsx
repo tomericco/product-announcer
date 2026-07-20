@@ -9,6 +9,7 @@ import { reviewStatusLabel } from "@/lib/ai/review-status";
 import { saveDraft, approveDraft, rejectDraft } from "../actions";
 import { Button } from "@/components/ui/button";
 import { DraftBodyEditor } from "./draft-body-editor";
+import { DraftTitleField } from "./draft-title-field";
 import { DraftEditorProvider, SourceToggleButton } from "./draft-editor-context";
 
 export default async function DraftDetailPage({ params }: { params: Promise<{ updateId: string }> }) {
@@ -53,14 +54,7 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ up
           {/* The visible title is an input, so the document outline would
               otherwise have no heading at all — give screen readers a real h1. */}
           <h1 className="sr-only">{update.title || "Untitled draft"}</h1>
-          <input
-            id="title"
-            name="title"
-            defaultValue={update.title}
-            placeholder="Untitled"
-            aria-label="Title"
-            className="w-full rounded-sm border-0 bg-transparent p-0 text-4xl font-bold tracking-tight outline-none placeholder:text-muted-foreground/40 focus-visible:ring-2 focus-visible:ring-ring/50"
-          />
+          <DraftTitleField defaultValue={update.title} />
           <DraftBodyEditor defaultValue={update.body} />
           <div className="flex items-center gap-4 pt-4">
             <SourceToggleButton />
