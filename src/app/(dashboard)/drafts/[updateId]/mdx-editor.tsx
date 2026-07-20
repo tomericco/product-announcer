@@ -131,7 +131,7 @@ function EditorSurfaces() {
 
   return (
     <>
-      <div className="flex w-full justify-end border-b border-border px-1 py-1">
+      <div className="flex w-full justify-end border-b border-border/60 px-2 py-1.5">
         <SourceToggle />
       </div>
 
@@ -203,7 +203,7 @@ export default function MdxEditor({
           console.error("MDXEditor markdown parse error:", error, source);
           setParseError(error);
         }}
-        className="w-full rounded-lg border border-border"
+        className="w-full rounded-lg border border-border/60"
         contentEditableClassName="mdx-content min-h-[65vh]"
         plugins={[
           headingsPlugin(),
