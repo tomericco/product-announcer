@@ -50,13 +50,16 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ up
       <DraftEditorProvider>
         <form action={saveDraft} className="space-y-4">
           <input type="hidden" name="updateId" value={update.id} />
+          {/* The visible title is an input, so the document outline would
+              otherwise have no heading at all — give screen readers a real h1. */}
+          <h1 className="sr-only">{update.title || "Untitled draft"}</h1>
           <input
             id="title"
             name="title"
             defaultValue={update.title}
             placeholder="Untitled"
             aria-label="Title"
-            className="w-full border-0 bg-transparent p-0 text-4xl font-bold tracking-tight outline-none placeholder:text-muted-foreground/40 focus:outline-none"
+            className="w-full rounded-sm border-0 bg-transparent p-0 text-4xl font-bold tracking-tight outline-none placeholder:text-muted-foreground/40 focus-visible:ring-2 focus-visible:ring-ring/50"
           />
           <DraftBodyEditor defaultValue={update.body} />
           <div className="flex items-center gap-4 pt-4">
