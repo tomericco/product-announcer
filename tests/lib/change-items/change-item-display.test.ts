@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { changeItemFacingState, ignoredReasonLabel } from "../../../src/lib/change-items/change-item-display";
+import {
+  changeItemFacingState,
+  changeItemReleasedAt,
+  ignoredReasonLabel,
+} from "../../../src/lib/change-items/change-item-display";
 
 describe("changeItemFacingState", () => {
   it("is non-facing when userFacing is false", () => {
@@ -25,5 +29,35 @@ describe("ignoredReasonLabel", () => {
     expect(ignoredReasonLabel("merge_commit")).toBe("merge commit");
     expect(ignoredReasonLabel("empty_diff")).toBe("empty diff");
     expect(ignoredReasonLabel(null)).toBeNull();
+  });
+});
+
+describe("changeItemReleasedAt", () => {
+  const MERGED = new Date("2026-03-10T12:00:00Z");
+  const RELEASED = new Date("2026-03-08T09:00:00Z");
+  const COMMITTED = new Date("2026-03-01T08:00:00Z");
+
+  it("uses the merge time for a PR, ignoring commit timestamps", () => {
+    expect(
+      changeItemReleasedAt({ sourceType: "pr", mergedAt: MERGED, releasedAt: null, committedAt: COMMITTED })
+    ).toBe(MERGED);
+  });
+
+  it("prefers a commit's push time over its author date", () => {
+    expect(
+      changeItemReleasedAt({ sourceType: "commit", mergedAt: null, releasedAt: RELEASED, committedAt: COMMITTED })
+    ).toBe(RELEASED);
+  });
+
+  it("falls back to the author date for imported commits, which have no push time", () => {
+    expect(
+      changeItemReleasedAt({ sourceType: "commit", mergedAt: null, releasedAt: null, committedAt: COMMITTED })
+    ).toBe(COMMITTED);
+  });
+
+  it("returns null when nothing is known, so callers can sort it last", () => {
+    expect(
+      changeItemReleasedAt({ sourceType: "commit", mergedAt: null, releasedAt: null, committedAt: null })
+    ).toBeNull();
   });
 });

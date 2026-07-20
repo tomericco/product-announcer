@@ -6,7 +6,11 @@ import { repos, scheduleConfigs } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { getBatchableChangeItems, getTrackedChangeItems } from "@/lib/change-items/change-item-batch";
 import { formatScheduleDistance } from "@/lib/scheduling/format-schedule";
-import { changeItemFacingState, ignoredReasonLabel } from "@/lib/change-items/change-item-display";
+import {
+  changeItemFacingState,
+  changeItemReleasedAt,
+  ignoredReasonLabel,
+} from "@/lib/change-items/change-item-display";
 import { dropChangeItem, includeChangeItem } from "./actions";
 import { ImportCommitsDialog } from "./import-commits-dialog";
 import { DraftUpdateDialog } from "./draft-update-dialog";
@@ -69,18 +73,18 @@ export default async function PendingPage() {
     .from(scheduleConfigs)
     .where(eq(scheduleConfigs.tenantId, session.user.tenantId));
   const tracked = await getTrackedChangeItems(session.user.tenantId);
-  // Show the oldest change first, by when it landed (PR merge time / commit time);
-  // items without a timestamp sort last.
+  // Show the oldest change first, by when it reached users; items without a
+  // timestamp sort last.
   tracked.sort((a, b) => {
-    const ta = (a.sourceType === "pr" ? a.mergedAt : a.committedAt)?.getTime() ?? Infinity;
-    const tb = (b.sourceType === "pr" ? b.mergedAt : b.committedAt)?.getTime() ?? Infinity;
+    const ta = changeItemReleasedAt(a)?.getTime() ?? Infinity;
+    const tb = changeItemReleasedAt(b)?.getTime() ?? Infinity;
     return ta - tb;
   });
   const pendingCount = tracked.filter((t) => t.status === "pending").length;
 
   const batchable = await getBatchableChangeItems(session.user.tenantId);
   const batchableWhens = batchable
-    .map((b) => (b.sourceType === "pr" ? b.mergedAt : b.committedAt))
+    .map(changeItemReleasedAt)
     .filter((d): d is Date => d instanceof Date)
     .sort((a, b) => a.getTime() - b.getTime());
   const draftPreview = {
@@ -151,7 +155,7 @@ export default async function PendingPage() {
               const isPr = item.sourceType === "pr";
               const change = (isPr ? item.prTitle : item.commitMessage) ?? "—";
               const url = isPr ? item.prUrl : item.commitUrl;
-              const when = isPr ? item.mergedAt : item.committedAt;
+              const when = changeItemReleasedAt(item);
               const facingState = changeItemFacingState(item);
               const isNonFacing = facingState === "non-facing";
               const isIgnored = item.status === "ignored";

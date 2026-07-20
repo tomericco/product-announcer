@@ -19,6 +19,25 @@ export function changeItemFacingState(item: {
   return "facing";
 }
 
+/**
+ * When a change reached users: the PR's merge time, or for a commit the time it
+ * landed on the watched branch.
+ *
+ * `releasedAt` is only known for commits that arrived via the push webhook —
+ * GitHub's list-commits API carries no branch-landing time, so imported ones
+ * fall back to the author date. That fallback is approximate by nature: a
+ * commit can be authored days before it ships.
+ */
+export function changeItemReleasedAt(item: {
+  sourceType: "pr" | "commit";
+  mergedAt: Date | null;
+  releasedAt: Date | null;
+  committedAt: Date | null;
+}): Date | null {
+  if (item.sourceType === "pr") return item.mergedAt;
+  return item.releasedAt ?? item.committedAt;
+}
+
 export function ignoredReasonLabel(reason: "merge_commit" | "empty_diff" | null): string | null {
   switch (reason) {
     case "merge_commit":
