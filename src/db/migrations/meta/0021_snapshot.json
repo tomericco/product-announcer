@@ -458,7 +458,29 @@
           "default": "now()"
         }
       },
-      "indexes": {},
+      "indexes": {
+        "delivery_attempts_update_id_destination_unique": {
+          "name": "delivery_attempts_update_id_destination_unique",
+          "columns": [
+            {
+              "expression": "update_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "destination",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "delivery_attempts_update_id_updates_id_fk": {
           "name": "delivery_attempts_update_id_updates_id_fk",

@@ -217,22 +217,31 @@ export const webhookConfigs = pgTable("webhook_configs", {
 
 export const destinationEnum = pgEnum("destination", ["webhook", "webflow"]);
 
-export const deliveryAttempts = pgTable("delivery_attempts", {
-  id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
-  updateId: uuid("update_id")
-    .notNull()
-    .references(() => updates.id, { onDelete: "cascade" }),
-  destination: destinationEnum("destination").notNull(),
-  status: webhookDeliveryStatusEnum("status").notNull().default("pending"),
-  attempts: integer("attempts").notNull().default(0),
-  // Last error, surfaced in the UI. Null on success.
-  lastError: text("last_error"),
-  // Destination-side identifier, e.g. the Webflow CMS item id, so a
-  // re-publish updates instead of duplicating.
-  externalId: text("external_id"),
-  lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true }),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+export const deliveryAttempts = pgTable(
+  "delivery_attempts",
+  {
+    id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    updateId: uuid("update_id")
+      .notNull()
+      .references(() => updates.id, { onDelete: "cascade" }),
+    destination: destinationEnum("destination").notNull(),
+    status: webhookDeliveryStatusEnum("status").notNull().default("pending"),
+    attempts: integer("attempts").notNull().default(0),
+    // Last error, surfaced in the UI. Null on success.
+    lastError: text("last_error"),
+    // Destination-side identifier, e.g. the Webflow CMS item id, so a
+    // re-publish updates instead of duplicating.
+    externalId: text("external_id"),
+    lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    // One row per update+destination: dispatch reuses this row across
+    // re-publishes, so a race between two concurrent publishes must not be
+    // able to insert two rows for the same pair.
+    uniqueIndex("delivery_attempts_update_id_destination_unique").on(table.updateId, table.destination),
+  ]
+);
 
 export const llmUsage = pgTable("llm_usage", {
   id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),

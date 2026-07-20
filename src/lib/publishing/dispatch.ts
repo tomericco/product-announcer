@@ -52,11 +52,15 @@ export async function dispatchAllDestinations(
 
         const result = await destination.deliver(update, config, attempt.externalId);
 
+        // A fresh publish always gets a full retry budget, regardless of how
+        // many attempts a prior publish burned through — otherwise a single
+        // transient failure on a re-publish pushes the row past MAX_ATTEMPTS
+        // and the sweep (`retryFailedDeliveries`) stops retrying it forever.
         await database
           .update(deliveryAttempts)
           .set({
             status: statusFor(result),
-            attempts: result.status === "permanent" ? MAX_ATTEMPTS : attempt.attempts + 1,
+            attempts: result.status === "permanent" ? MAX_ATTEMPTS : 1,
             lastError: result.status === "ok" ? null : result.error,
             externalId: result.status === "ok" ? (result.externalId ?? attempt.externalId) : attempt.externalId,
             lastAttemptAt: new Date(),

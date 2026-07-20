@@ -11,7 +11,7 @@ const encryptedSecret = () => {
   return { secretCiphertext: p.ciphertext, secretIv: p.iv, secretAuthTag: p.authTag };
 };
 
-describe("webhook-delivery", () => {
+describe("dispatch", () => {
   beforeEach(() => {
     vi.stubGlobal("fetch", vi.fn());
   });
@@ -149,6 +149,48 @@ describe("webhook-delivery", () => {
     const [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.updateId, update.id));
     expect(delivery.status).toBe("failed");
     expect(delivery.attempts).toBe(1);
+  });
+
+  it("resets the retry budget on a fresh publish instead of accumulating across re-publishes", async () => {
+    const { tenant, update } = await seed();
+    await db.insert(webhookConfigs).values({ tenantId: tenant.id, url: "https://example.com/hook", ...encryptedSecret() });
+
+    // Publish while the endpoint is down: attempts starts at 1, not accumulated.
+    vi.mocked(fetch).mockRejectedValue(new Error("timeout"));
+    await dispatchAllDestinations(update.id);
+
+    let [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.updateId, update.id));
+    expect(delivery.status).toBe("failed");
+    expect(delivery.attempts).toBe(1);
+
+    // Sweep it to exhaustion: 1 -> 2 -> 3.
+    await retryFailedDeliveries();
+    await retryFailedDeliveries();
+
+    [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.updateId, update.id));
+    expect(delivery.status).toBe("failed");
+    expect(delivery.attempts).toBe(3);
+
+    // A further sweep must skip it now that it's exhausted.
+    await retryFailedDeliveries();
+    expect(fetch).toHaveBeenCalledTimes(3); // the original publish + the 2 sweeps above
+
+    // The operator fixes the endpoint and re-publishes, but it fails once more
+    // transiently. Without the fix, this would push attempts to 4 and the row
+    // would never be retried again.
+    await dispatchAllDestinations(update.id);
+
+    [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.updateId, update.id));
+    expect(delivery.status).toBe("failed");
+    expect(delivery.attempts).toBe(1);
+
+    // And it's eligible for the sweep again: this call must actually retry it.
+    vi.mocked(fetch).mockResolvedValue({ ok: true } as Response);
+    await retryFailedDeliveries();
+
+    [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.updateId, update.id));
+    expect(delivery.status).toBe("success");
+    expect(delivery.attempts).toBe(2);
   });
 
   it("classifies a webhook secret decrypt failure as permanent and never calls fetch", async () => {
