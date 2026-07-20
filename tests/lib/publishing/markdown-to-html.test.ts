@@ -1,5 +1,6 @@
 // tests/lib/publishing/markdown-to-html.test.ts
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+import { Lexer } from "marked";
 import { markdownToWebflowHtml, containsCodeBlock } from "../../../src/lib/publishing/markdown-to-html";
 
 describe("markdownToWebflowHtml", () => {
@@ -52,9 +53,116 @@ describe("markdownToWebflowHtml", () => {
     expect(html).toContain('alt="alt text"');
   });
 
-  it("returns an empty string for empty input", () => {
-    expect(markdownToWebflowHtml("")).toBe("");
-    expect(markdownToWebflowHtml("   \n  ")).toBe("");
+  it("short-circuits on empty/whitespace-only input without invoking the parser", () => {
+    // marked itself already returns "" for empty/whitespace input, so asserting
+    // on the output alone doesn't prove the `if (!markdown.trim()) return "";`
+    // guard exists. Assert on the guard's actual effect instead: the lexer is
+    // never invoked. Without the guard, marked's `parse()` would still reach
+    // `Lexer.lex` internally (and would itself return ""), making this
+    // assertion fail even though the output-only assertions above still pass.
+    const lexSpy = vi.spyOn(Lexer, "lex");
+    try {
+      expect(markdownToWebflowHtml("")).toBe("");
+      expect(markdownToWebflowHtml("   \n  ")).toBe("");
+      expect(lexSpy).not.toHaveBeenCalled();
+    } finally {
+      lexSpy.mockRestore();
+    }
+  });
+
+  it("downgrades strikethrough to <s>, not <del>", () => {
+    const html = markdownToWebflowHtml("~~struck~~");
+    expect(html).toContain("<s>struck</s>");
+    expect(html).not.toContain("<del");
+  });
+
+  it("downgrades GFM tables to paragraphs, preserving every cell's text and dropping table tags", () => {
+    const html = markdownToWebflowHtml(
+      "| Name | Status |\n| --- | --- |\n| Widget | Shipped |\n| Gadget | Planned |",
+    );
+    expect(html).not.toContain("<table");
+    expect(html).not.toContain("<thead");
+    expect(html).not.toContain("<tr");
+    expect(html).not.toContain("<th");
+    expect(html).not.toContain("<td");
+    expect(html).toContain("Name");
+    expect(html).toContain("Status");
+    expect(html).toContain("Widget");
+    expect(html).toContain("Shipped");
+    expect(html).toContain("Gadget");
+    expect(html).toContain("Planned");
+  });
+
+  it("escapes HTML-special characters in table cells", () => {
+    const html = markdownToWebflowHtml(
+      "| Field | Value |\n| --- | --- |\n| tag | <script>alert(1)</script> & co |",
+    );
+    expect(html).not.toContain("<script>");
+    expect(html).toContain("&lt;script&gt;");
+    expect(html).toContain("&amp;");
+  });
+
+  it("only ever emits tags from Webflow's allowed set across every supported construct", () => {
+    const markdown = [
+      "# Heading 1",
+      "## Heading 2",
+      "",
+      "A paragraph with **bold**, *italic*, ~~strikethrough~~, and a [link](https://x.com).",
+      "",
+      "- bullet one",
+      "- bullet two",
+      "",
+      "1. first",
+      "2. second",
+      "",
+      "> A blockquote.",
+      "",
+      "![alt text](https://cdn.example.com/a.png)",
+      "",
+      "```js",
+      "const a = 1;",
+      "```",
+      "",
+      "Some `inline code` here.",
+      "",
+      "| Col A | Col B |",
+      "| --- | --- |",
+      "| one | two |",
+      "",
+      '<div class="raw">raw html</div>',
+    ].join("\n");
+
+    const html = markdownToWebflowHtml(markdown);
+
+    const allowedTags = new Set([
+      "h1",
+      "h2",
+      "h3",
+      "h4",
+      "h5",
+      "h6",
+      "p",
+      "strong",
+      "em",
+      "u",
+      "s",
+      "a",
+      "ul",
+      "ol",
+      "li",
+      "blockquote",
+      "br",
+      "img",
+    ]);
+
+    const foundTags = new Set(
+      Array.from(html.matchAll(/<\/?([a-zA-Z][a-zA-Z0-9]*)\b/g)).map((match) => match[1].toLowerCase()),
+    );
+
+    expect(foundTags.size).toBeGreaterThan(0);
+    for (const tag of foundTags) {
+      expect(allowedTags.has(tag)).toBe(true);
+    }
   });
 });
 

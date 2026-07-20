@@ -26,6 +26,32 @@ function buildRenderer() {
       codespan(this: unknown, token: Tokens.Codespan) {
         return escapeHtml(token.text);
       },
+      // GFM strikethrough (~~text~~) renders as <del> by default. `del` is not
+      // in Webflow's allowed tag set, but `s` is — swap it, preserving nested
+      // inline formatting (e.g. ~~**bold**~~).
+      del(token: Tokens.Del) {
+        return `<s>${this.parser.parseInline(token.tokens)}</s>`;
+      },
+      // GFM tables render as <table>/<thead>/<tr>/<th>/<td>, none of which are
+      // in Webflow's allowed set, and unlike code blocks there's no downgrade
+      // path upstream. Flatten each row into a <p>, cells joined by " — ",
+      // with header cells bolded, so no cell content is lost.
+      table(token: Tokens.Table) {
+        const renderRow = (cells: Tokens.TableCell[], header: boolean) =>
+          cells
+            .map((cell) => {
+              const text = escapeHtml(cell.text);
+              return header ? `<strong>${text}</strong>` : text;
+            })
+            .join(" — ");
+
+        const lines = [
+          renderRow(token.header, true),
+          ...token.rows.map((row) => renderRow(row, false)),
+        ];
+
+        return lines.map((line) => `<p>${line}</p>\n`).join("");
+      },
       // Raw HTML in the source would be stripped by Webflow anyway; drop it here
       // so what we send matches what gets stored.
       html() {
