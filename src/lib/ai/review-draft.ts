@@ -19,7 +19,7 @@ export const RevisionSchema = z.object({
 });
 export type Revision = z.infer<typeof RevisionSchema>;
 
-export type ReviewStatus = "passed" | "revised" | "failed" | "error";
+export type ReviewStatus = "passed" | "failed" | "error";
 export type ReviewOutcome = { finalDraft: UpdateDraft; status: ReviewStatus; issues: string[] };
 
 const DEFAULT_MAX_ROUNDS = 2;
@@ -130,7 +130,11 @@ export async function reviewAndReconcile(
       current = await withRetry(() => reviseDraft(current, critique.issues, brandProfile));
       onProgress?.({ type: "detail", text: `Reviewing (round ${round + 2})` });
       critique = await withRetry(() => reviewDraft(current, brandProfile));
-      if (critique.compliant) return { finalDraft: current, status: "revised", issues: [] };
+      // A draft that needed a revision is reported the same as one that was
+      // clean first time: both are compliant and ready to read. The distinction
+      // wasn't actionable (the issues that triggered the rewrite aren't kept),
+      // so it only added noise.
+      if (critique.compliant) return { finalDraft: current, status: "passed", issues: [] };
     }
 
     return { finalDraft: current, status: "failed", issues: critique.issues };

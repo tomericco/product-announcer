@@ -49,6 +49,10 @@ export const changeItemStatusEnum = pgEnum("change_item_status", ["pending", "ba
 export const ignoredReasonEnum = pgEnum("ignored_reason", ["merge_commit", "empty_diff"]);
 export const cadenceEnum = pgEnum("cadence", ["daily", "weekly", "biweekly", "monthly", "none"]);
 export const updateStatusEnum = pgEnum("update_status", ["draft", "approved", "published", "rejected"]);
+// "revised" is legacy and no longer written: a draft that needed a revision is
+// now recorded as "passed" (the distinction wasn't actionable). Kept in the enum
+// only because Postgres has no DROP VALUE -- removing it would mean recreating
+// the type and re-pointing the column for no functional gain.
 export const reviewStatusEnum = pgEnum("review_status", ["passed", "revised", "failed", "error"]);
 export const updateCategoryEnum = pgEnum("update_category", ["new", "improved", "fixed"]);
 

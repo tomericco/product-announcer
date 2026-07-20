@@ -4,8 +4,6 @@ export function reviewStatusLabel(status: string | null): string | null {
   switch (status) {
     case "failed":
       return "Failed review";
-    case "revised":
-      return "Auto-revised";
     case "error":
       return "Review unavailable";
     default:

@@ -60,7 +60,7 @@ describe("runBatchForWorkspace auto-publish", () => {
     vi.mocked(fetch).mockResolvedValue({ ok: true } as Response);
     vi.mocked(reviewAndReconcile).mockImplementation(async () => ({
       finalDraft: { title: "Revised title", body: "Revised body" },
-      status: "revised",
+      status: "passed",
       issues: [],
     }));
 
@@ -69,7 +69,7 @@ describe("runBatchForWorkspace auto-publish", () => {
 
     const [update] = await db.select().from(updates).where(eq(updates.tenantId, tenant.id));
     expect(update.status).toBe("published");
-    expect(update.reviewStatus).toBe("revised");
+    expect(update.reviewStatus).toBe("passed");
     expect(update.title).toBe("Revised title");
     expect(update.body).toBe("Revised body");
     const deliveries = await db.select().from(webhookDeliveries).where(eq(webhookDeliveries.updateId, update.id));

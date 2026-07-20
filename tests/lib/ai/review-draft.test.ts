@@ -50,13 +50,13 @@ describe("reviewAndReconcile", () => {
     expect(generateObject).toHaveBeenCalledTimes(1);
   });
 
-  it("revises once and returns 'revised' when the fix becomes compliant", async () => {
+  it("revises once and returns 'passed' when the fix becomes compliant", async () => {
     vi.mocked(generateObject)
       .mockResolvedValueOnce(critique(false, ["too hypey"]))    // review 1
       .mockResolvedValueOnce(revision("News", "We shipped X.")) // revise 1
       .mockResolvedValueOnce(critique(true));                   // review 2
     const out = await reviewAndReconcile(draft, brand as never);
-    expect(out.status).toBe("revised");
+    expect(out.status).toBe("passed");
     expect(out.finalDraft).toEqual({ title: "News", body: "We shipped X." });
     expect(out.issues).toEqual([]);
     expect(generateObject).toHaveBeenCalledTimes(3);
@@ -70,7 +70,7 @@ describe("reviewAndReconcile", () => {
       .mockResolvedValueOnce(revision("R2", "b2"))             // revise 2
       .mockResolvedValueOnce(critique(true));                  // review 3
     const out = await reviewAndReconcile(draft, brand as never);
-    expect(out.status).toBe("revised");
+    expect(out.status).toBe("passed");
     expect(out.finalDraft).toEqual({ title: "R2", body: "b2" });
     expect(generateObject).toHaveBeenCalledTimes(5);
   });

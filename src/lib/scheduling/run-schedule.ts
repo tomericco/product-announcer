@@ -95,7 +95,7 @@ export async function runBatchForWorkspace(
       .where(and(eq(webhookConfigs.tenantId, tenantId), eq(webhookConfigs.active, true)))
       .limit(1);
 
-    const reviewPassed = review.status === "passed" || review.status === "revised";
+    const reviewPassed = review.status === "passed";
     if (tenant?.autoPublish && activeWebhook && reviewPassed) {
       await database
         .update(updates)
