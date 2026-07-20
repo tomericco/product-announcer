@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { eq } from "drizzle-orm";
 import { webflowDestination } from "../../../../src/lib/publishing/destinations/webflow";
-import type { WebflowFieldMapping } from "../../../../src/db/schema";
+import { db } from "../../../../src/db";
+import { tenants, webflowConnections, type WebflowFieldMapping } from "../../../../src/db/schema";
 
 // Token decryption is exercised in the credentials tests; stub it here so
 // these cases stay focused on delivery behavior.
@@ -74,7 +76,7 @@ describe("webflowDestination.deliver", () => {
       .mockResolvedValueOnce(jsonResponse(SCHEMA))
       .mockResolvedValueOnce(jsonResponse({ id: "item1" }, 202));
 
-    const result = await webflowDestination.deliver(update, connection(), null);
+    const result = await webflowDestination.deliver(update, connection(), null, db);
 
     expect(result).toEqual({ status: "ok", externalId: "item1" });
     const [url, init] = vi.mocked(fetch).mock.calls[1];
@@ -89,7 +91,7 @@ describe("webflowDestination.deliver", () => {
       .mockResolvedValueOnce(jsonResponse(SCHEMA))
       .mockResolvedValueOnce(jsonResponse({ id: "item1" }, 202));
 
-    await webflowDestination.deliver(update, connection({ publishMode: "live" }), null);
+    await webflowDestination.deliver(update, connection({ publishMode: "live" }), null, db);
 
     expect(vi.mocked(fetch).mock.calls[1][0]).toBe("https://api.webflow.com/v2/collections/c1/items/live");
     expect(JSON.parse(vi.mocked(fetch).mock.calls[1][1]?.body as string).isDraft).toBe(false);
@@ -100,7 +102,7 @@ describe("webflowDestination.deliver", () => {
       .mockResolvedValueOnce(jsonResponse(SCHEMA))
       .mockResolvedValueOnce(jsonResponse({ id: "item1" }, 202));
 
-    await webflowDestination.deliver(update, connection({ publishMode: "live" }), null);
+    await webflowDestination.deliver(update, connection({ publishMode: "live" }), null, db);
 
     for (const [url] of vi.mocked(fetch).mock.calls) {
       expect(String(url)).not.toContain("/publish");
@@ -112,7 +114,7 @@ describe("webflowDestination.deliver", () => {
       .mockResolvedValueOnce(jsonResponse(SCHEMA))
       .mockResolvedValueOnce(jsonResponse({ id: "item1" }, 200));
 
-    const result = await webflowDestination.deliver(update, connection(), "item1");
+    const result = await webflowDestination.deliver(update, connection(), "item1", db);
 
     expect(result.status).toBe("ok");
     expect(vi.mocked(fetch).mock.calls[1][0]).toBe("https://api.webflow.com/v2/collections/c1/items/item1");
@@ -131,7 +133,7 @@ describe("webflowDestination.deliver", () => {
       .mockResolvedValueOnce(jsonResponse({ message: "Not Found" }, 404))
       .mockResolvedValueOnce(jsonResponse({ id: "item2" }, 202));
 
-    const result = await webflowDestination.deliver(update, connection(), "item1");
+    const result = await webflowDestination.deliver(update, connection(), "item1", db);
 
     expect(result).toEqual({ status: "ok", externalId: "item2" });
   });
@@ -144,7 +146,7 @@ describe("webflowDestination.deliver", () => {
       .mockResolvedValueOnce(jsonResponse({ message: "Not Found" }, 404))
       .mockResolvedValueOnce(jsonResponse({ id: "item2" }, 202));
 
-    await webflowDestination.deliver(update, connection(), "item1");
+    await webflowDestination.deliver(update, connection(), "item1", db);
 
     const createCall = vi.mocked(fetch).mock.calls[2];
     expect(createCall[0]).toBe("https://api.webflow.com/v2/collections/c1/items");
@@ -166,7 +168,7 @@ describe("webflowDestination.deliver", () => {
       )
       .mockResolvedValueOnce(jsonResponse({ id: "item1" }, 202));
 
-    const result = await webflowDestination.deliver(update, connection(), null);
+    const result = await webflowDestination.deliver(update, connection(), null, db);
 
     expect(result.status).toBe("ok");
     expect(JSON.parse(vi.mocked(fetch).mock.calls[2][1]?.body as string).fieldData.slug).toBe("faster-search-2");
@@ -194,7 +196,7 @@ describe("webflowDestination.deliver", () => {
       vi.mocked(fetch).mockResolvedValueOnce(collisionResponse());
     }
 
-    const result = await webflowDestination.deliver(update, connection(), "item1");
+    const result = await webflowDestination.deliver(update, connection(), "item1", db);
 
     expect(result.status).toBe("permanent");
 
@@ -220,13 +222,13 @@ describe("webflowDestination.deliver", () => {
         )
       );
     }
-    const result = await webflowDestination.deliver(update, connection(), null);
+    const result = await webflowDestination.deliver(update, connection(), null, db);
     expect(result.status).toBe("permanent");
   });
 
   it("returns permanent on 401", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ message: "Unauthorized" }, 401));
-    const result = await webflowDestination.deliver(update, connection(), null);
+    const result = await webflowDestination.deliver(update, connection(), null, db);
     expect(result).toMatchObject({ status: "permanent" });
   });
 
@@ -239,24 +241,24 @@ describe("webflowDestination.deliver", () => {
           400
         )
       );
-    const result = await webflowDestination.deliver(update, connection(), null);
+    const result = await webflowDestination.deliver(update, connection(), null, db);
     expect(result.status).toBe("permanent");
     expect((result as { error: string }).error).toContain("Field is required");
   });
 
   it("returns retryable on 429", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ message: "Too Many Requests" }, 429));
-    expect((await webflowDestination.deliver(update, connection(), null)).status).toBe("retryable");
+    expect((await webflowDestination.deliver(update, connection(), null, db)).status).toBe("retryable");
   });
 
   it("returns retryable on 5xx", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ message: "Server Error" }, 503));
-    expect((await webflowDestination.deliver(update, connection(), null)).status).toBe("retryable");
+    expect((await webflowDestination.deliver(update, connection(), null, db)).status).toBe("retryable");
   });
 
   it("returns retryable on 408", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ message: "Request Timeout" }, 408));
-    expect((await webflowDestination.deliver(update, connection(), null)).status).toBe("retryable");
+    expect((await webflowDestination.deliver(update, connection(), null, db)).status).toBe("retryable");
   });
 
   it("classifies a non-WebflowApiError (e.g. a request timeout) as retryable", async () => {
@@ -269,7 +271,7 @@ describe("webflowDestination.deliver", () => {
     timeoutError.name = "TimeoutError";
     vi.mocked(fetch).mockRejectedValueOnce(timeoutError);
 
-    const result = await webflowDestination.deliver(update, connection(), null);
+    const result = await webflowDestination.deliver(update, connection(), null, db);
 
     expect(result.status).toBe("retryable");
   });
@@ -278,14 +280,15 @@ describe("webflowDestination.deliver", () => {
     const result = await webflowDestination.deliver(
       { ...(update as Record<string, unknown>), body: "   " } as never,
       connection(),
-      null
+      null,
+      db
     );
     expect(result.status).toBe("permanent");
     expect(vi.mocked(fetch)).not.toHaveBeenCalled();
   });
 
   it("returns permanent when the connection is not fully configured", async () => {
-    const result = await webflowDestination.deliver(update, connection({ collectionId: null }), null);
+    const result = await webflowDestination.deliver(update, connection({ collectionId: null }), null, db);
     expect(result.status).toBe("permanent");
     expect(vi.mocked(fetch)).not.toHaveBeenCalled();
   });
@@ -296,7 +299,7 @@ describe("webflowDestination.deliver", () => {
     vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(SCHEMA));
 
     const blankTitleUpdate = { ...(update as Record<string, unknown>), title: "   " };
-    const result = await webflowDestination.deliver(blankTitleUpdate as never, connection(), null);
+    const result = await webflowDestination.deliver(blankTitleUpdate as never, connection(), null, db);
 
     expect(result).toEqual({
       status: "permanent",
@@ -311,9 +314,104 @@ describe("webflowDestination.deliver", () => {
       .mockResolvedValueOnce(jsonResponse(SCHEMA))
       .mockResolvedValueOnce(jsonResponse({ id: "item9" }, 202));
 
-    const result = await webflowDestination.deliver(update, connection(), null);
+    const result = await webflowDestination.deliver(update, connection(), null, db);
 
     expect(result).toEqual({ status: "ok", externalId: "item9" });
     expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("webflowDestination.deliver — needs_reauth status writes", () => {
+  const TENANT_NAME = "Webflow Deliver Status Test Tenant";
+
+  beforeEach(() => {
+    process.env.CREDENTIALS_ENCRYPTION_KEY = "a".repeat(64);
+    vi.stubGlobal("fetch", vi.fn());
+  });
+
+  afterEach(async () => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    await db.delete(tenants).where(eq(tenants.name, TENANT_NAME));
+  });
+
+  // A real row is required here (unlike the plain-object cast used above):
+  // these tests assert on a write to that row, which only exists in the
+  // database, not on a `deliver`-local object.
+  async function seedConnection(overrides: Partial<typeof webflowConnections.$inferInsert> = {}) {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT_NAME }).returning();
+    const [connection] = await db
+      .insert(webflowConnections)
+      .values({
+        tenantId: tenant.id,
+        tokenCiphertext: "x",
+        tokenIv: "x",
+        tokenAuthTag: "x",
+        siteId: "s1",
+        collectionId: "c1",
+        fieldMapping: mapping,
+        publishMode: "draft",
+        status: "active",
+        ...overrides,
+      })
+      .returning();
+    return connection;
+  }
+
+  async function statusOf(connectionId: string) {
+    const [row] = await db.select().from(webflowConnections).where(eq(webflowConnections.id, connectionId));
+    return row.status;
+  }
+
+  it("sets the connection to needs_reauth on a 401 and still returns permanent", async () => {
+    const connection = await seedConnection();
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ message: "Unauthorized" }, 401));
+
+    const result = await webflowDestination.deliver(update, connection, null, db);
+
+    expect(result).toMatchObject({ status: "permanent" });
+    expect(await statusOf(connection.id)).toBe("needs_reauth");
+  });
+
+  it("sets the connection to needs_reauth on a 403 and still returns permanent", async () => {
+    const connection = await seedConnection();
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ message: "Forbidden" }, 403));
+
+    const result = await webflowDestination.deliver(update, connection, null, db);
+
+    expect(result).toMatchObject({ status: "permanent" });
+    expect(await statusOf(connection.id)).toBe("needs_reauth");
+  });
+
+  it("does not change status on a 400 validation error — that is a content problem, not an auth problem", async () => {
+    const connection = await seedConnection();
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(jsonResponse(SCHEMA))
+      .mockResolvedValueOnce(
+        jsonResponse(
+          { message: "Validation Error", details: [{ param: "author", description: "Field is required" }] },
+          400
+        )
+      );
+
+    const result = await webflowDestination.deliver(update, connection, null, db);
+
+    expect(result.status).toBe("permanent");
+    expect(await statusOf(connection.id)).toBe("active");
+  });
+
+  it("still returns the permanent result, without throwing, when recording needs_reauth itself fails", async () => {
+    const connection = await seedConnection();
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ message: "Unauthorized" }, 401));
+
+    const brokenDb = {
+      update: () => {
+        throw new Error("db write failed");
+      },
+    } as unknown as typeof db;
+
+    await expect(webflowDestination.deliver(update, connection, null, brokenDb)).resolves.toMatchObject({
+      status: "permanent",
+    });
   });
 });

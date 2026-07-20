@@ -16,5 +16,10 @@ export type DeliveryResult =
 export interface Destination<TConfig> {
   id: DestinationId;
   loadConfig(tenantId: string, database: typeof defaultDb): Promise<TConfig | null>;
-  deliver(update: Update, config: TConfig, externalId: string | null): Promise<DeliveryResult>;
+  deliver(
+    update: Update,
+    config: TConfig,
+    externalId: string | null,
+    database: typeof defaultDb
+  ): Promise<DeliveryResult>;
 }

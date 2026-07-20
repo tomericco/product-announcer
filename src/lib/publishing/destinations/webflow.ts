@@ -43,6 +43,10 @@ function findEmptyRequiredField(
   });
 }
 
+function isAuthFailure(error: unknown): boolean {
+  return error instanceof WebflowApiError && (error.status === 401 || error.status === 403);
+}
+
 function classify(error: unknown): DeliveryResult {
   if (error instanceof WebflowApiError) {
     // 401: the token was revoked or the app uninstalled. Webflow issues no
@@ -63,6 +67,35 @@ function classify(error: unknown): DeliveryResult {
   return { status: "retryable", error: error instanceof Error ? error.message : "request failed" };
 }
 
+// Webflow issues no refresh token: once the token is revoked or the app is
+// uninstalled, retrying can never succeed. The banner in the integrations UI
+// (`webflow-form.tsx`) is the only way a user learns they must reconnect, so
+// a 401/403 must flip the connection's status. This is best-effort — a
+// failure here must never turn a clean `permanent` classification into a
+// thrown error, so it gets its own try/catch and is scoped by connection id
+// alone (never by tenant) so it can't touch another row.
+async function recordNeedsReauth(database: typeof defaultDb, connectionId: string): Promise<void> {
+  try {
+    await database
+      .update(webflowConnections)
+      .set({ status: "needs_reauth" })
+      .where(eq(webflowConnections.id, connectionId));
+  } catch (updateError) {
+    console.error(`Failed to mark Webflow connection ${connectionId} as needs_reauth:`, updateError);
+  }
+}
+
+async function classifyAndRecord(
+  error: unknown,
+  database: typeof defaultDb,
+  connectionId: string
+): Promise<DeliveryResult> {
+  if (isAuthFailure(error)) {
+    await recordNeedsReauth(database, connectionId);
+  }
+  return classify(error);
+}
+
 export const webflowDestination: Destination<WebflowConnection> = {
   id: "webflow",
 
@@ -75,7 +108,7 @@ export const webflowDestination: Destination<WebflowConnection> = {
     return connection ?? null;
   },
 
-  async deliver(update: Update, connection, externalId): Promise<DeliveryResult> {
+  async deliver(update: Update, connection, externalId, database): Promise<DeliveryResult> {
     if (!connection.collectionId) {
       return { status: "permanent", error: "Webflow connection is missing a collection." };
     }
@@ -145,13 +178,13 @@ export const webflowDestination: Destination<WebflowConnection> = {
             slugAttempt++;
             continue;
           }
-          return classify(error);
+          return classifyAndRecord(error, database, connection.id);
         }
       }
 
       return lastError ?? { status: "permanent", error: "Could not find an available slug in Webflow." };
     } catch (error) {
-      return classify(error);
+      return classifyAndRecord(error, database, connection.id);
     }
   },
 };

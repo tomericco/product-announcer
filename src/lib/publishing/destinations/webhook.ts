@@ -38,7 +38,11 @@ export const webhookDestination: Destination<WebhookConfig> = {
     return config ?? null;
   },
 
-  async deliver(update, config): Promise<DeliveryResult> {
+  // `externalId` and `database` are part of the `Destination` interface
+  // (webflow needs `database` to record `needs_reauth`), but webhook
+  // delivery has no notion of an external id and no DB write of its own.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  async deliver(update, config, _externalId, _database): Promise<DeliveryResult> {
     // A decrypt failure (rotated/misconfigured CREDENTIALS_ENCRYPTION_KEY) can't be
     // fixed by retrying, and must not be logged identically to a network timeout.
     // Decrypt outside and before the fetch's try block so a decrypt failure is

@@ -51,7 +51,7 @@ export async function dispatchAllDestinations(
               .returning()
           )[0];
 
-        const result = await destination.deliver(update, config, attempt.externalId);
+        const result = await destination.deliver(update, config, attempt.externalId, database);
 
         // A fresh publish always gets a full retry budget, regardless of how
         // many attempts a prior publish burned through — otherwise a single
@@ -96,7 +96,7 @@ export async function retryFailedDeliveries(database: typeof defaultDb = default
       // Skip if the config was deactivated or removed since the original attempt.
       if (!config) continue;
 
-      const result = await destination.deliver(update, config, attempt.externalId);
+      const result = await destination.deliver(update, config, attempt.externalId, database);
 
       await database
         .update(deliveryAttempts)
