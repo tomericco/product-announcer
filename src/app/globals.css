@@ -156,3 +156,59 @@
 .mdx-content li {
   margin: 0.25rem 0;
 }
+.mdx-content h1 {
+  font-size: 1.875rem;
+  font-weight: 700;
+  line-height: 1.2;
+  margin: 1.5rem 0 0.75rem;
+}
+.mdx-content h2 {
+  font-size: 1.5rem;
+  font-weight: 700;
+  line-height: 1.25;
+  margin: 1.25rem 0 0.625rem;
+}
+.mdx-content h3 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  line-height: 1.3;
+  margin: 1rem 0 0.5rem;
+}
+.mdx-content h4 {
+  font-size: 1.125rem;
+  font-weight: 600;
+  margin: 1rem 0 0.5rem;
+}
+.mdx-content h5,
+.mdx-content h6 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0.875rem 0 0.5rem;
+}
+.mdx-content h1:first-child,
+.mdx-content h2:first-child,
+.mdx-content h3:first-child {
+  margin-top: 0;
+}
+.mdx-content blockquote {
+  border-left: 3px solid var(--border);
+  padding-left: 1rem;
+  margin: 1rem 0;
+  color: var(--muted-foreground);
+}
+.mdx-content code {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.875em;
+  background: var(--muted);
+  padding: 0.125rem 0.3rem;
+  border-radius: 0.25rem;
+}
+.mdx-content pre code {
+  background: transparent;
+  padding: 0;
+}
+.mdx-content hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 1.5rem 0;
+}
