@@ -18,12 +18,25 @@ function autoGrow(el: HTMLTextAreaElement) {
  */
 export function DraftTitleField({ defaultValue }: { defaultValue: string }) {
   const ref = useRef<HTMLTextAreaElement | null>(null);
-  const { markDirty } = useUnsavedChanges();
+  const { setSectionDirty, cleanToken } = useUnsavedChanges();
+  // What the field should compare against: the stored title, then whatever was
+  // last committed.
+  const baseline = useRef(defaultValue);
 
   // Size to the stored title on mount (the server renders it at rows=1).
   useEffect(() => {
     if (ref.current) autoGrow(ref.current);
   }, []);
+
+  // Re-baseline once edits are committed, so a later revert is measured against
+  // what was saved rather than what was originally loaded.
+  useEffect(() => {
+    if (ref.current) baseline.current = ref.current.value;
+  }, [cleanToken]);
+
+  // Clear this field's flag when the page unmounts, so navigating away can't
+  // leave a stale warning armed on another page.
+  useEffect(() => () => setSectionDirty("title", false), [setSectionDirty]);
 
   return (
     <textarea
@@ -36,7 +49,7 @@ export function DraftTitleField({ defaultValue }: { defaultValue: string }) {
       aria-label="Title"
       onInput={(e) => {
         autoGrow(e.currentTarget);
-        markDirty();
+        setSectionDirty("title", e.currentTarget.value !== baseline.current);
       }}
       className="w-full resize-none overflow-hidden border-0 bg-transparent p-0 text-4xl font-bold leading-tight tracking-tight outline-none placeholder:text-muted-foreground/40 focus:outline-none focus-visible:outline-none"
     />

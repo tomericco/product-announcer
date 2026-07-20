@@ -16,26 +16,37 @@ const CONFIRM_MESSAGE = "You have unsaved changes. Leave without saving?";
 
 type UnsavedChanges = {
   isDirty: boolean;
-  markDirty: () => void;
-  markClean: () => void;
+  /**
+   * Each editable field reports itself under its own key, comparing against the
+   * value it started from — so reverting an edit clears the warning rather than
+   * leaving it armed.
+   */
+  setSectionDirty: (key: string, dirty: boolean) => void;
+  /**
+   * Bumped whenever edits are committed. Fields watch it to re-baseline against
+   * what was just saved; without that, reverting to the originally-loaded text
+   * after a save would look clean when it actually differs from the server.
+   */
+  cleanToken: number;
 };
 
 const UnsavedChangesContext = createContext<UnsavedChanges>({
   isDirty: false,
-  markDirty: () => {},
-  markClean: () => {},
+  setSectionDirty: () => {},
+  cleanToken: 0,
 });
 
-/**
- * Tracks whether the page has edits that haven't been submitted yet, and warns
- * before they'd be lost. Lives in the dashboard layout so the sidebar links
- * (which are outside the page they'd navigate away from) can read it.
- */
 export function UnsavedChangesProvider({ children }: { children: ReactNode }) {
-  const [isDirty, setIsDirty] = useState(false);
+  const [sections, setSections] = useState<Record<string, boolean>>({});
+  const [cleanToken, setCleanToken] = useState(0);
 
-  const markDirty = useCallback(() => setIsDirty(true), []);
-  const markClean = useCallback(() => setIsDirty(false), []);
+  const setSectionDirty = useCallback((key: string, dirty: boolean) => {
+    // Skip the update when nothing changed, so typing doesn't re-render the
+    // whole dashboard shell on every keystroke.
+    setSections((prev) => (prev[key] === dirty ? prev : { ...prev, [key]: dirty }));
+  }, []);
+
+  const isDirty = useMemo(() => Object.values(sections).some(Boolean), [sections]);
 
   // Full page loads: refresh, tab close, external navigation. The browser shows
   // its own standard warning — the text can't be customized, calling
@@ -53,12 +64,18 @@ export function UnsavedChangesProvider({ children }: { children: ReactNode }) {
   // Submitting anything (Save, Approve & publish, Reject) commits the edits, so
   // it must not then warn on the navigation that follows.
   useEffect(() => {
-    const onSubmit = () => markClean();
+    const onSubmit = () => {
+      setSections({});
+      setCleanToken((token) => token + 1);
+    };
     document.addEventListener("submit", onSubmit, true);
     return () => document.removeEventListener("submit", onSubmit, true);
-  }, [markClean]);
+  }, []);
 
-  const value = useMemo(() => ({ isDirty, markDirty, markClean }), [isDirty, markDirty, markClean]);
+  const value = useMemo(
+    () => ({ isDirty, setSectionDirty, cleanToken }),
+    [isDirty, setSectionDirty, cleanToken]
+  );
 
   return <UnsavedChangesContext.Provider value={value}>{children}</UnsavedChangesContext.Provider>;
 }
