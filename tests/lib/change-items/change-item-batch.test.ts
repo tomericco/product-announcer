@@ -7,6 +7,7 @@ import {
   getBatchableChangeItems,
   getTrackedChangeItems,
   claimBatchAndCreateUpdate,
+  releaseBatchForUpdate,
   batchCategories,
 } from "../../../src/lib/change-items/change-item-batch";
 
@@ -148,6 +149,63 @@ describe("change-item-batch", () => {
     expect(update!.reviewStatus).toBe("failed");
     expect(update!.reviewIssues).toEqual(["too salesy"]);
     expect(update!.reviewedAt).toBeInstanceOf(Date);
+  });
+
+  it("releaseBatchForUpdate returns the update's items to pending and clears updateId", async () => {
+    const { tenant, repoA } = await seed();
+    const [mine] = await db
+      .insert(changeItems)
+      .values({ tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "a" })
+      .returning();
+    const [other] = await db
+      .insert(changeItems)
+      .values({ tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "pending", prNumber: 2, prTitle: "b" })
+      .returning();
+
+    const update = await claimBatchAndCreateUpdate({
+      tenantId: tenant.id,
+      changeItemIds: [mine.id],
+      draft: { title: "T", body: "B" },
+    });
+
+    const released = await releaseBatchForUpdate(update!.id);
+    expect(released).toBe(1);
+
+    const [releasedItem] = await db.select().from(changeItems).where(eq(changeItems.id, mine.id));
+    expect(releasedItem.status).toBe("pending");
+    expect(releasedItem.updateId).toBeNull();
+
+    // An unrelated pending item must not be touched.
+    const [untouched] = await db.select().from(changeItems).where(eq(changeItems.id, other.id));
+    expect(untouched.status).toBe("pending");
+
+    // The released items are visible on the Pending page again — the whole
+    // point of releasing them rather than leaving them stranded in `batched`.
+    const tracked = await getTrackedChangeItems(tenant.id);
+    expect(tracked.map((t) => t.prTitle).sort()).toEqual(["a", "b"]);
+  });
+
+  it("an update can be deleted once its batch is released (the FK otherwise rejects it)", async () => {
+    const { tenant, repoA } = await seed();
+    const [item] = await db
+      .insert(changeItems)
+      .values({ tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "a" })
+      .returning();
+
+    const update = await claimBatchAndCreateUpdate({
+      tenantId: tenant.id,
+      changeItemIds: [item.id],
+      draft: { title: "T", body: "B" },
+    });
+
+    // Deleting while the item still points at the update violates the FK.
+    await expect(db.delete(updates).where(eq(updates.id, update!.id))).rejects.toThrow();
+
+    await releaseBatchForUpdate(update!.id);
+    await db.delete(updates).where(eq(updates.id, update!.id));
+
+    const remaining = await db.select().from(updates).where(eq(updates.id, update!.id));
+    expect(remaining).toHaveLength(0);
   });
 });
 

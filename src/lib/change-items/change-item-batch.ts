@@ -6,6 +6,13 @@ import type { ReviewStatus } from "@/lib/ai/review-draft";
 type ChangeItemRow = typeof changeItems.$inferSelect;
 type UpdateRow = typeof updates.$inferSelect;
 
+/**
+ * The root connection or a transaction handle. Drizzle's transaction type isn't
+ * assignable to the db type (it has no `$client`), so helpers that callers need
+ * to run inside a transaction have to accept the union explicitly.
+ */
+type Executor = typeof defaultDb | Parameters<Parameters<(typeof defaultDb)["transaction"]>[0]>[0];
+
 export async function getPendingChangeItems(
   tenantId: string,
   database: typeof defaultDb = defaultDb
@@ -95,6 +102,28 @@ export async function claimBatchAndCreateUpdate(
 
     return update;
   });
+}
+
+/**
+ * The exact inverse of `claimBatchAndCreateUpdate`'s claim: returns an update's
+ * change items to the pending pool and clears their `updateId`.
+ *
+ * Load-bearing for deletion: `change_items.update_id` has no ON DELETE clause,
+ * so Postgres rejects deleting an update that still owns items. It also matters
+ * for rejection, which otherwise strands the items in `batched` with a dangling
+ * `updateId` — invisible to `getTrackedChangeItems`, so those commits would
+ * silently never be announced.
+ */
+export async function releaseBatchForUpdate(
+  updateId: string,
+  database: Executor = defaultDb
+): Promise<number> {
+  const released = await database
+    .update(changeItems)
+    .set({ status: "pending", updateId: null })
+    .where(eq(changeItems.updateId, updateId))
+    .returning({ id: changeItems.id });
+  return released.length;
 }
 
 /**

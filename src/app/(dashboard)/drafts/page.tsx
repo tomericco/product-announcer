@@ -7,6 +7,7 @@ import { requireSession } from "@/lib/workspace/session";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { reviewStatusLabel } from "@/lib/ai/review-status";
+import { DraftRowMenu } from "./draft-row-menu";
 import {
   EmptyState,
   EmptyStateIcon,
@@ -55,23 +56,33 @@ export default async function DraftsPage() {
           without indenting the rows themselves. */}
       <div className="-mx-3">
         {drafts.map((d) => (
-          <Link
+          // The menu button can't nest inside the anchor, so the link is
+          // stretched over the row and the menu sits above it as a sibling.
+          <div
             key={d.id}
-            href={`/drafts/${d.id}`}
-            className="flex items-center justify-between gap-4 rounded-lg px-3 py-2.5 transition-colors hover:bg-muted/60"
+            className="group relative flex items-center gap-3 rounded-lg px-3 py-2.5 transition-colors hover:bg-muted/60"
           >
+            <Link href={`/drafts/${d.id}`} className="absolute inset-0 rounded-lg" aria-label={d.title} />
             <span className="min-w-0 flex-1 truncate font-medium">{d.title}</span>
-            <div className="flex shrink-0 items-center gap-3">
-              {reviewStatusLabel(d.reviewStatus) && (
-                <Badge variant={d.reviewStatus === "failed" ? "destructive" : "outline"}>
-                  {reviewStatusLabel(d.reviewStatus)}
-                </Badge>
-              )}
-              <span className="text-sm text-muted-foreground" title={d.createdAt.toLocaleString()}>
-                {d.createdAt.toLocaleDateString()}
-              </span>
+            {reviewStatusLabel(d.reviewStatus) && (
+              <Badge variant={d.reviewStatus === "failed" ? "destructive" : "outline"}>
+                {reviewStatusLabel(d.reviewStatus)}
+              </Badge>
+            )}
+            <span
+              className="shrink-0 text-sm text-muted-foreground"
+              title={d.createdAt.toLocaleString()}
+            >
+              {d.createdAt.toLocaleDateString()}
+            </span>
+            <div className="relative shrink-0">
+              <DraftRowMenu
+                updateId={d.id}
+                title={d.title}
+                sourceItemCount={d.sourceItems.length}
+              />
             </div>
-          </Link>
+          </div>
         ))}
       </div>
     </div>

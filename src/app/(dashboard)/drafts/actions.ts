@@ -7,6 +7,7 @@ import { db } from "@/db";
 import { updates } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { dispatchWebhookForUpdate } from "@/lib/publishing/webhook-delivery";
+import { releaseBatchForUpdate } from "@/lib/change-items/change-item-batch";
 
 async function loadOwnedDraft(tenantId: string, updateId: string) {
   const [update] = await db
@@ -76,8 +77,48 @@ export async function rejectDraft(formData: FormData) {
   const updateId = formData.get("updateId") as string;
   await loadOwnedDraft(session.user.tenantId, updateId);
 
-  await db.update(updates).set({ status: "rejected" }).where(eq(updates.id, updateId));
+  await db.transaction(async (tx) => {
+    await tx.update(updates).set({ status: "rejected" }).where(eq(updates.id, updateId));
+    // Rejecting the write-up isn't rejecting the commits — hand them back so
+    // they can go into a later update instead of vanishing from Pending.
+    await releaseBatchForUpdate(updateId, tx);
+  });
 
   revalidatePath("/drafts");
   redirect("/drafts");
+}
+
+/**
+ * Publishes a draft as-stored, for the drafts list — where there is no editor
+ * and so nothing unsaved to preserve. `approveDraft` is the detail-page
+ * equivalent and additionally persists the submitted title/body first.
+ */
+export async function publishDraft(formData: FormData) {
+  const session = await requireSession();
+  const updateId = formData.get("updateId") as string;
+  await loadOwnedDraft(session.user.tenantId, updateId);
+
+  await db
+    .update(updates)
+    .set({ status: "published", publishedAt: new Date() })
+    .where(eq(updates.id, updateId));
+
+  await dispatchWebhookForUpdate(updateId);
+
+  revalidatePath("/drafts");
+}
+
+export async function deleteDraft(formData: FormData) {
+  const session = await requireSession();
+  const updateId = formData.get("updateId") as string;
+  await loadOwnedDraft(session.user.tenantId, updateId);
+
+  await db.transaction(async (tx) => {
+    // Must precede the delete: change_items.update_id has no ON DELETE clause,
+    // so the FK rejects removing an update that still owns items.
+    await releaseBatchForUpdate(updateId, tx);
+    await tx.delete(updates).where(eq(updates.id, updateId));
+  });
+
+  revalidatePath("/drafts");
 }
