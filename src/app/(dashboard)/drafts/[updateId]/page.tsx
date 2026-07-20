@@ -35,18 +35,16 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ up
       </Link>
 
       {statusLabel && (
-        <p className="text-sm text-muted-foreground">
-          {statusLabel}
+        <div className="space-y-1 text-sm text-muted-foreground">
+          <p>{statusLabel}</p>
           {update.reviewStatus === "failed" && update.reviewIssues.length > 0 && (
-            <span className="mt-1 block space-y-0.5">
+            <ul className="list-disc space-y-0.5 pl-5">
               {update.reviewIssues.map((issue, i) => (
-                <span key={i} className="block">
-                  &middot; {issue}
-                </span>
+                <li key={i}>{issue}</li>
               ))}
-            </span>
+            </ul>
           )}
-        </p>
+        </div>
       )}
 
       <DraftEditorProvider>
