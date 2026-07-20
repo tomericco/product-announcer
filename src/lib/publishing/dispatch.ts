@@ -2,12 +2,13 @@ import { and, eq, lt } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
 import { deliveryAttempts, updates } from "@/db/schema";
 import { webhookDestination } from "./destinations/webhook";
+import { webflowDestination } from "./destinations/webflow";
 import type { Destination, DeliveryResult } from "./destinations/types";
 
 const MAX_ATTEMPTS = 3;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const DESTINATIONS: Destination<any>[] = [webhookDestination];
+const DESTINATIONS: Destination<any>[] = [webhookDestination, webflowDestination];
 
 function statusFor(result: DeliveryResult) {
   if (result.status === "ok") return "success" as const;

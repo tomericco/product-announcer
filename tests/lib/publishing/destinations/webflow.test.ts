@@ -1,0 +1,257 @@
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { webflowDestination } from "../../../../src/lib/publishing/destinations/webflow";
+import type { WebflowFieldMapping } from "../../../../src/db/schema";
+
+const SCHEMA = {
+  id: "c1",
+  displayName: "Blog",
+  slug: "blog",
+  fields: [
+    { id: "f1", slug: "name", displayName: "Name", type: "PlainText", isRequired: true },
+    { id: "f2", slug: "slug", displayName: "Slug", type: "PlainText", isRequired: true },
+    { id: "f3", slug: "post-body", displayName: "Body", type: "RichText", isRequired: false },
+  ],
+};
+
+const mapping: WebflowFieldMapping = {
+  name: { source: "title" },
+  slug: { source: "slug" },
+  "post-body": { source: "body" },
+};
+
+function connection(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "conn1",
+    tenantId: "t1",
+    authType: "site_token",
+    // Encrypted at rest; the destination decrypts before calling the API.
+    tokenCiphertext: "",
+    tokenIv: "",
+    tokenAuthTag: "",
+    siteId: "s1",
+    collectionId: "c1",
+    fieldMapping: mapping,
+    publishMode: "draft",
+    status: "active",
+    ...overrides,
+  } as never;
+}
+
+const update = {
+  id: "u1",
+  tenantId: "t1",
+  title: "Faster Search",
+  body: "We shipped search.",
+  publishedAt: new Date("2026-07-20T10:00:00Z"),
+} as never;
+
+function jsonResponse(body: unknown, status = 200, headers: Record<string, string> = {}) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json", ...headers },
+  });
+}
+
+describe("webflowDestination.deliver", () => {
+  beforeEach(() => {
+    process.env.CREDENTIALS_ENCRYPTION_KEY = "a".repeat(64);
+    vi.stubGlobal("fetch", vi.fn());
+    // Token decryption is exercised in the credentials tests; stub it here so
+    // these cases stay focused on delivery behavior.
+    vi.mock("../../../../src/lib/credentials/encryption", () => ({
+      encryptSecret: () => ({ ciphertext: "", iv: "", authTag: "" }),
+      decryptSecret: () => "tok",
+    }));
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("creates a draft item and returns its id", async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(jsonResponse(SCHEMA))
+      .mockResolvedValueOnce(jsonResponse({ id: "item1" }, 202));
+
+    const result = await webflowDestination.deliver(update, connection(), null);
+
+    expect(result).toEqual({ status: "ok", externalId: "item1" });
+    const [url, init] = vi.mocked(fetch).mock.calls[1];
+    expect(url).toBe("https://api.webflow.com/v2/collections/c1/items");
+    const body = JSON.parse(init?.body as string);
+    expect(body.isDraft).toBe(true);
+    expect(body.fieldData.name).toBe("Faster Search");
+  });
+
+  it("uses the live endpoint when publishMode is live", async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(jsonResponse(SCHEMA))
+      .mockResolvedValueOnce(jsonResponse({ id: "item1" }, 202));
+
+    await webflowDestination.deliver(update, connection({ publishMode: "live" }), null);
+
+    expect(vi.mocked(fetch).mock.calls[1][0]).toBe("https://api.webflow.com/v2/collections/c1/items/live");
+    expect(JSON.parse(vi.mocked(fetch).mock.calls[1][1]?.body as string).isDraft).toBe(false);
+  });
+
+  it("never calls the site publish endpoint", async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(jsonResponse(SCHEMA))
+      .mockResolvedValueOnce(jsonResponse({ id: "item1" }, 202));
+
+    await webflowDestination.deliver(update, connection({ publishMode: "live" }), null);
+
+    for (const [url] of vi.mocked(fetch).mock.calls) {
+      expect(String(url)).not.toContain("/publish");
+    }
+  });
+
+  it("patches the existing item when an externalId is known", async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(jsonResponse(SCHEMA))
+      .mockResolvedValueOnce(jsonResponse({ id: "item1" }, 200));
+
+    const result = await webflowDestination.deliver(update, connection(), "item1");
+
+    expect(result.status).toBe("ok");
+    expect(vi.mocked(fetch).mock.calls[1][0]).toBe("https://api.webflow.com/v2/collections/c1/items/item1");
+    expect(vi.mocked(fetch).mock.calls[1][1]?.method).toBe("PATCH");
+  });
+
+  it("falls back to create when the known item was deleted in Webflow", async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(jsonResponse(SCHEMA))
+      .mockResolvedValueOnce(jsonResponse({ message: "Not Found" }, 404))
+      .mockResolvedValueOnce(jsonResponse({ id: "item2" }, 202));
+
+    const result = await webflowDestination.deliver(update, connection(), "item1");
+
+    expect(result).toEqual({ status: "ok", externalId: "item2" });
+  });
+
+  it("uses the base slug (not a suffixed one) when falling back to create after a 404", async () => {
+    // A 404-triggered switch from update to create is not a slug collision, so
+    // it must not consume a slug-retry attempt or skip ahead to a suffixed slug.
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(jsonResponse(SCHEMA))
+      .mockResolvedValueOnce(jsonResponse({ message: "Not Found" }, 404))
+      .mockResolvedValueOnce(jsonResponse({ id: "item2" }, 202));
+
+    await webflowDestination.deliver(update, connection(), "item1");
+
+    const createCall = vi.mocked(fetch).mock.calls[2];
+    expect(createCall[0]).toBe("https://api.webflow.com/v2/collections/c1/items");
+    expect(JSON.parse(createCall[1]?.body as string).fieldData.slug).toBe("faster-search");
+  });
+
+  it("retries with a suffixed slug on a slug collision", async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(jsonResponse(SCHEMA))
+      .mockResolvedValueOnce(
+        jsonResponse(
+          {
+            message: "Validation Error",
+            code: "validation_error",
+            details: [{ param: "slug", description: "Unique value is already in database: 'faster-search'" }],
+          },
+          400
+        )
+      )
+      .mockResolvedValueOnce(jsonResponse({ id: "item1" }, 202));
+
+    const result = await webflowDestination.deliver(update, connection(), null);
+
+    expect(result.status).toBe("ok");
+    expect(JSON.parse(vi.mocked(fetch).mock.calls[2][1]?.body as string).fieldData.slug).toBe("faster-search-2");
+  });
+
+  it("gives up after exhausting slug attempts", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(SCHEMA));
+    for (let i = 0; i < 5; i++) {
+      vi.mocked(fetch).mockResolvedValueOnce(
+        jsonResponse(
+          {
+            message: "Validation Error",
+            details: [{ param: "slug", description: "Unique value is already in database" }],
+          },
+          400
+        )
+      );
+    }
+    const result = await webflowDestination.deliver(update, connection(), null);
+    expect(result.status).toBe("permanent");
+  });
+
+  it("returns permanent on 401", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ message: "Unauthorized" }, 401));
+    const result = await webflowDestination.deliver(update, connection(), null);
+    expect(result).toMatchObject({ status: "permanent" });
+  });
+
+  it("returns permanent on a non-slug validation error, surfacing the detail", async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(jsonResponse(SCHEMA))
+      .mockResolvedValueOnce(
+        jsonResponse(
+          { message: "Validation Error", details: [{ param: "author", description: "Field is required" }] },
+          400
+        )
+      );
+    const result = await webflowDestination.deliver(update, connection(), null);
+    expect(result.status).toBe("permanent");
+    expect((result as { error: string }).error).toContain("Field is required");
+  });
+
+  it("returns retryable on 429", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ message: "Too Many Requests" }, 429));
+    expect((await webflowDestination.deliver(update, connection(), null)).status).toBe("retryable");
+  });
+
+  it("returns retryable on 5xx", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ message: "Server Error" }, 503));
+    expect((await webflowDestination.deliver(update, connection(), null)).status).toBe("retryable");
+  });
+
+  it("returns permanent for an empty body without calling Webflow", async () => {
+    const result = await webflowDestination.deliver(
+      { ...(update as Record<string, unknown>), body: "   " } as never,
+      connection(),
+      null
+    );
+    expect(result.status).toBe("permanent");
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+  });
+
+  it("returns permanent when the connection is not fully configured", async () => {
+    const result = await webflowDestination.deliver(update, connection({ collectionId: null }), null);
+    expect(result.status).toBe("permanent");
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+  });
+
+  it("returns permanent when a required field mapped to title is blank, without writing the item", async () => {
+    // Only the schema fetch happens; the item-write call must never fire once
+    // a required field's mapped value is known to be empty.
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(SCHEMA));
+
+    const blankTitleUpdate = { ...(update as Record<string, unknown>), title: "   " };
+    const result = await webflowDestination.deliver(blankTitleUpdate as never, connection(), null);
+
+    expect(result).toEqual({
+      status: "permanent",
+      error: 'Webflow requires "Name", but the mapped value is empty.',
+    });
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(fetch).mock.calls[0][0]).toBe("https://api.webflow.com/v2/collections/c1");
+  });
+
+  it("publishes normally when a required field's mapped value is present", async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(jsonResponse(SCHEMA))
+      .mockResolvedValueOnce(jsonResponse({ id: "item9" }, 202));
+
+    const result = await webflowDestination.deliver(update, connection(), null);
+
+    expect(result).toEqual({ status: "ok", externalId: "item9" });
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2);
+  });
+});
