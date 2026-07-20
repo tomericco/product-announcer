@@ -51,6 +51,26 @@ const CODE_BLOCK_LANGUAGES = {
 
 type SurfaceMode = "hidden" | "selection" | "insert";
 
+// The toolbar host (our positioning anchor's offsetParent) and the
+// content-editable wrapper (.mdx-content) are SIBLINGS in MDXEditor's DOM
+// tree, not ancestor/descendant -- see RichTextEditor in
+// node_modules/@mdxeditor/editor/dist/MDXEditor.js, which renders
+// topAreaChildren (the toolbar) and the content-editable wrapper as sibling
+// children of the same fragment. So `.mdx-content` must be located by
+// walking UP from the host to a shared ancestor, not by querying inside the
+// toolbar host itself. Walk up to (and including) document.body to avoid
+// pathological walking past the document root.
+function findContentEl(host: HTMLElement): HTMLElement | null {
+  let node: HTMLElement | null = host;
+  while (node) {
+    const found = node.querySelector<HTMLElement>(".mdx-content");
+    if (found) return found;
+    if (node === document.body) break;
+    node = node.parentElement;
+  }
+  return null;
+}
+
 function useSelectionSurface(hostRef: React.RefObject<HTMLDivElement | null>) {
   const [mode, setMode] = useState<SurfaceMode>("hidden");
   const [pos, setPos] = useState({ top: 0, left: 0 });
@@ -58,8 +78,12 @@ function useSelectionSurface(hostRef: React.RefObject<HTMLDivElement | null>) {
   useEffect(() => {
     function update() {
       const host = hostRef.current;
+      // `parent` (the toolbar host div) is the CSS `position: relative`
+      // containing block for the floating surfaces, so it stays the
+      // coordinate origin for their top/left -- only the content lookup
+      // below is scoped differently.
       const parent = host?.offsetParent as HTMLElement | null;
-      const content = parent?.querySelector<HTMLElement>(".mdx-content");
+      const content = host && findContentEl(host);
       const sel = window.getSelection();
       if (!host || !parent || !content || !sel || sel.rangeCount === 0 || !sel.anchorNode || !content.contains(sel.anchorNode)) {
         setMode("hidden");
