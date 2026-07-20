@@ -81,17 +81,17 @@ export function WebflowMappingForm({
 
   async function handleSave(formData: FormData) {
     setSubmitting(true);
-    try {
-      await saveWebflowMapping(formData);
+    // saveWebflowMapping returns { ok: false, error } when validateMapping
+    // finds an unmapped required field — rendering that here is what makes
+    // the block actionable; a thrown error's message is stripped in a
+    // production build before it would reach this catch.
+    const result = await saveWebflowMapping(formData);
+    if (result.ok) {
       toast.success("Webflow field mapping saved");
-    } catch (error) {
-      // saveWebflowMapping throws when validateMapping finds an unmapped
-      // required field — surface that message instead of letting the thrown
-      // server action fall through to Next.js's unstyled error page.
-      toast.error(error instanceof Error ? error.message : "Could not save the field mapping");
-    } finally {
-      setSubmitting(false);
+    } else {
+      toast.error(result.error);
     }
+    setSubmitting(false);
   }
 
   return (

@@ -13,14 +13,19 @@ vi.mock("@/lib/credentials/encryption", () => ({
 }));
 vi.mock("@/lib/integrations/webflow/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/integrations/webflow/client")>();
-  return { ...actual, getCollection: vi.fn() };
+  return { ...actual, getCollection: vi.fn(), listSites: vi.fn() };
 });
 
 import { getServerSession } from "next-auth";
-import { getCollection } from "@/lib/integrations/webflow/client";
+import { getCollection, listSites, WebflowApiError } from "@/lib/integrations/webflow/client";
 import { db } from "@/db";
 import { tenants, webflowConnections, type WebflowFieldMapping } from "@/db/schema";
-import { saveWebflowSite, saveWebflowCollection } from "@/app/(dashboard)/integrations/actions";
+import {
+  saveWebflowSite,
+  saveWebflowCollection,
+  saveWebflowMapping,
+  saveWebflowToken,
+} from "@/app/(dashboard)/integrations/actions";
 
 // Regression coverage for a data-loss bug: saveWebflowSite/saveWebflowCollection
 // used to write unconditionally, so re-confirming the CURRENT site or
@@ -156,6 +161,113 @@ describe("saveWebflowSite / saveWebflowCollection — no-op guard preserves the 
     formData.set("siteId", "site-blog-hub");
     // siteName intentionally omitted.
 
-    await expect(saveWebflowSite(formData)).rejects.toThrow('"siteName" is required.');
+    // The action returns a result object rather than throwing: a thrown
+    // server-action error's message is stripped in a production build before
+    // it reaches the client, which would silence this exact validation.
+    await expect(saveWebflowSite(formData)).resolves.toEqual({
+      ok: false,
+      error: '"siteName" is required.',
+    });
+  });
+});
+
+describe("saveWebflowMapping — returns a result object instead of throwing", () => {
+  beforeEach(() => {
+    vi.mocked(getServerSession).mockReset();
+    vi.mocked(getCollection).mockReset();
+  });
+
+  afterEach(async () => {
+    await db.delete(tenants).where(eq(tenants.name, TENANT_NAME));
+  });
+
+  it("returns { ok: false, error } when a required field is left unmapped, without throwing", async () => {
+    const { tenant, connection } = await seedConnection();
+    vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id } } as never);
+    vi.mocked(getCollection).mockResolvedValue({
+      id: "collection-blog",
+      displayName: "Blog",
+      slug: "blog",
+      fields: [{ id: "f1", slug: "name", displayName: "Name", type: "PlainText", isRequired: true }],
+    });
+
+    const formData = new FormData();
+    // "source:name" intentionally omitted, leaving the required field unmapped.
+
+    const result = await saveWebflowMapping(formData);
+
+    expect(result).toEqual({
+      ok: false,
+      error: '"Name" is required by Webflow but is not mapped.',
+    });
+    // The row must be untouched by a rejected save.
+    const row = await rowFor(connection.id);
+    expect(row.fieldMapping).toEqual(HAND_TUNED_MAPPING);
+  });
+
+  it("returns { ok: true } and persists the mapping when every required field is mapped", async () => {
+    const { tenant, connection } = await seedConnection();
+    vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id } } as never);
+    vi.mocked(getCollection).mockResolvedValue({
+      id: "collection-blog",
+      displayName: "Blog",
+      slug: "blog",
+      fields: [{ id: "f1", slug: "name", displayName: "Name", type: "PlainText", isRequired: true }],
+    });
+
+    const formData = new FormData();
+    formData.set("source:name", "title");
+    formData.set("publishMode", "draft");
+
+    const result = await saveWebflowMapping(formData);
+
+    expect(result).toEqual({ ok: true });
+    const row = await rowFor(connection.id);
+    expect(row.fieldMapping).toEqual({ name: { source: "title" } });
+  });
+});
+
+describe("saveWebflowToken — returns a result object instead of throwing", () => {
+  const TOKEN_TENANT_NAME = "Webflow Token Save Test Tenant";
+
+  beforeEach(() => {
+    vi.mocked(getServerSession).mockReset();
+    vi.mocked(listSites).mockReset();
+  });
+
+  afterEach(async () => {
+    await db.delete(tenants).where(eq(tenants.name, TOKEN_TENANT_NAME));
+  });
+
+  it("returns { ok: false, error } with the real message when the token fails validation, and never stores it", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TOKEN_TENANT_NAME }).returning();
+    vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id } } as never);
+    // A bad Site API token: listSites (called to validate before storing)
+    // rejects with a WebflowApiError, same as a real 401 from Webflow.
+    vi.mocked(listSites).mockRejectedValue(new WebflowApiError(401, "Webflow rejected the request (401)."));
+
+    const formData = new FormData();
+    formData.set("token", "bad-token");
+
+    const result = await saveWebflowToken(formData);
+
+    expect(result).toEqual({ ok: false, error: "Webflow rejected the request (401)." });
+    const [row] = await db.select().from(webflowConnections).where(eq(webflowConnections.tenantId, tenant.id));
+    expect(row).toBeUndefined();
+  });
+
+  it("returns { ok: true } and stores the connection when the token validates", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TOKEN_TENANT_NAME }).returning();
+    vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id } } as never);
+    vi.mocked(listSites).mockResolvedValue([{ id: "site-1", displayName: "Marketing" }]);
+
+    const formData = new FormData();
+    formData.set("token", "good-token");
+
+    const result = await saveWebflowToken(formData);
+
+    expect(result).toEqual({ ok: true });
+    const [row] = await db.select().from(webflowConnections).where(eq(webflowConnections.tenantId, tenant.id));
+    expect(row.status).toBe("active");
   });
 });

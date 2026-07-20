@@ -33,16 +33,15 @@ export function WebflowCollectionForm({
 
   async function handleSave(formData: FormData) {
     setSubmitting(true);
-    try {
-      await saveWebflowCollection(formData);
+    // saveWebflowCollection re-fetches the collection schema before saving,
+    // so an API failure (outage, revoked token) surfaces here.
+    const result = await saveWebflowCollection(formData);
+    if (result.ok) {
       toast.success("Webflow collection selected");
-    } catch (error) {
-      // saveWebflowCollection re-fetches the collection schema before saving,
-      // so an API failure (outage, revoked token) surfaces here.
-      toast.error(error instanceof Error ? error.message : "Could not save the selected collection");
-    } finally {
-      setSubmitting(false);
+    } else {
+      toast.error(result.error);
     }
+    setSubmitting(false);
   }
 
   if (collections.length === 0) {

@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "../../../src/db";
 import {
   tenants,
@@ -103,6 +103,32 @@ describe("dispatch", () => {
     await dispatchAllDestinations(update.id);
 
     const deliveries = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.updateId, update.id));
+    expect(deliveries).toHaveLength(0);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("treats a Webflow connection with no collection chosen yet as not-a-destination", async () => {
+    // A connection row is created as soon as a token validates, before the
+    // wizard's site/collection steps are done — that half-finished state is
+    // deliberate and resumable. Without gating loadConfig on collectionId,
+    // this row would be treated as a live destination: deliver() would
+    // return permanent for "missing a collection", dispatch would pin
+    // attempts to MAX_ATTEMPTS, and the sweep would skip it forever — even
+    // after the user finishes the wizard and the connection becomes usable.
+    const { tenant, update } = await seed();
+    await db.insert(webflowConnections).values({
+      tenantId: tenant.id,
+      ...encryptedToken(),
+      status: "active",
+      // siteId/collectionId intentionally left null: wizard not finished.
+    });
+
+    await dispatchAllDestinations(update.id);
+
+    const deliveries = await db
+      .select()
+      .from(deliveryAttempts)
+      .where(and(eq(deliveryAttempts.updateId, update.id), eq(deliveryAttempts.destination, "webflow")));
     expect(deliveries).toHaveLength(0);
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -272,7 +298,218 @@ describe("dispatch", () => {
 
     const [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.updateId, update.id));
     expect(delivery.status).toBe("failed");
-    expect(delivery.attempts).toBe(3);
+    // A decrypt failure is config-shaped (rotating CREDENTIALS_ENCRYPTION_KEY
+    // back fixes it), so it must not pin attempts to MAX_ATTEMPTS the way a
+    // genuinely permanent failure does — that would make the row permanently
+    // un-sweepable even after the key is fixed. `attempts` is left at its
+    // current value (0, the default for a brand-new row) instead.
+    expect(delivery.attempts).toBe(0);
     expect(delivery.lastError).toMatch(/decrypt/i);
+  });
+
+  it("a permanent config fault (401) leaves attempts below MAX and stays selectable by the retry sweep", async () => {
+    const { tenant, update } = await seed();
+    await db.insert(webflowConnections).values({
+      tenantId: tenant.id,
+      ...encryptedToken(),
+      siteId: "s1",
+      collectionId: "c1",
+      fieldMapping: webflowMapping,
+      publishMode: "draft",
+      status: "active",
+    });
+
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ message: "Unauthorized" }, 401));
+
+    await dispatchAllDestinations(update.id);
+
+    const [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.updateId, update.id));
+    expect(delivery.status).toBe("failed");
+    expect(delivery.attempts).toBeLessThan(3);
+
+    // Confirm the sweep actually still considers it: reconnect (flip the
+    // connection back to active) and prove retryFailedDeliveries reaches it.
+    await db
+      .update(webflowConnections)
+      .set({ status: "active" })
+      .where(eq(webflowConnections.tenantId, tenant.id));
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(WEBFLOW_SCHEMA)).mockResolvedValueOnce(jsonResponse({ id: "item1" }, 202));
+
+    await retryFailedDeliveries();
+
+    const [retried] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.updateId, update.id));
+    expect(retried.status).toBe("success");
+  });
+
+  it("a genuinely permanent failure (400 validation error) still pins attempts to MAX and is skipped by the sweep", async () => {
+    const { tenant, update } = await seed();
+    await db.insert(webflowConnections).values({
+      tenantId: tenant.id,
+      ...encryptedToken(),
+      siteId: "s1",
+      collectionId: "c1",
+      fieldMapping: webflowMapping,
+      publishMode: "draft",
+      status: "active",
+    });
+
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(jsonResponse(WEBFLOW_SCHEMA))
+      .mockResolvedValueOnce(
+        jsonResponse(
+          { message: "Validation Error", details: [{ param: "author", description: "Field is required" }] },
+          400
+        )
+      );
+
+    await dispatchAllDestinations(update.id);
+
+    const [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.updateId, update.id));
+    expect(delivery.status).toBe("failed");
+    expect(delivery.attempts).toBe(3);
+
+    vi.mocked(fetch).mockClear();
+    await retryFailedDeliveries();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("resets attempts to 1 on a fresh re-publish even when the prior delivery was permanent and exhausted", async () => {
+    // The ledger flagged this as missing: dispatchAllDestinations already
+    // resets a fresh publish's retry budget for retryable/ok outcomes (see
+    // "resets the retry budget on a fresh publish" above), but nothing proved
+    // it also does so when the PRIOR attempt was exhausted by a genuine
+    // (non-configFault) permanent classification, e.g. a 400 the user fixed
+    // by correcting the update's content before re-publishing.
+    const { tenant, update } = await seed();
+    await db.insert(webflowConnections).values({
+      tenantId: tenant.id,
+      ...encryptedToken(),
+      siteId: "s1",
+      collectionId: "c1",
+      fieldMapping: webflowMapping,
+      publishMode: "draft",
+      status: "active",
+    });
+
+    // First publish: Webflow 400s on a required field — genuinely permanent,
+    // pinned to MAX_ATTEMPTS.
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(jsonResponse(WEBFLOW_SCHEMA))
+      .mockResolvedValueOnce(
+        jsonResponse(
+          { message: "Validation Error", details: [{ param: "author", description: "Field is required" }] },
+          400
+        )
+      );
+    await dispatchAllDestinations(update.id);
+
+    let [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.updateId, update.id));
+    expect(delivery.status).toBe("failed");
+    expect(delivery.attempts).toBe(3);
+
+    // The user fixes the content and re-publishes; this time it succeeds.
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(WEBFLOW_SCHEMA)).mockResolvedValueOnce(jsonResponse({ id: "item1" }, 202));
+    await dispatchAllDestinations(update.id);
+
+    [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.updateId, update.id));
+    expect(delivery.status).toBe("success");
+    expect(delivery.attempts).toBe(1);
+  });
+
+  it("does not create a duplicate CMS item when a re-publish and the retry sweep race on the same delivery attempt", async () => {
+    // Regression test for the race dispatch.ts's row lock fixes:
+    // dispatchAllDestinations (a re-publish) and retryFailedDeliveries (the
+    // cron sweep) both used to read the same delivery_attempts row before
+    // either wrote to it. Merely calling them back-to-back does NOT
+    // reproduce this — the reviewer noted a naive test like that passed
+    // against the racy code because the pooled pg client happened to
+    // serialize the two calls anyway. This test forces genuine interleaving
+    // with an explicit barrier: it pauses whichever call wins the row first,
+    // starts the second while the first is still "in flight", then releases
+    // the first — so a build without the lock has both read externalId as
+    // null and each independently create a Webflow item, silently orphaning
+    // one (only the last writer's externalId survives).
+    const { tenant, update } = await seed();
+    await db.insert(webflowConnections).values({
+      tenantId: tenant.id,
+      ...encryptedToken(),
+      siteId: "s1",
+      collectionId: "c1",
+      fieldMapping: webflowMapping,
+      publishMode: "draft",
+      status: "active",
+    });
+    // The state a concurrent "sweep the failure" + "user re-publishes" race
+    // starts from: a prior attempt failed before ever creating an item.
+    await db.insert(deliveryAttempts).values({
+      updateId: update.id,
+      destination: "webflow",
+      status: "failed",
+      attempts: 1,
+      externalId: null,
+    });
+
+    let releaseFirstClaimant!: () => void;
+    const firstClaimantPaused = new Promise<void>((resolve) => {
+      releaseFirstClaimant = resolve;
+    });
+    let signalFirstClaimantStarted!: () => void;
+    const firstClaimantStarted = new Promise<void>((resolve) => {
+      signalFirstClaimantStarted = resolve;
+    });
+
+    let schemaFetchCount = 0;
+    const createdIds: string[] = [];
+    const updatedIds: string[] = [];
+
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = (init?.method ?? "GET").toUpperCase();
+
+      if (method === "GET" && /\/v2\/collections\/[^/]+$/.test(url)) {
+        schemaFetchCount++;
+        if (schemaFetchCount === 1) {
+          // Whichever claimant wins the row lock reaches here first. Signal
+          // the test to start the second (racing) claimant now, then pause —
+          // still inside the transaction, lock held — long enough for the
+          // second claimant's `SELECT ... FOR UPDATE` to actually reach
+          // Postgres and, under the fix, block on it.
+          signalFirstClaimantStarted();
+          await firstClaimantPaused;
+        }
+        return jsonResponse(WEBFLOW_SCHEMA);
+      }
+      if (method === "POST") {
+        const id = `item-${createdIds.length + 1}`;
+        createdIds.push(id);
+        return jsonResponse({ id }, 202);
+      }
+      if (method === "PATCH") {
+        const id = url.split("/").pop() as string;
+        updatedIds.push(id);
+        return jsonResponse({ id }, 200);
+      }
+      throw new Error(`Unexpected fetch in race test: ${method} ${url}`);
+    });
+
+    const republish = dispatchAllDestinations(update.id);
+    await firstClaimantStarted;
+    const sweep = retryFailedDeliveries();
+    // Give the sweep's `SELECT ... FOR UPDATE` real time to reach Postgres
+    // and start blocking on the first claimant's row lock before releasing it.
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    releaseFirstClaimant();
+
+    await Promise.all([republish, sweep]);
+
+    // Exactly one item ever created; the second claimant updated that SAME
+    // item rather than creating (and orphaning) a second one.
+    expect(createdIds).toHaveLength(1);
+    expect(updatedIds).toHaveLength(1);
+    expect(updatedIds[0]).toBe(createdIds[0]);
+
+    const [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.updateId, update.id));
+    expect(delivery.status).toBe("success");
+    expect(delivery.externalId).toBe(createdIds[0]);
   });
 });

@@ -3,10 +3,7 @@ import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { webhookConfigs } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
-import { saveWebhookConfig } from "./actions";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { WebhookConfigForm } from "./webhook-config-form";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { WebflowForm } from "./webflow-form";
@@ -43,34 +40,7 @@ export default async function IntegrationsPage() {
             <CardTitle>Generic Webhook</CardTitle>
           </CardHeader>
           <CardContent>
-            <form action={saveWebhookConfig} className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="url">URL</Label>
-                <Input id="url" type="url" name="url" defaultValue={config?.url ?? ""} required />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="secret">Secret</Label>
-                <Input
-                  id="secret"
-                  type="password"
-                  name="secret"
-                  placeholder={config ? "Saved — leave blank to keep" : ""}
-                  required={!config}
-                />
-              </div>
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  name="active"
-                  defaultChecked={config?.active ?? true}
-                  className="size-4 rounded border-input"
-                />
-                Active
-              </label>
-              <Button type="submit" variant="outline">
-                Save
-              </Button>
-            </form>
+            <WebhookConfigForm config={config ? { url: config.url, active: config.active } : null} />
           </CardContent>
         </Card>
 

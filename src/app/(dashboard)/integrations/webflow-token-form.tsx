@@ -12,17 +12,18 @@ export function WebflowTokenForm() {
 
   async function handleSave(formData: FormData) {
     setSubmitting(true);
-    try {
-      await saveWebflowToken(formData);
+    // saveWebflowToken validates the token with a live listSites call before
+    // storing anything, so a bad token surfaces here rather than blowing up
+    // the whole page with an unstyled error boundary. It returns a result
+    // object instead of throwing — a thrown server-action error's message is
+    // stripped in production builds, which would silence exactly this.
+    const result = await saveWebflowToken(formData);
+    if (result.ok) {
       toast.success("Webflow token saved");
-    } catch (error) {
-      // saveWebflowToken validates the token with a live listSites call before
-      // storing anything, so a bad token surfaces here rather than blowing up
-      // the whole page with an unstyled error boundary.
-      toast.error(error instanceof Error ? error.message : "Could not connect to Webflow");
-    } finally {
-      setSubmitting(false);
+    } else {
+      toast.error(result.error);
     }
+    setSubmitting(false);
   }
 
   return (

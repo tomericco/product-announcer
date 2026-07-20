@@ -1,7 +1,14 @@
-import type { db as defaultDb } from "@/db";
+import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { updates } from "@/db/schema";
+import type * as schema from "@/db/schema";
 
 export type DestinationId = "webhook" | "webflow";
+
+// The shape every destination needs from a DB handle: enough for
+// select/insert/update/delete. Deliberately NOT `typeof db` (which also
+// carries `$client: Pool`) — dispatch.ts's row-locking fix passes a
+// transaction handle (`tx`) here too, and a `PgTransaction` has no `$client`.
+export type DbClient = NodePgDatabase<typeof schema>;
 
 export type Update = typeof updates.$inferSelect;
 
@@ -11,15 +18,16 @@ export type DeliveryResult =
   // Worth another attempt in the cron sweep: network, 429, 5xx.
   | { status: "retryable"; error: string }
   // Retrying cannot help: bad credentials, validation failure, empty body.
-  | { status: "permanent"; error: string };
+  // `configFault` marks the subset caused by connection/credential SETUP
+  // (a revoked token, an undecryptable secret, an incomplete wizard) rather
+  // than by the content being published. dispatch.ts uses it to decide
+  // whether to pin `attempts` to the retry cap: a genuine content/validation
+  // failure should stop the sweep from retrying forever, but a config fault
+  // is fixable by the user, so the row must stay sweepable once they fix it.
+  | { status: "permanent"; error: string; configFault?: true };
 
 export interface Destination<TConfig> {
   id: DestinationId;
-  loadConfig(tenantId: string, database: typeof defaultDb): Promise<TConfig | null>;
-  deliver(
-    update: Update,
-    config: TConfig,
-    externalId: string | null,
-    database: typeof defaultDb
-  ): Promise<DeliveryResult>;
+  loadConfig(tenantId: string, database: DbClient): Promise<TConfig | null>;
+  deliver(update: Update, config: TConfig, externalId: string | null, database: DbClient): Promise<DeliveryResult>;
 }

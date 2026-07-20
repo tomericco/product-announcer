@@ -55,12 +55,14 @@ function StatusBanner({ status, problems }: { status: string; problems: string[]
       <ErrorBanner message="Your Webflow connection needs to be reconnected. Paste a fresh Site API token below." />
     );
   }
-  if (status === "misconfigured") {
-    return (
-      <ErrorBanner
-        message={problems.length > 0 ? problems.join(" ") : "This Webflow connection is misconfigured."}
-      />
-    );
+  // Not gated on `status === "misconfigured"`: nothing in the codebase ever
+  // writes that status, so gating on it made this check permanently dead
+  // even though the freshly-fetched collection schema (two lines up in
+  // renderStep) is exactly what's needed to catch a field mapped to
+  // something that no longer exists in Webflow. Render whenever there's an
+  // actual problem, regardless of the stored status.
+  if (problems.length > 0) {
+    return <ErrorBanner message={problems.join(" ")} />;
   }
   return null;
 }
@@ -198,8 +200,10 @@ async function renderStep(connection: Connection | undefined) {
     );
   }
 
-  const problems =
-    connection.status === "misconfigured" ? validateMapping(connection.fieldMapping, collection.fields) : [];
+  // Re-validate against the schema just fetched above (not the stale one
+  // saved at config time): a field the mapping relies on may have been
+  // deleted in Webflow since. Always compute this — see StatusBanner.
+  const problems = validateMapping(connection.fieldMapping, collection.fields);
 
   return (
     <>

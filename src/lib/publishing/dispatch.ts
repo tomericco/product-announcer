@@ -3,7 +3,7 @@ import { db as defaultDb } from "@/db";
 import { deliveryAttempts, updates } from "@/db/schema";
 import { webhookDestination } from "./destinations/webhook";
 import { webflowDestination } from "./destinations/webflow";
-import type { Destination, DeliveryResult } from "./destinations/types";
+import type { Destination, DeliveryResult, Update } from "./destinations/types";
 
 const MAX_ATTEMPTS = 3;
 
@@ -15,6 +15,99 @@ function statusFor(result: DeliveryResult) {
   // A permanent failure is recorded as failed with attempts maxed out, so the
   // retry sweep skips it without needing a fourth status value.
   return "failed" as const;
+}
+
+// A unique-violation on delivery_attempts_update_id_destination_unique
+// (Postgres code 23505). Only possible on the insert branch below, when two
+// claimants race to create the row for the same update+destination for the
+// very first time — the row-lock further down only protects an EXISTING row.
+function isUniqueViolation(error: unknown): boolean {
+  return typeof error === "object" && error !== null && (error as { code?: string }).code === "23505";
+}
+
+// Decides the `attempts` value to persist after a delivery result.
+// `undefined` means "leave the column as-is" — used for a `configFault`
+// permanent failure (bad credentials, an incomplete connection) so the row
+// doesn't get pinned past MAX_ATTEMPTS: the user can fix the cause, and the
+// row must stay selectable by retryFailedDeliveries once they do. A genuine
+// permanent failure (no configFault — e.g. a 400 validation error) still
+// pins to MAX_ATTEMPTS so the sweep stops retrying content it can't fix.
+// `onOtherwise` supplies the value for "ok" and "retryable": a fresh publish
+// resets to 1, a sweep retry increments the existing count.
+function nextAttempts(result: DeliveryResult, onOtherwise: number): number | undefined {
+  if (result.status === "permanent") {
+    return result.configFault ? undefined : MAX_ATTEMPTS;
+  }
+  return onOtherwise;
+}
+
+// Claims the delivery_attempts row for this update+destination, delivers,
+// and writes the result — all under a single row lock so a concurrent
+// claimant (the cron sweep firing mid-re-publish, or two overlapping sweeps)
+// can never read the same externalId before either has written, which is
+// what let both create their own Webflow CMS item and orphan one of them.
+//
+// The lock is a real `SELECT ... FOR UPDATE` inside a transaction, held for
+// the duration of the network call to the destination — the call is exactly
+// what must not run twice concurrently for the same row, so the lock has to
+// span it, not just the surrounding reads/writes.
+//
+// Never throws: `dispatchAllDestinations` and `retryFailedDeliveries` both
+// call this from inside a per-destination/per-attempt try/catch, but a
+// transaction failure here (e.g. a dropped connection) must not abort the
+// destinations loop it's called from, so callers should treat this the same
+// as any other awaited step in that try block.
+async function claimAndDeliver(
+  database: typeof defaultDb,
+  destination: Destination<unknown>,
+  update: Update,
+  config: unknown,
+  attemptsFor: (result: DeliveryResult, currentAttempts: number) => number | undefined
+): Promise<void> {
+  await database.transaction(async (tx) => {
+    const [existing] = await tx
+      .select()
+      .from(deliveryAttempts)
+      .where(and(eq(deliveryAttempts.updateId, update.id), eq(deliveryAttempts.destination, destination.id)))
+      .for("update")
+      .limit(1);
+
+    let attempt = existing;
+    if (!attempt) {
+      try {
+        [attempt] = await tx
+          .insert(deliveryAttempts)
+          .values({ updateId: update.id, destination: destination.id })
+          .returning();
+      } catch (error) {
+        // Another claimant inserted the row first (unique-index race on a
+        // first-ever publish). Re-read it under lock rather than duplicating
+        // delivery — it's either mid-flight or already recorded.
+        if (!isUniqueViolation(error)) throw error;
+        [attempt] = await tx
+          .select()
+          .from(deliveryAttempts)
+          .where(and(eq(deliveryAttempts.updateId, update.id), eq(deliveryAttempts.destination, destination.id)))
+          .for("update")
+          .limit(1);
+      }
+    }
+    if (!attempt) return;
+
+    const result = await destination.deliver(update, config, attempt.externalId, tx);
+    const attempts = attemptsFor(result, attempt.attempts);
+
+    await tx
+      .update(deliveryAttempts)
+      .set({
+        status: statusFor(result),
+        ...(attempts !== undefined ? { attempts } : {}),
+        lastError: result.status === "ok" ? null : result.error,
+        externalId: result.status === "ok" ? (result.externalId ?? attempt.externalId) : attempt.externalId,
+        lastAttemptAt: new Date(),
+      })
+      .where(eq(deliveryAttempts.id, attempt.id));
+  });
 }
 
 export async function dispatchAllDestinations(
@@ -32,41 +125,11 @@ export async function dispatchAllDestinations(
         const config = await destination.loadConfig(update.tenantId, database);
         if (!config) continue;
 
-        // Reuse the prior attempt row for this update+destination so a
-        // re-publish updates the existing external item rather than duplicating.
-        const [existing] = await database
-          .select()
-          .from(deliveryAttempts)
-          .where(
-            and(eq(deliveryAttempts.updateId, update.id), eq(deliveryAttempts.destination, destination.id))
-          )
-          .limit(1);
-
-        const attempt =
-          existing ??
-          (
-            await database
-              .insert(deliveryAttempts)
-              .values({ updateId: update.id, destination: destination.id })
-              .returning()
-          )[0];
-
-        const result = await destination.deliver(update, config, attempt.externalId, database);
-
         // A fresh publish always gets a full retry budget, regardless of how
         // many attempts a prior publish burned through — otherwise a single
         // transient failure on a re-publish pushes the row past MAX_ATTEMPTS
         // and the sweep (`retryFailedDeliveries`) stops retrying it forever.
-        await database
-          .update(deliveryAttempts)
-          .set({
-            status: statusFor(result),
-            attempts: result.status === "permanent" ? MAX_ATTEMPTS : 1,
-            lastError: result.status === "ok" ? null : result.error,
-            externalId: result.status === "ok" ? (result.externalId ?? attempt.externalId) : attempt.externalId,
-            lastAttemptAt: new Date(),
-          })
-          .where(eq(deliveryAttempts.id, attempt.id));
+        await claimAndDeliver(database, destination, update, config, (result) => nextAttempts(result, 1));
       } catch (error) {
         console.error(`Dispatch to ${destination.id} failed for update ${updateId}:`, error);
       }
@@ -96,18 +159,9 @@ export async function retryFailedDeliveries(database: typeof defaultDb = default
       // Skip if the config was deactivated or removed since the original attempt.
       if (!config) continue;
 
-      const result = await destination.deliver(update, config, attempt.externalId, database);
-
-      await database
-        .update(deliveryAttempts)
-        .set({
-          status: statusFor(result),
-          attempts: result.status === "permanent" ? MAX_ATTEMPTS : attempt.attempts + 1,
-          lastError: result.status === "ok" ? null : result.error,
-          externalId: result.status === "ok" ? (result.externalId ?? attempt.externalId) : attempt.externalId,
-          lastAttemptAt: new Date(),
-        })
-        .where(eq(deliveryAttempts.id, attempt.id));
+      await claimAndDeliver(database, destination, update, config, (result, currentAttempts) =>
+        nextAttempts(result, currentAttempts + 1)
+      );
     } catch (error) {
       console.error(`Retry failed for delivery attempt ${attempt.id}:`, error);
     }

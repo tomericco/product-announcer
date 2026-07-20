@@ -300,6 +300,10 @@ describe("webflowDestination.deliver", () => {
     expect(result).toEqual({
       status: "permanent",
       error: "Could not decrypt the Webflow token. Check CREDENTIALS_ENCRYPTION_KEY.",
+      // Config-shaped, not content-shaped: fixing CREDENTIALS_ENCRYPTION_KEY
+      // makes this deliverable again, so dispatch.ts must not pin attempts to
+      // the retry cap for it — see dispatch.test.ts's configFault coverage.
+      configFault: true,
     });
     expect(vi.mocked(fetch)).not.toHaveBeenCalled();
   });

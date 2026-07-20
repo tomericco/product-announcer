@@ -35,17 +35,16 @@ export function WebflowSiteForm({
 
   async function handleSave(formData: FormData) {
     setSubmitting(true);
-    try {
-      // The Select only posts siteId; the display name is looked up here
-      // rather than trusted from a second (spoofable) form field.
-      formData.set("siteName", selectedName);
-      await saveWebflowSite(formData);
+    // The Select only posts siteId; the display name is looked up here
+    // rather than trusted from a second (spoofable) form field.
+    formData.set("siteName", selectedName);
+    const result = await saveWebflowSite(formData);
+    if (result.ok) {
       toast.success("Webflow site selected");
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not save the selected site");
-    } finally {
-      setSubmitting(false);
+    } else {
+      toast.error(result.error);
     }
+    setSubmitting(false);
   }
 
   if (sites.length === 0) {

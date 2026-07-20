@@ -1,5 +1,4 @@
-import { and, eq } from "drizzle-orm";
-import type { db as defaultDb } from "@/db";
+import { and, eq, isNotNull } from "drizzle-orm";
 import { webflowConnections } from "@/db/schema";
 import { decryptSecret } from "@/lib/credentials/encryption";
 import {
@@ -12,7 +11,7 @@ import {
 } from "@/lib/integrations/webflow/client";
 import { buildFieldData } from "@/lib/integrations/webflow/mapping";
 import { slugify, withSuffix } from "@/lib/publishing/slug";
-import type { Destination, DeliveryResult, Update } from "./types";
+import type { Destination, DeliveryResult, DbClient, Update } from "./types";
 
 type WebflowConnection = typeof webflowConnections.$inferSelect;
 
@@ -52,7 +51,11 @@ function classify(error: unknown): DeliveryResult {
     // 401: the token was revoked or the app uninstalled. Webflow issues no
     // refresh token, so retrying can never succeed — the user must reconnect.
     if (error.status === 401 || error.status === 403) {
-      return { status: "permanent", error: "Webflow rejected the token. Reconnect the integration." };
+      return {
+        status: "permanent",
+        error: "Webflow rejected the token. Reconnect the integration.",
+        configFault: true,
+      };
     }
     if (error.status === 400) {
       const detail = error.validationDetails.join("; ") || error.message;
@@ -74,7 +77,7 @@ function classify(error: unknown): DeliveryResult {
 // failure here must never turn a clean `permanent` classification into a
 // thrown error, so it gets its own try/catch and is scoped by connection id
 // alone (never by tenant) so it can't touch another row.
-async function recordNeedsReauth(database: typeof defaultDb, connectionId: string): Promise<void> {
+async function recordNeedsReauth(database: DbClient, connectionId: string): Promise<void> {
   try {
     await database
       .update(webflowConnections)
@@ -87,7 +90,7 @@ async function recordNeedsReauth(database: typeof defaultDb, connectionId: strin
 
 async function classifyAndRecord(
   error: unknown,
-  database: typeof defaultDb,
+  database: DbClient,
   connectionId: string
 ): Promise<DeliveryResult> {
   if (isAuthFailure(error)) {
@@ -99,18 +102,32 @@ async function classifyAndRecord(
 export const webflowDestination: Destination<WebflowConnection> = {
   id: "webflow",
 
-  async loadConfig(tenantId, database: typeof defaultDb) {
+  async loadConfig(tenantId, database: DbClient) {
     const [connection] = await database
       .select()
       .from(webflowConnections)
-      .where(and(eq(webflowConnections.tenantId, tenantId), eq(webflowConnections.status, "active")))
+      .where(
+        and(
+          eq(webflowConnections.tenantId, tenantId),
+          eq(webflowConnections.status, "active"),
+          // A connection row exists as soon as a token validates, before a
+          // site or collection is chosen — that resumable half-finished
+          // wizard state is deliberate (see drafts/[updateId]/page.tsx's
+          // identical gate). Without this, a connection someone abandoned
+          // mid-wizard is treated as a live destination: `deliver` below
+          // returns permanent for "missing a collection", dispatch.ts pins
+          // attempts to the cap, and the sweep skips it forever even after
+          // the wizard is completed.
+          isNotNull(webflowConnections.collectionId)
+        )
+      )
       .limit(1);
     return connection ?? null;
   },
 
   async deliver(update: Update, connection, externalId, database): Promise<DeliveryResult> {
     if (!connection.collectionId) {
-      return { status: "permanent", error: "Webflow connection is missing a collection." };
+      return { status: "permanent", error: "Webflow connection is missing a collection.", configFault: true };
     }
     // MDXEditor can submit a blank body on a parse failure (see resolveBody in
     // drafts/actions.ts). Publishing an empty CMS item is worse than failing.
@@ -136,6 +153,7 @@ export const webflowDestination: Destination<WebflowConnection> = {
       return {
         status: "permanent",
         error: "Could not decrypt the Webflow token. Check CREDENTIALS_ENCRYPTION_KEY.",
+        configFault: true,
       };
     }
 

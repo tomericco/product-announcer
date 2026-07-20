@@ -1,9 +1,8 @@
 import { createHmac } from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import type { db as defaultDb } from "@/db";
 import { webhookConfigs } from "@/db/schema";
 import { decryptSecret } from "@/lib/credentials/encryption";
-import type { Destination, DeliveryResult, Update } from "./types";
+import type { Destination, DeliveryResult, DbClient, Update } from "./types";
 
 const DELIVERY_TIMEOUT_MS = 5000;
 
@@ -29,7 +28,7 @@ function buildPayload(update: Update) {
 export const webhookDestination: Destination<WebhookConfig> = {
   id: "webhook",
 
-  async loadConfig(tenantId, database: typeof defaultDb) {
+  async loadConfig(tenantId, database: DbClient) {
     const [config] = await database
       .select()
       .from(webhookConfigs)
@@ -55,7 +54,11 @@ export const webhookDestination: Destination<WebhookConfig> = {
         authTag: config.secretAuthTag,
       });
     } catch {
-      return { status: "permanent", error: "Could not decrypt the webhook secret. Check CREDENTIALS_ENCRYPTION_KEY." };
+      return {
+        status: "permanent",
+        error: "Could not decrypt the webhook secret. Check CREDENTIALS_ENCRYPTION_KEY.",
+        configFault: true,
+      };
     }
 
     const body = JSON.stringify(buildPayload(update));
