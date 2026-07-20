@@ -2,7 +2,8 @@ import { generateObject } from "ai";
 import { z } from "zod";
 import type { changeItems, brandProfiles, ResolvedPersona, systemUpdateExamples } from "@/db/schema";
 import { composePrompt } from "./compose-prompt";
-import { resolveModel } from "./model";
+import { resolveModel, modelId } from "./model";
+import { recordLlmUsage } from "./llm-usage";
 
 type ChangeItemRow = typeof changeItems.$inferSelect;
 type BrandProfileRow = typeof brandProfiles.$inferSelect;
@@ -24,11 +25,19 @@ export async function generateUpdateDraft(
 ): Promise<UpdateDraft> {
   const { system, prompt } = composePrompt({ items, brandProfile, reposById, personas, examples });
 
+  const spec = process.env.GENERATION_MODEL ?? "anthropic/claude-sonnet-4-5";
   const result = await generateObject({
-    model: resolveModel(process.env.GENERATION_MODEL ?? "anthropic/claude-sonnet-4-5"),
+    model: resolveModel(spec),
     schema: UpdateDraftSchema,
     system,
     prompt,
+  });
+
+  await recordLlmUsage({
+    tenantId: brandProfile.tenantId,
+    operation: "generation",
+    model: modelId(spec),
+    usage: result.usage,
   });
 
   return result.object;

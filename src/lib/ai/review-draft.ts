@@ -2,7 +2,8 @@ import { generateObject } from "ai";
 import { z } from "zod";
 import type { brandProfiles } from "@/db/schema";
 import type { UpdateDraft } from "./generation";
-import { resolveModel } from "./model";
+import { resolveModel, modelId } from "./model";
+import { recordLlmUsage } from "./llm-usage";
 import type { OnDraftProgress } from "@/lib/scheduling/draft-progress";
 
 type BrandProfileRow = typeof brandProfiles.$inferSelect;
@@ -24,8 +25,8 @@ export type ReviewOutcome = { finalDraft: UpdateDraft; status: ReviewStatus; iss
 
 const DEFAULT_MAX_ROUNDS = 2;
 
-function reviewModel() {
-  return resolveModel(process.env.REVIEW_MODEL ?? "anthropic/claude-sonnet-4-5");
+function reviewModelSpec(): string {
+  return process.env.REVIEW_MODEL ?? "anthropic/claude-sonnet-4-5";
 }
 
 // Default when unset; any non-positive/invalid value clamps to 0 (pure gate).
@@ -81,11 +82,18 @@ export function buildRevisionPrompt(draft: UpdateDraft, issues: string[], brandP
 }
 
 export async function reviewDraft(draft: UpdateDraft, brandProfile: BrandProfileRow): Promise<ReviewCritique> {
+  const spec = reviewModelSpec();
   const result = await generateObject({
-    model: reviewModel(),
+    model: resolveModel(spec),
     schema: ReviewCritiqueSchema,
     system: REVIEW_SYSTEM,
     prompt: buildReviewPrompt(draft, brandProfile),
+  });
+  await recordLlmUsage({
+    tenantId: brandProfile.tenantId,
+    operation: "review",
+    model: modelId(spec),
+    usage: result.usage,
   });
   return result.object;
 }
@@ -95,11 +103,18 @@ export async function reviseDraft(
   issues: string[],
   brandProfile: BrandProfileRow
 ): Promise<UpdateDraft> {
+  const spec = reviewModelSpec();
   const result = await generateObject({
-    model: reviewModel(),
+    model: resolveModel(spec),
     schema: RevisionSchema,
     system: REVISION_SYSTEM,
     prompt: buildRevisionPrompt(draft, issues, brandProfile),
+  });
+  await recordLlmUsage({
+    tenantId: brandProfile.tenantId,
+    operation: "revision",
+    model: modelId(spec),
+    usage: result.usage,
   });
   return { title: result.object.title, body: result.object.body };
 }

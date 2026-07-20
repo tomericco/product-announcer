@@ -110,7 +110,7 @@ export async function ingestPush(input: PushInput, deps: IngestPushDeps = {}): P
       }
 
       // 4. Substantive → enrich + pending.
-      const enrichment = await enrich({ sourceType: "commit", repoName: input.repoFullName, commitMessage: commit.message, diff });
+      const enrichment = await enrich({ tenantId: repo.tenantId, sourceType: "commit", repoName: input.repoFullName, commitMessage: commit.message, diff });
       await insertCommit(database, repo, commit, { status: "pending", ignoredReason: null, diff, enrichment });
     } catch (error) {
       // One bad commit (flaky API call, transient error) must not abort the whole

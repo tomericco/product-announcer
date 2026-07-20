@@ -7,7 +7,7 @@ import { analyzeBrandStyle, type DerivedBrandProfile } from "@/lib/workspace/ana
 
 export type ImportBrandStyleDeps = {
   scrape?: (url: string) => Promise<ScrapeResult>;
-  analyze?: (text: string) => Promise<DerivedBrandProfile>;
+  analyze?: (text: string, tenantId: string) => Promise<DerivedBrandProfile>;
   database?: typeof defaultDb;
 };
 
@@ -28,7 +28,7 @@ export async function importBrandStyleForTenant(
   const scraped = await scrape(url);
   if ("error" in scraped) return { ok: false, reason: scraped.error };
 
-  const derived = await analyze(scraped.text);
+  const derived = await analyze(scraped.text, tenantId);
   const isEmptyDerivation =
     derived.tone === null &&
     derived.readingLevel === null &&

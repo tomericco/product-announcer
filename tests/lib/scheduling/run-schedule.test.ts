@@ -8,7 +8,7 @@ vi.mock("../../../src/lib/ai/review-draft", () => ({ reviewAndReconcile: vi.fn()
 import { generateObject } from "ai";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, repos, changeItems, updates, scheduleConfigs, brandProfiles } from "../../../src/db/schema";
+import { tenants, repos, changeItems, updates, scheduleConfigs, brandProfiles, llmUsage } from "../../../src/db/schema";
 import { runBatchForWorkspace, runSchedulerTick } from "../../../src/lib/scheduling/run-schedule";
 import { getPendingChangeItems } from "../../../src/lib/change-items/change-item-batch";
 import { advanceNextScheduledAt } from "../../../src/lib/scheduling/scheduler-decision";
@@ -165,6 +165,26 @@ describe("run-schedule (workspace-level)", () => {
     expect(done?.type).toBe("done");
     const [row] = await db.select().from(updates).where(eq(updates.tenantId, tenant.id));
     expect(done).toEqual({ type: "done", updateId: row.id });
+  });
+
+  it("records token usage for the generation call", async () => {
+    const { tenant, repoA } = await seed();
+    await db.insert(changeItems).values({
+      tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "a",
+    });
+    vi.mocked(generateObject).mockResolvedValue({
+      object: { title: "T", body: "B" },
+      usage: { inputTokens: 100, outputTokens: 20, totalTokens: 120 },
+    } as never);
+
+    const pending = await getPendingChangeItems(tenant.id);
+    await runBatchForWorkspace(tenant.id, pending);
+
+    const rows = await db.select().from(llmUsage).where(eq(llmUsage.tenantId, tenant.id));
+    const generation = rows.find((r) => r.operation === "generation");
+    expect(generation).toBeTruthy();
+    expect(generation!.inputTokens).toBe(100);
+    expect(generation!.outputTokens).toBe(20);
   });
 
   it("runBatchForWorkspace emits an error event (not done) when generation fails twice", async () => {

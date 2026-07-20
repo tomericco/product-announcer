@@ -1,6 +1,7 @@
 import { generateObject } from "ai";
 import { z } from "zod";
-import { resolveModel } from "./model";
+import { resolveModel, modelId } from "./model";
+import { recordLlmUsage } from "./llm-usage";
 
 export type EnrichmentResult = {
   userFacing: boolean;
@@ -10,6 +11,7 @@ export type EnrichmentResult = {
 };
 
 export type EnrichmentInput = {
+  tenantId: string;
   sourceType: "pr" | "commit";
   repoName: string;
   commitMessage?: string | null;
@@ -48,11 +50,19 @@ export function buildEnrichmentPrompt(input: EnrichmentInput): string {
 
 export const enrichChangeItem: EnrichChangeItem = async (input) => {
   try {
-    const { object } = await generateObject({
-      model: resolveModel(process.env.ENRICHMENT_MODEL ?? "anthropic/claude-haiku-4-5"),
+    const spec = process.env.ENRICHMENT_MODEL ?? "anthropic/claude-haiku-4-5";
+    const { object, usage } = await generateObject({
+      model: resolveModel(spec),
       schema: EnrichmentSchema,
       system: ENRICHMENT_SYSTEM,
       prompt: buildEnrichmentPrompt(input),
+    });
+
+    await recordLlmUsage({
+      tenantId: input.tenantId,
+      operation: "enrichment",
+      model: modelId(spec),
+      usage,
     });
 
     return {

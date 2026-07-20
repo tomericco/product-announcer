@@ -1,6 +1,7 @@
 import { generateObject } from "ai";
 import { z } from "zod";
-import { resolveModel } from "@/lib/ai/model";
+import { resolveModel, modelId } from "@/lib/ai/model";
+import { recordLlmUsage } from "@/lib/ai/llm-usage";
 
 export const DerivedBrandProfileSchema = z.object({
   tone: z.string().nullable(),
@@ -30,13 +31,20 @@ export function buildAnalysisPrompt(pageText: string): string {
   return `Here is the text of a company's product updates / changelog page. Infer their brand writing style.\n\n${pageText}`;
 }
 
-export async function analyzeBrandStyle(pageText: string): Promise<DerivedBrandProfile> {
+export async function analyzeBrandStyle(pageText: string, tenantId: string): Promise<DerivedBrandProfile> {
   try {
-    const { object } = await generateObject({
-      model: resolveModel(process.env.ONBOARDING_ANALYSIS_MODEL ?? "anthropic/claude-sonnet-4-5"),
+    const spec = process.env.ONBOARDING_ANALYSIS_MODEL ?? "anthropic/claude-sonnet-4-5";
+    const { object, usage } = await generateObject({
+      model: resolveModel(spec),
       schema: DerivedBrandProfileSchema,
       system: ANALYSIS_SYSTEM,
       prompt: buildAnalysisPrompt(pageText),
+    });
+    await recordLlmUsage({
+      tenantId,
+      operation: "brand_analysis",
+      model: modelId(spec),
+      usage,
     });
     return object;
   } catch {

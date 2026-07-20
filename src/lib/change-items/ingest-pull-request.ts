@@ -31,6 +31,7 @@ export async function ingestMergedPullRequest(
   if (input.baseBranch !== repo.watchedBranch) return;
 
   const enrichment = await enrich({
+    tenantId: repo.tenantId,
     sourceType: "pr",
     repoName: input.repoFullName,
     prTitle: input.prTitle,

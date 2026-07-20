@@ -60,6 +60,7 @@ export async function importSelectedCommits(
     const insertedCounts = await mapWithConcurrency(selections, ENRICH_CONCURRENCY, async (selection) => {
       const diff = truncateDiff(await getCommitDiff(repo.githubInstallationId, repo.githubRepoFullName, selection.sha));
       const enrichment = await enrich({
+        tenantId: input.tenantId,
         sourceType: "commit",
         repoName: repo.githubRepoFullName,
         commitMessage: selection.message,
