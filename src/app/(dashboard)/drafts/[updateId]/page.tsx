@@ -3,9 +3,10 @@ import { GuardedLink } from "../../unsaved-changes";
 import { ArrowLeft } from "lucide-react";
 import { notFound } from "next/navigation";
 import { db } from "@/db";
-import { updates } from "@/db/schema";
+import { updates, webflowConnections } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { reviewStatusLabel } from "@/lib/ai/review-status";
+import { containsCodeBlock } from "@/lib/publishing/markdown-to-html";
 import { saveDraft, approveDraft, rejectDraft } from "../actions";
 import { Button } from "@/components/ui/button";
 import { DraftBodyEditor } from "./draft-body-editor";
@@ -24,6 +25,17 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ up
   if (!update) notFound();
 
   const statusLabel = reviewStatusLabel(update.reviewStatus);
+
+  // Only warn once Webflow is actually usable as a publish target — a
+  // connection row exists as soon as a token validates, but nothing can be
+  // published until a collection is picked, so warning earlier would flag a
+  // destination that can't receive anything yet.
+  const [webflow] = await db
+    .select()
+    .from(webflowConnections)
+    .where(eq(webflowConnections.tenantId, session.user.tenantId))
+    .limit(1);
+  const showCodeWarning = Boolean(webflow?.collectionId) && containsCodeBlock(update.body);
 
   return (
     <div className="mx-auto w-full max-w-3xl space-y-6">
@@ -46,6 +58,13 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ up
             </ul>
           )}
         </div>
+      )}
+
+      {showCodeWarning && (
+        <p className="rounded-md border border-amber-500/50 bg-amber-500/10 p-2 text-sm">
+          This draft contains a code block. Webflow&apos;s rich text field doesn&apos;t support code
+          blocks, so it will be published as plain formatted text.
+        </p>
       )}
 
       <DraftEditorProvider>
