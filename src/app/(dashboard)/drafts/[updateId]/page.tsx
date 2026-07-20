@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { DraftBodyEditor } from "./draft-body-editor";
+import { DraftEditorProvider, SourceToggleButton } from "./draft-editor-context";
 
 export default async function DraftDetailPage({ params }: { params: Promise<{ updateId: string }> }) {
   const session = await requireSession();
@@ -51,28 +52,31 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ up
         </div>
       )}
 
-      <form action={saveDraft} className="space-y-6">
-        <input type="hidden" name="updateId" value={update.id} />
-        <div className="space-y-2">
-          <Label htmlFor="title">Title</Label>
-          <Input id="title" name="title" defaultValue={update.title} />
-        </div>
-        <div className="space-y-2">
-          <Label>Body</Label>
-          <DraftBodyEditor defaultValue={update.body} />
-        </div>
-        <div className="flex items-center justify-end gap-3 border-t border-border/60 pt-6">
-          <Button type="submit" variant="outline">
-            Save changes
-          </Button>
-          {/* formAction overrides the form's default action (saveDraft) for this
-              button only, so approving submits the same title/body the user is
-              currently looking at instead of whatever was last saved to the DB. */}
-          <Button type="submit" formAction={approveDraft}>
-            Approve &amp; publish
-          </Button>
-        </div>
-      </form>
+      <DraftEditorProvider>
+        <form action={saveDraft} className="space-y-6">
+          <input type="hidden" name="updateId" value={update.id} />
+          <div className="space-y-2">
+            <Label htmlFor="title">Title</Label>
+            <Input id="title" name="title" defaultValue={update.title} />
+          </div>
+          <div className="space-y-2">
+            <Label>Body</Label>
+            <DraftBodyEditor defaultValue={update.body} />
+          </div>
+          <div className="flex items-center justify-end gap-3 border-t border-border/60 pt-6">
+            <SourceToggleButton />
+            <Button type="submit" variant="outline">
+              Save changes
+            </Button>
+            {/* formAction overrides the form's default action (saveDraft) for this
+                button only, so approving submits the same title/body the user is
+                currently looking at instead of whatever was last saved to the DB. */}
+            <Button type="submit" formAction={approveDraft}>
+              Approve &amp; publish
+            </Button>
+          </div>
+        </form>
+      </DraftEditorProvider>
 
       <form
         action={rejectDraft}

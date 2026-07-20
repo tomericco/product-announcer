@@ -27,6 +27,7 @@ import {
   InsertImage,
   InsertCodeBlock,
 } from "@mdxeditor/editor";
+import { useDraftEditorBridge } from "./draft-editor-context";
 
 // Small set of common languages for the CodeMirror code-block editor. The
 // underlying descriptor matches any fenced code block without "meta" text
@@ -172,6 +173,22 @@ function useSelectionSurface(hostRef: React.RefObject<HTMLDivElement | null>) {
   return { mode, pos, selectionSurfaceRef, insertSurfaceRef };
 }
 
+function ViewModeBridge() {
+  const viewMode = useCellValue(viewMode$);
+  const setViewMode = usePublisher(viewMode$);
+  const { setBridge } = useDraftEditorBridge();
+
+  useEffect(() => {
+    setBridge({
+      viewMode: viewMode === "source" ? "source" : "rich-text",
+      setViewMode,
+    });
+    return () => setBridge(null);
+  }, [viewMode, setViewMode, setBridge]);
+
+  return null;
+}
+
 function EditorSurfaces() {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const { mode, pos, selectionSurfaceRef, insertSurfaceRef } = useSelectionSurface(hostRef);
@@ -184,9 +201,7 @@ function EditorSurfaces() {
 
   return (
     <>
-      <div className="flex w-full justify-end border-b border-border/60 px-2 py-1.5">
-        <SourceToggle />
-      </div>
+      <ViewModeBridge />
 
       {/* Anchor: not visible itself; gives the hook an offsetParent to measure against. */}
       <div ref={hostRef} className="mdx-surface-anchor" />
@@ -218,22 +233,6 @@ function EditorSurfaces() {
   );
 }
 
-function SourceToggle() {
-  const viewMode = useCellValue(viewMode$);
-  const setViewMode = usePublisher(viewMode$);
-  const isSource = viewMode === "source";
-  return (
-    <button
-      type="button"
-      onClick={() => setViewMode(isSource ? "rich-text" : "source")}
-      className="rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
-      aria-pressed={isSource}
-    >
-      {isSource ? "Rich text" : "Source"}
-    </button>
-  );
-}
-
 export default function MdxEditor({
   markdown,
   onChange,
@@ -248,7 +247,7 @@ export default function MdxEditor({
       {parseError && (
         <p className="rounded-md border border-destructive/50 bg-destructive/10 p-2 text-sm text-destructive">
           This draft&apos;s Markdown couldn&apos;t be fully rendered ({parseError}). Switch to Source mode
-          (the toggle above the editor) to view and edit the raw Markdown safely.
+          (the Source button in the action row) to view and edit the raw Markdown safely.
         </p>
       )}
       <MDXEditor
