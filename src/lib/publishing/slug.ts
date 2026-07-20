@@ -1,4 +1,4 @@
-const MAX_LENGTH = 200;
+export const MAX_LENGTH = 200;
 
 export function slugify(title: string): string {
   const slug = title
@@ -16,5 +16,18 @@ export function slugify(title: string): string {
 }
 
 export function withSuffix(slug: string, attempt: number): string {
-  return attempt === 0 ? slug : `${slug}-${attempt + 1}`;
+  if (attempt === 0) {
+    return slug;
+  }
+
+  const suffix = `-${attempt + 1}`;
+  const maxBaseLength = MAX_LENGTH - suffix.length;
+
+  // Truncate the base slug to make room for the suffix
+  const truncatedBase = slug.slice(0, maxBaseLength);
+
+  // Strip trailing hyphens to avoid double hyphens when appending the suffix
+  const cleanBase = truncatedBase.replace(/-+$/, "");
+
+  return `${cleanBase}${suffix}`;
 }
