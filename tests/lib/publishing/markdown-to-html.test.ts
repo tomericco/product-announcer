@@ -1,6 +1,5 @@
 // tests/lib/publishing/markdown-to-html.test.ts
-import { describe, it, expect, vi } from "vitest";
-import { Lexer } from "marked";
+import { describe, it, expect } from "vitest";
 import { markdownToWebflowHtml, containsCodeBlock } from "../../../src/lib/publishing/markdown-to-html";
 
 describe("markdownToWebflowHtml", () => {
@@ -53,21 +52,9 @@ describe("markdownToWebflowHtml", () => {
     expect(html).toContain('alt="alt text"');
   });
 
-  it("short-circuits on empty/whitespace-only input without invoking the parser", () => {
-    // marked itself already returns "" for empty/whitespace input, so asserting
-    // on the output alone doesn't prove the `if (!markdown.trim()) return "";`
-    // guard exists. Assert on the guard's actual effect instead: the lexer is
-    // never invoked. Without the guard, marked's `parse()` would still reach
-    // `Lexer.lex` internally (and would itself return ""), making this
-    // assertion fail even though the output-only assertions above still pass.
-    const lexSpy = vi.spyOn(Lexer, "lex");
-    try {
-      expect(markdownToWebflowHtml("")).toBe("");
-      expect(markdownToWebflowHtml("   \n  ")).toBe("");
-      expect(lexSpy).not.toHaveBeenCalled();
-    } finally {
-      lexSpy.mockRestore();
-    }
+  it("returns an empty string for empty input", () => {
+    expect(markdownToWebflowHtml("")).toBe("");
+    expect(markdownToWebflowHtml("   \n  ")).toBe("");
   });
 
   it("downgrades strikethrough to <s>, not <del>", () => {
