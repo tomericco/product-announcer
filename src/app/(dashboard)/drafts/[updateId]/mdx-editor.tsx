@@ -17,13 +17,13 @@ import {
   diffSourcePlugin,
   markdownShortcutPlugin,
   toolbarPlugin,
-  DiffSourceToggleWrapper,
-  UndoRedo,
+  viewMode$,
+  usePublisher,
+  useCellValue,
   BoldItalicUnderlineToggles,
   ListsToggle,
   BlockTypeSelect,
   CreateLink,
-  InsertTable,
   InsertImage,
   InsertCodeBlock,
 } from "@mdxeditor/editor";
@@ -49,6 +49,22 @@ const CODE_BLOCK_LANGUAGES = {
   "": "Plain text",
 };
 
+function SourceToggle() {
+  const viewMode = useCellValue(viewMode$);
+  const setViewMode = usePublisher(viewMode$);
+  const isSource = viewMode === "source";
+  return (
+    <button
+      type="button"
+      onClick={() => setViewMode(isSource ? "rich-text" : "source")}
+      className="rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
+      aria-pressed={isSource}
+    >
+      {isSource ? "Rich text" : "Source"}
+    </button>
+  );
+}
+
 export default function MdxEditor({
   markdown,
   onChange,
@@ -62,8 +78,8 @@ export default function MdxEditor({
     <div className="w-full space-y-2">
       {parseError && (
         <p className="rounded-md border border-destructive/50 bg-destructive/10 p-2 text-sm text-destructive">
-          This draft&apos;s Markdown couldn&apos;t be fully rendered ({parseError}). Switch to source mode
-          (the &quot;source&quot; toggle in the toolbar) to view and edit the raw Markdown safely.
+          This draft&apos;s Markdown couldn&apos;t be fully rendered ({parseError}). Switch to Source mode
+          (the toggle above the editor) to view and edit the raw Markdown safely.
         </p>
       )}
       <MDXEditor
@@ -92,16 +108,17 @@ export default function MdxEditor({
           markdownShortcutPlugin(),
           toolbarPlugin({
             toolbarContents: () => (
-              <DiffSourceToggleWrapper>
-                <UndoRedo />
+              <>
+                <div className="flex w-full justify-end border-b border-border px-1 py-1">
+                  <SourceToggle />
+                </div>
                 <BoldItalicUnderlineToggles />
-                <ListsToggle />
                 <BlockTypeSelect />
+                <ListsToggle />
                 <CreateLink />
-                <InsertTable />
                 <InsertImage />
                 <InsertCodeBlock />
-              </DiffSourceToggleWrapper>
+              </>
             ),
           }),
         ]}
