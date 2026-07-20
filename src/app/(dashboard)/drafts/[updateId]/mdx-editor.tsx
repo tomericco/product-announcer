@@ -71,12 +71,38 @@ function findContentEl(host: HTMLElement): HTMLElement | null {
   return null;
 }
 
+// Clamp a coordinate to [min, max] -- used to keep the floating surfaces
+// from rendering off-screen near the edges of the positioning parent.
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
+}
+
 function useSelectionSurface(hostRef: React.RefObject<HTMLDivElement | null>) {
   const [mode, setMode] = useState<SurfaceMode>("hidden");
   const [pos, setPos] = useState({ top: 0, left: 0 });
+  // Refs on the two floating surfaces themselves, so `update()` can tell
+  // when a selectionchange was caused by interacting WITH a surface (e.g.
+  // focus moving into BlockTypeSelect's trigger) rather than by the user
+  // clicking away from the editor. In that case we must not hide the
+  // surface mid-click, or the click that opens/activates it gets swallowed.
+  const selectionSurfaceRef = useRef<HTMLDivElement | null>(null);
+  const insertSurfaceRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     function update() {
+      const active = document.activeElement;
+      if (
+        active &&
+        ((selectionSurfaceRef.current && selectionSurfaceRef.current.contains(active)) ||
+          (insertSurfaceRef.current && insertSurfaceRef.current.contains(active)))
+      ) {
+        // Focus/interaction is currently inside one of the surfaces (e.g. a
+        // toolbar button just received focus on mousedown) -- leave the
+        // surface exactly as it is rather than hiding it out from under an
+        // in-flight click.
+        return;
+      }
+
       const host = hostRef.current;
       // `parent` (the toolbar host div) is the CSS `position: relative`
       // containing block for the floating surfaces, so it stays the
@@ -94,18 +120,39 @@ function useSelectionSurface(hostRef: React.RefObject<HTMLDivElement | null>) {
 
       if (!sel.isCollapsed) {
         const r = range.getBoundingClientRect();
-        setPos({ top: r.top - parentRect.top, left: r.left - parentRect.left + r.width / 2 });
+        const rawTop = r.top - parentRect.top;
+        const rawLeft = r.left - parentRect.left + r.width / 2;
+        setPos({
+          top: Math.max(rawTop, 0),
+          left: clamp(rawLeft, 0, parent.clientWidth),
+        });
         setMode("selection");
         return;
       }
 
-      // Collapsed caret: only offer the insert menu on an EMPTY block.
-      let node: Node | null = sel.anchorNode;
-      while (node && node.parentElement !== content) node = node.parentElement;
-      const block = node as HTMLElement | null;
-      if (block && !block.textContent?.trim()) {
+      // Collapsed caret: only offer the insert menu on an EMPTY paragraph.
+      let block: HTMLElement | null;
+      if (sel.anchorNode === content) {
+        // Empty editor: the anchor is the content wrapper itself, so there's
+        // no ancestor walk to do -- resolve the target block directly from
+        // its children, falling back to the first child if the offset is
+        // out of range (e.g. no children yet).
+        const idx = clamp(sel.anchorOffset, 0, Math.max(content.children.length - 1, 0));
+        block = (content.children[idx] as HTMLElement | undefined) ?? (content.children[0] as HTMLElement | undefined) ?? null;
+      } else {
+        let node: Node | null = sel.anchorNode;
+        while (node && node.parentElement !== content) node = node.parentElement;
+        block = node as HTMLElement | null;
+      }
+
+      if (block && block.tagName === "P" && block.children.length === 0 && !block.textContent?.trim()) {
         const r = block.getBoundingClientRect();
-        setPos({ top: r.top - parentRect.top, left: r.left - parentRect.left });
+        const rawTop = r.top - parentRect.top;
+        const rawLeft = r.left - parentRect.left;
+        setPos({
+          top: Math.max(rawTop, 0),
+          left: clamp(rawLeft, 0, parent.clientWidth),
+        });
         setMode("insert");
       } else {
         setMode("hidden");
@@ -122,12 +169,18 @@ function useSelectionSurface(hostRef: React.RefObject<HTMLDivElement | null>) {
     };
   }, [hostRef]);
 
-  return { mode, pos };
+  return { mode, pos, selectionSurfaceRef, insertSurfaceRef };
 }
 
 function EditorSurfaces() {
   const hostRef = useRef<HTMLDivElement | null>(null);
-  const { mode, pos } = useSelectionSurface(hostRef);
+  const { mode, pos, selectionSurfaceRef, insertSurfaceRef } = useSelectionSurface(hostRef);
+
+  // Keep the DOM selection intact when pressing a surface button. Without
+  // this, mousedown's default action can move focus/selection out of
+  // `.mdx-content` before the click completes, which fires `selectionchange`
+  // and hides the surface mid-click -- swallowing the click.
+  const preserveSelection = (e: React.MouseEvent) => e.preventDefault();
 
   return (
     <>
@@ -139,9 +192,11 @@ function EditorSurfaces() {
       <div ref={hostRef} className="mdx-surface-anchor" />
 
       <div
+        ref={selectionSurfaceRef}
         className="mdx-surface mdx-surface-selection"
         data-open={mode === "selection"}
         style={{ top: pos.top, left: pos.left }}
+        onMouseDown={preserveSelection}
       >
         <BoldItalicUnderlineToggles />
         <BlockTypeSelect />
@@ -150,9 +205,11 @@ function EditorSurfaces() {
       </div>
 
       <div
+        ref={insertSurfaceRef}
         className="mdx-surface mdx-surface-insert"
         data-open={mode === "insert"}
         style={{ top: pos.top, left: pos.left }}
+        onMouseDown={preserveSelection}
       >
         <InsertImage />
         <InsertCodeBlock />

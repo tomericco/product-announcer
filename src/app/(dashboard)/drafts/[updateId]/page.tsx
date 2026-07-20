@@ -79,7 +79,7 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ up
         className="flex items-center justify-between gap-4 border-t border-border/60 pt-6"
       >
         <input type="hidden" name="updateId" value={update.id} />
-        <p className="text-sm text-muted-foreground">Not right? Reject to discard this draft.</p>
+        <p className="text-sm text-muted-foreground">Not right? Reject it to take it out of the queue.</p>
         <Button type="submit" variant="ghost" className="text-muted-foreground hover:text-destructive">
           Reject
         </Button>
