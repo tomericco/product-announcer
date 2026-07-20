@@ -80,20 +80,31 @@ export async function runBatchForWorkspace(
 
   // Auto-publish: only when the workspace opted in, an active webhook exists, AND
   // the review passed/revised — otherwise the update stays a draft for review.
-  const [tenant] = await database.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1);
-  const [activeWebhook] = await database
-    .select()
-    .from(webhookConfigs)
-    .where(and(eq(webhookConfigs.tenantId, tenantId), eq(webhookConfigs.active, true)))
-    .limit(1);
+  //
+  // Best-effort, and deliberately guarded: the draft is already saved and its
+  // change items are already claimed by this point. Letting a failure here
+  // propagate would report the whole run as failed — the caller would show an
+  // error for a draft that actually exists, and a retry would find nothing
+  // pending. It would also stop the scheduler from advancing its cadence, so the
+  // next tick would re-run and produce a duplicate draft.
+  try {
+    const [tenant] = await database.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1);
+    const [activeWebhook] = await database
+      .select()
+      .from(webhookConfigs)
+      .where(and(eq(webhookConfigs.tenantId, tenantId), eq(webhookConfigs.active, true)))
+      .limit(1);
 
-  const reviewPassed = review.status === "passed" || review.status === "revised";
-  if (tenant?.autoPublish && activeWebhook && reviewPassed) {
-    await database
-      .update(updates)
-      .set({ status: "published", publishedAt: new Date() })
-      .where(eq(updates.id, update.id));
-    await dispatchWebhookForUpdate(update.id, database);
+    const reviewPassed = review.status === "passed" || review.status === "revised";
+    if (tenant?.autoPublish && activeWebhook && reviewPassed) {
+      await database
+        .update(updates)
+        .set({ status: "published", publishedAt: new Date() })
+        .where(eq(updates.id, update.id));
+      await dispatchWebhookForUpdate(update.id, database);
+    }
+  } catch (error) {
+    console.error(`Auto-publish failed for update ${update.id}; it remains a saved draft:`, error);
   }
 
   onProgress?.({ type: "done", updateId: update.id });
