@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
-import { repos, changeItems } from "@/db/schema";
+import { repos, changeEvents } from "@/db/schema";
 import { enrichChangeItem, type EnrichChangeItem } from "@/lib/ai/enrich-change-item";
 
 export type MergedPullRequestInput = {
@@ -32,18 +32,21 @@ export async function ingestMergedPullRequest(
 
   const enrichment = await enrich({
     tenantId: repo.tenantId,
-    sourceType: "pr",
+    type: "pull_request",
     repoName: input.repoFullName,
     prTitle: input.prTitle,
     prDescription: input.prDescription,
   });
 
   await database
-    .insert(changeItems)
+    .insert(changeEvents)
     .values({
       tenantId: repo.tenantId,
       repoId: repo.id,
-      sourceType: "pr",
+      type: "pull_request",
+      provider: "github",
+      // Namespaced by repo full name — PR numbers collide across repos.
+      externalId: `${input.repoFullName}#${input.prNumber}`,
       prNumber: input.prNumber,
       prTitle: input.prTitle,
       prDescription: input.prDescription,

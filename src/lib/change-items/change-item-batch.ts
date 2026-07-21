@@ -1,9 +1,9 @@
 import { and, eq, inArray, isNull, or } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
-import { changeItems, updates } from "@/db/schema";
+import { changeEvents, updates } from "@/db/schema";
 import type { ReviewStatus } from "@/lib/ai/review-draft";
 
-type ChangeItemRow = typeof changeItems.$inferSelect;
+type ChangeItemRow = typeof changeEvents.$inferSelect;
 type UpdateRow = typeof updates.$inferSelect;
 
 /**
@@ -19,9 +19,9 @@ export async function getPendingChangeItems(
 ): Promise<ChangeItemRow[]> {
   return database
     .select()
-    .from(changeItems)
-    .where(and(eq(changeItems.tenantId, tenantId), eq(changeItems.status, "pending")))
-    .orderBy(changeItems.createdAt);
+    .from(changeEvents)
+    .where(and(eq(changeEvents.tenantId, tenantId), eq(changeEvents.status, "pending")))
+    .orderBy(changeEvents.createdAt);
 }
 
 /**
@@ -36,15 +36,15 @@ export async function getBatchableChangeItems(
 ): Promise<ChangeItemRow[]> {
   return database
     .select()
-    .from(changeItems)
+    .from(changeEvents)
     .where(
       and(
-        eq(changeItems.tenantId, tenantId),
-        eq(changeItems.status, "pending"),
-        or(isNull(changeItems.userFacing), eq(changeItems.userFacing, true))
+        eq(changeEvents.tenantId, tenantId),
+        eq(changeEvents.status, "pending"),
+        or(isNull(changeEvents.userFacing), eq(changeEvents.userFacing, true))
       )
     )
-    .orderBy(changeItems.createdAt);
+    .orderBy(changeEvents.createdAt);
 }
 
 /**
@@ -58,9 +58,9 @@ export async function getTrackedChangeItems(
 ): Promise<ChangeItemRow[]> {
   return database
     .select()
-    .from(changeItems)
-    .where(and(eq(changeItems.tenantId, tenantId), inArray(changeItems.status, ["pending", "ignored"])))
-    .orderBy(changeItems.createdAt);
+    .from(changeEvents)
+    .where(and(eq(changeEvents.tenantId, tenantId), inArray(changeEvents.status, ["pending", "ignored"])))
+    .orderBy(changeEvents.createdAt);
 }
 
 export type DraftInput = { title: string; body: string };
@@ -76,10 +76,10 @@ export async function claimBatchAndCreateUpdate(
 ): Promise<UpdateRow | null> {
   return database.transaction(async (tx) => {
     const claimed = await tx
-      .update(changeItems)
+      .update(changeEvents)
       .set({ status: "batched" })
-      .where(and(inArray(changeItems.id, input.changeItemIds), eq(changeItems.status, "pending")))
-      .returning({ id: changeItems.id });
+      .where(and(inArray(changeEvents.id, input.changeItemIds), eq(changeEvents.status, "pending")))
+      .returning({ id: changeEvents.id });
 
     if (claimed.length === 0) return null;
 
@@ -98,7 +98,7 @@ export async function claimBatchAndCreateUpdate(
       })
       .returning();
 
-    await tx.update(changeItems).set({ updateId: update.id }).where(inArray(changeItems.id, claimedIds));
+    await tx.update(changeEvents).set({ updateId: update.id }).where(inArray(changeEvents.id, claimedIds));
 
     return update;
   });
@@ -108,7 +108,7 @@ export async function claimBatchAndCreateUpdate(
  * The exact inverse of `claimBatchAndCreateUpdate`'s claim: returns an update's
  * change items to the pending pool and clears their `updateId`.
  *
- * Load-bearing for deletion: `change_items.update_id` has no ON DELETE clause,
+ * Load-bearing for deletion: `change_events.update_id` has no ON DELETE clause,
  * so Postgres rejects deleting an update that still owns items. It also matters
  * for rejection, which otherwise strands the items in `batched` with a dangling
  * `updateId` — invisible to `getTrackedChangeItems`, so those commits would
@@ -119,10 +119,10 @@ export async function releaseBatchForUpdate(
   database: Executor = defaultDb
 ): Promise<number> {
   const released = await database
-    .update(changeItems)
+    .update(changeEvents)
     .set({ status: "pending", updateId: null })
-    .where(eq(changeItems.updateId, updateId))
-    .returning({ id: changeItems.id });
+    .where(eq(changeEvents.updateId, updateId))
+    .returning({ id: changeEvents.id });
   return released.length;
 }
 

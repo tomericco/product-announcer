@@ -44,13 +44,24 @@ export const tenantMembers = pgTable(
   (table) => [primaryKey({ columns: [table.tenantId, table.userId] })]
 );
 
-export const sourceTypeEnum = pgEnum("source_type", ["pr", "commit"]);
 export const changeItemStatusEnum = pgEnum("change_item_status", ["pending", "batched", "excluded", "ignored"]);
-export const ignoredReasonEnum = pgEnum("ignored_reason", ["merge_commit", "empty_diff"]);
 export const cadenceEnum = pgEnum("cadence", ["daily", "weekly", "biweekly", "monthly", "none"]);
 export const updateStatusEnum = pgEnum("update_status", ["draft", "approved", "published", "rejected"]);
 export const reviewStatusEnum = pgEnum("review_status", ["passed", "failed", "error"]);
 export const updateCategoryEnum = pgEnum("update_category", ["new", "improved", "fixed"]);
+
+export const changeEventTypeEnum = pgEnum("change_event_type", ["commit", "pull_request", "task"]);
+export const changeEventProviderEnum = pgEnum("change_event_provider", ["github", "notion"]);
+export const atomicUpdateStatusEnum = pgEnum("atomic_update_status", ["open", "released"]);
+// Why tier 1 dropped an event. Null means it was not dropped deterministically.
+export const filterReasonEnum = pgEnum("filter_reason", [
+  "merge_commit",
+  "empty_diff",
+  "lockfile_only",
+  "test_only",
+  "chore_prefix",
+  "empty_task",
+]);
 
 export const repos = pgTable("repos", {
   id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
@@ -64,8 +75,8 @@ export const repos = pgTable("repos", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
-export const changeItems = pgTable(
-  "change_items",
+export const changeEvents = pgTable(
+  "change_events",
   {
     id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
     tenantId: uuid("tenant_id")
@@ -74,9 +85,16 @@ export const changeItems = pgTable(
     repoId: uuid("repo_id")
       .notNull()
       .references(() => repos.id, { onDelete: "cascade" }),
-    sourceType: sourceTypeEnum("source_type").notNull(),
+    type: changeEventTypeEnum("type").notNull(),
+    provider: changeEventProviderEnum("provider").notNull(),
+    // Idempotency key, namespaced per provider. Commits use the SHA; PRs use
+    // `owner/repo#number` because PR numbers collide across repos.
+    externalId: text("external_id").notNull(),
+    externalUrl: text("external_url"),
+    atomicUpdateId: uuid("atomic_update_id").references(() => atomicUpdates.id, { onDelete: "set null" }),
     status: changeItemStatusEnum("status").notNull().default("pending"),
-    ignoredReason: ignoredReasonEnum("ignored_reason"),
+    // Why tier 1 dropped this event. Null means it survived the filter.
+    filterReason: filterReasonEnum("filter_reason"),
     updateId: uuid("update_id").references(() => updates.id),
     excludedAt: timestamp("excluded_at", { withTimezone: true }),
     excludedBy: uuid("excluded_by").references(() => users.id),
@@ -99,7 +117,7 @@ export const changeItems = pgTable(
     // than pretending the author date is a release.
     releasedAt: timestamp("released_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    // enrichment (sub-project A): classifier output, null until enriched
+    // tier 2 classifier output, null until classified
     userFacing: boolean("user_facing"),
     impactSummary: text("impact_summary"),
     suggestedCategory: updateCategoryEnum("suggested_category"),
@@ -107,10 +125,34 @@ export const changeItems = pgTable(
     enrichedAt: timestamp("enriched_at", { withTimezone: true }),
   },
   (table) => [
-    uniqueIndex("change_items_repo_pr_unique").on(table.repoId, table.prNumber),
-    uniqueIndex("change_items_repo_commit_unique").on(table.repoId, table.commitSha),
+    uniqueIndex("change_events_repo_pr_unique").on(table.repoId, table.prNumber),
+    uniqueIndex("change_events_repo_commit_unique").on(table.repoId, table.commitSha),
+    uniqueIndex("change_events_tenant_provider_external_unique").on(
+      table.tenantId,
+      table.provider,
+      table.externalId
+    ),
   ]
 );
+
+export const atomicUpdates = pgTable("atomic_updates", {
+  id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  tenantId: uuid("tenant_id")
+    .notNull()
+    .references(() => tenants.id, { onDelete: "cascade" }),
+  // Set when this atomic update joins a release draft. At most one release ever,
+  // so "which release is this shipping in" always has a single answer.
+  releaseId: uuid("release_id").references(() => updates.id, { onDelete: "set null" }),
+  title: text("title").notNull(),
+  summary: text("summary").notNull(),
+  category: updateCategoryEnum("category"),
+  status: atomicUpdateStatusEnum("status").notNull().default("open"),
+  // Non-null freezes regeneration: once a human edits the summary, attaching a
+  // new change event must not overwrite their words.
+  summaryEditedAt: timestamp("summary_edited_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
 
 export const scheduleConfigs = pgTable("schedule_configs", {
   id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),

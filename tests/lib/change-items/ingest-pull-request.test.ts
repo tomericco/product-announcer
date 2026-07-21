@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, repos, changeItems } from "../../../src/db/schema";
+import { tenants, repos, changeEvents } from "../../../src/db/schema";
 import { ingestMergedPullRequest } from "../../../src/lib/change-items/ingest-pull-request";
 import type { EnrichChangeItem } from "../../../src/lib/ai/enrich-change-item";
 
@@ -44,10 +44,10 @@ describe("ingestMergedPullRequest", () => {
       fakeEnrich
     );
 
-    const items = await db.select().from(changeItems).where(eq(changeItems.repoId, repo.id));
+    const items = await db.select().from(changeEvents).where(eq(changeEvents.repoId, repo.id));
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({
-      sourceType: "pr",
+      type: "pull_request",
       status: "pending",
       prNumber: 7,
       prTitle: "Add dark mode",
@@ -86,7 +86,7 @@ describe("ingestMergedPullRequest", () => {
       fakeEnrich
     );
 
-    const items = await db.select().from(changeItems).where(eq(changeItems.repoId, repo.id));
+    const items = await db.select().from(changeEvents).where(eq(changeEvents.repoId, repo.id));
     expect(items).toHaveLength(0);
   });
 
@@ -117,10 +117,10 @@ describe("ingestMergedPullRequest", () => {
       fakeEnrich
     );
 
-    const items = await db.select().from(changeItems).where(eq(changeItems.repoId, repo.id));
+    const items = await db.select().from(changeEvents).where(eq(changeEvents.repoId, repo.id));
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({
-      sourceType: "pr",
+      type: "pull_request",
       prNumber: 1,
       prTitle: "Should still be ingested",
     });
@@ -153,7 +153,7 @@ describe("ingestMergedPullRequest", () => {
     await ingestMergedPullRequest(input, fakeEnrich);
     await ingestMergedPullRequest(input, fakeEnrich);
 
-    const items = await db.select().from(changeItems).where(eq(changeItems.repoId, repo.id));
+    const items = await db.select().from(changeEvents).where(eq(changeEvents.repoId, repo.id));
     expect(items).toHaveLength(1);
   });
 

@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, repos, changeItems } from "../../../src/db/schema";
+import { tenants, repos, changeEvents } from "../../../src/db/schema";
 import { importSelectedCommits } from "../../../src/lib/change-items/import-commits";
 import type { EnrichChangeItem } from "../../../src/lib/ai/enrich-change-item";
 
@@ -51,10 +51,10 @@ describe("importSelectedCommits", () => {
     );
 
     expect(result.importedCount).toBe(2);
-    const items = await db.select().from(changeItems).where(eq(changeItems.repoId, repo.id));
+    const items = await db.select().from(changeEvents).where(eq(changeEvents.repoId, repo.id));
     expect(items).toHaveLength(2);
     expect(items.map((i) => i.commitSha).sort()).toEqual(["aaa111", "bbb222"]);
-    expect(items[0]).toMatchObject({ sourceType: "commit", status: "pending" });
+    expect(items[0]).toMatchObject({ type: "commit", status: "pending" });
     expect(items.every((i) => i.diff?.includes("added a line"))).toBe(true);
     expect(getCommitDiff).toHaveBeenCalledTimes(2);
     const facing = items.find((i) => i.commitSha === "aaa111")!;
@@ -81,7 +81,7 @@ describe("importSelectedCommits", () => {
 
     expect(first.importedCount).toBe(1);
     expect(second.importedCount).toBe(0);
-    const items = await db.select().from(changeItems).where(eq(changeItems.repoId, repo.id));
+    const items = await db.select().from(changeEvents).where(eq(changeEvents.repoId, repo.id));
     expect(items).toHaveLength(1);
   });
 
@@ -97,15 +97,15 @@ describe("importSelectedCommits", () => {
 
     // Drop it (what dropChangeItem does).
     await db
-      .update(changeItems)
+      .update(changeEvents)
       .set({ status: "excluded", excludedAt: new Date() })
-      .where(eq(changeItems.repoId, repo.id));
+      .where(eq(changeEvents.repoId, repo.id));
 
     // Re-importing resurrects the same row to pending and clears the exclusion.
     const second = await importSelectedCommits({ tenantId: tenant.id, selections }, getCommitDiff, fakeEnrich);
     expect(second.importedCount).toBe(1);
 
-    const items = await db.select().from(changeItems).where(eq(changeItems.repoId, repo.id));
+    const items = await db.select().from(changeEvents).where(eq(changeEvents.repoId, repo.id));
     expect(items).toHaveLength(1); // resurrected in place, not duplicated
     expect(items[0].status).toBe("pending");
     expect(items[0].excludedAt).toBeNull();
@@ -120,7 +120,7 @@ describe("importSelectedCommits", () => {
 
     // The list-commits API has no branch-landing time, so an import can't know it.
     await importSelectedCommits({ tenantId: tenant.id, selections }, getCommitDiff, fakeEnrich);
-    const [imported] = await db.select().from(changeItems).where(eq(changeItems.repoId, repo.id));
+    const [imported] = await db.select().from(changeEvents).where(eq(changeEvents.repoId, repo.id));
     expect(imported.releasedAt).toBeNull();
 
     // Now simulate the row having arrived via the push webhook instead, then
@@ -128,13 +128,13 @@ describe("importSelectedCommits", () => {
     // push time it already carries.
     const pushedAt = new Date("2026-07-02T09:30:00Z");
     await db
-      .update(changeItems)
+      .update(changeEvents)
       .set({ status: "excluded", excludedAt: new Date(), releasedAt: pushedAt })
-      .where(eq(changeItems.repoId, repo.id));
+      .where(eq(changeEvents.repoId, repo.id));
 
     await importSelectedCommits({ tenantId: tenant.id, selections }, getCommitDiff, fakeEnrich);
 
-    const [resurrected] = await db.select().from(changeItems).where(eq(changeItems.repoId, repo.id));
+    const [resurrected] = await db.select().from(changeEvents).where(eq(changeEvents.repoId, repo.id));
     expect(resurrected.status).toBe("pending");
     expect(resurrected.releasedAt).toEqual(pushedAt);
   });
@@ -157,7 +157,7 @@ describe("importSelectedCommits", () => {
 
     expect(result.importedCount).toBe(0);
     expect(getCommitDiff).not.toHaveBeenCalled();
-    const items = await db.select().from(changeItems).where(eq(changeItems.repoId, repo.id));
+    const items = await db.select().from(changeEvents).where(eq(changeEvents.repoId, repo.id));
     expect(items).toHaveLength(0);
   });
 });

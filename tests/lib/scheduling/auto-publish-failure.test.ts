@@ -11,7 +11,7 @@ vi.mock("../../../src/lib/publishing/dispatch", () => ({
 import { generateObject } from "ai";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, repos, changeItems, updates, webhookConfigs } from "../../../src/db/schema";
+import { tenants, repos, changeEvents, updates, webhookConfigs } from "../../../src/db/schema";
 import { runBatchForWorkspace } from "../../../src/lib/scheduling/run-schedule";
 import { getPendingChangeItems } from "../../../src/lib/change-items/change-item-batch";
 import { reviewAndReconcile } from "../../../src/lib/ai/review-draft";
@@ -50,8 +50,8 @@ describe("runBatchForWorkspace when auto-publish fails after the draft is saved"
       .insert(repos)
       .values({ tenantId: tenant.id, githubRepoFullName: "acme/x", githubInstallationId: "1", watchedBranch: "main" })
       .returning();
-    await db.insert(changeItems).values({
-      tenantId: tenant.id, repoId: repo.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "a",
+    await db.insert(changeEvents).values({
+      tenantId: tenant.id, repoId: repo.id, type: "pull_request", provider: "github", externalId: "acme/x#1", status: "pending", prNumber: 1, prTitle: "a",
     });
     await db.insert(webhookConfigs).values({ tenantId: tenant.id, url: "https://example.com/hook", ...encryptedSecret() });
 

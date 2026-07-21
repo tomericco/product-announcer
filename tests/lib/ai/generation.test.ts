@@ -3,7 +3,7 @@ import { describe, it, expect, vi } from "vitest";
 type FakeChangeItem = {
   id: string;
   repoId: string;
-  sourceType: "pr" | "commit";
+  type: "pull_request" | "commit";
   prNumber: number | null;
   prTitle: string | null;
   prDescription: string | null;
@@ -16,7 +16,7 @@ function prItem(overrides: Partial<FakeChangeItem> = {}): FakeChangeItem {
   return {
     id: "ci_1",
     repoId: "repo_web",
-    sourceType: "pr",
+    type: "pull_request",
     prNumber: 1,
     prTitle: "Add dark mode",
     prDescription: "Adds a toggle.",
@@ -31,7 +31,7 @@ function commitItem(overrides: Partial<FakeChangeItem> = {}): FakeChangeItem {
   return {
     id: "ci_2",
     repoId: "repo_api",
-    sourceType: "commit",
+    type: "commit",
     prNumber: null,
     prTitle: null,
     prDescription: null,

@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
-import { repos, changeItems } from "@/db/schema";
+import { repos, changeEvents } from "@/db/schema";
 import {
   truncateDiff,
   getCommitDiff,
@@ -43,20 +43,22 @@ async function insertCommit(
   commit: PushCommit,
   opts: {
     status: "pending" | "ignored";
-    ignoredReason: "merge_commit" | "empty_diff" | null;
+    filterReason: "merge_commit" | "empty_diff" | null;
     diff: string | null;
     enrichment: EnrichmentResult | null;
     releasedAt: Date;
   }
 ): Promise<void> {
   await database
-    .insert(changeItems)
+    .insert(changeEvents)
     .values({
       tenantId: repo.tenantId,
       repoId: repo.id,
-      sourceType: "commit",
+      type: "commit",
+      provider: "github",
+      externalId: commit.sha,
       status: opts.status,
-      ignoredReason: opts.ignoredReason,
+      filterReason: opts.filterReason,
       commitSha: commit.sha,
       commitMessage: commit.message,
       commitUrl: commit.url,
@@ -105,20 +107,20 @@ export async function ingestPush(input: PushInput, deps: IngestPushDeps = {}): P
 
       // 2. Merge commit with no associated PR → ignored (no diff, no enrichment).
       if (commit.parents.length >= 2) {
-        await insertCommit(database, repo, commit, { status: "ignored", ignoredReason: "merge_commit", diff: null, enrichment: null, releasedAt: input.pushedAt });
+        await insertCommit(database, repo, commit, { status: "ignored", filterReason: "merge_commit", diff: null, enrichment: null, releasedAt: input.pushedAt });
         return;
       }
 
       // 3. Empty diff → ignored (no enrichment).
       const diff = truncateDiff(await commitDiff(input.installationId, input.repoFullName, commit.sha));
       if (diff.trim() === "") {
-        await insertCommit(database, repo, commit, { status: "ignored", ignoredReason: "empty_diff", diff, enrichment: null, releasedAt: input.pushedAt });
+        await insertCommit(database, repo, commit, { status: "ignored", filterReason: "empty_diff", diff, enrichment: null, releasedAt: input.pushedAt });
         return;
       }
 
       // 4. Substantive → enrich + pending.
-      const enrichment = await enrich({ tenantId: repo.tenantId, sourceType: "commit", repoName: input.repoFullName, commitMessage: commit.message, diff });
-      await insertCommit(database, repo, commit, { status: "pending", ignoredReason: null, diff, enrichment, releasedAt: input.pushedAt });
+      const enrichment = await enrich({ tenantId: repo.tenantId, type: "commit", repoName: input.repoFullName, commitMessage: commit.message, diff });
+      await insertCommit(database, repo, commit, { status: "pending", filterReason: null, diff, enrichment, releasedAt: input.pushedAt });
     } catch (error) {
       // One bad commit (flaky API call, transient error) must not abort the whole
       // push via `Promise.all` inside `mapWithConcurrency` and abandon the

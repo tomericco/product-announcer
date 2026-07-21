@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, repos, changeItems, updates } from "../../../src/db/schema";
+import { tenants, repos, changeEvents, updates } from "../../../src/db/schema";
 import {
   getPendingChangeItems,
   getBatchableChangeItems,
@@ -31,10 +31,10 @@ describe("change-item-batch", () => {
 
   it("getPendingChangeItems returns pending items across all of the tenant's repos", async () => {
     const { tenant, repoA, repoB } = await seed();
-    await db.insert(changeItems).values([
-      { tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "a" },
-      { tenantId: tenant.id, repoId: repoB.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "b" },
-      { tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "excluded", prNumber: 2, prTitle: "x" },
+    await db.insert(changeEvents).values([
+      { tenantId: tenant.id, repoId: repoA.id, type: "pull_request", provider: "github", externalId: "acme/a#1", status: "pending", prNumber: 1, prTitle: "a" },
+      { tenantId: tenant.id, repoId: repoB.id, type: "pull_request", provider: "github", externalId: "acme/b#1", status: "pending", prNumber: 1, prTitle: "b" },
+      { tenantId: tenant.id, repoId: repoA.id, type: "pull_request", provider: "github", externalId: "acme/a#2", status: "excluded", prNumber: 2, prTitle: "x" },
     ]);
 
     const pending = await getPendingChangeItems(tenant.id);
@@ -44,10 +44,10 @@ describe("change-item-batch", () => {
 
   it("getBatchableChangeItems excludes non-facing items but keeps facing and un-enriched (null)", async () => {
     const { tenant, repoA } = await seed();
-    await db.insert(changeItems).values([
-      { tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "facing", userFacing: true },
-      { tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "pending", prNumber: 2, prTitle: "non-facing", userFacing: false },
-      { tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "pending", prNumber: 3, prTitle: "unenriched" }, // userFacing null
+    await db.insert(changeEvents).values([
+      { tenantId: tenant.id, repoId: repoA.id, type: "pull_request", provider: "github", externalId: "acme/a#1", status: "pending", prNumber: 1, prTitle: "facing", userFacing: true },
+      { tenantId: tenant.id, repoId: repoA.id, type: "pull_request", provider: "github", externalId: "acme/a#2", status: "pending", prNumber: 2, prTitle: "non-facing", userFacing: false },
+      { tenantId: tenant.id, repoId: repoA.id, type: "pull_request", provider: "github", externalId: "acme/a#3", status: "pending", prNumber: 3, prTitle: "unenriched" }, // userFacing null
     ]);
 
     const batchable = await getBatchableChangeItems(tenant.id);
@@ -59,10 +59,10 @@ describe("change-item-batch", () => {
 
   it("getTrackedChangeItems returns pending and ignored items, excluding batched/excluded", async () => {
     const { tenant, repoA } = await seed();
-    await db.insert(changeItems).values([
-      { tenantId: tenant.id, repoId: repoA.id, sourceType: "commit", status: "pending", commitSha: "p1", commitMessage: "p" },
-      { tenantId: tenant.id, repoId: repoA.id, sourceType: "commit", status: "ignored", ignoredReason: "merge_commit", commitSha: "i1", commitMessage: "m" },
-      { tenantId: tenant.id, repoId: repoA.id, sourceType: "commit", status: "excluded", commitSha: "x1", commitMessage: "x" },
+    await db.insert(changeEvents).values([
+      { tenantId: tenant.id, repoId: repoA.id, type: "commit", provider: "github", externalId: "p1", status: "pending", commitSha: "p1", commitMessage: "p" },
+      { tenantId: tenant.id, repoId: repoA.id, type: "commit", provider: "github", externalId: "i1", status: "ignored", filterReason: "merge_commit", commitSha: "i1", commitMessage: "m" },
+      { tenantId: tenant.id, repoId: repoA.id, type: "commit", provider: "github", externalId: "x1", status: "excluded", commitSha: "x1", commitMessage: "x" },
     ]);
     const tracked = await getTrackedChangeItems(tenant.id);
     expect(tracked.map((t) => t.commitSha).sort()).toEqual(["i1", "p1"]);
@@ -74,10 +74,10 @@ describe("change-item-batch", () => {
   it("claimBatchAndCreateUpdate creates one cross-repo Update (repoId null) and marks items batched", async () => {
     const { tenant, repoA, repoB } = await seed();
     const inserted = await db
-      .insert(changeItems)
+      .insert(changeEvents)
       .values([
-        { tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "a" },
-        { tenantId: tenant.id, repoId: repoB.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "b" },
+        { tenantId: tenant.id, repoId: repoA.id, type: "pull_request", provider: "github", externalId: "acme/a#1", status: "pending", prNumber: 1, prTitle: "a" },
+        { tenantId: tenant.id, repoId: repoB.id, type: "pull_request", provider: "github", externalId: "acme/b#1", status: "pending", prNumber: 1, prTitle: "b" },
       ])
       .returning();
 
@@ -91,17 +91,17 @@ describe("change-item-batch", () => {
     expect(update!.repoId).toBeNull();
     expect(update!.sourceItems.sort()).toEqual(inserted.map((i) => i.id).sort());
 
-    const reloaded = await db.select().from(changeItems).where(eq(changeItems.tenantId, tenant.id));
+    const reloaded = await db.select().from(changeEvents).where(eq(changeEvents.tenantId, tenant.id));
     expect(reloaded.every((r) => r.status === "batched" && r.updateId === update!.id)).toBe(true);
   });
 
   it("only claims items still pending (race simulation)", async () => {
     const { tenant, repoA } = await seed();
     const [stillPending, alreadyBatched] = await db
-      .insert(changeItems)
+      .insert(changeEvents)
       .values([
-        { tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "a" },
-        { tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "batched", prNumber: 2, prTitle: "b" },
+        { tenantId: tenant.id, repoId: repoA.id, type: "pull_request", provider: "github", externalId: "acme/a#1", status: "pending", prNumber: 1, prTitle: "a" },
+        { tenantId: tenant.id, repoId: repoA.id, type: "pull_request", provider: "github", externalId: "acme/a#2", status: "batched", prNumber: 2, prTitle: "b" },
       ])
       .returning();
 
@@ -117,8 +117,8 @@ describe("change-item-batch", () => {
   it("returns null and creates no Update when none of the ids are still pending", async () => {
     const { tenant, repoA } = await seed();
     const [item] = await db
-      .insert(changeItems)
-      .values({ tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "batched", prNumber: 1, prTitle: "a" })
+      .insert(changeEvents)
+      .values({ tenantId: tenant.id, repoId: repoA.id, type: "pull_request", provider: "github", externalId: "acme/a#1", status: "batched", prNumber: 1, prTitle: "a" })
       .returning();
 
     const update = await claimBatchAndCreateUpdate({
@@ -135,8 +135,8 @@ describe("change-item-batch", () => {
   it("claimBatchAndCreateUpdate persists the review outcome when provided", async () => {
     const { tenant, repoA } = await seed();
     const [item] = await db
-      .insert(changeItems)
-      .values({ tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "a" })
+      .insert(changeEvents)
+      .values({ tenantId: tenant.id, repoId: repoA.id, type: "pull_request", provider: "github", externalId: "acme/a#1", status: "pending", prNumber: 1, prTitle: "a" })
       .returning();
 
     const update = await claimBatchAndCreateUpdate({
@@ -154,12 +154,12 @@ describe("change-item-batch", () => {
   it("releaseBatchForUpdate returns the update's items to pending and clears updateId", async () => {
     const { tenant, repoA } = await seed();
     const [mine] = await db
-      .insert(changeItems)
-      .values({ tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "a" })
+      .insert(changeEvents)
+      .values({ tenantId: tenant.id, repoId: repoA.id, type: "pull_request", provider: "github", externalId: "acme/a#1", status: "pending", prNumber: 1, prTitle: "a" })
       .returning();
     const [other] = await db
-      .insert(changeItems)
-      .values({ tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "pending", prNumber: 2, prTitle: "b" })
+      .insert(changeEvents)
+      .values({ tenantId: tenant.id, repoId: repoA.id, type: "pull_request", provider: "github", externalId: "acme/a#2", status: "pending", prNumber: 2, prTitle: "b" })
       .returning();
 
     const update = await claimBatchAndCreateUpdate({
@@ -171,12 +171,12 @@ describe("change-item-batch", () => {
     const released = await releaseBatchForUpdate(update!.id);
     expect(released).toBe(1);
 
-    const [releasedItem] = await db.select().from(changeItems).where(eq(changeItems.id, mine.id));
+    const [releasedItem] = await db.select().from(changeEvents).where(eq(changeEvents.id, mine.id));
     expect(releasedItem.status).toBe("pending");
     expect(releasedItem.updateId).toBeNull();
 
     // An unrelated pending item must not be touched.
-    const [untouched] = await db.select().from(changeItems).where(eq(changeItems.id, other.id));
+    const [untouched] = await db.select().from(changeEvents).where(eq(changeEvents.id, other.id));
     expect(untouched.status).toBe("pending");
 
     // The released items are visible on the Pending page again — the whole
@@ -188,8 +188,8 @@ describe("change-item-batch", () => {
   it("an update can be deleted once its batch is released (the FK otherwise rejects it)", async () => {
     const { tenant, repoA } = await seed();
     const [item] = await db
-      .insert(changeItems)
-      .values({ tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "a" })
+      .insert(changeEvents)
+      .values({ tenantId: tenant.id, repoId: repoA.id, type: "pull_request", provider: "github", externalId: "acme/a#1", status: "pending", prNumber: 1, prTitle: "a" })
       .returning();
 
     const update = await claimBatchAndCreateUpdate({

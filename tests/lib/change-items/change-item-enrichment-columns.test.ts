@@ -1,11 +1,11 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, repos, changeItems } from "../../../src/db/schema";
+import { tenants, repos, changeEvents } from "../../../src/db/schema";
 
 const NAME = "Enrichment Columns Test Tenant";
 
-describe("change_items enrichment columns", () => {
+describe("change_events enrichment columns", () => {
   afterEach(async () => {
     await db.delete(tenants).where(eq(tenants.name, NAME));
   });
@@ -18,8 +18,8 @@ describe("change_items enrichment columns", () => {
       .returning();
 
     const [defaulted] = await db
-      .insert(changeItems)
-      .values({ tenantId: tenant.id, repoId: repo.id, sourceType: "pr", prNumber: 1, prTitle: "a" })
+      .insert(changeEvents)
+      .values({ tenantId: tenant.id, repoId: repo.id, type: "pull_request", provider: "github", externalId: "acme/e#1", prNumber: 1, prTitle: "a" })
       .returning();
     expect(defaulted.userFacing).toBeNull();
     expect(defaulted.impactSummary).toBeNull();
@@ -28,11 +28,13 @@ describe("change_items enrichment columns", () => {
     expect(defaulted.enrichedAt).toBeNull();
 
     const [enriched] = await db
-      .insert(changeItems)
+      .insert(changeEvents)
       .values({
         tenantId: tenant.id,
         repoId: repo.id,
-        sourceType: "pr",
+        type: "pull_request",
+        provider: "github",
+        externalId: "acme/e#2",
         prNumber: 2,
         prTitle: "b",
         userFacing: true,

@@ -162,6 +162,13 @@
       "when": 1784640427379,
       "tag": "0022_cuddly_shiver_man",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1784653544016,
+      "tag": "0023_orange_captain_cross",
+      "breakpoints": true
     }
   ]
 }

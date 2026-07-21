@@ -1,11 +1,11 @@
 import { generateObject } from "ai";
 import { z } from "zod";
-import type { changeItems, brandProfiles, ResolvedPersona, systemUpdateExamples } from "@/db/schema";
+import type { changeEvents, brandProfiles, ResolvedPersona, systemUpdateExamples } from "@/db/schema";
 import { composePrompt } from "./compose-prompt";
 import { resolveModel, modelId } from "./model";
 import { recordLlmUsage } from "./llm-usage";
 
-type ChangeItemRow = typeof changeItems.$inferSelect;
+type ChangeItemRow = typeof changeEvents.$inferSelect;
 type BrandProfileRow = typeof brandProfiles.$inferSelect;
 type ExampleRow = typeof systemUpdateExamples.$inferSelect;
 

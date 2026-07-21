@@ -3,7 +3,7 @@
 import { and, eq, inArray, ne } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { db } from "@/db";
-import { changeItems, repos } from "@/db/schema";
+import { changeEvents, repos } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { getCommitDiff, listRepoCommits } from "@/lib/integrations/github/github";
 import { importSelectedCommits, type CommitSelection } from "@/lib/change-items/import-commits";
@@ -15,9 +15,9 @@ export async function dropChangeItem(formData: FormData) {
   // Scope the mutation to the change item AND the caller's tenant so a caller
   // can only ever exclude their own rows.
   await db
-    .update(changeItems)
+    .update(changeEvents)
     .set({ status: "excluded", excludedAt: new Date(), excludedBy: session.user.id })
-    .where(and(eq(changeItems.id, changeItemId), eq(changeItems.tenantId, session.user.tenantId)));
+    .where(and(eq(changeEvents.id, changeItemId), eq(changeEvents.tenantId, session.user.tenantId)));
 
   revalidatePath("/pending");
 }
@@ -29,9 +29,9 @@ export async function includeChangeItem(formData: FormData) {
   // Force-include: the user is overriding the classifier. Scope to the caller's
   // tenant so a caller can only ever flip their own rows.
   await db
-    .update(changeItems)
+    .update(changeEvents)
     .set({ userFacing: true })
-    .where(and(eq(changeItems.id, changeItemId), eq(changeItems.tenantId, session.user.tenantId)));
+    .where(and(eq(changeEvents.id, changeItemId), eq(changeEvents.tenantId, session.user.tenantId)));
 
   revalidatePath("/pending");
 }
@@ -80,13 +80,13 @@ export async function listImportableCommits(input: {
       // imported, so it shows up here as re-importable again.
       const existing = shas.length
         ? await db
-            .select({ sha: changeItems.commitSha })
-            .from(changeItems)
+            .select({ sha: changeEvents.commitSha })
+            .from(changeEvents)
             .where(
               and(
-                eq(changeItems.repoId, repo.id),
-                inArray(changeItems.commitSha, shas),
-                ne(changeItems.status, "excluded")
+                eq(changeEvents.repoId, repo.id),
+                inArray(changeEvents.commitSha, shas),
+                ne(changeEvents.status, "excluded")
               )
             )
         : [];

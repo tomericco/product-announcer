@@ -152,7 +152,7 @@ export default async function PendingPage() {
           </TableHeader>
           <TableBody>
             {tracked.map((item) => {
-              const isPr = item.sourceType === "pr";
+              const isPr = item.type === "pull_request";
               const change = (isPr ? item.prTitle : item.commitMessage) ?? "—";
               const url = isPr ? item.prUrl : item.commitUrl;
               const when = changeItemReleasedAt(item);
@@ -176,7 +176,7 @@ export default async function PendingPage() {
                     </div>
                     {isIgnored ? (
                       <Badge variant="outline" className="mt-1 text-muted-foreground">
-                        Ignored · {ignoredReasonLabel(item.ignoredReason)}
+                        Ignored · {ignoredReasonLabel(item.filterReason)}
                       </Badge>
                     ) : facingState === "non-facing" ? (
                       <Badge variant="outline" className="mt-1 text-muted-foreground">

@@ -29,16 +29,28 @@ export function changeItemFacingState(item: {
  * commit can be authored days before it ships.
  */
 export function changeItemReleasedAt(item: {
-  sourceType: "pr" | "commit";
+  type: "pull_request" | "commit" | "task";
   mergedAt: Date | null;
   releasedAt: Date | null;
   committedAt: Date | null;
 }): Date | null {
-  if (item.sourceType === "pr") return item.mergedAt;
+  if (item.type === "pull_request") return item.mergedAt;
   return item.releasedAt ?? item.committedAt;
 }
 
-export function ignoredReasonLabel(reason: "merge_commit" | "empty_diff" | null): string | null {
+// Only merge_commit/empty_diff have labels today — the remaining filter
+// reasons (lockfile_only, test_only, chore_prefix, empty_task) aren't produced
+// by any ingestion path yet, so they fall through to null like an unset reason.
+export function ignoredReasonLabel(
+  reason:
+    | "merge_commit"
+    | "empty_diff"
+    | "lockfile_only"
+    | "test_only"
+    | "chore_prefix"
+    | "empty_task"
+    | null
+): string | null {
   switch (reason) {
     case "merge_commit":
       return "merge commit";

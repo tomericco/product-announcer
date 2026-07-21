@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../src/db";
-import { tenants, repos, changeItems, updates, scheduleConfigs } from "../../src/db/schema";
+import { tenants, repos, changeEvents, updates, scheduleConfigs } from "../../src/db/schema";
 
 describe("scheduler/generation schema", () => {
   afterEach(async () => {
@@ -32,11 +32,13 @@ describe("scheduler/generation schema", () => {
       .returning();
 
     const [item] = await db
-      .insert(changeItems)
+      .insert(changeEvents)
       .values({
         tenantId: tenant.id,
         repoId: repo.id,
-        sourceType: "pr",
+        type: "pull_request",
+        provider: "github",
+        externalId: "acme/widgets#1",
         status: "batched",
         updateId: update.id,
         prNumber: 1,

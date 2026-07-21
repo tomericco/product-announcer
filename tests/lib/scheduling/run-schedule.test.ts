@@ -8,7 +8,7 @@ vi.mock("../../../src/lib/ai/review-draft", () => ({ reviewAndReconcile: vi.fn()
 import { generateObject } from "ai";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, repos, changeItems, updates, scheduleConfigs, brandProfiles, llmUsage } from "../../../src/db/schema";
+import { tenants, repos, changeEvents, updates, scheduleConfigs, brandProfiles, llmUsage } from "../../../src/db/schema";
 import { runBatchForWorkspace, runSchedulerTick } from "../../../src/lib/scheduling/run-schedule";
 import { getPendingChangeItems } from "../../../src/lib/change-items/change-item-batch";
 import { advanceNextScheduledAt } from "../../../src/lib/scheduling/scheduler-decision";
@@ -40,9 +40,9 @@ describe("run-schedule (workspace-level)", () => {
 
   it("runBatchForWorkspace makes one cross-repo Update from all pending and marks them batched", async () => {
     const { tenant, repoA, repoB } = await seed();
-    await db.insert(changeItems).values([
-      { tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "a" },
-      { tenantId: tenant.id, repoId: repoB.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "b" },
+    await db.insert(changeEvents).values([
+      { tenantId: tenant.id, repoId: repoA.id, type: "pull_request", provider: "github", externalId: "acme/a#1", status: "pending", prNumber: 1, prTitle: "a" },
+      { tenantId: tenant.id, repoId: repoB.id, type: "pull_request", provider: "github", externalId: "acme/b#1", status: "pending", prNumber: 1, prTitle: "b" },
     ]);
     vi.mocked(generateObject).mockResolvedValue({
       object: { title: "Combined", body: "Two repos.", category: "new" },
@@ -67,8 +67,8 @@ describe("run-schedule (workspace-level)", () => {
 
   it("leaves items pending when generation fails twice", async () => {
     const { tenant, repoA } = await seed();
-    await db.insert(changeItems).values({
-      tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "flaky",
+    await db.insert(changeEvents).values({
+      tenantId: tenant.id, repoId: repoA.id, type: "pull_request", provider: "github", externalId: "acme/a#1", status: "pending", prNumber: 1, prTitle: "flaky",
     });
     vi.mocked(generateObject).mockRejectedValue(new Error("model unavailable"));
 
@@ -82,8 +82,8 @@ describe("run-schedule (workspace-level)", () => {
 
   it("runSchedulerTick fires the workspace config, creates one Update, advances nextScheduledAt on cadence", async () => {
     const { tenant, repoA } = await seed();
-    await db.insert(changeItems).values({
-      tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "a",
+    await db.insert(changeEvents).values({
+      tenantId: tenant.id, repoId: repoA.id, type: "pull_request", provider: "github", externalId: "acme/a#1", status: "pending", prNumber: 1, prTitle: "a",
     });
     const past = new Date("2026-07-01T00:00:00Z");
     await db.insert(scheduleConfigs).values({ tenantId: tenant.id, cadence: "weekly", threshold: null, nextScheduledAt: past });
@@ -100,8 +100,8 @@ describe("run-schedule (workspace-level)", () => {
 
   it("runSchedulerTick does NOT advance nextScheduledAt on a threshold-reason fire", async () => {
     const { tenant, repoA } = await seed();
-    await db.insert(changeItems).values({
-      tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "a",
+    await db.insert(changeEvents).values({
+      tenantId: tenant.id, repoId: repoA.id, type: "pull_request", provider: "github", externalId: "acme/a#1", status: "pending", prNumber: 1, prTitle: "a",
     });
     const future = new Date("2026-08-01T00:00:00Z");
     await db.insert(scheduleConfigs).values({ tenantId: tenant.id, cadence: "weekly", threshold: 1, thresholdEnabled: true, nextScheduledAt: future });
@@ -124,8 +124,8 @@ describe("run-schedule (workspace-level)", () => {
       industry: "Developer Tools",
       userPersonas: [{ type: "system", key: "developer" }],
     });
-    await db.insert(changeItems).values({
-      tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "a",
+    await db.insert(changeEvents).values({
+      tenantId: tenant.id, repoId: repoA.id, type: "pull_request", provider: "github", externalId: "acme/a#1", status: "pending", prNumber: 1, prTitle: "a",
     });
     vi.mocked(generateObject).mockResolvedValue({
       object: { title: "T", body: "B", category: "new" },
@@ -141,8 +141,8 @@ describe("run-schedule (workspace-level)", () => {
 
   it("runBatchForWorkspace emits ordered progress events and a done event on success", async () => {
     const { tenant, repoA } = await seed();
-    await db.insert(changeItems).values({
-      tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "a",
+    await db.insert(changeEvents).values({
+      tenantId: tenant.id, repoId: repoA.id, type: "pull_request", provider: "github", externalId: "acme/a#1", status: "pending", prNumber: 1, prTitle: "a",
     });
     vi.mocked(generateObject).mockResolvedValue({
       object: { title: "T", body: "B", category: "new" },
@@ -169,8 +169,8 @@ describe("run-schedule (workspace-level)", () => {
 
   it("records token usage for the generation call", async () => {
     const { tenant, repoA } = await seed();
-    await db.insert(changeItems).values({
-      tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "a",
+    await db.insert(changeEvents).values({
+      tenantId: tenant.id, repoId: repoA.id, type: "pull_request", provider: "github", externalId: "acme/a#1", status: "pending", prNumber: 1, prTitle: "a",
     });
     vi.mocked(generateObject).mockResolvedValue({
       object: { title: "T", body: "B" },
@@ -189,8 +189,8 @@ describe("run-schedule (workspace-level)", () => {
 
   it("runBatchForWorkspace emits an error event (not done) when generation fails twice", async () => {
     const { tenant, repoA } = await seed();
-    await db.insert(changeItems).values({
-      tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "flaky",
+    await db.insert(changeEvents).values({
+      tenantId: tenant.id, repoId: repoA.id, type: "pull_request", provider: "github", externalId: "acme/a#1", status: "pending", prNumber: 1, prTitle: "flaky",
     });
     vi.mocked(generateObject).mockRejectedValue(new Error("model unavailable"));
 

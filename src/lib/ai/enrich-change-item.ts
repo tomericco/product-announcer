@@ -12,7 +12,7 @@ export type EnrichmentResult = {
 
 export type EnrichmentInput = {
   tenantId: string;
-  sourceType: "pr" | "commit";
+  type: "pull_request" | "commit";
   repoName: string;
   commitMessage?: string | null;
   diff?: string | null;
@@ -41,7 +41,7 @@ const ENRICHMENT_SYSTEM = [
 
 export function buildEnrichmentPrompt(input: EnrichmentInput): string {
   const source =
-    input.sourceType === "pr"
+    input.type === "pull_request"
       ? `Pull request in ${input.repoName}:\nTitle: ${input.prTitle ?? ""}\nDescription: ${input.prDescription ?? ""}`
       : `Commit in ${input.repoName}:\nMessage: ${input.commitMessage ?? ""}\nDiff:\n${input.diff ?? "(no diff available)"}`;
 

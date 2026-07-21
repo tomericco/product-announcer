@@ -39,25 +39,25 @@ describe("changeItemReleasedAt", () => {
 
   it("uses the merge time for a PR, ignoring commit timestamps", () => {
     expect(
-      changeItemReleasedAt({ sourceType: "pr", mergedAt: MERGED, releasedAt: null, committedAt: COMMITTED })
+      changeItemReleasedAt({ type: "pull_request", mergedAt: MERGED, releasedAt: null, committedAt: COMMITTED })
     ).toBe(MERGED);
   });
 
   it("prefers a commit's push time over its author date", () => {
     expect(
-      changeItemReleasedAt({ sourceType: "commit", mergedAt: null, releasedAt: RELEASED, committedAt: COMMITTED })
+      changeItemReleasedAt({ type: "commit", mergedAt: null, releasedAt: RELEASED, committedAt: COMMITTED })
     ).toBe(RELEASED);
   });
 
   it("falls back to the author date for imported commits, which have no push time", () => {
     expect(
-      changeItemReleasedAt({ sourceType: "commit", mergedAt: null, releasedAt: null, committedAt: COMMITTED })
+      changeItemReleasedAt({ type: "commit", mergedAt: null, releasedAt: null, committedAt: COMMITTED })
     ).toBe(COMMITTED);
   });
 
   it("returns null when nothing is known, so callers can sort it last", () => {
     expect(
-      changeItemReleasedAt({ sourceType: "commit", mergedAt: null, releasedAt: null, committedAt: null })
+      changeItemReleasedAt({ type: "commit", mergedAt: null, releasedAt: null, committedAt: null })
     ).toBeNull();
   });
 });

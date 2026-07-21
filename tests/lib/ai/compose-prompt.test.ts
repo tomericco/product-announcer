@@ -2,19 +2,19 @@ import { describe, it, expect } from "vitest";
 import { serializeBatch, buildSystemPrompt } from "../../../src/lib/ai/compose-prompt";
 
 type FakeChangeItem = {
-  id: string; repoId: string; sourceType: "pr" | "commit";
+  id: string; repoId: string; type: "pull_request" | "commit";
   prNumber: number | null; prTitle: string | null; prDescription: string | null;
   commitSha: string | null; commitMessage: string | null; diff: string | null;
   impactSummary: string | null;
 };
 
 function prItem(o: Partial<FakeChangeItem> = {}): FakeChangeItem {
-  return { id: "ci_1", repoId: "repo_web", sourceType: "pr", prNumber: 1, prTitle: "Add dark mode",
+  return { id: "ci_1", repoId: "repo_web", type: "pull_request", prNumber: 1, prTitle: "Add dark mode",
     prDescription: "Adds a toggle.", commitSha: null, commitMessage: null, diff: "diff --git a/x b/x\n+dark",
     impactSummary: null, ...o };
 }
 function commitItem(o: Partial<FakeChangeItem> = {}): FakeChangeItem {
-  return { id: "ci_2", repoId: "repo_api", sourceType: "commit", prNumber: null, prTitle: null,
+  return { id: "ci_2", repoId: "repo_api", type: "commit", prNumber: null, prTitle: null,
     prDescription: null, commitSha: "abcdef1234567", commitMessage: "fix export timeout",
     diff: "diff --git a/y b/y\n+fix", impactSummary: null, ...o };
 }

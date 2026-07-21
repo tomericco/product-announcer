@@ -15,7 +15,7 @@ describe("buildEnrichmentPrompt", () => {
   it("includes commit message and diff for commit-sourced items", () => {
     const prompt = buildEnrichmentPrompt({
       tenantId,
-      sourceType: "commit",
+      type: "commit",
       repoName: "acme/api",
       commitMessage: "fix export timeout",
       diff: "diff --git a/x b/x\n+fix",
@@ -28,7 +28,7 @@ describe("buildEnrichmentPrompt", () => {
   it("includes PR title and description for pr-sourced items", () => {
     const prompt = buildEnrichmentPrompt({
       tenantId,
-      sourceType: "pr",
+      type: "pull_request",
       repoName: "acme/web",
       prTitle: "Add dark mode",
       prDescription: "Adds a toggle.",
@@ -57,7 +57,7 @@ describe("enrichChangeItem", () => {
       object: { userFacing: true, impactSummary: "Exports finish faster", suggestedCategory: "improved", confidence: 0.8 },
     } as never);
 
-    const result = await enrichChangeItem({ tenantId, sourceType: "commit", repoName: "acme/api", commitMessage: "x", diff: "y" });
+    const result = await enrichChangeItem({ tenantId, type: "commit", repoName: "acme/api", commitMessage: "x", diff: "y" });
     expect(result).toEqual({
       userFacing: true,
       impactSummary: "Exports finish faster",
@@ -76,14 +76,14 @@ describe("enrichChangeItem", () => {
       object: { userFacing: false, impactSummary: "internal refactor", suggestedCategory: "improved", confidence: 0.95 },
     } as never);
 
-    const result = await enrichChangeItem({ tenantId, sourceType: "commit", repoName: "acme/api", commitMessage: "refactor", diff: "z" });
+    const result = await enrichChangeItem({ tenantId, type: "commit", repoName: "acme/api", commitMessage: "refactor", diff: "z" });
     expect(result).toEqual({ userFacing: false, impactSummary: null, suggestedCategory: null, confidence: 0.95 });
   });
 
   it("fails open to user-facing when the model throws", async () => {
     vi.mocked(generateObject).mockRejectedValue(new Error("model down"));
 
-    const result = await enrichChangeItem({ tenantId, sourceType: "pr", repoName: "acme/web", prTitle: "t", prDescription: "d" });
+    const result = await enrichChangeItem({ tenantId, type: "pull_request", repoName: "acme/web", prTitle: "t", prDescription: "d" });
     expect(result).toEqual({ userFacing: true, impactSummary: null, suggestedCategory: null, confidence: null });
   });
 });

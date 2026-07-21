@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, repos, changeItems } from "../../../src/db/schema";
+import { tenants, repos, changeEvents } from "../../../src/db/schema";
 import { ingestPush } from "../../../src/lib/change-items/ingest-push";
 import type { PushCommit } from "../../../src/lib/integrations/github/github";
 import type { EnrichChangeItem } from "../../../src/lib/ai/enrich-change-item";
@@ -40,8 +40,8 @@ describe("ingestPush classification", () => {
       getCommitDiff: async () => "diff --git a/x b/x\n+real change",
       enrich: enrichAllFacing,
     });
-    const [row] = await db.select().from(changeItems).where(eq(changeItems.tenantId, tenant.id));
-    expect(row).toMatchObject({ status: "pending", ignoredReason: null, commitSha: "feat1", userFacing: true, suggestedCategory: "improved" });
+    const [row] = await db.select().from(changeEvents).where(eq(changeEvents.tenantId, tenant.id));
+    expect(row).toMatchObject({ status: "pending", filterReason: null, commitSha: "feat1", userFacing: true, suggestedCategory: "improved" });
   });
 
   it("ignores a non-PR merge commit without fetching a diff or enriching", async () => {
@@ -53,8 +53,8 @@ describe("ingestPush classification", () => {
       getCommitDiff: async () => { diffCalls++; return "x"; },
       enrich: enrichAllFacing,
     });
-    const [row] = await db.select().from(changeItems).where(eq(changeItems.tenantId, tenant.id));
-    expect(row).toMatchObject({ status: "ignored", ignoredReason: "merge_commit", commitSha: "merge1", userFacing: null });
+    const [row] = await db.select().from(changeEvents).where(eq(changeEvents.tenantId, tenant.id));
+    expect(row).toMatchObject({ status: "ignored", filterReason: "merge_commit", commitSha: "merge1", userFacing: null });
     expect(diffCalls).toBe(0);
   });
 
@@ -67,8 +67,8 @@ describe("ingestPush classification", () => {
       getCommitDiff: async () => "   ",
       enrich: async (x) => { enrichCalls++; return enrichAllFacing(x); },
     });
-    const [row] = await db.select().from(changeItems).where(eq(changeItems.tenantId, tenant.id));
-    expect(row).toMatchObject({ status: "ignored", ignoredReason: "empty_diff", commitSha: "empty1" });
+    const [row] = await db.select().from(changeEvents).where(eq(changeEvents.tenantId, tenant.id));
+    expect(row).toMatchObject({ status: "ignored", filterReason: "empty_diff", commitSha: "empty1" });
     expect(enrichCalls).toBe(0);
   });
 
@@ -80,7 +80,7 @@ describe("ingestPush classification", () => {
       getCommitDiff: async () => "diff",
       enrich: enrichAllFacing,
     });
-    const rows = await db.select().from(changeItems).where(eq(changeItems.tenantId, tenant.id));
+    const rows = await db.select().from(changeEvents).where(eq(changeEvents.tenantId, tenant.id));
     expect(rows).toHaveLength(0);
   });
 
@@ -92,9 +92,9 @@ describe("ingestPush classification", () => {
       getCommitDiff: async () => "diff --git a/x b/x\n+real change",
       enrich: enrichAllFacing,
     });
-    const rows = await db.select().from(changeItems).where(eq(changeItems.tenantId, tenant.id));
+    const rows = await db.select().from(changeEvents).where(eq(changeEvents.tenantId, tenant.id));
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ status: "pending", ignoredReason: null, commitSha: "promoted1", userFacing: true });
+    expect(rows[0]).toMatchObject({ status: "pending", filterReason: null, commitSha: "promoted1", userFacing: true });
   });
 
   it("ignores pushes to a non-watched branch", async () => {
@@ -105,7 +105,7 @@ describe("ingestPush classification", () => {
       getCommitPulls: noPulls, getCommitDiff: async () => "x", enrich: enrichAllFacing,
     });
     expect(listed).toBe(false);
-    expect(await db.select().from(changeItems).where(eq(changeItems.tenantId, tenant.id))).toHaveLength(0);
+    expect(await db.select().from(changeEvents).where(eq(changeEvents.tenantId, tenant.id))).toHaveLength(0);
   });
 
   it("isolates a per-commit failure: the other commit in the batch still ingests", async () => {
@@ -123,9 +123,9 @@ describe("ingestPush classification", () => {
       },
       enrich: enrichAllFacing,
     });
-    const rows = await db.select().from(changeItems).where(eq(changeItems.tenantId, tenant.id));
+    const rows = await db.select().from(changeEvents).where(eq(changeEvents.tenantId, tenant.id));
     expect(rows.map((r) => r.commitSha)).toEqual(["good1"]);
-    expect(rows[0]).toMatchObject({ status: "pending", ignoredReason: null, userFacing: true });
+    expect(rows[0]).toMatchObject({ status: "pending", filterReason: null, userFacing: true });
     expect(errorSpy).toHaveBeenCalledOnce();
     expect(errorSpy.mock.calls[0][0]).toMatch(/bad1/);
     errorSpy.mockRestore();
@@ -141,7 +141,7 @@ describe("ingestPush classification", () => {
       enrich: enrichAllFacing,
     });
 
-    const [row] = await db.select().from(changeItems).where(eq(changeItems.tenantId, tenant.id));
+    const [row] = await db.select().from(changeEvents).where(eq(changeEvents.tenantId, tenant.id));
     expect(row.releasedAt).toEqual(PUSHED_AT);
     expect(row.committedAt).toEqual(new Date("2026-02-01T00:00:00Z"));
     expect(row.releasedAt!.getTime()).toBeGreaterThan(row.committedAt!.getTime());
@@ -159,7 +159,7 @@ describe("ingestPush classification", () => {
       enrich: enrichAllFacing,
     });
 
-    const rows = await db.select().from(changeItems).where(eq(changeItems.tenantId, tenant.id));
+    const rows = await db.select().from(changeEvents).where(eq(changeEvents.tenantId, tenant.id));
     expect(rows).toHaveLength(2);
     expect(rows.every((r) => r.releasedAt?.getTime() === PUSHED_AT.getTime())).toBe(true);
   });
@@ -169,6 +169,6 @@ describe("ingestPush classification", () => {
     const deps = { listPushCommits: async () => [commit({ sha: "dup1" })], getCommitPulls: noPulls, getCommitDiff: async () => "real", enrich: enrichAllFacing };
     await ingestPush(baseInput, deps);
     await ingestPush(baseInput, deps);
-    expect(await db.select().from(changeItems).where(eq(changeItems.tenantId, tenant.id))).toHaveLength(1);
+    expect(await db.select().from(changeEvents).where(eq(changeEvents.tenantId, tenant.id))).toHaveLength(1);
   });
 });

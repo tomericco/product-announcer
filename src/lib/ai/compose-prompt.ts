@@ -1,6 +1,6 @@
-import type { changeItems, brandProfiles, ResolvedPersona, systemUpdateExamples } from "@/db/schema";
+import type { changeEvents, brandProfiles, ResolvedPersona, systemUpdateExamples } from "@/db/schema";
 
-type ChangeItemRow = typeof changeItems.$inferSelect;
+type ChangeItemRow = typeof changeEvents.$inferSelect;
 type BrandProfileRow = typeof brandProfiles.$inferSelect;
 type ExampleRow = typeof systemUpdateExamples.$inferSelect;
 
@@ -9,7 +9,7 @@ const DEFAULT_MAX_PROMPT_CHARS = 24000;
 function formatChangeItem(item: ChangeItemRow, index: number, reposById: Map<string, string>): string {
   const repo = reposById.get(item.repoId) ?? "unknown";
   const n = index + 1;
-  if (item.sourceType === "pr") {
+  if (item.type === "pull_request") {
     const detail = item.impactSummary ?? item.prDescription ?? "";
     return `${n}. [${repo} · PR #${item.prNumber}] "${item.prTitle}"${detail ? ` — ${detail}` : ""}`;
   }

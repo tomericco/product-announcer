@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
-import { repos, changeItems } from "@/db/schema";
+import { repos, changeEvents } from "@/db/schema";
 import { truncateDiff } from "@/lib/integrations/github/github";
 import { mapWithConcurrency } from "@/lib/concurrency";
 import { enrichChangeItem, type EnrichChangeItem } from "@/lib/ai/enrich-change-item";
@@ -61,7 +61,7 @@ export async function importSelectedCommits(
       const diff = truncateDiff(await getCommitDiff(repo.githubInstallationId, repo.githubRepoFullName, selection.sha));
       const enrichment = await enrich({
         tenantId: input.tenantId,
-        sourceType: "commit",
+        type: "commit",
         repoName: repo.githubRepoFullName,
         commitMessage: selection.message,
         diff,
@@ -85,11 +85,13 @@ export async function importSelectedCommits(
       };
 
       const upserted = await database
-        .insert(changeItems)
+        .insert(changeEvents)
         .values({
           tenantId: input.tenantId,
           repoId: repo.id,
-          sourceType: "commit",
+          type: "commit",
+          provider: "github",
+          externalId: selection.sha,
           commitSha: selection.sha,
           ...enrichedFields,
         })
@@ -97,11 +99,11 @@ export async function importSelectedCommits(
         // exclusion) with fresh content; a still-active row is not touched, so the
         // returned-rows count only reflects genuine (re)imports.
         .onConflictDoUpdate({
-          target: [changeItems.repoId, changeItems.commitSha],
+          target: [changeEvents.repoId, changeEvents.commitSha],
           set: { status: "pending", excludedAt: null, excludedBy: null, ...enrichedFields },
-          setWhere: eq(changeItems.status, "excluded"),
+          setWhere: eq(changeEvents.status, "excluded"),
         })
-        .returning({ id: changeItems.id });
+        .returning({ id: changeEvents.id });
 
       return upserted.length;
     });
