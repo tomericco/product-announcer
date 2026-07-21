@@ -145,22 +145,22 @@
     {
       "idx": 20,
       "version": "7",
-      "when": 1784559878070,
-      "tag": "0020_tan_wild_child",
+      "when": 1784640329838,
+      "tag": "0020_clean_exiles",
       "breakpoints": true
     },
     {
       "idx": 21,
       "version": "7",
-      "when": 1784560698252,
-      "tag": "0021_faithful_skaar",
+      "when": 1784640389890,
+      "tag": "0021_dapper_gauntlet",
       "breakpoints": true
     },
     {
       "idx": 22,
       "version": "7",
-      "when": 1784562554372,
-      "tag": "0022_shocking_prima",
+      "when": 1784640427379,
+      "tag": "0022_cuddly_shiver_man",
       "breakpoints": true
     }
   ]
