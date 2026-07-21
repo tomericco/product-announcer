@@ -22,7 +22,7 @@ renames the shippable artifact to *release*.
 | Release composition | Manual selection, or scheduler creates a **draft** | Auto-publishing an uncurated sweep contradicts the point of curation. |
 | Atomic update in a draft release | Still open for assignment; belongs to at most one release | Nothing has been communicated yet, so there is nothing to preserve. |
 | Stale drafts | Catch-up affordance, merge-regenerate | Never silently rewrite text a human touched. |
-| Notion delivery | Public integration (OAuth) + webhooks. No polling. | Minimal. Polling is additive later. |
+| Notion | Specified separately | Independent of this restructure once `change_events` exists. |
 | Resolver concurrency | Batched per push, serialized per tenant by advisory lock | Batching is both faster and more accurate than a sequential loop. |
 | Historical backfill | None | Running the resolver over all history is expensive and produces atomic updates nobody asked for. |
 
@@ -84,12 +84,6 @@ New:
 - `bodyEditedAt` — drives merge-regenerate vs regenerate
 - `composedAt` — the timestamp the catch-up deltas are measured against
 
-### `notion_connections` (new)
-
-Mirrors `webflow_connections`: encrypted `accessToken` / `refreshToken`,
-`workspaceId`, `botId`, `databaseId`, `statusPropertyId`, `doneValues[]`,
-`status` (`active | needs_reauth | misconfigured`).
-
 ## Ingestion
 
 ### Tier 1 — deterministic filter
@@ -137,51 +131,20 @@ lock-across-work pattern already in `src/lib/publishing/dispatch.ts`.
 Ingestion remains deferred via Next's `after()`, so none of this blocks a webhook
 response. The cost of slowness is UI latency, not a timeout.
 
-## Notion integration
+## Task sources
 
-A **public integration** — OAuth 2.0, installable by any workspace, the direct
-analogue of the existing GitHub App. On install we receive `access_token`,
-`refresh_token`, `workspace_id`, `bot_id`, and owner info; the tenant picks which
-databases to grant via Notion's page picker during consent.
+The pipeline above is source-agnostic: anything that produces a `change_events`
+row of type `task` flows through the same three tiers. The `provider` column and
+the `task` type exist from day one so that adding Linear or Jira later is an
+adapter, not a migration.
 
-Real-time delivery uses connection webhooks, subscribing to
-`page.properties_updated`. The payload carries `workspace_id` (routes to the
-tenant) and an `updated_properties` array (cheaply ignore edits that don't touch
-the configured status property), but **not** the property values — a follow-up
-`GET /pages/{id}` fetches those, using the stored token.
-
-Signature verification is HMAC-SHA256 via `X-Notion-Signature`, the same shape as
-the GitHub webhook verification already in
-`src/lib/integrations/github/github-webhook.ts`.
-
-### Notion API facts this design depends on
-
-Verified against `developers.notion.com` and Notion's help center, 2026-07-21.
-
-- **Webhook subscriptions are created in Notion's developer UI, not via API**, with
-  a one-time `verification_token` handshake. This is a one-off setup for our
-  integration, not per tenant.
-- **Delivery is at-most-once.** Notion retries up to 8 times over ~24h but does
-  not guarantee delivery. Unlike GitHub's at-least-once webhooks, a dropped event
-  is simply lost.
-- **Events may arrive out of order.** Use payload timestamps, not arrival order.
-- **The integration only receives events for pages explicitly shared with it.**
-  There is no workspace-wide firehose. The OAuth page picker defines the scope.
-
-### Known gap, accepted
-
-**Unresolved:** whether one subscription on a public integration fans in events
-from every install (routed by `workspace_id`), or whether each workspace needs
-its own subscription. Notion's docs support both readings and third-party guides
-favor fan-in. If it turns out to be per-workspace, self-serve onboarding is
-blocked and the fallback is on-demand reconciliation. **Confirm with a hands-on
-test against a second workspace before building the webhook route.**
-
-**Accepted:** no polling means no backfill on connect — a tenant links Notion and
-sees nothing until their next task completes — and dropped webhooks are
-unrecoverable. Both are additive to fix later: one function querying tasks
-completed since the last recorded event, wired to a "Sync tasks" button, and
-optionally promoted to the existing cron tick.
+Notion is the first task provider and is specified separately in
+[2026-07-21-notion-task-source-design.md](./2026-07-21-notion-task-source-design.md).
+That spec depends on phase 1 of this one and can be implemented independently
+afterward. It carries one open blocker worth knowing about here: whether a single
+Notion webhook subscription fans in across all workspaces that install a public
+integration is unconfirmed, and a per-workspace answer would make self-serve
+Notion onboarding unviable as designed.
 
 ## Composition
 
@@ -233,7 +196,6 @@ publishing closes it — sitting in an unpublished draft does not.
   inline title/summary editing (which sets `summaryEditedAt`), and selection for
   a release.
 - **Releases** — today's drafts/history pages, renamed, plus the catch-up banner.
-- **Integrations** — Notion connect card alongside GitHub and Webflow.
 
 ## Testing
 
@@ -264,13 +226,14 @@ pipeline, each phase shippable on its own:
 2. **Composition.** Repoint generation at atomic updates, add the catch-up
    affordance and merge-regenerate, remove `autoPublish`.
 3. **Change-events UI.** The full list plus manual reassignment.
-4. **Notion.** Public integration, OAuth flow, webhook route.
+4. **Notion.** Its own spec — see "Task sources". Depends only on phase 1, so it
+   can run in parallel with phases 2–3 or in a separate session.
 
 Phase 1 carries essentially all the risk. Phases 2–4 are additive.
 
 ## Out of scope
 
-- Polling / reconciliation for Notion (see accepted gap above)
+- The Notion integration itself (separate spec)
 - Task providers other than Notion
 - Historical backfill of atomic updates
 - Auto-publishing of any kind
