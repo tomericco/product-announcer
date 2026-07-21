@@ -8,7 +8,7 @@ import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
 import { tenants, repos, changeEvents, updates, webhookConfigs, deliveryAttempts } from "../../../src/db/schema";
 import { runBatchForWorkspace } from "../../../src/lib/scheduling/run-schedule";
-import { getPendingChangeItems } from "../../../src/lib/change-items/change-item-batch";
+import { getPendingChangeItems } from "../../../src/lib/change-events/change-item-batch";
 import { reviewAndReconcile } from "../../../src/lib/ai/review-draft";
 import { encryptSecret } from "../../../src/lib/credentials/encryption";
 

@@ -3,7 +3,7 @@ import {
   changeItemFacingState,
   changeItemReleasedAt,
   ignoredReasonLabel,
-} from "../../../src/lib/change-items/change-item-display";
+} from "../../../src/lib/change-events/change-item-display";
 
 describe("changeItemFacingState", () => {
   it("is non-facing when userFacing is false", () => {

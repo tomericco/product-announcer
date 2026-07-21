@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
 import { tenants, repos, changeEvents } from "../../../src/db/schema";
-import { ingestMergedPullRequest } from "../../../src/lib/change-items/ingest-pull-request";
+import { ingestMergedPullRequest } from "../../../src/lib/change-events/ingest-pull-request";
 import type { EnrichChangeItem } from "../../../src/lib/ai/enrich-change-item";
 
 const fakeEnrich: EnrichChangeItem = async (input) => ({

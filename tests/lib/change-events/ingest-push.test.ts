@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
 import { tenants, repos, changeEvents } from "../../../src/db/schema";
-import { ingestPush } from "../../../src/lib/change-items/ingest-push";
+import { ingestPush } from "../../../src/lib/change-events/ingest-push";
 import type { PushCommit } from "../../../src/lib/integrations/github/github";
 import type { EnrichChangeItem } from "../../../src/lib/ai/enrich-change-item";
 

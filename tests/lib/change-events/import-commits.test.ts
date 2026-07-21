@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
 import { tenants, repos, changeEvents } from "../../../src/db/schema";
-import { importSelectedCommits } from "../../../src/lib/change-items/import-commits";
+import { importSelectedCommits } from "../../../src/lib/change-events/import-commits";
 import type { EnrichChangeItem } from "../../../src/lib/ai/enrich-change-item";
 
 const NAME = "Import Commits Test Tenant";

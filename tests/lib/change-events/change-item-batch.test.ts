@@ -9,7 +9,7 @@ import {
   claimBatchAndCreateUpdate,
   releaseBatchForUpdate,
   batchCategories,
-} from "../../../src/lib/change-items/change-item-batch";
+} from "../../../src/lib/change-events/change-item-batch";
 
 describe("change-item-batch", () => {
   afterEach(async () => {

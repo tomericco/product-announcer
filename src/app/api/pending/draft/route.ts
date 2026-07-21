@@ -2,7 +2,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/workspace/auth";
 import { hasValidSession, tenantExists } from "@/lib/workspace/session";
 import { db } from "@/db";
-import { getBatchableChangeItems } from "@/lib/change-items/change-item-batch";
+import { getBatchableChangeItems } from "@/lib/change-events/change-item-batch";
 import { runBatchForWorkspace } from "@/lib/scheduling/run-schedule";
 import type { DraftProgressEvent } from "@/lib/scheduling/draft-progress";
 

@@ -3,13 +3,13 @@ import { eq } from "drizzle-orm";
 
 vi.mock("next-auth", () => ({ getServerSession: vi.fn() }));
 vi.mock("../../../../../src/lib/scheduling/run-schedule", () => ({ runBatchForWorkspace: vi.fn() }));
-vi.mock("../../../../../src/lib/change-items/change-item-batch", () => ({ getBatchableChangeItems: vi.fn() }));
+vi.mock("../../../../../src/lib/change-events/change-item-batch", () => ({ getBatchableChangeItems: vi.fn() }));
 
 import { getServerSession } from "next-auth";
 import { db } from "../../../../../src/db";
 import { tenants } from "../../../../../src/db/schema";
 import { runBatchForWorkspace } from "../../../../../src/lib/scheduling/run-schedule";
-import { getBatchableChangeItems } from "../../../../../src/lib/change-items/change-item-batch";
+import { getBatchableChangeItems } from "../../../../../src/lib/change-events/change-item-batch";
 import { POST } from "../../../../../src/app/api/pending/draft/route";
 
 const TENANT_NAME = "Pending Draft Route Test Tenant";

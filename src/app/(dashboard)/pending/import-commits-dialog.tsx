@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Download, ExternalLink } from "lucide-react";
 import { listImportableCommits, importCommits, type ImportableCommit } from "./actions";
-import type { CommitSelection } from "@/lib/change-items/import-commits";
+import type { CommitSelection } from "@/lib/change-events/import-commits";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";

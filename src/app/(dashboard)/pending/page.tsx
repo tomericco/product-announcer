@@ -4,13 +4,13 @@ import { FolderGit2, Inbox, ArrowRight } from "lucide-react";
 import { db } from "@/db";
 import { repos, scheduleConfigs } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
-import { getBatchableChangeItems, getTrackedChangeItems } from "@/lib/change-items/change-item-batch";
+import { getBatchableChangeItems, getTrackedChangeItems } from "@/lib/change-events/change-item-batch";
 import { formatScheduleDistance } from "@/lib/scheduling/format-schedule";
 import {
   changeItemFacingState,
   changeItemReleasedAt,
   ignoredReasonLabel,
-} from "@/lib/change-items/change-item-display";
+} from "@/lib/change-events/change-item-display";
 import { dropChangeItem, includeChangeItem } from "./actions";
 import { ImportCommitsDialog } from "./import-commits-dialog";
 import { DraftUpdateDialog } from "./draft-update-dialog";

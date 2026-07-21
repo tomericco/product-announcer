@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
 import { repos, scheduleConfigs, tenants, webhookConfigs, updates, systemPersonas, systemUpdateExamples } from "@/db/schema";
-import { getPendingChangeItems, getBatchableChangeItems, claimBatchAndCreateUpdate, batchCategories } from "@/lib/change-items/change-item-batch";
+import { getPendingChangeItems, getBatchableChangeItems, claimBatchAndCreateUpdate, batchCategories } from "@/lib/change-events/change-item-batch";
 import { generateUpdateDraft } from "@/lib/ai/generation";
 import { getOrCreateBrandProfile } from "@/lib/workspace/brand-profile";
 import { resolvePersonaRefs, systemPersonaKeys } from "@/lib/workspace/personas";

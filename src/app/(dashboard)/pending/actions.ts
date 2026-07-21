@@ -6,7 +6,7 @@ import { db } from "@/db";
 import { changeEvents, repos } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { getCommitDiff, listRepoCommits } from "@/lib/integrations/github/github";
-import { importSelectedCommits, type CommitSelection } from "@/lib/change-items/import-commits";
+import { importSelectedCommits, type CommitSelection } from "@/lib/change-events/import-commits";
 
 export async function dropChangeItem(formData: FormData) {
   const session = await requireSession();

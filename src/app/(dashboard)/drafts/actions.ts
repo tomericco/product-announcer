@@ -7,7 +7,7 @@ import { db } from "@/db";
 import { updates } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { dispatchAllDestinations } from "@/lib/publishing/dispatch";
-import { releaseBatchForUpdate } from "@/lib/change-items/change-item-batch";
+import { releaseBatchForUpdate } from "@/lib/change-events/change-item-batch";
 
 async function loadOwnedDraft(tenantId: string, updateId: string) {
   const [update] = await db
