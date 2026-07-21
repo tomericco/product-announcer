@@ -1,20 +1,31 @@
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/workspace/auth";
-import { hasValidSession } from "@/lib/workspace/session";
+import { hasValidSession, tenantExists } from "@/lib/workspace/session";
 import { db } from "@/db";
 import { getBatchableChangeItems } from "@/lib/change-items/change-item-batch";
 import { runBatchForWorkspace } from "@/lib/scheduling/run-schedule";
 import type { DraftProgressEvent } from "@/lib/scheduling/draft-progress";
 
+function unauthorized(): Response {
+  return new Response(JSON.stringify({ error: "unauthorized" }), {
+    status: 401,
+    headers: { "content-type": "application/json" },
+  });
+}
+
 export async function POST(_req: Request): Promise<Response> {
   const session = await getServerSession(authOptions);
   if (!hasValidSession(session)) {
-    return new Response(JSON.stringify({ error: "unauthorized" }), {
-      status: 401,
-      headers: { "content-type": "application/json" },
-    });
+    return unauthorized();
   }
   const tenantId = session.user.tenantId;
+  // A JWT can outlive the tenant row it points at (deleted tenant, restored
+  // backup). This is a fetch-based JSON/ndjson API, not a browser-navigated
+  // page, so it must fail with a plain 401 rather than requireSession()'s
+  // redirect (a fetch() caller won't follow a redirect into a page render).
+  if (!(await tenantExists(tenantId))) {
+    return unauthorized();
+  }
 
   const encoder = new TextEncoder();
   const stream = new ReadableStream<Uint8Array>({
