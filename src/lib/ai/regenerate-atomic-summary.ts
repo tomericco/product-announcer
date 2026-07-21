@@ -96,6 +96,8 @@ export async function refreshAtomicUpdates(
       summary: r.impactSummary,
     }));
 
+    if (evidence.length === 0) continue;
+
     const next = await regenerateAtomicSummary({
       tenantId,
       current: { title: atomic.title, summary: atomic.summary },
