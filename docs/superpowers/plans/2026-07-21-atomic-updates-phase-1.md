@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- **The database has no production data.** Existing rows are disposable. Schema changes drop and recreate rather than backfill, and required columns are `NOT NULL` rather than nullable-with-fallback.
+- **The database has no production data.** No backfill is needed anywhere, and required columns are `NOT NULL` rather than nullable-with-fallback. This does NOT mean dropping schemas or squashing migration history — migrations continue normally from 0022.
 - **Rename `change_items` → `change_events` and drop `sourceType` in favor of `type`.** Both are done in Task 1 and every consumer is updated in the same task.
 - **Do NOT rename `updates` → `releases` in this phase.** That rename drags in `dispatch.ts`, `delivery_attempts`, Webflow publishing, and the drafts UI — none of which phase 1 touches. It belongs to phase 2.
 - **No historical backfill.** Never run the resolver over pre-existing rows.
@@ -27,8 +27,7 @@
 
 **Files:**
 - Modify: `src/db/schema.ts`
-- Delete: `src/db/migrations/` contents (see Step 3)
-- Create: `src/db/migrations/0000_init.sql` (regenerated)
+- Create: `src/db/migrations/0023_*.sql` (generated)
 - Test: `tests/db/atomic-updates-schema.test.ts`
 - Test: `tests/db/repo-and-change-item.test.ts` (existing — update)
 
@@ -42,7 +41,7 @@
 
 **Context:** `externalId` is the cross-provider idempotency key. Commit SHAs are globally unique, but PR numbers collide across repos, so PR ids are namespaced by repo full name: `acme/widgets#42`. The unique index is `(tenantId, provider, externalId)`.
 
-Because the database has no data worth keeping, this task squashes the migration history rather than adding migration 0023 on top of a table that is about to be renamed. `type`, `provider`, and `externalId` are `NOT NULL` — there are no legacy rows to accommodate, and making them required removes a `?? "commit"` fallback from every consumer.
+Because the database has no rows, `type`, `provider`, and `externalId` can be `NOT NULL` with no backfill and no default — and making them required removes a `?? "commit"` fallback from every consumer. Migration history is preserved: this is one ordinary migration on top of 0022.
 
 - [ ] **Step 1: Write the failing schema test**
 
@@ -297,53 +296,49 @@ Also delete the now-unused `ignoredReasonEnum` (line 49).
 
 **Note:** `changeEvents` references `atomicUpdates` and `updates`, both declared later in the file. Drizzle's `() =>` thunks make forward references safe — do not reorder the file.
 
-- [ ] **Step 4: Squash the migration history and reset both databases**
+- [ ] **Step 4: Generate the migration**
 
-There is no data to preserve, so regenerate from scratch rather than stacking a
-rename onto 23 migrations describing a table that no longer exists.
+An ordinary migration on top of the existing history — no squash, no schema drop.
+The migration counter continues from 0022, so expect `0023_*.sql`.
 
-```bash
-rm -rf src/db/migrations
-psql "$DATABASE_URL" -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
-psql "$TEST_DATABASE_URL" -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
-npm run db:generate
-```
+Run: `npm run db:generate`
 
-`TEST_DATABASE_URL` is whatever `drizzle.config.test.ts` reads — check that file
-for the exact env var name before running the second `psql`.
+**This step prompts interactively.** drizzle-kit detects that `change_items`
+disappeared and `change_events` appeared, and asks whether that is a rename or a
+drop-and-create. **An agent cannot answer this — ask the user to run it, or
+expect the prompt and hand it back.**
 
-**This is destructive and intentional.** If either database turns out to hold
-data you care about, stop and say so rather than proceeding.
+Either answer produces a correct schema. Rename preserves the (empty) table;
+drop-and-create discards it. With no data, prefer **rename** — it keeps the
+migration readable as a rename, which is what actually happened.
 
-Expected: a single `src/db/migrations/0000_*.sql` describing the whole schema.
+Expected: one new `src/db/migrations/0023_*.sql`. Open it and confirm it contains
+the rename (or drop+create) of `change_items`, the three new `NOT NULL` columns,
+the dropped `source_type` / `ignored_reason` columns, the new `atomic_updates`
+table, and the new unique index. `ADD COLUMN ... NOT NULL` without a default is
+valid here precisely because the table is empty — if the table turns out to have
+rows, this migration fails loudly rather than corrupting anything, which is the
+behavior we want.
 
 - [ ] **Step 5: Apply to both databases**
 
 Run: `npm run db:migrate && npm run db:migrate:test`
-Expected: both report migration 0000 applied.
+Expected: both report migration 0023 applied. The seeded `system_personas` and
+`system_update_examples` catalogs are untouched by this migration.
 
-- [ ] **Step 6: Re-seed the system catalogs**
-
-`system_personas` and `system_update_examples` are seeded, not user data, and the
-schema drop removed them. Find the seed script with
-`grep -rn "systemPersonas" src/ scripts/ --include=*.ts -l` and re-run it.
-
-Verify: `psql "$DATABASE_URL" -c "SELECT count(*) FROM system_personas;"` returns
-a non-zero count. Generation quality depends on these rows.
-
-- [ ] **Step 7: Update the existing change-item schema test**
+- [ ] **Step 6: Update the existing change-item schema test**
 
 `tests/db/repo-and-change-item.test.ts` imports `changeItems` and sets
 `sourceType`. Update it: rename the import to `changeEvents`, replace
 `sourceType: "pr"` with `type: "pull_request"`, and add
 `provider: "github", externalId: "acme/widgets#42"` to the insert.
 
-- [ ] **Step 8: Run both schema tests**
+- [ ] **Step 7: Run both schema tests**
 
 Run: `npx vitest run tests/db/`
 Expected: PASS, including the 4 new tests.
 
-- [ ] **Step 9: Update every remaining `changeItems` reference**
+- [ ] **Step 8: Update every remaining `changeItems` reference**
 
 Run: `grep -rln "changeItems\|sourceType" src/ tests/`
 
@@ -357,14 +352,14 @@ In `src/lib/ai/enrich-change-item.ts`, change `EnrichmentInput.sourceType` from
 database says `"pull_request"` is exactly the inconsistency this task exists to
 remove.
 
-- [ ] **Step 10: Verify nothing else broke**
+- [ ] **Step 9: Verify nothing else broke**
 
 Run: `npm run typecheck && npm run lint && npx vitest run`
 Expected: typecheck clean, full suite green. Any remaining reference to
 `changeItems` or `sourceType` fails the typecheck — that is the intended safety
 net for this rename.
 
-- [ ] **Step 11: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
 git add -A src/db src/lib tests
