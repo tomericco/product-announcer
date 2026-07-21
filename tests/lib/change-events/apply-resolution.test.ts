@@ -110,7 +110,7 @@ describe("apply-resolution", () => {
   });
 
   it("never assigns an event belonging to another tenant", async () => {
-    const { tenant, repo } = await seed();
+    const { tenant } = await seed();
     const [other] = await db.insert(tenants).values({ name: TENANT }).returning();
     const [otherRepo] = await db
       .insert(repos)
@@ -129,6 +129,29 @@ describe("apply-resolution", () => {
 
     const [updated] = await db.select().from(changeEvents).where(eq(changeEvents.id, foreign.id));
     expect(updated.atomicUpdateId).toBeNull();
+  });
+
+  it("never assigns to an atomic update owned by another tenant", async () => {
+    const { tenant, repo } = await seed();
+    const [other] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const [foreignAtomic] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: other.id, title: "Foreign", summary: "S" })
+      .returning();
+    const event = await insertEvent(tenant.id, repo.id, "sha-cross-tenant-assign");
+
+    await applyResolution(db, tenant.id, [
+      { eventId: event.id, action: "assign", atomicUpdateId: foreignAtomic.id },
+    ]);
+
+    const [updated] = await db.select().from(changeEvents).where(eq(changeEvents.id, event.id));
+    expect(updated.atomicUpdateId).toBeNull();
+
+    const [otherAtomic] = await db
+      .select()
+      .from(atomicUpdates)
+      .where(eq(atomicUpdates.id, foreignAtomic.id));
+    expect(otherAtomic.tenantId).toBe(other.id);
   });
 
   it("loadOpenAtomicUpdates returns only open ones for the tenant", async () => {

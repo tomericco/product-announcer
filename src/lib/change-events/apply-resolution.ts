@@ -1,4 +1,4 @@
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, exists, isNull, sql } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
 import { atomicUpdates, changeEvents } from "@/db/schema";
 import type { OpenAtomicUpdate, ResolutionAction } from "@/lib/ai/resolve-atomic-updates";
@@ -54,52 +54,69 @@ export async function applyResolutionInTx(
 ): Promise<void> {
   if (actions.length === 0) return;
 
-  {
-    // Two events describing the same new change both arrive as `create` actions
-    // with an identical title. Creating a row per action would split one change
-    // across two atomic updates, so the first create wins and the rest reuse it.
-    const createdByTitle = new Map<string, string>();
+  // Two events describing the same new change both arrive as `create` actions
+  // with an identical title. Creating a row per action would split one change
+  // across two atomic updates, so the first create wins and the rest reuse it.
+  const createdByTitle = new Map<string, string>();
 
-    for (const action of actions) {
-      let atomicUpdateId: string;
+  for (const action of actions) {
+    let atomicUpdateId: string;
 
-      if (action.action === "create") {
-        const key = action.title.trim().toLowerCase();
-        const existing = createdByTitle.get(key);
+    if (action.action === "create") {
+      const key = action.title.trim().toLowerCase();
+      const existing = createdByTitle.get(key);
 
-        if (existing) {
-          atomicUpdateId = existing;
-        } else {
-          const [created] = await tx
-            .insert(atomicUpdates)
-            .values({
-              tenantId,
-              title: action.title,
-              summary: action.summary,
-              category: action.category,
-            })
-            .returning({ id: atomicUpdates.id });
-          atomicUpdateId = created.id;
-          createdByTitle.set(key, atomicUpdateId);
-        }
+      if (existing) {
+        atomicUpdateId = existing;
       } else {
-        atomicUpdateId = action.atomicUpdateId;
+        const [created] = await tx
+          .insert(atomicUpdates)
+          .values({
+            tenantId,
+            title: action.title,
+            summary: action.summary,
+            category: action.category,
+          })
+          .returning({ id: atomicUpdates.id });
+        atomicUpdateId = created.id;
+        createdByTitle.set(key, atomicUpdateId);
       }
-
-      // Tenant-scoped and unassigned-only: the resolver's plan is model output,
-      // so it must not be able to reach another tenant's rows or clobber an
-      // assignment made while it was thinking.
-      await tx
-        .update(changeEvents)
-        .set({ atomicUpdateId })
-        .where(
-          and(
-            eq(changeEvents.id, action.eventId),
-            eq(changeEvents.tenantId, tenantId),
-            isNull(changeEvents.atomicUpdateId)
-          )
-        );
+    } else {
+      atomicUpdateId = action.atomicUpdateId;
     }
+
+    // Tenant-scoped and unassigned-only: the resolver's plan is model output,
+    // so it must not be able to reach another tenant's rows or clobber an
+    // assignment made while it was thinking.
+    const conditions = [
+      eq(changeEvents.id, action.eventId),
+      eq(changeEvents.tenantId, tenantId),
+      isNull(changeEvents.atomicUpdateId),
+    ];
+
+    if (action.action === "assign") {
+      // `assign` names an atomic update the resolver picked from its `open`
+      // set, which is supposed to already be tenant-scoped (loadOpenAtomicUpdates)
+      // — but that guarantee lives two modules away and this function has no
+      // way to see it. Re-verify ownership locally via EXISTS, folded into the
+      // same UPDATE, so a differently-sourced `open` list can never link one
+      // tenant's change event to another tenant's atomic update. If the target
+      // isn't this tenant's, the WHERE simply matches nothing and the event
+      // stays unassigned rather than throwing.
+      conditions.push(
+        exists(
+          tx
+            .select({ one: sql`1` })
+            .from(atomicUpdates)
+            .where(and(eq(atomicUpdates.id, atomicUpdateId), eq(atomicUpdates.tenantId, tenantId)))
+        )
+      );
+    }
+
+    await tx
+      .update(changeEvents)
+      .set({ atomicUpdateId })
+      .where(and(...conditions));
   }
 }
 
