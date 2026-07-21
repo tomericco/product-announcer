@@ -9,6 +9,7 @@ import {
   buildResolverPrompt,
   resolveAtomicUpdates,
   RESOLVER_BATCH_SIZE,
+  RESOLVER_SYSTEM,
 } from "../../../src/lib/ai/resolve-atomic-updates";
 
 const EVENTS = [
@@ -27,6 +28,14 @@ describe("buildResolverPrompt", () => {
 
   it("states explicitly when there are no open atomic updates", () => {
     expect(buildResolverPrompt(EVENTS, [])).toContain("(none)");
+  });
+});
+
+describe("RESOLVER_SYSTEM", () => {
+  it("explains what the category values mean for create actions", () => {
+    expect(RESOLVER_SYSTEM).toContain("'new' (new capability)");
+    expect(RESOLVER_SYSTEM).toContain("'improved' (better existing behavior)");
+    expect(RESOLVER_SYSTEM).toContain("'fixed' (bug fix)");
   });
 });
 
@@ -66,6 +75,40 @@ describe("resolveAtomicUpdates", () => {
     } as never);
 
     expect(await resolveAtomicUpdates({ tenantId: "t1", events: EVENTS, open: OPEN })).toEqual([]);
+  });
+
+  it("keeps only the first action when two actions name the same eventId", async () => {
+    const first = { eventId: "e1", action: "assign" as const, atomicUpdateId: "a1" };
+    const second = {
+      eventId: "e1",
+      action: "create" as const,
+      title: "Duplicate",
+      summary: "Should be dropped.",
+      category: "new" as const,
+    };
+    vi.mocked(generateObject).mockResolvedValue({
+      object: { actions: [first, second] },
+      usage: {},
+    } as never);
+
+    expect(await resolveAtomicUpdates({ tenantId: "t1", events: EVENTS, open: OPEN })).toEqual([first]);
+  });
+
+  it("skips a hallucinated action without consuming its event's slot, keeping the later valid action", async () => {
+    const hallucinated = { eventId: "e1", action: "assign" as const, atomicUpdateId: "hallucinated" };
+    const valid = {
+      eventId: "e1",
+      action: "create" as const,
+      title: "CSV export",
+      summary: "Adds CSV export.",
+      category: "new" as const,
+    };
+    vi.mocked(generateObject).mockResolvedValue({
+      object: { actions: [hallucinated, valid] },
+      usage: {},
+    } as never);
+
+    expect(await resolveAtomicUpdates({ tenantId: "t1", events: EVENTS, open: OPEN })).toEqual([valid]);
   });
 
   it("returns an empty plan on model error rather than throwing", async () => {

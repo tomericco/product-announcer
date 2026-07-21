@@ -38,7 +38,7 @@ const ActionSchema = z.discriminatedUnion("action", [
 
 export const ResolutionSchema = z.object({ actions: z.array(ActionSchema) });
 
-const RESOLVER_SYSTEM = [
+export const RESOLVER_SYSTEM = [
   "You group code changes into atomic updates for a user-facing product changelog.",
   "An atomic update is ONE meaningful change a user would care about — a feature, or a fix.",
   "Several commits, a pull request, and a task can all describe the same atomic update.",
@@ -47,6 +47,8 @@ const RESOLVER_SYSTEM = [
   "Prefer assigning over creating: a follow-up fix to work already in progress belongs to that atomic update.",
   "Several events in this batch may describe the same new change. In that case give every one of them",
   "a create action carrying the SAME title and summary — they will be merged into a single atomic update.",
+  "When you create a new atomic update, also pick category: 'new' (new capability), 'improved' (better existing",
+  "behavior), or 'fixed' (bug fix).",
   "Return exactly one action per event. Use only atomicUpdateId values from the provided list.",
   "Write title as a short noun phrase and summary as one plain sentence describing the user-visible benefit.",
 ].join(" ");
@@ -96,9 +98,21 @@ export async function resolveAtomicUpdates(input: {
 
     // Guard against hallucinated ids: an action naming an event we did not send,
     // or an atomic update that does not exist, would corrupt the apply step.
-    return object.actions.filter((a) => {
+    const validActions = object.actions.filter((a) => {
       if (!eventIds.has(a.eventId)) return false;
       if (a.action === "assign") return openIds.has(a.atomicUpdateId);
+      return true;
+    });
+
+    // Enforce one action per event: keep the first valid action for each eventId
+    // and drop any subsequent ones. A duplicate create would otherwise insert an
+    // orphaned atomic update row that no event points at. This runs after the
+    // hallucination guard so an invalid action never consumes an event's slot
+    // and suppresses a later valid action for that same event.
+    const seenEventIds = new Set<string>();
+    return validActions.filter((a) => {
+      if (seenEventIds.has(a.eventId)) return false;
+      seenEventIds.add(a.eventId);
       return true;
     });
   } catch (error) {
