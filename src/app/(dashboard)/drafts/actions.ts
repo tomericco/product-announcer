@@ -155,7 +155,7 @@ export async function deleteDraft(formData: FormData) {
   await loadOwnedDraft(session.user.tenantId, updateId);
 
   await db.transaction(async (tx) => {
-    // Must precede the delete: change_items.update_id has no ON DELETE clause,
+    // Must precede the delete: change_events.update_id has no ON DELETE clause,
     // so the FK rejects removing an update that still owns items.
     await releaseBatchForUpdate(updateId, tx);
     await tx.delete(updates).where(eq(updates.id, updateId));

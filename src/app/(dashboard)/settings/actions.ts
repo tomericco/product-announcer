@@ -97,7 +97,7 @@ export async function removeRepo(formData: FormData) {
   if (!repoId) return;
 
   // Tenant-scoped delete so one tenant can't remove another's repo (IDOR guard).
-  // change_items reference repos with onDelete cascade, so their rows are cleaned up.
+  // change_events reference repos with onDelete cascade, so their rows are cleaned up.
   await db.delete(repos).where(and(eq(repos.id, repoId), eq(repos.tenantId, session.user.tenantId)));
 
   revalidatePath("/settings");
