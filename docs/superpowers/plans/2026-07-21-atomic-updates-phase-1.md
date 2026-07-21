@@ -840,7 +840,8 @@ git commit -m "feat: add batched atomic update resolver"
 - Produces:
   - `withTenantLock<T>(database, tenantId, fn: (tx) => Promise<T>): Promise<T>`
   - `loadOpenAtomicUpdates(database, tenantId): Promise<OpenAtomicUpdate[]>`
-  - `applyResolution(database, tenantId, actions: ResolutionAction[]): Promise<void>`
+  - `applyResolutionInTx(tx, tenantId, actions: ResolutionAction[]): Promise<void>` — the core; caller supplies the transaction
+  - `applyResolution(database, tenantId, actions: ResolutionAction[]): Promise<void>` — standalone wrapper that opens its own transaction
 
 **Context:** `pg_advisory_xact_lock` is held for the whole transaction and released automatically on commit or rollback. Keying on `hashtext(tenantId)` serializes resolution per tenant while leaving other tenants unblocked. This mirrors the lock-across-work pattern in `src/lib/publishing/dispatch.ts`.
 
@@ -1080,15 +1081,23 @@ export async function loadOpenAtomicUpdates(
   return rows;
 }
 
-/** Applies a resolver plan in one transaction. A partial plan is never written. */
-export async function applyResolution(
-  database: Database,
+/**
+ * Applies a resolver plan using a caller-supplied transaction.
+ *
+ * The pipeline calls this INSIDE `withTenantLock`, so that loading the candidate
+ * set, resolving, and writing the result all happen under one lock. Splitting
+ * apply into its own transaction would release the lock between the decision and
+ * the write, which is precisely the window two concurrent pushes need to both
+ * conclude "no matching atomic update exists" and create duplicates.
+ */
+export async function applyResolutionInTx(
+  tx: Tx,
   tenantId: string,
   actions: ResolutionAction[]
 ): Promise<void> {
   if (actions.length === 0) return;
 
-  await database.transaction(async (tx) => {
+  {
     // Two events describing the same new change both arrive as `create` actions
     // with an identical title. Creating a row per action would split one change
     // across two atomic updates, so the first create wins and the rest reuse it.
@@ -1134,7 +1143,20 @@ export async function applyResolution(
           )
         );
     }
-  });
+  }
+}
+
+/**
+ * Standalone wrapper: applies a plan in its own transaction. Used by tests and
+ * any caller that is not already holding the tenant lock.
+ */
+export async function applyResolution(
+  database: Database,
+  tenantId: string,
+  actions: ResolutionAction[]
+): Promise<void> {
+  if (actions.length === 0) return;
+  await database.transaction((tx) => applyResolutionInTx(tx, tenantId, actions));
 }
 ```
 
@@ -1413,7 +1435,7 @@ git commit -m "feat: regenerate atomic update summaries, frozen on manual edit"
 - Test: `tests/lib/change-events/pipeline.test.ts`
 
 **Interfaces:**
-- Consumes: `resolveAtomicUpdates`, `RESOLVER_BATCH_SIZE` (Task 3); `withTenantLock`, `loadOpenAtomicUpdates`, `applyResolution` (Task 4); `refreshAtomicUpdates` (Task 5)
+- Consumes: `resolveAtomicUpdates`, `RESOLVER_BATCH_SIZE` (Task 3); `withTenantLock`, `loadOpenAtomicUpdates`, `applyResolutionInTx` (Task 4); `refreshAtomicUpdates` (Task 5)
 - Produces: `resolvePendingEvents(tenantId: string, eventIds: string[], deps?: PipelineDeps): Promise<void>`
 
 **Context:** Tier 3 only. Tiers 1 and 2 already ran per-event during ingestion; this takes the surviving `userFacing` event ids and resolves them as one batch. Chunks at `RESOLVER_BATCH_SIZE`, and each chunk is resolved and applied under the tenant lock before the next chunk loads its candidate set — so events in chunk 2 can attach to atomic updates chunk 1 just created.
@@ -1521,6 +1543,32 @@ describe("resolvePendingEvents", () => {
     expect(resolve).not.toHaveBeenCalled();
   });
 
+  it("does not create duplicates when two pushes resolve concurrently", async () => {
+    const { tenant, events } = await seed(2);
+
+    // Stands in for the real resolver: assigns when it can see a match in the
+    // candidate set it was handed, creates otherwise. If the lock does not span
+    // loading `open` AND writing the result, the second caller reads a stale
+    // candidate set, creates a second "Shared feature", and this test fails.
+    const resolve = vi.fn(async ({ events: batch, open }) => {
+      await new Promise((r) => setTimeout(r, 30));
+      const match = open.find((a: { title: string }) => a.title === "Shared feature");
+      return batch.map((e: { id: string }) =>
+        match
+          ? { eventId: e.id, action: "assign", atomicUpdateId: match.id }
+          : { eventId: e.id, action: "create", title: "Shared feature", summary: "S", category: "new" }
+      );
+    });
+
+    await Promise.all([
+      resolvePendingEvents(tenant.id, [events[0].id], { resolve, refresh: vi.fn() }),
+      resolvePendingEvents(tenant.id, [events[1].id], { resolve, refresh: vi.fn() }),
+    ]);
+
+    const rows = await db.select().from(atomicUpdates).where(eq(atomicUpdates.tenantId, tenant.id));
+    expect(rows).toHaveLength(1);
+  });
+
   it("skips events that are already assigned", async () => {
     const { tenant, events } = await seed(1);
     const [existing] = await db
@@ -1559,7 +1607,7 @@ import {
   type ResolverEvent,
 } from "@/lib/ai/resolve-atomic-updates";
 import { refreshAtomicUpdates } from "@/lib/ai/regenerate-atomic-summary";
-import { applyResolution, loadOpenAtomicUpdates, withTenantLock } from "./apply-resolution";
+import { applyResolutionInTx, loadOpenAtomicUpdates, withTenantLock } from "./apply-resolution";
 
 export type PipelineDeps = {
   resolve?: typeof resolveAtomicUpdates;
@@ -1626,10 +1674,14 @@ export async function resolvePendingEvents(
     // concurrent push cannot create a duplicate atomic update in between.
     const actions = await withTenantLock(database, tenantId, async (tx) => {
       const open = await loadOpenAtomicUpdates(tx, tenantId);
-      return resolve({ tenantId, events: batch, open });
+      const plan = await resolve({ tenantId, events: batch, open });
+      // Applied under the SAME lock and transaction that loaded `open`. Applying
+      // in a separate transaction would release the lock between deciding and
+      // writing — the exact window in which a concurrent push reads a stale
+      // candidate set and creates a duplicate.
+      await applyResolutionInTx(tx, tenantId, plan);
+      return plan;
     });
-
-    await applyResolution(database, tenantId, actions);
 
     for (const action of actions) {
       if (action.action === "assign") touched.add(action.atomicUpdateId);
@@ -1647,7 +1699,7 @@ export async function resolvePendingEvents(
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `npx vitest run tests/lib/change-events/pipeline.test.ts`
-Expected: PASS, 5 tests.
+Expected: PASS, 6 tests.
 
 - [ ] **Step 5: Commit**
 
