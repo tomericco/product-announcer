@@ -7,11 +7,12 @@ import { updates, webflowConnections } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { reviewStatusLabel } from "@/lib/ai/review-status";
 import { containsCodeBlock } from "@/lib/publishing/markdown-to-html";
-import { saveDraft, approveDraft, rejectDraft } from "../actions";
+import { saveDraft, rejectDraft } from "../actions";
 import { Button } from "@/components/ui/button";
 import { DraftBodyEditor } from "./draft-body-editor";
 import { DraftTitleField } from "./draft-title-field";
 import { DraftEditorProvider, SourceToggleButton } from "./draft-editor-context";
+import { SaveChangesButton, ApproveButton } from "./draft-submit-buttons";
 
 export default async function DraftDetailPage({ params }: { params: Promise<{ updateId: string }> }) {
   const session = await requireSession();
@@ -70,6 +71,17 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ up
       <DraftEditorProvider>
         <form action={saveDraft} className="space-y-4">
           <input type="hidden" name="updateId" value={update.id} />
+          {/* The value published_at had when this page was rendered. Approve
+              submits it back so the action can detect a double-submit of this
+              same form (published_at unchanged) versus an intentional
+              re-publish (a fresh page load first, carrying the current
+              value). Empty string, not "null", so a never-published draft's
+              hidden field is unambiguous on the wire. */}
+          <input
+            type="hidden"
+            name="publishedAt"
+            value={update.publishedAt ? update.publishedAt.toISOString() : ""}
+          />
           {/* The visible title is an input, so the document outline would
               otherwise have no heading at all — give screen readers a real h1. */}
           <h1 className="sr-only">{update.title || "Untitled draft"}</h1>
@@ -77,15 +89,8 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ up
           <DraftBodyEditor defaultValue={update.body} />
           <div className="flex items-center gap-4 pt-4">
             <SourceToggleButton />
-            <Button type="submit" variant="ghost">
-              Save changes
-            </Button>
-            {/* formAction overrides the form's default action (saveDraft) for this
-                button only, so approving submits the same title/body the user is
-                currently looking at instead of whatever was last saved to the DB. */}
-            <Button type="submit" formAction={approveDraft}>
-              Approve &amp; publish
-            </Button>
+            <SaveChangesButton />
+            <ApproveButton />
           </div>
         </form>
       </DraftEditorProvider>
