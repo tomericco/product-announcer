@@ -11,8 +11,11 @@ export type FilterVerdict = { drop: true; reason: FilterReason } | { drop: false
 const KEEP: FilterVerdict = { drop: false };
 
 // Conventional-commit types that never produce user-facing news. The colon or
-// scope-paren is required, so "choreography" is not a chore commit.
-const NOISE_PREFIX = /^(chore|docs|ci|build|style|test|refactor)(\([^)]*\))?!?:/i;
+// scope-paren is required, so "choreography" is not a chore commit. A `!`
+// breaking-change marker (e.g. "chore!:", "refactor(api)!:") must never be
+// treated as noise — it always falls through to the classifier, since `!`
+// means the change is user-facing by definition.
+const NOISE_PREFIX = /^(chore|docs|ci|build|style|test|refactor)(\([^)]*\))?:/i;
 
 const LOCKFILES = new Set([
   "package-lock.json",

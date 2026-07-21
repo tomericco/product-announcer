@@ -72,6 +72,19 @@ describe("filterCommit", () => {
       drop: false,
     });
   });
+
+  it("keeps breaking-change-marked prefixes instead of dropping as noise", () => {
+    for (const message of ["chore!: x", "refactor!: x", "chore(api)!: x"]) {
+      expect(filterCommit({ message, diff: diffFor("src/a.ts"), parentCount: 1 })).toEqual({
+        drop: false,
+      });
+    }
+  });
+
+  it("keeps a commit touching both a lockfile and a source file", () => {
+    const diff = diffFor("pnpm-lock.yaml", "src/feature.ts");
+    expect(filterCommit({ message: "bump deps and add feature", diff, parentCount: 1 })).toEqual({ drop: false });
+  });
 });
 
 describe("filterPullRequest", () => {
@@ -81,6 +94,10 @@ describe("filterPullRequest", () => {
 
   it("keeps a normal PR title", () => {
     expect(filterPullRequest({ title: "Add CSV export" })).toEqual({ drop: false });
+  });
+
+  it("keeps a breaking-change-marked PR title instead of dropping as noise", () => {
+    expect(filterPullRequest({ title: "chore!: drop legacy endpoint" })).toEqual({ drop: false });
   });
 });
 
