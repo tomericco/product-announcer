@@ -1,4 +1,11 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
+
+// Structural backstop: resolvePendingEvents makes real Sonnet/Haiku calls to
+// Anthropic. Any test in this file that omits the `resolvePending` dep must
+// never fall through to the live implementation, so the module is mocked
+// here regardless of what individual tests pass.
+vi.mock("../../../src/lib/change-events/pipeline", () => ({ resolvePendingEvents: vi.fn() }));
+
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
 import { tenants, repos, changeEvents } from "../../../src/db/schema";
