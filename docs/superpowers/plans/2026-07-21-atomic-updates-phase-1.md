@@ -4,13 +4,15 @@
 
 **Goal:** Introduce the atomic-update layer — a three-tier ingestion pipeline that clusters commits and PRs into atomic updates instead of treating each one as an independent change item.
 
-**Architecture:** Raw source signals land in `change_items` (unchanged table, new columns). A deterministic filter drops obvious noise with no model call, a Haiku classifier decides `userFacing`, and a batched Sonnet resolver assigns each surviving event to an open `atomic_update` or creates a new one. Resolution is serialized per tenant by a Postgres advisory lock.
+**Architecture:** Raw source signals land in `change_events` (renamed from `change_items`). A deterministic filter drops obvious noise with no model call, a Haiku classifier decides `userFacing`, and a batched Sonnet resolver assigns each surviving event to an open `atomic_update` or creates a new one. Resolution is serialized per tenant by a Postgres advisory lock.
 
 **Tech Stack:** Next.js 16 (App Router), Drizzle ORM + Postgres, Vercel AI SDK v7 (`generateObject`) with `@ai-sdk/anthropic`, Vitest.
 
 ## Global Constraints
 
-- **Additive only.** Do NOT rename `change_items` → `change_events` or `updates` → `releases` in this phase. Those renames belong to phase 2. New code may use "change event" in variable and function names, but the table stays `change_items`.
+- **The database has no production data.** Existing rows are disposable. Schema changes drop and recreate rather than backfill, and required columns are `NOT NULL` rather than nullable-with-fallback.
+- **Rename `change_items` → `change_events` and drop `sourceType` in favor of `type`.** Both are done in Task 1 and every consumer is updated in the same task.
+- **Do NOT rename `updates` → `releases` in this phase.** That rename drags in `dispatch.ts`, `delivery_attempts`, Webflow publishing, and the drafts UI — none of which phase 1 touches. It belongs to phase 2.
 - **No historical backfill.** Never run the resolver over pre-existing rows.
 - **Model resolution goes through `src/lib/ai/model.ts`** (`resolveModel` / `modelId`). Never construct a provider client directly.
 - **Every LLM call records usage** via `recordLlmUsage` from `src/lib/ai/llm-usage.ts`.
@@ -21,18 +23,26 @@
 
 ---
 
-### Task 1: Schema — `atomic_updates` table and `change_items` columns
+### Task 1: Schema — rename to `change_events`, add `atomic_updates`
 
 **Files:**
 - Modify: `src/db/schema.ts`
-- Create: `src/db/migrations/0023_atomic_updates.sql` (generated)
+- Delete: `src/db/migrations/` contents (see Step 3)
+- Create: `src/db/migrations/0000_init.sql` (regenerated)
 - Test: `tests/db/atomic-updates-schema.test.ts`
+- Test: `tests/db/repo-and-change-item.test.ts` (existing — update)
 
 **Interfaces:**
 - Consumes: nothing
-- Produces: `atomicUpdates` table export; `changeItems.type`, `.provider`, `.externalId`, `.externalUrl`, `.atomicUpdateId`, `.filterReason`; enums `changeEventTypeEnum`, `changeEventProviderEnum`, `atomicUpdateStatusEnum`, `filterReasonEnum`
+- Produces:
+  - `atomicUpdates` table export
+  - `changeEvents` table export (replaces `changeItems`), with `type`, `provider`, `externalId` all `NOT NULL`, plus `externalUrl`, `atomicUpdateId`, `filterReason`
+  - Enums `changeEventTypeEnum`, `changeEventProviderEnum`, `atomicUpdateStatusEnum`, `filterReasonEnum`
+  - `sourceTypeEnum` and `changeItems` are **removed**
 
 **Context:** `externalId` is the cross-provider idempotency key. Commit SHAs are globally unique, but PR numbers collide across repos, so PR ids are namespaced by repo full name: `acme/widgets#42`. The unique index is `(tenantId, provider, externalId)`.
+
+Because the database has no data worth keeping, this task squashes the migration history rather than adding migration 0023 on top of a table that is about to be renamed. `type`, `provider`, and `externalId` are `NOT NULL` — there are no legacy rows to accommodate, and making them required removes a `?? "commit"` fallback from every consumer.
 
 - [ ] **Step 1: Write the failing schema test**
 
@@ -42,7 +52,7 @@ Create `tests/db/atomic-updates-schema.test.ts`:
 import { describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../src/db";
-import { tenants, repos, changeItems, atomicUpdates } from "../../src/db/schema";
+import { tenants, repos, changeEvents, atomicUpdates } from "../../src/db/schema";
 
 const TENANT = "Atomic Updates Schema Test Tenant";
 
@@ -51,7 +61,7 @@ describe("atomic_updates schema", () => {
     await db.delete(tenants).where(eq(tenants.name, TENANT));
   });
 
-  it("links change items to an atomic update and defaults status to open", async () => {
+  it("links change events to an atomic update and defaults status to open", async () => {
     const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
     const [repo] = await db
       .insert(repos)
@@ -73,11 +83,10 @@ describe("atomic_updates schema", () => {
     expect(atomic.summaryEditedAt).toBeNull();
 
     const [event] = await db
-      .insert(changeItems)
+      .insert(changeEvents)
       .values({
         tenantId: tenant.id,
         repoId: repo.id,
-        sourceType: "commit",
         type: "commit",
         provider: "github",
         externalId: "abc123",
@@ -105,15 +114,30 @@ describe("atomic_updates schema", () => {
     const values = {
       tenantId: tenant.id,
       repoId: repo.id,
-      sourceType: "commit" as const,
       type: "commit" as const,
       provider: "github" as const,
       externalId: "dup-sha",
       commitSha: "dup-sha",
     };
 
-    await db.insert(changeItems).values(values);
-    await expect(db.insert(changeItems).values(values)).rejects.toThrow();
+    await db.insert(changeEvents).values(values);
+    await expect(db.insert(changeEvents).values(values)).rejects.toThrow();
+  });
+
+  it("requires type, provider and externalId", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const [repo] = await db
+      .insert(repos)
+      .values({
+        tenantId: tenant.id,
+        githubRepoFullName: "acme/widgets",
+        githubInstallationId: "1",
+        watchedBranch: "main",
+      })
+      .returning();
+
+    // @ts-expect-error omitting required columns must not typecheck
+    await expect(db.insert(changeEvents).values({ tenantId: tenant.id, repoId: repo.id })).rejects.toThrow();
   });
 
   it("nulls atomic_update_id when the atomic update is deleted", async () => {
@@ -132,11 +156,10 @@ describe("atomic_updates schema", () => {
       .values({ tenantId: tenant.id, title: "T", summary: "S" })
       .returning();
     const [event] = await db
-      .insert(changeItems)
+      .insert(changeEvents)
       .values({
         tenantId: tenant.id,
         repoId: repo.id,
-        sourceType: "commit",
         type: "commit",
         provider: "github",
         externalId: "orphan-sha",
@@ -147,7 +170,7 @@ describe("atomic_updates schema", () => {
 
     await db.delete(atomicUpdates).where(eq(atomicUpdates.id, atomic.id));
 
-    const [found] = await db.select().from(changeItems).where(eq(changeItems.id, event.id));
+    const [found] = await db.select().from(changeEvents).where(eq(changeEvents.id, event.id));
     expect(found.atomicUpdateId).toBeNull();
   });
 });
@@ -156,11 +179,12 @@ describe("atomic_updates schema", () => {
 - [ ] **Step 2: Run the test to verify it fails**
 
 Run: `npx vitest run tests/db/atomic-updates-schema.test.ts`
-Expected: FAIL — `atomicUpdates` is not exported from `src/db/schema.ts`.
+Expected: FAIL — `atomicUpdates` and `changeEvents` are not exported from `src/db/schema.ts`.
 
 - [ ] **Step 3: Add the enums and table to the schema**
 
-In `src/db/schema.ts`, add after the existing enum block (near line 53):
+In `src/db/schema.ts`, **delete** the `sourceTypeEnum` declaration (line 47) and
+add after the remaining enum block:
 
 ```ts
 export const changeEventTypeEnum = pgEnum("change_event_type", ["commit", "pull_request", "task"]);
@@ -177,7 +201,7 @@ export const filterReasonEnum = pgEnum("filter_reason", [
 ]);
 ```
 
-Add the table after `changeItems` (after line 113):
+Add the `atomicUpdates` table immediately after the change-events table:
 
 ```ts
 export const atomicUpdates = pgTable("atomic_updates", {
@@ -200,98 +224,151 @@ export const atomicUpdates = pgTable("atomic_updates", {
 });
 ```
 
-Add these columns inside the `changeItems` column object (after `enrichedAt`, line 107):
+Now rename the `changeItems` table. Replace the entire `changeItems` declaration
+(lines 67–113) with:
 
 ```ts
-    // Source classification (phase 1). `sourceType` is retained for existing
-    // callers; `type` is the forward-looking column that also covers tasks.
-    type: changeEventTypeEnum("type"),
-    provider: changeEventProviderEnum("provider"),
+export const changeEvents = pgTable(
+  "change_events",
+  {
+    id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    repoId: uuid("repo_id")
+      .notNull()
+      .references(() => repos.id, { onDelete: "cascade" }),
+    type: changeEventTypeEnum("type").notNull(),
+    provider: changeEventProviderEnum("provider").notNull(),
     // Idempotency key, namespaced per provider. Commits use the SHA; PRs use
     // `owner/repo#number` because PR numbers collide across repos.
-    externalId: text("external_id"),
+    externalId: text("external_id").notNull(),
     externalUrl: text("external_url"),
     atomicUpdateId: uuid("atomic_update_id").references(() => atomicUpdates.id, { onDelete: "set null" }),
+    status: changeItemStatusEnum("status").notNull().default("pending"),
+    // Why tier 1 dropped this event. Null means it survived the filter.
     filterReason: filterReasonEnum("filter_reason"),
-```
-
-Add to the `changeItems` index array (after line 111):
-
-```ts
-    uniqueIndex("change_items_tenant_provider_external_unique").on(
+    updateId: uuid("update_id").references(() => updates.id),
+    excludedAt: timestamp("excluded_at", { withTimezone: true }),
+    excludedBy: uuid("excluded_by").references(() => users.id),
+    // pr-sourced fields
+    prNumber: integer("pr_number"),
+    prTitle: text("pr_title"),
+    prDescription: text("pr_description"),
+    prUrl: text("pr_url"),
+    mergedAt: timestamp("merged_at", { withTimezone: true }),
+    // commit-sourced fields
+    commitSha: text("commit_sha"),
+    commitMessage: text("commit_message"),
+    diff: text("diff"),
+    commitUrl: text("commit_url"),
+    committedAt: timestamp("committed_at", { withTimezone: true }),
+    // When the commit reached the watched branch, as distinct from when it was
+    // authored (`committedAt`) — a commit can be written days before it lands.
+    // Only the push webhook knows this: GitHub's list-commits API carries no
+    // branch-landing time, so backfilled/imported commits leave it null rather
+    // than pretending the author date is a release.
+    releasedAt: timestamp("released_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    // tier 2 classifier output, null until classified
+    userFacing: boolean("user_facing"),
+    impactSummary: text("impact_summary"),
+    suggestedCategory: updateCategoryEnum("suggested_category"),
+    enrichmentConfidence: real("enrichment_confidence"),
+    enrichedAt: timestamp("enriched_at", { withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex("change_events_repo_pr_unique").on(table.repoId, table.prNumber),
+    uniqueIndex("change_events_repo_commit_unique").on(table.repoId, table.commitSha),
+    uniqueIndex("change_events_tenant_provider_external_unique").on(
       table.tenantId,
       table.provider,
       table.externalId
     ),
+  ]
+);
 ```
 
-**Note:** `atomicUpdates` references `updates`, which is declared later in the file. Drizzle's `() =>` thunks make forward references safe — do not reorder the file.
+Note what changed from the old `changeItems`: `sourceType` and `ignoredReason`
+are gone (replaced by `type` and `filterReason`), and the three new columns are
+`NOT NULL`. Everything else carries over unchanged.
 
-- [ ] **Step 4: Generate the migration**
+Also delete the now-unused `ignoredReasonEnum` (line 49).
 
-Run: `npm run db:generate`
-Expected: a new file under `src/db/migrations/`. Rename it to `0023_atomic_updates.sql` only if drizzle-kit did not already number it 0023.
+**Note:** `changeEvents` references `atomicUpdates` and `updates`, both declared later in the file. Drizzle's `() =>` thunks make forward references safe — do not reorder the file.
 
-- [ ] **Step 5: Append the backfill to the generated migration**
+- [ ] **Step 4: Squash the migration history and reset both databases**
 
-Open the generated SQL file and append:
+There is no data to preserve, so regenerate from scratch rather than stacking a
+rename onto 23 migrations describing a table that no longer exists.
 
-```sql
---> statement-breakpoint
-UPDATE "change_items" SET "provider" = 'github' WHERE "provider" IS NULL;
---> statement-breakpoint
-UPDATE "change_items" SET "type" = 'pull_request' WHERE "type" IS NULL AND "pr_number" IS NOT NULL;
---> statement-breakpoint
-UPDATE "change_items" SET "type" = 'commit' WHERE "type" IS NULL AND "pr_number" IS NULL;
---> statement-breakpoint
-UPDATE "change_items" SET "external_id" = "commit_sha" WHERE "external_id" IS NULL AND "commit_sha" IS NOT NULL;
---> statement-breakpoint
-UPDATE "change_items" ci
-SET "external_id" = r."github_repo_full_name" || '#' || ci."pr_number"
-FROM "repos" r
-WHERE ci."repo_id" = r."id" AND ci."external_id" IS NULL AND ci."pr_number" IS NOT NULL;
---> statement-breakpoint
-UPDATE "change_items" SET "external_url" = COALESCE("commit_url", "pr_url") WHERE "external_url" IS NULL;
+```bash
+rm -rf src/db/migrations
+psql "$DATABASE_URL" -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
+psql "$TEST_DATABASE_URL" -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
+npm run db:generate
 ```
 
-Backfilling `external_id` before the unique index is created matters — the index is on `(tenant_id, provider, external_id)` and Postgres treats NULLs as distinct, so an unbackfilled table would index cleanly and then start colliding later.
+`TEST_DATABASE_URL` is whatever `drizzle.config.test.ts` reads — check that file
+for the exact env var name before running the second `psql`.
 
-- [ ] **Step 6: Apply migrations to both databases**
+**This is destructive and intentional.** If either database turns out to hold
+data you care about, stop and say so rather than proceeding.
+
+Expected: a single `src/db/migrations/0000_*.sql` describing the whole schema.
+
+- [ ] **Step 5: Apply to both databases**
 
 Run: `npm run db:migrate && npm run db:migrate:test`
-Expected: both report the new migration applied.
+Expected: both report migration 0000 applied.
 
-- [ ] **Step 7: Run the test to verify it passes**
+- [ ] **Step 6: Re-seed the system catalogs**
 
-Run: `npx vitest run tests/db/atomic-updates-schema.test.ts`
-Expected: PASS, 3 tests.
+`system_personas` and `system_update_examples` are seeded, not user data, and the
+schema drop removed them. Find the seed script with
+`grep -rn "systemPersonas" src/ scripts/ --include=*.ts -l` and re-run it.
 
-- [ ] **Step 8: Verify the backfill against real data**
+Verify: `psql "$DATABASE_URL" -c "SELECT count(*) FROM system_personas;"` returns
+a non-zero count. Generation quality depends on these rows.
 
-The backfill runs once, before any test fixture exists, so it cannot be covered
-by a normal test. Check it by hand against the dev database:
+- [ ] **Step 7: Update the existing change-item schema test**
+
+`tests/db/repo-and-change-item.test.ts` imports `changeItems` and sets
+`sourceType`. Update it: rename the import to `changeEvents`, replace
+`sourceType: "pr"` with `type: "pull_request"`, and add
+`provider: "github", externalId: "acme/widgets#42"` to the insert.
+
+- [ ] **Step 8: Run both schema tests**
+
+Run: `npx vitest run tests/db/`
+Expected: PASS, including the 4 new tests.
+
+- [ ] **Step 9: Update every remaining `changeItems` reference**
+
+Run: `grep -rln "changeItems\|sourceType" src/ tests/`
+
+For each file, rename the import and usages to `changeEvents`, and replace
+`sourceType` with `type` — mapping the value `"pr"` to `"pull_request"` and
+`"commit"` to `"commit"`. Tasks 5–8 assume this rename is already done.
+
+In `src/lib/ai/enrich-change-item.ts`, change `EnrichmentInput.sourceType` from
+`"pr" | "commit"` to `type: "pull_request" | "commit"` and update the ternary in
+`buildEnrichmentPrompt` plus its tests — leaving `"pr"` in one module while the
+database says `"pull_request"` is exactly the inconsistency this task exists to
+remove.
+
+- [ ] **Step 10: Verify nothing else broke**
+
+Run: `npm run typecheck && npm run lint && npx vitest run`
+Expected: typecheck clean, full suite green. Any remaining reference to
+`changeItems` or `sourceType` fails the typecheck — that is the intended safety
+net for this rename.
+
+- [ ] **Step 11: Commit**
 
 ```bash
-psql "$DATABASE_URL" -c "
-  SELECT type, provider, count(*), count(*) FILTER (WHERE external_id IS NULL) AS missing_id
-  FROM change_items GROUP BY type, provider;"
-```
-
-Expected: every row has `provider = 'github'`, `type` is `commit` or
-`pull_request` with no NULLs, and `missing_id` is 0 in every group. A non-zero
-`missing_id` means the unique index will start colliding later — fix the backfill
-and re-run before continuing.
-
-- [ ] **Step 9: Verify nothing else broke**
-
-Run: `npm run typecheck && npx vitest run`
-Expected: typecheck clean, full suite green.
-
-- [ ] **Step 10: Commit**
-
-```bash
-git add src/db/schema.ts src/db/migrations tests/db/atomic-updates-schema.test.ts
-git commit -m "feat: add atomic_updates table and change event columns"
+git add -A src/db src/lib tests
+git commit -m "feat: rename change_items to change_events and add atomic_updates"
 ```
 
 ---
@@ -764,7 +841,7 @@ git commit -m "feat: add batched atomic update resolver"
 - Test: `tests/lib/change-events/apply-resolution.test.ts`
 
 **Interfaces:**
-- Consumes: `ResolutionAction` from Task 3; `atomicUpdates`, `changeItems` from Task 1
+- Consumes: `ResolutionAction` from Task 3; `atomicUpdates`, `changeEvents` from Task 1
 - Produces:
   - `withTenantLock<T>(database, tenantId, fn: (tx) => Promise<T>): Promise<T>`
   - `loadOpenAtomicUpdates(database, tenantId): Promise<OpenAtomicUpdate[]>`
@@ -780,7 +857,7 @@ Create `tests/lib/change-events/apply-resolution.test.ts`:
 import { describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, repos, changeItems, atomicUpdates, updates } from "../../../src/db/schema";
+import { tenants, repos, changeEvents, atomicUpdates, updates } from "../../../src/db/schema";
 import {
   applyResolution,
   loadOpenAtomicUpdates,
@@ -805,11 +882,10 @@ async function seed() {
 
 async function insertEvent(tenantId: string, repoId: string, sha: string) {
   const [row] = await db
-    .insert(changeItems)
+    .insert(changeEvents)
     .values({
       tenantId,
       repoId,
-      sourceType: "commit",
       type: "commit",
       provider: "github",
       externalId: sha,
@@ -833,7 +909,7 @@ describe("apply-resolution", () => {
       { eventId: event.id, action: "create", title: "CSV export", summary: "Export as CSV.", category: "new" },
     ]);
 
-    const [updated] = await db.select().from(changeItems).where(eq(changeItems.id, event.id));
+    const [updated] = await db.select().from(changeEvents).where(eq(changeEvents.id, event.id));
     expect(updated.atomicUpdateId).not.toBeNull();
 
     const [atomic] = await db
@@ -858,8 +934,8 @@ describe("apply-resolution", () => {
     const rows = await db.select().from(atomicUpdates).where(eq(atomicUpdates.tenantId, tenant.id));
     expect(rows).toHaveLength(1);
 
-    const [a] = await db.select().from(changeItems).where(eq(changeItems.id, first.id));
-    const [b] = await db.select().from(changeItems).where(eq(changeItems.id, second.id));
+    const [a] = await db.select().from(changeEvents).where(eq(changeEvents.id, first.id));
+    const [b] = await db.select().from(changeEvents).where(eq(changeEvents.id, second.id));
     expect(a.atomicUpdateId).toBe(b.atomicUpdateId);
   });
 
@@ -875,7 +951,7 @@ describe("apply-resolution", () => {
       { eventId: event.id, action: "assign", atomicUpdateId: atomic.id },
     ]);
 
-    const [updated] = await db.select().from(changeItems).where(eq(changeItems.id, event.id));
+    const [updated] = await db.select().from(changeEvents).where(eq(changeEvents.id, event.id));
     expect(updated.atomicUpdateId).toBe(atomic.id);
   });
 
@@ -885,7 +961,7 @@ describe("apply-resolution", () => {
 
     await applyResolution(db, tenant.id, []);
 
-    const [updated] = await db.select().from(changeItems).where(eq(changeItems.id, event.id));
+    const [updated] = await db.select().from(changeEvents).where(eq(changeEvents.id, event.id));
     expect(updated.atomicUpdateId).toBeNull();
   });
 
@@ -907,7 +983,7 @@ describe("apply-resolution", () => {
       { eventId: foreign.id, action: "create", title: "X", summary: "Y", category: "new" },
     ]);
 
-    const [updated] = await db.select().from(changeItems).where(eq(changeItems.id, foreign.id));
+    const [updated] = await db.select().from(changeEvents).where(eq(changeEvents.id, foreign.id));
     expect(updated.atomicUpdateId).toBeNull();
   });
 
@@ -971,7 +1047,7 @@ Create `src/lib/change-events/apply-resolution.ts`:
 ```ts
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
-import { atomicUpdates, changeItems } from "@/db/schema";
+import { atomicUpdates, changeEvents } from "@/db/schema";
 import type { OpenAtomicUpdate, ResolutionAction } from "@/lib/ai/resolve-atomic-updates";
 
 type Database = typeof defaultDb;
@@ -1053,13 +1129,13 @@ export async function applyResolution(
       // so it must not be able to reach another tenant's rows or clobber an
       // assignment made while it was thinking.
       await tx
-        .update(changeItems)
+        .update(changeEvents)
         .set({ atomicUpdateId })
         .where(
           and(
-            eq(changeItems.id, action.eventId),
-            eq(changeItems.tenantId, tenantId),
-            isNull(changeItems.atomicUpdateId)
+            eq(changeEvents.id, action.eventId),
+            eq(changeEvents.tenantId, tenantId),
+            isNull(changeEvents.atomicUpdateId)
           )
         );
     }
@@ -1210,7 +1286,7 @@ import { generateObject } from "ai";
 import { z } from "zod";
 import { and, eq, isNull } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
-import { atomicUpdates, changeItems } from "@/db/schema";
+import { atomicUpdates, changeEvents } from "@/db/schema";
 import { resolveModel, modelId } from "./model";
 import { recordLlmUsage } from "./llm-usage";
 
@@ -1290,16 +1366,16 @@ export async function refreshAtomicUpdates(
 
     const evidenceRows = await database
       .select({
-        type: changeItems.type,
-        prTitle: changeItems.prTitle,
-        commitMessage: changeItems.commitMessage,
-        impactSummary: changeItems.impactSummary,
+        type: changeEvents.type,
+        prTitle: changeEvents.prTitle,
+        commitMessage: changeEvents.commitMessage,
+        impactSummary: changeEvents.impactSummary,
       })
-      .from(changeItems)
-      .where(eq(changeItems.atomicUpdateId, id));
+      .from(changeEvents)
+      .where(eq(changeEvents.atomicUpdateId, id));
 
     const evidence: AtomicEvidence[] = evidenceRows.map((r) => ({
-      type: r.type ?? "commit",
+      type: r.type,
       title: r.prTitle ?? r.commitMessage ?? "",
       summary: r.impactSummary,
     }));
@@ -1355,7 +1431,7 @@ Create `tests/lib/change-events/pipeline.test.ts`:
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, repos, changeItems, atomicUpdates } from "../../../src/db/schema";
+import { tenants, repos, changeEvents, atomicUpdates } from "../../../src/db/schema";
 import { resolvePendingEvents } from "../../../src/lib/change-events/pipeline";
 
 const TENANT = "Pipeline Test Tenant";
@@ -1375,11 +1451,10 @@ async function seed(count: number) {
   const events = [];
   for (let i = 0; i < count; i++) {
     const [row] = await db
-      .insert(changeItems)
+      .insert(changeEvents)
       .values({
         tenantId: tenant.id,
         repoId: repo.id,
-        sourceType: "commit",
         type: "commit",
         provider: "github",
         externalId: `sha-${i}`,
@@ -1407,7 +1482,7 @@ describe("resolvePendingEvents", () => {
 
     await resolvePendingEvents(tenant.id, [events[0].id], { resolve, refresh: vi.fn() });
 
-    const [updated] = await db.select().from(changeItems).where(eq(changeItems.id, events[0].id));
+    const [updated] = await db.select().from(changeEvents).where(eq(changeEvents.id, events[0].id));
     expect(updated.atomicUpdateId).not.toBeNull();
   });
 
@@ -1458,9 +1533,9 @@ describe("resolvePendingEvents", () => {
       .values({ tenantId: tenant.id, title: "Existing", summary: "S" })
       .returning();
     await db
-      .update(changeItems)
+      .update(changeEvents)
       .set({ atomicUpdateId: existing.id })
-      .where(eq(changeItems.id, events[0].id));
+      .where(eq(changeEvents.id, events[0].id));
 
     const resolve = vi.fn().mockResolvedValue([]);
     await resolvePendingEvents(tenant.id, [events[0].id], { resolve, refresh: vi.fn() });
@@ -1482,7 +1557,7 @@ Create `src/lib/change-events/pipeline.ts`:
 ```ts
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
-import { changeItems, repos } from "@/db/schema";
+import { changeEvents, repos } from "@/db/schema";
 import {
   resolveAtomicUpdates,
   RESOLVER_BATCH_SIZE,
@@ -1522,28 +1597,28 @@ export async function resolvePendingEvents(
 
   const rows = await database
     .select({
-      id: changeItems.id,
-      type: changeItems.type,
-      prTitle: changeItems.prTitle,
-      commitMessage: changeItems.commitMessage,
-      impactSummary: changeItems.impactSummary,
+      id: changeEvents.id,
+      type: changeEvents.type,
+      prTitle: changeEvents.prTitle,
+      commitMessage: changeEvents.commitMessage,
+      impactSummary: changeEvents.impactSummary,
       repoName: repos.githubRepoFullName,
     })
-    .from(changeItems)
-    .leftJoin(repos, eq(changeItems.repoId, repos.id))
+    .from(changeEvents)
+    .leftJoin(repos, eq(changeEvents.repoId, repos.id))
     .where(
       and(
-        inArray(changeItems.id, eventIds),
-        eq(changeItems.tenantId, tenantId),
-        eq(changeItems.userFacing, true),
-        isNull(changeItems.atomicUpdateId)
+        inArray(changeEvents.id, eventIds),
+        eq(changeEvents.tenantId, tenantId),
+        eq(changeEvents.userFacing, true),
+        isNull(changeEvents.atomicUpdateId)
       )
     );
   if (rows.length === 0) return;
 
   const events: ResolverEvent[] = rows.map((r) => ({
     id: r.id,
-    type: r.type ?? "commit",
+    type: r.type,
     title: r.prTitle ?? r.commitMessage ?? "",
     summary: r.impactSummary,
     repoName: r.repoName,
@@ -1591,9 +1666,9 @@ git commit -m "feat: add change event resolution pipeline"
 ### Task 7: Wire the pipeline into push and PR ingestion
 
 **Files:**
-- Modify: `src/lib/change-items/ingest-push.ts`
-- Modify: `src/lib/change-items/ingest-pull-request.ts`
-- Test: `tests/lib/change-items/ingest-push.test.ts` (existing — extend)
+- Modify: `src/lib/change-events/ingest-push.ts`
+- Modify: `src/lib/change-events/ingest-pull-request.ts`
+- Test: `tests/lib/change-events/ingest-push.test.ts` (existing — extend)
 
 **Interfaces:**
 - Consumes: `filterCommit`, `filterPullRequest` (Task 2); `resolvePendingEvents` (Task 6)
@@ -1601,14 +1676,37 @@ git commit -m "feat: add change event resolution pipeline"
 
 **Context:** Tier 1 replaces the ad-hoc merge-commit and empty-diff checks already in `ingestPush` — the same two rules, plus four more, now in one tested function. Tier 2 (`enrichChangeItem`) is unchanged. Tier 3 runs once after the concurrent per-commit work completes.
 
-- [ ] **Step 1: Read the existing tests**
+- [ ] **Step 1: Move the ingestion modules into `change-events/`**
 
-Run: `npx vitest run tests/lib/change-items/ingest-push.test.ts`
-Expected: PASS. Read the file to learn its fixture and dependency-injection style before editing — the new assertions must follow it.
+Tasks 2–6 created `src/lib/change-events/`. Leaving the ingestion modules in a
+parallel `change-items/` directory would leave two directories for one concept.
+
+```bash
+git mv src/lib/change-items/* src/lib/change-events/
+rmdir src/lib/change-items
+git mv tests/lib/change-items/* tests/lib/change-events/
+rmdir tests/lib/change-items
+```
+
+Then fix every import of the moved modules:
+
+```bash
+grep -rln "change-items" src/ tests/
+```
+
+Replace `@/lib/change-items/` with `@/lib/change-events/` in each, and update the
+relative import paths inside the moved test files — they gained no directory
+depth, so those should still resolve, but run the check below rather than
+assuming.
+
+Run: `npm run typecheck && npx vitest run tests/lib/change-events/`
+Expected: typecheck clean, existing ingestion tests still PASS. Read
+`ingest-push.test.ts` now to learn its fixture and dependency-injection style —
+the new assertions must follow it.
 
 - [ ] **Step 2: Write the failing test**
 
-Append to `tests/lib/change-items/ingest-push.test.ts`, inside the existing top-level `describe`:
+Append to `tests/lib/change-events/ingest-push.test.ts`, inside the existing top-level `describe`:
 
 ```ts
   it("stores type, provider and externalId on ingested commits", async () => {
@@ -1620,7 +1718,7 @@ Append to `tests/lib/change-items/ingest-push.test.ts`, inside the existing top-
       resolvePending: vi.fn(),
     });
 
-    const [row] = await db.select().from(changeItems).where(eq(changeItems.commitSha, "sha-typed"));
+    const [row] = await db.select().from(changeEvents).where(eq(changeEvents.commitSha, "sha-typed"));
     expect(row.type).toBe("commit");
     expect(row.provider).toBe("github");
     expect(row.externalId).toBe("sha-typed");
@@ -1638,7 +1736,7 @@ Append to `tests/lib/change-items/ingest-push.test.ts`, inside the existing top-
       resolvePending: vi.fn(),
     });
 
-    const [row] = await db.select().from(changeItems).where(eq(changeItems.commitSha, "sha-chore"));
+    const [row] = await db.select().from(changeEvents).where(eq(changeEvents.commitSha, "sha-chore"));
     expect(row.filterReason).toBe("chore_prefix");
     expect(row.status).toBe("ignored");
     expect(enrich).not.toHaveBeenCalled();
@@ -1669,17 +1767,17 @@ If `seedRepo`, `pushInput`, `payloadCommit`, `pushCommit`, or `baseDeps` do not 
 
 - [ ] **Step 3: Run the test to verify it fails**
 
-Run: `npx vitest run tests/lib/change-items/ingest-push.test.ts`
+Run: `npx vitest run tests/lib/change-events/ingest-push.test.ts`
 Expected: FAIL — `resolvePending` is not a recognized dep, and `type`/`provider`/`filterReason` are null.
 
 - [ ] **Step 4: Rewrite `ingest-push.ts`**
 
-Replace the contents of `src/lib/change-items/ingest-push.ts` with:
+Replace the contents of `src/lib/change-events/ingest-push.ts` with:
 
 ```ts
 import { and, eq } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
-import { repos, changeItems } from "@/db/schema";
+import { repos, changeEvents } from "@/db/schema";
 import {
   truncateDiff,
   getCommitDiff,
@@ -1731,23 +1829,16 @@ async function insertCommit(
     releasedAt: Date;
   }
 ): Promise<string | null> {
-  // `ignoredReason` is the pre-phase-1 column and only has values for the two
-  // rules that predate the filter; `filterReason` is the complete record.
-  const legacyIgnoredReason =
-    opts.filterReason === "merge_commit" || opts.filterReason === "empty_diff" ? opts.filterReason : null;
-
   const [row] = await database
-    .insert(changeItems)
+    .insert(changeEvents)
     .values({
       tenantId: repo.tenantId,
       repoId: repo.id,
-      sourceType: "commit",
       type: "commit",
       provider: "github",
       externalId: commit.sha,
       externalUrl: commit.url,
       status: opts.status,
-      ignoredReason: legacyIgnoredReason,
       filterReason: opts.filterReason,
       commitSha: commit.sha,
       commitMessage: commit.message,
@@ -1762,7 +1853,7 @@ async function insertCommit(
       enrichedAt: opts.enrichment ? new Date() : null,
     })
     .onConflictDoNothing()
-    .returning({ id: changeItems.id });
+    .returning({ id: changeEvents.id });
 
   return row?.id ?? null;
 }
@@ -1835,7 +1926,7 @@ export async function ingestPush(input: PushInput, deps: IngestPushDeps = {}): P
       // Tier 2.
       const enrichment = await enrich({
         tenantId: repo.tenantId,
-        sourceType: "commit",
+        type: "commit",
         repoName: input.repoFullName,
         commitMessage: commit.message,
         diff,
@@ -1867,7 +1958,7 @@ export async function ingestPush(input: PushInput, deps: IngestPushDeps = {}): P
 
 - [ ] **Step 5: Run the push tests**
 
-Run: `npx vitest run tests/lib/change-items/ingest-push.test.ts`
+Run: `npx vitest run tests/lib/change-events/ingest-push.test.ts`
 Expected: PASS, including the three new tests.
 
 - [ ] **Step 6: Rewrite `ingest-pull-request.ts`**
@@ -1877,12 +1968,12 @@ arguments. It now takes a deps object, matching `ingestPush`. Update the one
 caller in `src/app/api/webhooks/github/route.ts` accordingly — find it with
 `grep -rn "ingestMergedPullRequest" src/`.
 
-Replace the contents of `src/lib/change-items/ingest-pull-request.ts` with:
+Replace the contents of `src/lib/change-events/ingest-pull-request.ts` with:
 
 ```ts
 import { and, eq } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
-import { repos, changeItems } from "@/db/schema";
+import { repos, changeEvents } from "@/db/schema";
 import { enrichChangeItem, type EnrichChangeItem } from "@/lib/ai/enrich-change-item";
 import { filterPullRequest } from "@/lib/change-events/filter";
 import { resolvePendingEvents } from "@/lib/change-events/pipeline";
@@ -1930,7 +2021,6 @@ export async function ingestMergedPullRequest(
   const base = {
     tenantId: repo.tenantId,
     repoId: repo.id,
-    sourceType: "pr" as const,
     type: "pull_request" as const,
     provider: "github" as const,
     externalId,
@@ -1946,7 +2036,7 @@ export async function ingestMergedPullRequest(
   const verdict = filterPullRequest({ title: input.prTitle });
   if (verdict.drop) {
     await database
-      .insert(changeItems)
+      .insert(changeEvents)
       .values({ ...base, status: "ignored", filterReason: verdict.reason })
       .onConflictDoNothing();
     return;
@@ -1955,14 +2045,14 @@ export async function ingestMergedPullRequest(
   // Tier 2.
   const enrichment = await enrich({
     tenantId: repo.tenantId,
-    sourceType: "pr",
+    type: "pull_request",
     repoName: input.repoFullName,
     prTitle: input.prTitle,
     prDescription: input.prDescription,
   });
 
   const [row] = await database
-    .insert(changeItems)
+    .insert(changeEvents)
     .values({
       ...base,
       userFacing: enrichment.userFacing,
@@ -1972,7 +2062,7 @@ export async function ingestMergedPullRequest(
       enrichedAt: new Date(),
     })
     .onConflictDoNothing()
-    .returning({ id: changeItems.id });
+    .returning({ id: changeEvents.id });
 
   // Tier 3. `row` is undefined when the conflict clause swallowed a duplicate
   // delivery, in which case the PR was already resolved on the first attempt.
@@ -1984,7 +2074,7 @@ export async function ingestMergedPullRequest(
 
 - [ ] **Step 7: Update the existing PR ingestion tests for the new signature**
 
-Run: `npx vitest run tests/lib/change-items/ingest-pull-request.test.ts`
+Run: `npx vitest run tests/lib/change-events/ingest-pull-request.test.ts`
 Expected: FAIL — the tests pass `enrich` and `database` positionally.
 
 Change each call from `ingestMergedPullRequest(input, enrichFn, db)` to
@@ -2004,7 +2094,7 @@ Then append this test inside the existing `describe`:
       { enrich, resolvePending, database: db }
     );
 
-    const [row] = await db.select().from(changeItems).where(eq(changeItems.prNumber, 99));
+    const [row] = await db.select().from(changeEvents).where(eq(changeEvents.prNumber, 99));
     expect(row.filterReason).toBe("chore_prefix");
     expect(row.status).toBe("ignored");
     expect(row.externalId).toBe(`${repo.githubRepoFullName}#99`);
@@ -2016,7 +2106,7 @@ Then append this test inside the existing `describe`:
 If `seedRepo` or `prInput` do not exist under those names, use the fixtures the
 file already defines — do not introduce a second fixture style.
 
-Run: `npx vitest run tests/lib/change-items/ingest-pull-request.test.ts`
+Run: `npx vitest run tests/lib/change-events/ingest-pull-request.test.ts`
 Expected: PASS.
 
 - [ ] **Step 8: Run the full suite**
@@ -2027,7 +2117,7 @@ Expected: typecheck clean, all tests green.
 - [ ] **Step 9: Commit**
 
 ```bash
-git add src/lib/change-items tests/lib/change-items
+git add -A src/lib/change-events tests/lib/change-events
 git commit -m "feat: route push and PR ingestion through the three-tier pipeline"
 ```
 
@@ -2042,7 +2132,7 @@ git commit -m "feat: route push and PR ingestion through the three-tier pipeline
 - Test: `tests/app/atomic-updates-actions.test.ts`
 
 **Interfaces:**
-- Consumes: `atomicUpdates`, `changeItems` (Task 1); `requireSession` from `src/lib/workspace/session.ts`
+- Consumes: `atomicUpdates`, `changeEvents` (Task 1); `requireSession` from `src/lib/workspace/session.ts`
 - Produces: `listAtomicUpdates(): Promise<AtomicUpdateRow[]>`, `editAtomicUpdate(id: string, patch: { title: string; summary: string }): Promise<void>`
 
 **Context:** The minimum surface that makes phase 1 inspectable — without it there is no way to judge whether the resolver clusters well. Editing sets `summaryEditedAt`, which is what freezes regeneration.
@@ -2134,7 +2224,7 @@ Create `src/app/(dashboard)/atomic-updates/actions.ts`:
 import { and, desc, eq, sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { db } from "@/db";
-import { atomicUpdates, changeItems } from "@/db/schema";
+import { atomicUpdates, changeEvents } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 
 export type AtomicUpdateRow = {
@@ -2156,12 +2246,12 @@ export async function listAtomicUpdates(): Promise<AtomicUpdateRow[]> {
       title: atomicUpdates.title,
       summary: atomicUpdates.summary,
       category: atomicUpdates.category,
-      eventCount: sql<number>`count(${changeItems.id})::int`,
+      eventCount: sql<number>`count(${changeEvents.id})::int`,
       summaryEditedAt: atomicUpdates.summaryEditedAt,
       updatedAt: atomicUpdates.updatedAt,
     })
     .from(atomicUpdates)
-    .leftJoin(changeItems, eq(changeItems.atomicUpdateId, atomicUpdates.id))
+    .leftJoin(changeEvents, eq(changeEvents.atomicUpdateId, atomicUpdates.id))
     .where(and(eq(atomicUpdates.tenantId, tenantId), eq(atomicUpdates.status, "open")))
     .groupBy(atomicUpdates.id)
     .orderBy(desc(atomicUpdates.updatedAt));
@@ -2368,10 +2458,12 @@ After all tasks, confirm phase 1 end to end:
 - [ ] Push a `chore:` commit and confirm it is stored with `filter_reason = 'chore_prefix'`, never reaches the classifier, and creates no atomic update
 - [ ] Edit an atomic update's summary in the UI, push another related commit, and confirm the summary is **not** overwritten
 - [ ] Confirm `llm_usage` has rows with `operation` in (`enrichment`, `resolution`, `atomic_summary`)
+- [ ] Confirm `grep -rn "changeItems\|sourceType\|change-items" src/ tests/` returns nothing
+- [ ] Confirm the existing drafts flow still works end to end — generate a draft from pending items and publish it. Task 1 renamed a table the scheduler and drafts pages read from, and phase 1 has no other coverage of that path.
 
 ## Deferred to phase 2
 
-- Renaming `change_items` → `change_events` and `updates` → `releases`
+- Renaming `updates` → `releases` (deliberately not done in phase 1: it drags in `dispatch.ts`, `delivery_attempts`, Webflow publishing, and the drafts UI, none of which phase 1 otherwise touches)
 - Repointing generation at atomic updates
 - Catch-up affordance and merge-regenerate
 - Removing `autoPublish`
