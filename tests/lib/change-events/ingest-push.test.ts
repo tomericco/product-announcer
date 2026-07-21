@@ -39,6 +39,7 @@ describe("ingestPush classification", () => {
       getCommitPulls: noPulls,
       getCommitDiff: async () => "diff --git a/x b/x\n+real change",
       enrich: enrichAllFacing,
+      resolvePending: vi.fn(),
     });
     const [row] = await db.select().from(changeEvents).where(eq(changeEvents.tenantId, tenant.id));
     expect(row).toMatchObject({ status: "pending", filterReason: null, commitSha: "feat1", userFacing: true, suggestedCategory: "improved" });
@@ -52,6 +53,7 @@ describe("ingestPush classification", () => {
       getCommitPulls: noPulls,
       getCommitDiff: async () => { diffCalls++; return "x"; },
       enrich: enrichAllFacing,
+      resolvePending: vi.fn(),
     });
     const [row] = await db.select().from(changeEvents).where(eq(changeEvents.tenantId, tenant.id));
     expect(row).toMatchObject({ status: "ignored", filterReason: "merge_commit", commitSha: "merge1", userFacing: null });
@@ -66,6 +68,7 @@ describe("ingestPush classification", () => {
       getCommitPulls: noPulls,
       getCommitDiff: async () => "   ",
       enrich: async (x) => { enrichCalls++; return enrichAllFacing(x); },
+      resolvePending: vi.fn(),
     });
     const [row] = await db.select().from(changeEvents).where(eq(changeEvents.tenantId, tenant.id));
     expect(row).toMatchObject({ status: "ignored", filterReason: "empty_diff", commitSha: "empty1" });
@@ -79,6 +82,7 @@ describe("ingestPush classification", () => {
       getCommitPulls: async () => [{ number: 42, merged: true, baseRef: "main" }],
       getCommitDiff: async () => "diff",
       enrich: enrichAllFacing,
+      resolvePending: vi.fn(),
     });
     const rows = await db.select().from(changeEvents).where(eq(changeEvents.tenantId, tenant.id));
     expect(rows).toHaveLength(0);
@@ -91,6 +95,7 @@ describe("ingestPush classification", () => {
       getCommitPulls: async () => [{ number: 99, merged: true, baseRef: "develop" }],
       getCommitDiff: async () => "diff --git a/x b/x\n+real change",
       enrich: enrichAllFacing,
+      resolvePending: vi.fn(),
     });
     const rows = await db.select().from(changeEvents).where(eq(changeEvents.tenantId, tenant.id));
     expect(rows).toHaveLength(1);
@@ -103,6 +108,7 @@ describe("ingestPush classification", () => {
     await ingestPush({ ...baseInput, ref: "refs/heads/feature" }, {
       listPushCommits: async () => { listed = true; return []; },
       getCommitPulls: noPulls, getCommitDiff: async () => "x", enrich: enrichAllFacing,
+      resolvePending: vi.fn(),
     });
     expect(listed).toBe(false);
     expect(await db.select().from(changeEvents).where(eq(changeEvents.tenantId, tenant.id))).toHaveLength(0);
@@ -122,6 +128,7 @@ describe("ingestPush classification", () => {
         return "diff --git a/x b/x\n+real change";
       },
       enrich: enrichAllFacing,
+      resolvePending: vi.fn(),
     });
     const rows = await db.select().from(changeEvents).where(eq(changeEvents.tenantId, tenant.id));
     expect(rows.map((r) => r.commitSha)).toEqual(["good1"]);
@@ -139,6 +146,7 @@ describe("ingestPush classification", () => {
       getCommitPulls: noPulls,
       getCommitDiff: async () => "diff --git a/x b/x\n+real change",
       enrich: enrichAllFacing,
+      resolvePending: vi.fn(),
     });
 
     const [row] = await db.select().from(changeEvents).where(eq(changeEvents.tenantId, tenant.id));
@@ -157,6 +165,7 @@ describe("ingestPush classification", () => {
       getCommitPulls: noPulls,
       getCommitDiff: async () => "   ",
       enrich: enrichAllFacing,
+      resolvePending: vi.fn(),
     });
 
     const rows = await db.select().from(changeEvents).where(eq(changeEvents.tenantId, tenant.id));
@@ -166,9 +175,58 @@ describe("ingestPush classification", () => {
 
   it("is idempotent on re-delivery (onConflictDoNothing)", async () => {
     const { tenant } = await seed();
-    const deps = { listPushCommits: async () => [commit({ sha: "dup1" })], getCommitPulls: noPulls, getCommitDiff: async () => "real", enrich: enrichAllFacing };
+    const deps = { listPushCommits: async () => [commit({ sha: "dup1" })], getCommitPulls: noPulls, getCommitDiff: async () => "real", enrich: enrichAllFacing, resolvePending: vi.fn() };
     await ingestPush(baseInput, deps);
     await ingestPush(baseInput, deps);
     expect(await db.select().from(changeEvents).where(eq(changeEvents.tenantId, tenant.id))).toHaveLength(1);
+  });
+
+  it("stores type, provider and externalId on ingested commits", async () => {
+    const { repo } = await seed();
+    await ingestPush(baseInput, {
+      listPushCommits: async () => [commit({ sha: "sha-typed", message: "feat: add export" })],
+      getCommitPulls: noPulls,
+      getCommitDiff: async () => "diff --git a/src/a.ts b/src/a.ts\n+x\n",
+      enrich: enrichAllFacing,
+      resolvePending: vi.fn(),
+    });
+
+    const [row] = await db.select().from(changeEvents).where(eq(changeEvents.commitSha, "sha-typed"));
+    expect(row.type).toBe("commit");
+    expect(row.provider).toBe("github");
+    expect(row.externalId).toBe("sha-typed");
+    expect(row.repoId).toBe(repo.id);
+  });
+
+  it("drops a chore-prefixed commit with a filter reason and does not enrich it", async () => {
+    await seed();
+    const enrich = vi.fn();
+    await ingestPush(baseInput, {
+      listPushCommits: async () => [commit({ sha: "sha-chore", message: "chore: tidy" })],
+      getCommitPulls: noPulls,
+      getCommitDiff: async () => "diff --git a/src/a.ts b/src/a.ts\n+x\n",
+      enrich,
+      resolvePending: vi.fn(),
+    });
+
+    const [row] = await db.select().from(changeEvents).where(eq(changeEvents.commitSha, "sha-chore"));
+    expect(row.filterReason).toBe("chore_prefix");
+    expect(row.status).toBe("ignored");
+    expect(enrich).not.toHaveBeenCalled();
+  });
+
+  it("resolves user-facing commits once, after all commits are ingested", async () => {
+    await seed();
+    const resolvePending = vi.fn();
+    await ingestPush(baseInput, {
+      listPushCommits: async () => [commit({ sha: "sha-r1", message: "feat: a" }), commit({ sha: "sha-r2", message: "feat: b" })],
+      getCommitPulls: noPulls,
+      getCommitDiff: async () => "diff --git a/src/a.ts b/src/a.ts\n+x\n",
+      enrich: enrichAllFacing,
+      resolvePending,
+    });
+
+    expect(resolvePending).toHaveBeenCalledTimes(1);
+    expect(resolvePending.mock.calls[0][1]).toHaveLength(2);
   });
 });

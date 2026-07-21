@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
 import { tenants, repos, changeEvents } from "../../../src/db/schema";
@@ -41,7 +41,7 @@ describe("ingestMergedPullRequest", () => {
         prUrl: "https://github.com/acme/widgets/pull/7",
         mergedAt: new Date("2026-07-01T00:00:00Z"),
       },
-      fakeEnrich
+      { enrich: fakeEnrich, resolvePending: vi.fn() }
     );
 
     const items = await db.select().from(changeEvents).where(eq(changeEvents.repoId, repo.id));
@@ -83,7 +83,7 @@ describe("ingestMergedPullRequest", () => {
         prUrl: "https://github.com/acme/widgets/pull/9",
         mergedAt: new Date(),
       },
-      fakeEnrich
+      { enrich: fakeEnrich, resolvePending: vi.fn() }
     );
 
     const items = await db.select().from(changeEvents).where(eq(changeEvents.repoId, repo.id));
@@ -114,7 +114,7 @@ describe("ingestMergedPullRequest", () => {
         prUrl: "https://github.com/acme/commit-only/pull/1",
         mergedAt: new Date(),
       },
-      fakeEnrich
+      { enrich: fakeEnrich, resolvePending: vi.fn() }
     );
 
     const items = await db.select().from(changeEvents).where(eq(changeEvents.repoId, repo.id));
@@ -150,8 +150,8 @@ describe("ingestMergedPullRequest", () => {
       mergedAt: new Date("2026-07-01T00:00:00Z"),
     };
 
-    await ingestMergedPullRequest(input, fakeEnrich);
-    await ingestMergedPullRequest(input, fakeEnrich);
+    await ingestMergedPullRequest(input, { enrich: fakeEnrich, resolvePending: vi.fn() });
+    await ingestMergedPullRequest(input, { enrich: fakeEnrich, resolvePending: vi.fn() });
 
     const items = await db.select().from(changeEvents).where(eq(changeEvents.repoId, repo.id));
     expect(items).toHaveLength(1);
@@ -170,8 +170,46 @@ describe("ingestMergedPullRequest", () => {
           prUrl: "https://github.com/nobody/nothing/pull/1",
           mergedAt: new Date(),
         },
-        fakeEnrich
+        { enrich: fakeEnrich, resolvePending: vi.fn() }
       )
     ).resolves.not.toThrow();
+  });
+
+  it("drops a chore-prefixed PR without enriching or resolving", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: "PR Ingest Test Tenant" }).returning();
+    const [repo] = await db
+      .insert(repos)
+      .values({
+        tenantId: tenant.id,
+        githubRepoFullName: "acme/widgets",
+        githubInstallationId: "90001",
+        watchedBranch: "main",
+        sourceTypes: ["pr"],
+      })
+      .returning();
+
+    const enrich = vi.fn();
+    const resolvePending = vi.fn();
+
+    await ingestMergedPullRequest(
+      {
+        installationId: "90001",
+        repoFullName: "acme/widgets",
+        baseBranch: "main",
+        prNumber: 99,
+        prTitle: "chore: bump deps",
+        prDescription: "",
+        prUrl: "https://github.com/acme/widgets/pull/99",
+        mergedAt: new Date(),
+      },
+      { enrich, resolvePending, database: db }
+    );
+
+    const [row] = await db.select().from(changeEvents).where(eq(changeEvents.prNumber, 99));
+    expect(row.filterReason).toBe("chore_prefix");
+    expect(row.status).toBe("ignored");
+    expect(row.externalId).toBe(`${repo.githubRepoFullName}#99`);
+    expect(enrich).not.toHaveBeenCalled();
+    expect(resolvePending).not.toHaveBeenCalled();
   });
 });
