@@ -502,14 +502,159 @@ describe("dispatch", () => {
 
     await Promise.all([republish, sweep]);
 
-    // Exactly one item ever created; the second claimant updated that SAME
-    // item rather than creating (and orphaning) a second one.
+    // Exactly one item ever created, and exactly one delivery total: the
+    // second claimant (the sweep) re-reads the row once it finally gets the
+    // lock, sees the first claimant already recorded success, and bails out
+    // instead of redundantly PATCHing a CMS item the customer can see. Before
+    // the dedup fix this asserted `updatedIds` had length 1 — i.e. it
+    // encoded a genuine duplicate live delivery as the expected outcome,
+    // which is exactly the bug this test now guards against.
     expect(createdIds).toHaveLength(1);
-    expect(updatedIds).toHaveLength(1);
-    expect(updatedIds[0]).toBe(createdIds[0]);
+    expect(updatedIds).toHaveLength(0);
 
     const [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.updateId, update.id));
     expect(delivery.status).toBe("success");
     expect(delivery.externalId).toBe(createdIds[0]);
+  });
+
+  it("recovers instead of dropping the delivery when two concurrent first-ever publishes race the insert", async () => {
+    // Regression test for the unique-violation recovery branch in
+    // claimAndDeliver: when NO delivery_attempts row exists yet (a genuine
+    // first-ever publish, e.g. a double-clicked Approve button, or
+    // approveDraft racing the scheduler's auto-publish), two claimants can
+    // both find no existing row and both attempt the INSERT. Only one wins;
+    // the loser must recover under the row lock rather than have the
+    // unique-violation propagate and silently drop its delivery.
+    //
+    // Calling dispatchAllDestinations twice back-to-back does NOT reproduce
+    // this: the row-lock test above already showed the pooled client can
+    // serialize sequential calls. This forces genuine interleaving with a
+    // barrier so both claimants' inserts are in flight at once: the winner's
+    // insert succeeds but stays uncommitted (its transaction is still open,
+    // paused inside deliver()) while the loser's insert reaches Postgres and
+    // blocks on the winner's uncommitted row — a real unique-index race, not
+    // two serialized transactions.
+    const { tenant, update } = await seed();
+    await db.insert(webhookConfigs).values({ tenantId: tenant.id, url: "https://example.com/hook", ...encryptedSecret() });
+
+    let releaseFirstClaimant!: () => void;
+    const firstClaimantPaused = new Promise<void>((resolve) => {
+      releaseFirstClaimant = resolve;
+    });
+    let signalFirstClaimantStarted!: () => void;
+    const firstClaimantStarted = new Promise<void>((resolve) => {
+      signalFirstClaimantStarted = resolve;
+    });
+
+    let fetchCount = 0;
+    vi.mocked(fetch).mockImplementation(async () => {
+      fetchCount++;
+      if (fetchCount === 1) {
+        // Whichever claimant wins the insert reaches here first, still
+        // inside its transaction with the row inserted but NOT committed.
+        // Signal the test to start the second (racing) claimant now, then
+        // pause — long enough for its SELECT ... FOR UPDATE (finding no
+        // committed row yet) and its own INSERT to actually reach Postgres
+        // and block on the winner's uncommitted insert.
+        signalFirstClaimantStarted();
+        await firstClaimantPaused;
+      }
+      return { ok: true } as Response;
+    });
+
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const first = dispatchAllDestinations(update.id);
+    await firstClaimantStarted;
+    const second = dispatchAllDestinations(update.id);
+    // Give the second claimant's SELECT and INSERT real time to reach
+    // Postgres and start blocking on the first claimant's uncommitted row
+    // before releasing it.
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    releaseFirstClaimant();
+
+    await Promise.all([first, second]);
+    consoleErrorSpy.mockRestore();
+
+    // Exactly one row: the unique constraint holds regardless of the fix —
+    // what the fix changes is whether the loser recovers into it cleanly.
+    const deliveries = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.updateId, update.id));
+    expect(deliveries).toHaveLength(1);
+    expect(deliveries[0].status).toBe("success");
+
+    // Both claimants' deliveries actually went out — the loser's delivery is
+    // not silently dropped. Before the fix, the loser's unique-violation was
+    // never recognized as such (checked the wrong property) and, even where
+    // it was, retrying the read in the same aborted transaction (Postgres
+    // 25P02) would fail too — either way the loser's fetch is never reached
+    // and `Dispatch to webhook failed ... Failed query: insert into
+    // "delivery_attempts"` is logged instead.
+    expect(fetchCount).toBe(2);
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
+  });
+
+  it("two overlapping sweep retries of the same failed row deliver exactly once and increment attempts by exactly one", async () => {
+    // Regression test for claimAndDeliver's missing re-check: retryFailedDeliveries's
+    // outer SELECT decides a row is eligible BEFORE any lock is held, so two
+    // overlapping sweep ticks (the cron firing twice, or a manual "retry now"
+    // racing the scheduled sweep) can both select the same failed row and
+    // both enter claimAndDeliver for it. Without re-reading status/attempts
+    // once the lock is actually held, both would redeliver — a genuine
+    // duplicate POST to the customer's endpoint, and attempts driven up by 2
+    // instead of 1, burning retry budget on a delivery that already
+    // succeeded.
+    const { tenant, update } = await seed();
+    await db.insert(webhookConfigs).values({ tenantId: tenant.id, url: "https://example.com/hook", ...encryptedSecret() });
+    await db.insert(deliveryAttempts).values({
+      updateId: update.id,
+      destination: "webhook",
+      status: "failed",
+      attempts: 1,
+    });
+
+    let releaseFirstClaimant!: () => void;
+    const firstClaimantPaused = new Promise<void>((resolve) => {
+      releaseFirstClaimant = resolve;
+    });
+    let signalFirstClaimantStarted!: () => void;
+    const firstClaimantStarted = new Promise<void>((resolve) => {
+      signalFirstClaimantStarted = resolve;
+    });
+
+    let fetchCount = 0;
+    vi.mocked(fetch).mockImplementation(async () => {
+      fetchCount++;
+      if (fetchCount === 1) {
+        // Whichever sweep wins the row lock reaches here first. Signal the
+        // test to start the second (racing) sweep now, then pause — still
+        // inside the transaction, lock held — long enough for the second
+        // sweep's `SELECT ... FOR UPDATE` to actually reach Postgres and,
+        // under the fix, block on it.
+        signalFirstClaimantStarted();
+        await firstClaimantPaused;
+      }
+      return { ok: true } as Response;
+    });
+
+    const firstSweep = retryFailedDeliveries();
+    await firstClaimantStarted;
+    const secondSweep = retryFailedDeliveries();
+    // Give the second sweep's `SELECT ... FOR UPDATE` real time to reach
+    // Postgres and start blocking on the first sweep's row lock before
+    // releasing it.
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    releaseFirstClaimant();
+
+    await Promise.all([firstSweep, secondSweep]);
+
+    // Exactly one fetch: the second sweep re-reads the row once it gets the
+    // lock, sees the first sweep already recorded success, and bails out
+    // instead of redelivering.
+    expect(fetchCount).toBe(1);
+
+    const [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.updateId, update.id));
+    expect(delivery.status).toBe("success");
+    // Started at 1, one sweep's delivery increments it — not two.
+    expect(delivery.attempts).toBe(2);
   });
 });

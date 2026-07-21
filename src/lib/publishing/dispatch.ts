@@ -21,8 +21,22 @@ function statusFor(result: DeliveryResult) {
 // (Postgres code 23505). Only possible on the insert branch below, when two
 // claimants race to create the row for the same update+destination for the
 // very first time — the row-lock further down only protects an EXISTING row.
+//
+// Drizzle wraps the driver error in a DrizzleQueryError and puts the
+// original pg error on `.cause` (verified against real Postgres: the code
+// lives on `error.cause.code`, not `error.code`). Walk the cause chain
+// rather than assuming exactly one level of wrapping, or narrowing to
+// DrizzleQueryError by class name — a future Drizzle version could nest
+// differently, and this just needs to find a Postgres error code wherever
+// it is.
 function isUniqueViolation(error: unknown): boolean {
-  return typeof error === "object" && error !== null && (error as { code?: string }).code === "23505";
+  let current: unknown = error;
+  while (current !== null && typeof current === "object") {
+    const code = (current as { code?: unknown }).code;
+    if (code === "23505") return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
 }
 
 // Decides the `attempts` value to persist after a delivery result.
@@ -62,7 +76,13 @@ async function claimAndDeliver(
   destination: Destination<unknown>,
   update: Update,
   config: unknown,
-  attemptsFor: (result: DeliveryResult, currentAttempts: number) => number | undefined
+  attemptsFor: (result: DeliveryResult, currentAttempts: number) => number | undefined,
+  // "publish": dispatchAllDestinations — a fresh publish, which deliberately
+  // re-delivers even a row that previously succeeded (that's how an edited
+  // announcement updates the existing CMS item) and resets attempts itself.
+  // "retry": retryFailedDeliveries — a sweep over rows an earlier, now-stale
+  // read decided were still eligible; gates the already-done re-check below.
+  mode: "publish" | "retry"
 ): Promise<void> {
   await database.transaction(async (tx) => {
     const [existing] = await tx
@@ -75,10 +95,18 @@ async function claimAndDeliver(
     let attempt = existing;
     if (!attempt) {
       try {
-        [attempt] = await tx
-          .insert(deliveryAttempts)
-          .values({ updateId: update.id, destination: destination.id })
-          .returning();
+        // Wrap the insert in a nested transaction so Drizzle emits a real
+        // SAVEPOINT/ROLLBACK TO SAVEPOINT (verified against the node-postgres
+        // driver used here) around just this statement. A bare insert inside
+        // the outer transaction would, on a unique-violation, leave Postgres
+        // in "current transaction is aborted" (25P02) for every later query
+        // in this tx — including the recovery SELECT right below — because
+        // Postgres aborts the whole transaction on an unhandled statement
+        // error, not just the failing statement. The savepoint confines the
+        // rollback to the insert alone.
+        [attempt] = await tx.transaction(async (tx2) =>
+          tx2.insert(deliveryAttempts).values({ updateId: update.id, destination: destination.id }).returning()
+        );
       } catch (error) {
         // Another claimant inserted the row first (unique-index race on a
         // first-ever publish). Re-read it under lock rather than duplicating
@@ -93,6 +121,20 @@ async function claimAndDeliver(
       }
     }
     if (!attempt) return;
+
+    // A sweep retry re-reads the row it's about to act on now that the lock
+    // is actually held: retryFailedDeliveries's outer SELECT (which decided
+    // this row was still eligible) ran BEFORE the lock, so a concurrent
+    // claimant may have already finished it — delivered successfully, or
+    // burned the last retry — in the gap between that read and this one.
+    // Bail out rather than re-deliver or spend another attempt on work
+    // that's already done. Restricted to "retry": a fresh publish must not
+    // get this treatment, since for it "status already success" describes
+    // the PRIOR publish this call is deliberately re-delivering, not a
+    // concurrent duplicate of itself.
+    if (mode === "retry" && (attempt.status === "success" || attempt.attempts >= MAX_ATTEMPTS)) {
+      return;
+    }
 
     const result = await destination.deliver(update, config, attempt.externalId, tx);
     const attempts = attemptsFor(result, attempt.attempts);
@@ -129,7 +171,7 @@ export async function dispatchAllDestinations(
         // many attempts a prior publish burned through — otherwise a single
         // transient failure on a re-publish pushes the row past MAX_ATTEMPTS
         // and the sweep (`retryFailedDeliveries`) stops retrying it forever.
-        await claimAndDeliver(database, destination, update, config, (result) => nextAttempts(result, 1));
+        await claimAndDeliver(database, destination, update, config, (result) => nextAttempts(result, 1), "publish");
       } catch (error) {
         console.error(`Dispatch to ${destination.id} failed for update ${updateId}:`, error);
       }
@@ -159,8 +201,13 @@ export async function retryFailedDeliveries(database: typeof defaultDb = default
       // Skip if the config was deactivated or removed since the original attempt.
       if (!config) continue;
 
-      await claimAndDeliver(database, destination, update, config, (result, currentAttempts) =>
-        nextAttempts(result, currentAttempts + 1)
+      await claimAndDeliver(
+        database,
+        destination,
+        update,
+        config,
+        (result, currentAttempts) => nextAttempts(result, currentAttempts + 1),
+        "retry"
       );
     } catch (error) {
       console.error(`Retry failed for delivery attempt ${attempt.id}:`, error);
