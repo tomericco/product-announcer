@@ -7,7 +7,8 @@ export type LlmOperation =
   | "review"
   | "revision"
   | "brand_analysis"
-  | "resolution";
+  | "resolution"
+  | "atomic_summary";
 
 /** The subset of the SDK's usage object we persist. Every field is optional. */
 export type TokenUsage = {
