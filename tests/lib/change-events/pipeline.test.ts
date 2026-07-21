@@ -122,6 +122,88 @@ describe("resolvePendingEvents", () => {
     expect(rows).toHaveLength(1);
   });
 
+  it("refreshes atomic updates touched by earlier chunks even when a later chunk throws, and still propagates the error", async () => {
+    const { tenant, events } = await seed(26);
+    const [existing] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "Existing", summary: "S" })
+      .returning();
+    const refresh = vi.fn();
+
+    // First chunk (25 events) succeeds and assigns to `existing`; second chunk
+    // (the remaining 1 event) throws, simulating a DB error mid-run. Chunk 1's
+    // transaction has already committed by the time chunk 2 fails.
+    const resolve = vi
+      .fn()
+      .mockImplementationOnce(async ({ events: batch }: { events: { id: string }[] }) =>
+        batch.map((e) => ({ eventId: e.id, action: "assign" as const, atomicUpdateId: existing.id }))
+      )
+      .mockImplementationOnce(async () => {
+        throw new Error("boom");
+      });
+
+    await expect(
+      resolvePendingEvents(
+        tenant.id,
+        events.map((e) => e.id),
+        { resolve, refresh }
+      )
+    ).rejects.toThrow("boom");
+
+    expect(refresh).toHaveBeenCalledWith(expect.anything(), tenant.id, [existing.id]);
+  });
+
+  it("lets an event in a later chunk attach to an atomic update a prior chunk just created", async () => {
+    const { tenant, events } = await seed(26);
+
+    // Stands in for the real resolver: creates "Shared feature" when it isn't
+    // in the candidate set yet, assigns to it once it is. Chunk 1 (25 events)
+    // creates it; chunk 2 (the 26th event) reloads the candidate set and finds
+    // it there, so it assigns instead of creating a duplicate. This only holds
+    // if chunks run sequentially with a freshly reloaded candidate set each
+    // time — parallel chunks or a candidate set loaded once up front would
+    // make chunk 2 create a second "Shared feature" instead.
+    const resolve = vi.fn(
+      async ({
+        events: batch,
+        open,
+      }: {
+        events: { id: string }[];
+        open: { id: string; title: string }[];
+      }) => {
+        const match = open.find((a) => a.title === "Shared feature");
+        return batch.map((e) =>
+          match
+            ? { eventId: e.id, action: "assign" as const, atomicUpdateId: match.id }
+            : { eventId: e.id, action: "create" as const, title: "Shared feature", summary: "S", category: "new" as const }
+        );
+      }
+    );
+
+    await resolvePendingEvents(
+      tenant.id,
+      events.map((e) => e.id),
+      { resolve, refresh: vi.fn() }
+    );
+
+    expect(resolve).toHaveBeenCalledTimes(2);
+
+    const rows = await db.select().from(atomicUpdates).where(eq(atomicUpdates.tenantId, tenant.id));
+    expect(rows).toHaveLength(1);
+
+    const [firstChunkEvent] = await db
+      .select()
+      .from(changeEvents)
+      .where(eq(changeEvents.id, events[0].id));
+    const [secondChunkEvent] = await db
+      .select()
+      .from(changeEvents)
+      .where(eq(changeEvents.id, events[25].id));
+
+    expect(firstChunkEvent.atomicUpdateId).toBe(rows[0].id);
+    expect(secondChunkEvent.atomicUpdateId).toBe(rows[0].id);
+  });
+
   it("skips events that are already assigned", async () => {
     const { tenant, events } = await seed(1);
     const [existing] = await db

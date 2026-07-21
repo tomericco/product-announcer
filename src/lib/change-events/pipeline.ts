@@ -68,27 +68,50 @@ export async function resolvePendingEvents(
   }));
 
   const touched = new Set<string>();
+  let chunkError: unknown;
 
-  for (const batch of chunk(events, RESOLVER_BATCH_SIZE)) {
-    // The lock spans loading the candidate set and applying the plan, so a
-    // concurrent push cannot create a duplicate atomic update in between.
-    const actions = await withTenantLock(database, tenantId, async (tx) => {
-      const open = await loadOpenAtomicUpdates(tx, tenantId);
-      const plan = await resolve({ tenantId, events: batch, open });
-      // Applied under the SAME lock and transaction that loaded `open`. Applying
-      // in a separate transaction would release the lock between deciding and
-      // writing — the exact window in which a concurrent push reads a stale
-      // candidate set and creates a duplicate.
-      await applyResolutionInTx(tx, tenantId, plan);
-      return plan;
-    });
+  try {
+    for (const batch of chunk(events, RESOLVER_BATCH_SIZE)) {
+      // The lock spans loading the candidate set and applying the plan, so a
+      // concurrent push cannot create a duplicate atomic update in between.
+      const actions = await withTenantLock(database, tenantId, async (tx) => {
+        const open = await loadOpenAtomicUpdates(tx, tenantId);
+        const plan = await resolve({ tenantId, events: batch, open });
+        // Applied under the SAME lock and transaction that loaded `open`. Applying
+        // in a separate transaction would release the lock between deciding and
+        // writing — the exact window in which a concurrent push reads a stale
+        // candidate set and creates a duplicate.
+        await applyResolutionInTx(tx, tenantId, plan);
+        return plan;
+      });
 
-    for (const action of actions) {
-      if (action.action === "assign") touched.add(action.atomicUpdateId);
+      for (const action of actions) {
+        if (action.action === "assign") touched.add(action.atomicUpdateId);
+      }
+    }
+  } catch (err) {
+    chunkError = err;
+  }
+
+  // Each chunk commits independently, so if a later chunk threw, earlier
+  // chunks' assignments are already durable — their atomic updates would be
+  // left with stale summaries forever (the pre-filter query only selects
+  // unassigned events, so retrying never revisits them). Refresh whatever was
+  // accumulated so far, regardless of whether a later chunk failed, then
+  // surface the original chunk error (if any) rather than swallowing it.
+  //
+  // Only assignments change an existing atomic update's meaning. A freshly
+  // created one was written from its evidence a moment ago.
+  if (touched.size > 0) {
+    try {
+      await refresh(database, tenantId, [...touched]);
+    } catch (refreshError) {
+      // A chunk error is the real cause of this run failing; don't let a
+      // secondary failure in refresh hide it. Only surface refresh's error
+      // when the chunk loop itself succeeded.
+      if (chunkError === undefined) throw refreshError;
     }
   }
 
-  // Only assignments change an existing atomic update's meaning. A freshly
-  // created one was written from its evidence a moment ago.
-  if (touched.size > 0) await refresh(database, tenantId, [...touched]);
+  if (chunkError !== undefined) throw chunkError;
 }
