@@ -141,6 +141,27 @@
       "when": 1784554571560,
       "tag": "0019_needy_bucky",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1784640329838,
+      "tag": "0020_clean_exiles",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1784640389890,
+      "tag": "0021_dapper_gauntlet",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1784640427379,
+      "tag": "0022_cuddly_shiver_man",
+      "breakpoints": true
     }
   ]
 }

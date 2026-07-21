@@ -80,6 +80,7 @@ export default async function DraftsPage() {
                 updateId={d.id}
                 title={d.title}
                 sourceItemCount={d.sourceItems.length}
+                publishedAt={d.publishedAt ? d.publishedAt.toISOString() : null}
               />
             </div>
           </div>

@@ -1,12 +1,12 @@
 "use server";
 
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { db } from "@/db";
 import { updates } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
-import { dispatchWebhookForUpdate } from "@/lib/publishing/webhook-delivery";
+import { dispatchAllDestinations } from "@/lib/publishing/dispatch";
 import { releaseBatchForUpdate } from "@/lib/change-items/change-item-batch";
 
 async function loadOwnedDraft(tenantId: string, updateId: string) {
@@ -30,6 +30,14 @@ function resolveBody(submittedBody: string, existingBody: string) {
   return submittedBody;
 }
 
+// The hidden "publishedAt" field carries whatever `published_at` was rendered
+// into the form (an ISO string, or "" when the update had never been
+// published). Empty string means null, not the epoch.
+function parseExpectedPublishedAt(raw: FormDataEntryValue | null): Date | null {
+  if (typeof raw !== "string" || raw.length === 0) return null;
+  return new Date(raw);
+}
+
 export async function saveDraft(formData: FormData) {
   const session = await requireSession();
   const updateId = formData.get("updateId") as string;
@@ -51,11 +59,16 @@ export async function approveDraft(formData: FormData) {
   const session = await requireSession();
   const updateId = formData.get("updateId") as string;
   const existing = await loadOwnedDraft(session.user.tenantId, updateId);
+  // The value `published_at` had when this form was rendered — a hidden
+  // field, not user-editable. Guards against a double-submit of the same
+  // rendered form re-triggering delivery: gate the write on it still
+  // matching, and only dispatch when it actually did.
+  const expectedPublishedAt = parseExpectedPublishedAt(formData.get("publishedAt"));
 
   // Persist whatever title/body the user currently sees before publishing,
   // so approving doesn't silently discard unsaved edits in favor of the
   // last-saved DB copy.
-  await db
+  const [changed] = await db
     .update(updates)
     .set({
       title: formData.get("title") as string,
@@ -64,9 +77,24 @@ export async function approveDraft(formData: FormData) {
       status: "published",
       publishedAt: new Date(),
     })
-    .where(eq(updates.id, updateId));
+    .where(
+      and(
+        eq(updates.id, updateId),
+        eq(updates.tenantId, session.user.tenantId),
+        // `= NULL` is never true in SQL, so a plain `eq` would break the very
+        // first publish (published_at starts out null). IS NOT DISTINCT FROM
+        // treats null-equals-null as a match.
+        sql`${updates.publishedAt} IS NOT DISTINCT FROM ${expectedPublishedAt}`
+      )
+    )
+    .returning({ id: updates.id });
 
-  await dispatchWebhookForUpdate(updateId);
+  // A double submit's second call finds published_at already moved past what
+  // it expected, matches zero rows, and skips dispatch — the update is
+  // already published, which is what the user wanted, so this isn't an error.
+  if (changed) {
+    await dispatchAllDestinations(updateId);
+  }
 
   revalidatePath("/drafts");
   redirect("/drafts");
@@ -97,13 +125,26 @@ export async function publishDraft(formData: FormData) {
   const session = await requireSession();
   const updateId = formData.get("updateId") as string;
   await loadOwnedDraft(session.user.tenantId, updateId);
+  // Same guard as approveDraft: the drafts list only ever renders drafts, so
+  // in practice this is always null, but the mechanism stays identical rather
+  // than special-casing the list's caller.
+  const expectedPublishedAt = parseExpectedPublishedAt(formData.get("publishedAt"));
 
-  await db
+  const [changed] = await db
     .update(updates)
     .set({ status: "published", publishedAt: new Date() })
-    .where(eq(updates.id, updateId));
+    .where(
+      and(
+        eq(updates.id, updateId),
+        eq(updates.tenantId, session.user.tenantId),
+        sql`${updates.publishedAt} IS NOT DISTINCT FROM ${expectedPublishedAt}`
+      )
+    )
+    .returning({ id: updates.id });
 
-  await dispatchWebhookForUpdate(updateId);
+  if (changed) {
+    await dispatchAllDestinations(updateId);
+  }
 
   revalidatePath("/drafts");
 }

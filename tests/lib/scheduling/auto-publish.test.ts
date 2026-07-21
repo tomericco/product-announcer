@@ -6,12 +6,18 @@ vi.mock("../../../src/lib/ai/review-draft", () => ({ reviewAndReconcile: vi.fn()
 import { generateObject } from "ai";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, repos, changeItems, updates, webhookConfigs, webhookDeliveries } from "../../../src/db/schema";
+import { tenants, repos, changeItems, updates, webhookConfigs, deliveryAttempts } from "../../../src/db/schema";
 import { runBatchForWorkspace } from "../../../src/lib/scheduling/run-schedule";
 import { getPendingChangeItems } from "../../../src/lib/change-items/change-item-batch";
 import { reviewAndReconcile } from "../../../src/lib/ai/review-draft";
+import { encryptSecret } from "../../../src/lib/credentials/encryption";
 
 const NAME = "Auto Publish Test Tenant";
+
+const encryptedSecret = () => {
+  const p = encryptSecret("s");
+  return { secretCiphertext: p.ciphertext, secretIv: p.iv, secretAuthTag: p.authTag };
+};
 
 describe("runBatchForWorkspace auto-publish", () => {
   beforeEach(() => {
@@ -41,7 +47,7 @@ describe("runBatchForWorkspace auto-publish", () => {
 
   it("publishes and fires the webhook when autoPublish is on and an active webhook exists", async () => {
     const tenant = await seed(true);
-    await db.insert(webhookConfigs).values({ tenantId: tenant.id, url: "https://example.com/hook", secret: "s" });
+    await db.insert(webhookConfigs).values({ tenantId: tenant.id, url: "https://example.com/hook", ...encryptedSecret() });
     vi.mocked(fetch).mockResolvedValue({ ok: true } as Response);
 
     const pending = await getPendingChangeItems(tenant.id);
@@ -50,13 +56,13 @@ describe("runBatchForWorkspace auto-publish", () => {
     const [update] = await db.select().from(updates).where(eq(updates.tenantId, tenant.id));
     expect(update.status).toBe("published");
     expect(update.publishedAt).not.toBeNull();
-    const deliveries = await db.select().from(webhookDeliveries).where(eq(webhookDeliveries.updateId, update.id));
+    const deliveries = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.updateId, update.id));
     expect(deliveries).toHaveLength(1);
   });
 
   it("publishes the revised draft (not the original) when the review revises it, and still fires the webhook", async () => {
     const tenant = await seed(true);
-    await db.insert(webhookConfigs).values({ tenantId: tenant.id, url: "https://example.com/hook", secret: "s" });
+    await db.insert(webhookConfigs).values({ tenantId: tenant.id, url: "https://example.com/hook", ...encryptedSecret() });
     vi.mocked(fetch).mockResolvedValue({ ok: true } as Response);
     vi.mocked(reviewAndReconcile).mockImplementation(async () => ({
       finalDraft: { title: "Revised title", body: "Revised body" },
@@ -72,7 +78,7 @@ describe("runBatchForWorkspace auto-publish", () => {
     expect(update.reviewStatus).toBe("passed");
     expect(update.title).toBe("Revised title");
     expect(update.body).toBe("Revised body");
-    const deliveries = await db.select().from(webhookDeliveries).where(eq(webhookDeliveries.updateId, update.id));
+    const deliveries = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.updateId, update.id));
     expect(deliveries).toHaveLength(1);
     expect(fetch).toHaveBeenCalled();
   });
@@ -90,7 +96,7 @@ describe("runBatchForWorkspace auto-publish", () => {
 
   it("stays a draft (no publish) when the review fails, even with autoPublish + webhook", async () => {
     const tenant = await seed(true);
-    await db.insert(webhookConfigs).values({ tenantId: tenant.id, url: "https://example.com/hook", secret: "s" });
+    await db.insert(webhookConfigs).values({ tenantId: tenant.id, url: "https://example.com/hook", ...encryptedSecret() });
     vi.mocked(reviewAndReconcile).mockImplementation(async (draft) => ({ finalDraft: draft, status: "failed", issues: ["too salesy"] }));
 
     const pending = await getPendingChangeItems(tenant.id);
@@ -104,7 +110,7 @@ describe("runBatchForWorkspace auto-publish", () => {
 
   it("stays a draft (no publish) when the review errors", async () => {
     const tenant = await seed(true);
-    await db.insert(webhookConfigs).values({ tenantId: tenant.id, url: "https://example.com/hook", secret: "s" });
+    await db.insert(webhookConfigs).values({ tenantId: tenant.id, url: "https://example.com/hook", ...encryptedSecret() });
     vi.mocked(reviewAndReconcile).mockImplementation(async (draft) => ({ finalDraft: draft, status: "error", issues: [] }));
 
     const pending = await getPendingChangeItems(tenant.id);

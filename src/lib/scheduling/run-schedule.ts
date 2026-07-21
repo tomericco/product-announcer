@@ -7,7 +7,7 @@ import { getOrCreateBrandProfile } from "@/lib/workspace/brand-profile";
 import { resolvePersonaRefs, systemPersonaKeys } from "@/lib/workspace/personas";
 import { selectExamples } from "@/lib/ai/select-examples";
 import { shouldTriggerRun, advanceNextScheduledAt, type Cadence } from "./scheduler-decision";
-import { dispatchWebhookForUpdate } from "@/lib/publishing/webhook-delivery";
+import { dispatchAllDestinations } from "@/lib/publishing/dispatch";
 import { reviewAndReconcile } from "@/lib/ai/review-draft";
 import type { OnDraftProgress } from "./draft-progress";
 
@@ -101,7 +101,7 @@ export async function runBatchForWorkspace(
         .update(updates)
         .set({ status: "published", publishedAt: new Date() })
         .where(eq(updates.id, update.id));
-      await dispatchWebhookForUpdate(update.id, database);
+      await dispatchAllDestinations(update.id, database);
     }
   } catch (error) {
     console.error(`Auto-publish failed for update ${update.id}; it remains a saved draft:`, error);

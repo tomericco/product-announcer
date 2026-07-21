@@ -27,11 +27,18 @@ type Props = {
   title: string;
   /** Commits batched into this draft; named in the delete confirmation. */
   sourceItemCount: number;
+  /**
+   * published_at as rendered by this page load — always null/"" here since
+   * this list only ever shows drafts, but threaded through rather than
+   * hardcoded so publishDraft's compare-and-swap guard stays the same
+   * mechanism as approveDraft's, not a special case.
+   */
+  publishedAt: string | null;
 };
 
 type Confirming = "publish" | "delete" | null;
 
-export function DraftRowMenu({ updateId, title, sourceItemCount }: Props) {
+export function DraftRowMenu({ updateId, title, sourceItemCount, publishedAt }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirming, setConfirming] = useState<Confirming>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -40,6 +47,7 @@ export function DraftRowMenu({ updateId, title, sourceItemCount }: Props) {
     setSubmitting(true);
     const formData = new FormData();
     formData.set("updateId", updateId);
+    formData.set("publishedAt", publishedAt ?? "");
     try {
       await action(formData);
       setConfirming(null);

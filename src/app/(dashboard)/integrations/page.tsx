@@ -1,15 +1,31 @@
+import { Suspense } from "react";
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { webhookConfigs } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
-import { saveWebhookConfig } from "./actions";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { WebhookConfigForm } from "./webhook-config-form";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { WebflowForm } from "./webflow-form";
 
-const COMING_SOON = ["Webflow", "Customer.io", "Mailchimp", "HubSpot", "LinkedIn"];
+const COMING_SOON = ["Customer.io", "Mailchimp", "HubSpot", "LinkedIn"];
+
+// WebflowForm is an async Server Component that awaits a Webflow HTTP call
+// (up to a 10s timeout). Without a boundary, that await blocks this entire
+// page's render — the webhook card above would sit unrendered too. This
+// fallback keeps the same card shape so nothing jumps when it resolves.
+function WebflowFormSkeleton() {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Webflow CMS</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <p className="text-sm text-muted-foreground">Loading Webflow…</p>
+      </CardContent>
+    </Card>
+  );
+}
 
 export default async function IntegrationsPage() {
   const session = await requireSession();
@@ -24,30 +40,13 @@ export default async function IntegrationsPage() {
             <CardTitle>Generic Webhook</CardTitle>
           </CardHeader>
           <CardContent>
-            <form action={saveWebhookConfig} className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="url">URL</Label>
-                <Input id="url" type="url" name="url" defaultValue={config?.url ?? ""} required />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="secret">Secret</Label>
-                <Input id="secret" type="text" name="secret" defaultValue={config?.secret ?? ""} required />
-              </div>
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  name="active"
-                  defaultChecked={config?.active ?? true}
-                  className="size-4 rounded border-input"
-                />
-                Active
-              </label>
-              <Button type="submit" variant="outline">
-                Save
-              </Button>
-            </form>
+            <WebhookConfigForm config={config ? { url: config.url, active: config.active } : null} />
           </CardContent>
         </Card>
+
+        <Suspense fallback={<WebflowFormSkeleton />}>
+          <WebflowForm />
+        </Suspense>
       </section>
 
       <section className="space-y-2">

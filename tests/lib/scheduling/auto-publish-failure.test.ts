@@ -4,8 +4,8 @@ vi.mock("ai", () => ({ generateObject: vi.fn() }));
 vi.mock("../../../src/lib/ai/review-draft", () => ({ reviewAndReconcile: vi.fn() }));
 // Stand in for "something in the auto-publish block blew up after the draft was
 // already saved" — the real risk is a DB failure in that window.
-vi.mock("../../../src/lib/publishing/webhook-delivery", () => ({
-  dispatchWebhookForUpdate: vi.fn(),
+vi.mock("../../../src/lib/publishing/dispatch", () => ({
+  dispatchAllDestinations: vi.fn(),
 }));
 
 import { generateObject } from "ai";
@@ -15,10 +15,16 @@ import { tenants, repos, changeItems, updates, webhookConfigs } from "../../../s
 import { runBatchForWorkspace } from "../../../src/lib/scheduling/run-schedule";
 import { getPendingChangeItems } from "../../../src/lib/change-items/change-item-batch";
 import { reviewAndReconcile } from "../../../src/lib/ai/review-draft";
-import { dispatchWebhookForUpdate } from "../../../src/lib/publishing/webhook-delivery";
+import { dispatchAllDestinations } from "../../../src/lib/publishing/dispatch";
 import type { DraftProgressEvent } from "../../../src/lib/scheduling/draft-progress";
+import { encryptSecret } from "../../../src/lib/credentials/encryption";
 
 const NAME = "Auto Publish Failure Test Tenant";
+
+const encryptedSecret = () => {
+  const p = encryptSecret("s");
+  return { secretCiphertext: p.ciphertext, secretIv: p.iv, secretAuthTag: p.authTag };
+};
 
 describe("runBatchForWorkspace when auto-publish fails after the draft is saved", () => {
   beforeEach(() => {
@@ -35,7 +41,7 @@ describe("runBatchForWorkspace when auto-publish fails after the draft is saved"
   afterEach(async () => {
     await db.delete(tenants).where(eq(tenants.name, NAME));
     vi.mocked(generateObject).mockReset();
-    vi.mocked(dispatchWebhookForUpdate).mockReset();
+    vi.mocked(dispatchAllDestinations).mockReset();
   });
 
   it("still reports success: the draft exists, so it must not be reported as a failure", async () => {
@@ -47,9 +53,9 @@ describe("runBatchForWorkspace when auto-publish fails after the draft is saved"
     await db.insert(changeItems).values({
       tenantId: tenant.id, repoId: repo.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "a",
     });
-    await db.insert(webhookConfigs).values({ tenantId: tenant.id, url: "https://example.com/hook", secret: "s" });
+    await db.insert(webhookConfigs).values({ tenantId: tenant.id, url: "https://example.com/hook", ...encryptedSecret() });
 
-    vi.mocked(dispatchWebhookForUpdate).mockRejectedValue(new Error("webhook exploded"));
+    vi.mocked(dispatchAllDestinations).mockRejectedValue(new Error("webhook exploded"));
 
     const events: DraftProgressEvent[] = [];
     const pending = await getPendingChangeItems(tenant.id);
