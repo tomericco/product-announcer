@@ -56,6 +56,15 @@ export async function claimReleaseFromAtomicUpdates(
 ): Promise<Release | null> {
   if (input.atomicUpdateIds.length === 0) return null;
 
+  // Single timestamp shared by the release's composedAt AND the linked atomic
+  // updates' updatedAt. These are two separate round-trips, so two independent
+  // `new Date()` calls would leave the AUs' updatedAt a few ms AFTER
+  // composedAt — computeReleaseDelta's strict `updatedAt > composedAt` would
+  // then misread every just-linked AU as a post-compose "evidence" change.
+  // Using the same Date value for both makes them equal, so the strict `>`
+  // correctly excludes them.
+  const now = new Date();
+
   return database
     .transaction(async (tx) => {
       const [release] = await tx
@@ -67,7 +76,7 @@ export async function claimReleaseFromAtomicUpdates(
           // Has a DB default (now()), but set explicitly so the claim-time
           // semantics are clear and testable — this is the baseline catch-up
           // deltas measure against.
-          composedAt: new Date(),
+          composedAt: now,
           ...(input.review
             ? { reviewStatus: input.review.status, reviewIssues: input.review.issues, reviewedAt: new Date() }
             : {}),
@@ -76,7 +85,7 @@ export async function claimReleaseFromAtomicUpdates(
 
       const claimed = await tx
         .update(atomicUpdates)
-        .set({ releaseId: release.id, updatedAt: new Date() })
+        .set({ releaseId: release.id, updatedAt: now })
         .where(
           and(
             inArray(atomicUpdates.id, input.atomicUpdateIds),
