@@ -1,9 +1,11 @@
 "use server";
 
 import { and, desc, eq, isNotNull, isNull, not, or } from "drizzle-orm";
+import { revalidatePath } from "next/cache";
 import { db } from "@/db";
 import { atomicUpdates, changeEvents } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
+import { reassignChangeEvent, type ReassignResult, type ReassignTarget } from "@/lib/change-events/reassign";
 
 export type ChangeEventRow = {
   id: string;
@@ -118,4 +120,51 @@ export async function listChangeEvents(filters: ChangeEventFilters): Promise<Cha
       userFacing: row.userFacing,
     };
   });
+}
+
+function parseTarget(formData: FormData): ReassignTarget | null {
+  const targetKind = formData.get("targetKind");
+  if (targetKind === "existing") {
+    const atomicUpdateId = formData.get("atomicUpdateId");
+    if (typeof atomicUpdateId !== "string" || !atomicUpdateId) return null;
+    return { kind: "existing", atomicUpdateId };
+  }
+  if (targetKind === "detach") {
+    return { kind: "detach" };
+  }
+  if (targetKind === "new") {
+    return { kind: "new" };
+  }
+  return null;
+}
+
+/**
+ * Manually reassigns a change event to a different open atomic update,
+ * detaches it, or splits it into a new one (phase 3's reassignment UI).
+ *
+ * tenantId and userId ALWAYS come from the session, never from formData — a
+ * client could stuff arbitrary values into a hidden field, and the
+ * `reassignChangeEvent` core re-validates tenant ownership of the event/AUs
+ * regardless, but this action must not even offer a foreign tenantId as
+ * input. `eventId` and the target descriptor are the only formData reads.
+ *
+ * A `{ok:false}` outcome from the core (e.g. the event's atomic update was
+ * already released) is returned to the caller, not thrown — the client
+ * component surfaces it as a toast rather than an error boundary.
+ */
+export async function reassign(formData: FormData): Promise<ReassignResult> {
+  const session = await requireSession();
+  const tenantId = session.user.tenantId;
+  const userId = session.user.id;
+
+  const eventId = formData.get("eventId");
+  const target = parseTarget(formData);
+
+  if (typeof eventId !== "string" || !eventId || !target) {
+    return { ok: false, reason: "Invalid reassignment request." };
+  }
+
+  const result = await reassignChangeEvent({ tenantId, userId, eventId, target });
+  revalidatePath("/change-events");
+  return result;
 }
