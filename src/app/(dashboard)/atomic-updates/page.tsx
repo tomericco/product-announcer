@@ -7,7 +7,7 @@ import {
   EmptyStateDescription,
 } from "@/components/ui/empty-state";
 import { listAtomicUpdates } from "./actions";
-import { AtomicUpdateCard } from "./atomic-update-card";
+import { AtomicUpdatesList } from "./atomic-updates-list";
 
 export default async function AtomicUpdatesPage() {
   const rows = await listAtomicUpdates();
@@ -36,13 +36,7 @@ export default async function AtomicUpdatesPage() {
         Each one is a single user-facing change, gathered from the commits, pull requests, and tasks
         behind it.
       </p>
-      <ul className="flex flex-col gap-3">
-        {rows.map((row) => (
-          <li key={row.id}>
-            <AtomicUpdateCard row={row} />
-          </li>
-        ))}
-      </ul>
+      <AtomicUpdatesList rows={rows} />
     </div>
   );
 }

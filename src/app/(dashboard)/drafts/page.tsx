@@ -39,8 +39,8 @@ export default async function DraftsPage() {
             scheduled run, or as soon as you generate one yourself.
           </EmptyStateDescription>
           <EmptyStateActions>
-            <Button render={<Link href="/pending" />}>
-              Review pending changes
+            <Button render={<Link href="/atomic-updates" />}>
+              Review atomic updates
               <ArrowRight />
             </Button>
           </EmptyStateActions>

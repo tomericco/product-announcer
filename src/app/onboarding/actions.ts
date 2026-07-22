@@ -48,18 +48,18 @@ export async function saveOnboardingSchedule(formData: FormData) {
     });
 
   await markOnboardingComplete(session.user.tenantId);
-  redirect("/pending");
+  redirect("/atomic-updates");
 }
 
 export async function skipOnboarding() {
   const session = await requireSession();
   await markOnboardingComplete(session.user.tenantId);
-  redirect("/pending");
+  redirect("/atomic-updates");
 }
 
 export async function importBrandStyle(formData: FormData) {
   const session = await requireSession();
-  if (await isOnboardingComplete(session.user.tenantId)) redirect("/pending");
+  if (await isOnboardingComplete(session.user.tenantId)) redirect("/atomic-updates");
 
   const url = (formData.get("updatesPageUrl") as string)?.trim();
   if (!url) redirect("/onboarding");

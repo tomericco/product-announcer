@@ -31,7 +31,7 @@ export default async function OnboardingPage({
   searchParams: Promise<{ brandImport?: string }>;
 }) {
   const session = await requireSession();
-  if (await isOnboardingComplete(session.user.tenantId)) redirect("/pending");
+  if (await isOnboardingComplete(session.user.tenantId)) redirect("/atomic-updates");
   const { brandImport } = await searchParams;
 
   const [tenant] = await db.select().from(tenants).where(eq(tenants.id, session.user.tenantId)).limit(1);

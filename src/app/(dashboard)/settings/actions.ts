@@ -31,13 +31,6 @@ export async function saveWorkspaceName(formData: FormData) {
   revalidatePath("/settings");
 }
 
-export async function saveAutoPublish(formData: FormData) {
-  const session = await requireSession();
-  const autoPublish = formData.get("autoPublish") === "on";
-  await db.update(tenants).set({ autoPublish }).where(eq(tenants.id, session.user.tenantId));
-  revalidatePath("/settings");
-}
-
 export async function addRepo(formData: FormData) {
   const session = await requireSession();
   const [tenant] = await db.select().from(tenants).where(eq(tenants.id, session.user.tenantId)).limit(1);
@@ -58,7 +51,7 @@ export async function addRepo(formData: FormData) {
   await addSelectedRepos(session.user.tenantId, tenant.githubInstallationId, [{ fullName, branch }]);
 
   revalidatePath("/settings");
-  revalidatePath("/pending");
+  revalidatePath("/atomic-updates");
 }
 
 export async function updateRepoBranch(formData: FormData) {
@@ -88,7 +81,7 @@ export async function updateRepoBranch(formData: FormData) {
     .where(and(eq(repos.id, repoId), eq(repos.tenantId, session.user.tenantId)));
 
   revalidatePath("/settings");
-  revalidatePath("/pending");
+  revalidatePath("/atomic-updates");
 }
 
 export async function removeRepo(formData: FormData) {
@@ -101,7 +94,7 @@ export async function removeRepo(formData: FormData) {
   await db.delete(repos).where(and(eq(repos.id, repoId), eq(repos.tenantId, session.user.tenantId)));
 
   revalidatePath("/settings");
-  revalidatePath("/pending");
+  revalidatePath("/atomic-updates");
 }
 
 export async function saveBrandProfile(formData: FormData) {
@@ -177,5 +170,5 @@ export async function saveWorkspaceSchedule(formData: FormData) {
     .onConflictDoUpdate({ target: scheduleConfigs.tenantId, set: values });
 
   revalidatePath("/settings");
-  revalidatePath("/pending");
+  revalidatePath("/atomic-updates");
 }

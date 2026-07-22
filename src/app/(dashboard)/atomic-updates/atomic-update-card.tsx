@@ -37,7 +37,19 @@ function EventRow({ event }: { event: AtomicUpdateEvent }) {
   );
 }
 
-export function AtomicUpdateCard({ row }: { row: AtomicUpdateRow }) {
+export function AtomicUpdateCard({
+  row,
+  selectable = false,
+  selected = false,
+  onSelectChange,
+}: {
+  row: AtomicUpdateRow;
+  // Controlled by the page: only rendered/enabled when the page is in
+  // selection mode for drafting a release.
+  selectable?: boolean;
+  selected?: boolean;
+  onSelectChange?: (id: string, selected: boolean) => void;
+}) {
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(row.title);
   const [summary, setSummary] = useState(row.summary);
@@ -83,6 +95,15 @@ export function AtomicUpdateCard({ row }: { row: AtomicUpdateRow }) {
       ) : (
         <div className="flex flex-col gap-2">
           <div className="flex items-center gap-2">
+            {selectable && (
+              <input
+                type="checkbox"
+                className="size-4 rounded border-input"
+                aria-label={`Select "${row.title}"`}
+                checked={selected}
+                onChange={(e) => onSelectChange?.(row.id, e.target.checked)}
+              />
+            )}
             <h2 className="font-medium">{row.title}</h2>
             <CategoryBadge category={row.category} />
           </div>

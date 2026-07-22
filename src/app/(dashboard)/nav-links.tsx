@@ -5,7 +5,6 @@ import { usePathname } from "next/navigation";
 import { Button } from "@/components/ui/button";
 
 const NAV = [
-  { href: "/pending", label: "Pending" },
   { href: "/atomic-updates", label: "Atomic updates" },
   { href: "/drafts", label: "Drafts" },
   { href: "/history", label: "History" },

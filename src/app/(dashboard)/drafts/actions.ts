@@ -7,7 +7,7 @@ import { db } from "@/db";
 import { releases } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { dispatchAllDestinations } from "@/lib/publishing/dispatch";
-import { releaseBatchForUpdate } from "@/lib/change-events/change-item-batch";
+import { revertReleaseAtomicUpdates } from "@/lib/change-events/release-claim";
 
 async function loadOwnedDraft(tenantId: string, releaseId: string) {
   const [update] = await db
@@ -107,9 +107,10 @@ export async function rejectDraft(formData: FormData) {
 
   await db.transaction(async (tx) => {
     await tx.update(releases).set({ status: "rejected" }).where(eq(releases.id, releaseId));
-    // Rejecting the write-up isn't rejecting the commits — hand them back so
-    // they can go into a later update instead of vanishing from Pending.
-    await releaseBatchForUpdate(releaseId, tx);
+    // Rejecting the write-up isn't rejecting the underlying changes — hand the
+    // atomic updates back so they can go into a later release instead of
+    // vanishing.
+    await revertReleaseAtomicUpdates(releaseId, tx);
   });
 
   revalidatePath("/drafts");
@@ -155,9 +156,11 @@ export async function deleteDraft(formData: FormData) {
   await loadOwnedDraft(session.user.tenantId, releaseId);
 
   await db.transaction(async (tx) => {
-    // Must precede the delete: change_events.update_id has no ON DELETE clause,
-    // so the FK rejects removing an update that still owns items.
-    await releaseBatchForUpdate(releaseId, tx);
+    // Must precede the delete: releaseId is ON DELETE SET NULL, so deleting
+    // first would null the FK before this can find the atomic updates to
+    // revert, stranding them as status='released' with no release — invisible
+    // to every open-only query.
+    await revertReleaseAtomicUpdates(releaseId, tx);
     await tx.delete(releases).where(eq(releases.id, releaseId));
   });
 

@@ -2,7 +2,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/workspace/auth";
 import { hasValidSession, tenantExists } from "@/lib/workspace/session";
 import { db } from "@/db";
-import { getBatchableChangeItems } from "@/lib/change-events/change-item-batch";
+import { getOpenAtomicUpdates } from "@/lib/change-events/release-claim";
 import { runBatchForWorkspace } from "@/lib/scheduling/run-schedule";
 import type { DraftProgressEvent } from "@/lib/scheduling/draft-progress";
 
@@ -13,7 +13,7 @@ function unauthorized(): Response {
   });
 }
 
-export async function POST(_req: Request): Promise<Response> {
+export async function POST(req: Request): Promise<Response> {
   const session = await getServerSession(authOptions);
   if (!hasValidSession(session)) {
     return unauthorized();
@@ -27,6 +27,11 @@ export async function POST(_req: Request): Promise<Response> {
     return unauthorized();
   }
 
+  const body = await req.json().catch(() => null);
+  const requestedIds: string[] = Array.isArray(body?.atomicUpdateIds)
+    ? body.atomicUpdateIds.filter((id: unknown): id is string => typeof id === "string")
+    : [];
+
   const encoder = new TextEncoder();
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -34,13 +39,19 @@ export async function POST(_req: Request): Promise<Response> {
         controller.enqueue(encoder.encode(JSON.stringify(event) + "\n"));
       try {
         emit({ type: "step", key: "collecting", status: "start" });
-        const pending = await getBatchableChangeItems(tenantId, db);
-        if (pending.length === 0) {
-          emit({ type: "error", message: "No pending changes to draft." });
+        // Re-derive the tenant's open atomic updates server-side and intersect
+        // with the requested ids, rather than trusting the client's list
+        // outright — this is the ownership + still-open check in one pass
+        // (a stale or foreign id in the request is silently dropped, not an error).
+        const open = await getOpenAtomicUpdates(tenantId, db);
+        const requested = new Set(requestedIds);
+        const selected = open.filter((a) => requested.has(a.id));
+        if (selected.length === 0) {
+          emit({ type: "error", message: "No selected atomic updates are available to draft." });
           return;
         }
         emit({ type: "step", key: "collecting", status: "done" });
-        await runBatchForWorkspace(tenantId, pending, db, emit);
+        await runBatchForWorkspace(tenantId, selected, db, emit);
       } catch (err) {
         emit({ type: "error", message: err instanceof Error ? err.message : String(err) });
       } finally {

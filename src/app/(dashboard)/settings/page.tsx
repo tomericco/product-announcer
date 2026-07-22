@@ -4,7 +4,7 @@ import { repos, scheduleConfigs, tenants, systemPersonas } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { getGithubApp, listAccessibleRepos, listRepoBranches } from "@/lib/integrations/github/github";
 import { getOrCreateBrandProfile } from "@/lib/workspace/brand-profile";
-import { saveWorkspaceName, saveAutoPublish, saveBrandProfile, removeRepo } from "./actions";
+import { saveWorkspaceName, saveBrandProfile, removeRepo } from "./actions";
 import { AddRepoDialog } from "./add-repo-dialog";
 import { RepoBranchSelect } from "./repo-branch-select";
 import { PersonasEditor } from "./personas-editor";
@@ -17,7 +17,6 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Switch } from "@/components/ui/switch";
 
 export default async function SettingsPage() {
   const session = await requireSession();
@@ -83,27 +82,6 @@ export default async function SettingsPage() {
         <CardContent>
           <ToastForm action={saveWorkspaceName} successMessage="Workspace name saved" className="flex gap-2">
             <Input name="name" defaultValue={tenant?.name ?? ""} className="flex-1" />
-            <Button type="submit" variant="outline">
-              Save
-            </Button>
-          </ToastForm>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Auto-publish</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <ToastForm action={saveAutoPublish} successMessage="Auto-publish updated" className="space-y-3">
-            <label className="flex items-center gap-3 text-sm">
-              <Switch name="autoPublish" defaultChecked={tenant?.autoPublish ?? false} />
-              Publish generated updates automatically
-            </label>
-            <p className="text-xs text-muted-foreground">
-              When on, generated updates are published to your webhook immediately and skip the Drafts
-              review queue. Requires an active webhook — without one, updates still land in Drafts for review.
-            </p>
             <Button type="submit" variant="outline">
               Save
             </Button>

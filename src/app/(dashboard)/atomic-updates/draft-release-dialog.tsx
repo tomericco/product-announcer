@@ -36,17 +36,13 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-export function DraftUpdateDialog({
-  preview,
-}: {
-  preview: { count: number; earliest: string | null; latest: string | null };
-}) {
+export function DraftReleaseDialog({ atomicUpdateIds }: { atomicUpdateIds: string[] }) {
   const [open, setOpen] = useState(false);
   const [phase, setPhase] = useState<Phase>("preview");
   const [statuses, setStatuses] = useState<Record<DraftStepKey, StepStatus>>(initialStatuses());
   const [detail, setDetail] = useState("");
   const [error, setError] = useState("");
-  const [updateId, setUpdateId] = useState<string | null>(null);
+  const [releaseId, setReleaseId] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const lastTransitionRef = useRef(0);
 
@@ -57,7 +53,7 @@ export function DraftUpdateDialog({
     setStatuses(initialStatuses());
     setDetail("");
     setError("");
-    setUpdateId(null);
+    setReleaseId(null);
   }
 
   function apply(event: DraftProgressEvent) {
@@ -67,7 +63,7 @@ export function DraftUpdateDialog({
     } else if (event.type === "detail") {
       setDetail(event.text);
     } else if (event.type === "done") {
-      setUpdateId(event.updateId);
+      setReleaseId(event.updateId);
       setPhase("success");
     } else if (event.type === "error") {
       setError(event.message);
@@ -103,7 +99,12 @@ export function DraftUpdateDialog({
     lastTransitionRef.current = Date.now();
     setPhase("progress");
     try {
-      const res = await fetch("/api/pending/draft", { method: "POST", signal: ac.signal });
+      const res = await fetch("/api/atomic-updates/draft", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ atomicUpdateIds }),
+        signal: ac.signal,
+      });
       if (!res.ok || !res.body) {
         if (!ac.signal.aborted) {
           setError(res.status === 401 ? "Your session expired — please sign in again." : "Failed to start draft creation.");
@@ -133,10 +134,7 @@ export function DraftUpdateDialog({
     }
   }
 
-  const range =
-    preview.earliest && preview.latest
-      ? `${fmt(preview.earliest)} → ${fmt(preview.latest)}`
-      : "no dated changes";
+  const count = atomicUpdateIds.length;
 
   return (
     <Dialog
@@ -146,21 +144,21 @@ export function DraftUpdateDialog({
         if (!next) reset();
       }}
     >
-      <DialogTrigger render={<Button>Draft update now</Button>} />
+      <DialogTrigger render={<Button disabled={count === 0}>Draft release ({count})</Button>} />
       <DialogContent className="flex flex-col gap-5 p-6 sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>Draft update</DialogTitle>
+          <DialogTitle>Draft release</DialogTitle>
         </DialogHeader>
 
         {phase === "preview" && (
           <div className="space-y-4">
             <p className="text-sm text-muted-foreground">
-              This draft will include <span className="font-medium text-foreground">{preview.count}</span>{" "}
-              change{preview.count === 1 ? "" : "s"} ({range}).
+              This release will include <span className="font-medium text-foreground">{count}</span>{" "}
+              atomic update{count === 1 ? "" : "s"}.
             </p>
             <div className="flex justify-end gap-2">
               <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
-              <Button onClick={create} disabled={preview.count === 0}>Create draft</Button>
+              <Button onClick={create} disabled={count === 0}>Create draft</Button>
             </div>
           </div>
         )}
@@ -210,7 +208,7 @@ export function DraftUpdateDialog({
             </div>
             <div className="flex justify-end gap-2">
               <Button variant="outline" onClick={() => setOpen(false)}>Close</Button>
-              {updateId && <Button render={<Link href={`/drafts/${updateId}`} />}>Review it</Button>}
+              {releaseId && <Button render={<Link href={`/drafts/${releaseId}`} />}>Review it</Button>}
             </div>
           </div>
         )}
@@ -224,8 +222,4 @@ function initialStatuses(): Record<DraftStepKey, StepStatus> {
     (acc, s) => ({ ...acc, [s.key]: "pending" }),
     {} as Record<DraftStepKey, StepStatus>
   );
-}
-
-function fmt(iso: string): string {
-  return new Date(iso).toLocaleDateString();
 }
