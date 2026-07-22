@@ -43,12 +43,19 @@ export async function saveDraft(formData: FormData) {
   const releaseId = formData.get("releaseId") as string;
   const existing = await loadOwnedDraft(session.user.tenantId, releaseId);
 
+  const body = resolveBody(formData.get("body") as string, existing.body);
+  // Only a body that actually differs from what's stored counts as a hand
+  // edit — this must not fire when the blank-guard above fell back to the
+  // existing body, or when the user simply re-saved the same content.
+  const bodyChanged = body !== existing.body;
+
   await db
     .update(releases)
     .set({
       title: formData.get("title") as string,
-      body: resolveBody(formData.get("body") as string, existing.body),
+      body,
       editedBy: session.user.id,
+      ...(bodyChanged ? { bodyEditedAt: new Date() } : {}),
     })
     .where(eq(releases.id, releaseId));
 

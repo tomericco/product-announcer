@@ -19,6 +19,16 @@ describe("releases schema (renamed from updates)", () => {
     expect(release.status).toBe("draft");
   });
 
+  it("defaults composedAt to now and leaves bodyEditedAt null", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const [release] = await db
+      .insert(releases)
+      .values({ tenantId: tenant.id, title: "T", body: "B" })
+      .returning();
+    expect(release.composedAt).not.toBeNull();
+    expect(release.bodyEditedAt).toBeNull();
+  });
+
   it("links an atomic update to a release and nulls the FK on release delete", async () => {
     const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
     const [release] = await db

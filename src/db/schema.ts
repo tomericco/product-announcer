@@ -236,6 +236,14 @@ export const releases = pgTable("releases", {
   reviewStatus: reviewStatusEnum("review_status"),
   reviewIssues: jsonb("review_issues").$type<string[]>().notNull().default([]),
   reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+  // The baseline catch-up deltas measure against: how many new atomic updates
+  // (or new commits on already-attached ones) have appeared since. Set at
+  // claim, advanced again whenever a "catch up" merges the new material in.
+  composedAt: timestamp("composed_at", { withTimezone: true }).notNull().defaultNow(),
+  // Non-null means the body was hand-edited — the body's analogue of
+  // atomicUpdates.summaryEditedAt. Lets the UI/merge know the body carries
+  // hand edits worth preserving rather than silently overwriting.
+  bodyEditedAt: timestamp("body_edited_at", { withTimezone: true }),
 });
 
 export const webhookDeliveryStatusEnum = pgEnum("webhook_delivery_status", ["pending", "success", "failed"]);

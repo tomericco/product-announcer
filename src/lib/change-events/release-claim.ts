@@ -64,6 +64,10 @@ export async function claimReleaseFromAtomicUpdates(
           tenantId: input.tenantId,
           title: input.draft.title,
           body: input.draft.body,
+          // Has a DB default (now()), but set explicitly so the claim-time
+          // semantics are clear and testable — this is the baseline catch-up
+          // deltas measure against.
+          composedAt: new Date(),
           ...(input.review
             ? { reviewStatus: input.review.status, reviewIssues: input.review.issues, reviewedAt: new Date() }
             : {}),

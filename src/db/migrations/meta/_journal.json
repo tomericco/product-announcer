@@ -183,6 +183,13 @@
       "when": 1784726863380,
       "tag": "0025_keen_betty_ross",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1784733913765,
+      "tag": "0026_fair_lady_vermin",
+      "breakpoints": true
     }
   ]
 }

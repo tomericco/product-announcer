@@ -41,6 +41,20 @@ describe("claimReleaseFromAtomicUpdates", () => {
     expect(claimed.every((a) => a.status === "open")).toBe(true);
   });
 
+  it("sets composedAt on the release at claim time", async () => {
+    const [t] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const [a1] = await seed(t.id, ["A1"]);
+    const before = new Date();
+    const r = await claimReleaseFromAtomicUpdates({
+      tenantId: t.id,
+      atomicUpdateIds: [a1.id],
+      draft: { title: "R", body: "B" },
+    });
+    expect(r).not.toBeNull();
+    expect(r!.composedAt).not.toBeNull();
+    expect(r!.composedAt.getTime()).toBeGreaterThanOrEqual(before.getTime() - 1000);
+  });
+
   it("does not re-claim an atomic update that is already linked to an (open) draft release", async () => {
     const [t] = await db.insert(tenants).values({ name: TENANT }).returning();
     const [a1] = await seed(t.id, ["A1"]);
