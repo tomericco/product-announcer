@@ -4,6 +4,7 @@ import { repos, changeEvents } from "@/db/schema";
 import { truncateDiff } from "@/lib/integrations/github/github";
 import { mapWithConcurrency } from "@/lib/concurrency";
 import { enrichChangeItem, type EnrichChangeItem } from "@/lib/ai/enrich-change-item";
+import { resolvePendingEvents } from "@/lib/change-events/pipeline";
 
 export type CommitSelection = {
   repoId: string;
@@ -36,7 +37,8 @@ export async function importSelectedCommits(
   input: { tenantId: string; selections: CommitSelection[] },
   getCommitDiff: GetCommitDiff,
   enrich: EnrichChangeItem = enrichChangeItem,
-  database: typeof defaultDb = defaultDb
+  database: typeof defaultDb = defaultDb,
+  resolvePending: typeof resolvePendingEvents = resolvePendingEvents
 ): Promise<{ importedCount: number }> {
   if (input.selections.length === 0) return { importedCount: 0 };
 
@@ -48,6 +50,7 @@ export async function importSelectedCommits(
   }
 
   let importedCount = 0;
+  const resolvableIds: string[] = [];
 
   for (const [repoId, selections] of byRepo) {
     const [repo] = await database
@@ -105,15 +108,18 @@ export async function importSelectedCommits(
         })
         .returning({ id: changeEvents.id });
 
-      return upserted.length;
+      return { count: upserted.length, id: upserted[0]?.id, userFacing: enrichment.userFacing };
     });
 
-    importedCount += insertedCounts.reduce((a, b) => a + b, 0);
+    importedCount += insertedCounts.reduce((a, b) => a + b.count, 0);
+    for (const result of insertedCounts) {
+      if (result.count > 0 && result.id && result.userFacing !== false) {
+        resolvableIds.push(result.id);
+      }
+    }
   }
 
-  // Deliberately does not call resolvePendingEvents here. In phase 1 the
-  // resolver only runs over freshly ingested webhook events; manually
-  // imported (and other pre-existing) rows are not auto-resolved into
-  // atomic updates, so imported commits stay as standalone pending items.
+  if (resolvableIds.length > 0) await resolvePending(input.tenantId, resolvableIds);
+
   return { importedCount };
 }

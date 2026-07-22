@@ -1,4 +1,11 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
+
+// Structural backstop: resolvePendingEvents makes real Sonnet/Haiku calls to
+// Anthropic. Any test in this file that omits the `resolvePending` dep must
+// never fall through to the live implementation, so the module is mocked
+// here regardless of what individual tests pass.
+vi.mock("../../../src/lib/change-events/pipeline", () => ({ resolvePendingEvents: vi.fn() }));
+
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
 import { tenants, repos, changeEvents } from "../../../src/db/schema";
@@ -159,5 +166,52 @@ describe("importSelectedCommits", () => {
     expect(getCommitDiff).not.toHaveBeenCalled();
     const items = await db.select().from(changeEvents).where(eq(changeEvents.repoId, repo.id));
     expect(items).toHaveLength(0);
+  });
+
+  it("resolves the user-facing commits it imports, once, with both ids", async () => {
+    const { tenant, repo } = await seedRepo(["commit"]);
+    const getCommitDiff = vi.fn().mockResolvedValue("diff --git a/x b/x\n+line");
+    const resolvePending = vi.fn();
+
+    await importSelectedCommits(
+      {
+        tenantId: tenant.id,
+        selections: [
+          { repoId: repo.id, sha: "aaa111", message: "fix timeout", url: "https://x/aaa111", committedAt: "2026-07-01T00:00:00Z" },
+          { repoId: repo.id, sha: "bbb222", message: "fix retries", url: "https://x/bbb222", committedAt: "2026-07-02T00:00:00Z" },
+        ],
+      },
+      getCommitDiff,
+      fakeEnrich,
+      db,
+      resolvePending
+    );
+
+    expect(resolvePending).toHaveBeenCalledTimes(1);
+    const [calledTenantId, calledIds] = resolvePending.mock.calls[0];
+    expect(calledTenantId).toBe(tenant.id);
+    const items = await db.select().from(changeEvents).where(eq(changeEvents.repoId, repo.id));
+    expect(new Set(calledIds)).toEqual(new Set(items.map((i) => i.id)));
+  });
+
+  it("skips the resolver call when nothing imported was user-facing", async () => {
+    const { tenant, repo } = await seedRepo(["commit"]);
+    const getCommitDiff = vi.fn().mockResolvedValue("diff --git a/x b/x\n+line");
+    const resolvePending = vi.fn();
+
+    await importSelectedCommits(
+      {
+        tenantId: tenant.id,
+        selections: [
+          { repoId: repo.id, sha: "ccc333", message: "chore: lint", url: "https://x/ccc333", committedAt: "2026-07-01T00:00:00Z" },
+        ],
+      },
+      getCommitDiff,
+      fakeEnrich,
+      db,
+      resolvePending
+    );
+
+    expect(resolvePending).not.toHaveBeenCalled();
   });
 });
