@@ -38,9 +38,9 @@ export function changeItemReleasedAt(item: {
   return item.releasedAt ?? item.committedAt;
 }
 
-// Only merge_commit/empty_diff have labels today — the remaining filter
-// reasons (lockfile_only, test_only, chore_prefix, empty_task) aren't produced
-// by any ingestion path yet, so they fall through to null like an unset reason.
+// Human-readable labels for every filter reason ingestion can produce. `null`
+// means no reason was recorded (an unset/legacy row), not an unknown reason —
+// every known FilterReason value must have a case below.
 export function ignoredReasonLabel(
   reason:
     | "merge_commit"
@@ -56,7 +56,15 @@ export function ignoredReasonLabel(
       return "merge commit";
     case "empty_diff":
       return "empty diff";
-    default:
+    case "lockfile_only":
+      return "lockfile only";
+    case "test_only":
+      return "tests only";
+    case "chore_prefix":
+      return "chore/docs/CI";
+    case "empty_task":
+      return "empty task";
+    case null:
       return null;
   }
 }

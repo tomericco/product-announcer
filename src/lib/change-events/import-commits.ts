@@ -111,5 +111,9 @@ export async function importSelectedCommits(
     importedCount += insertedCounts.reduce((a, b) => a + b, 0);
   }
 
+  // Deliberately does not call resolvePendingEvents here. In phase 1 the
+  // resolver only runs over freshly ingested webhook events; manually
+  // imported (and other pre-existing) rows are not auto-resolved into
+  // atomic updates, so imported commits stay as standalone pending items.
   return { importedCount };
 }

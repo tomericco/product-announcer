@@ -108,7 +108,12 @@ export async function resolvePendingEvents(
     } catch (refreshError) {
       // A chunk error is the real cause of this run failing; don't let a
       // secondary failure in refresh hide it. Only surface refresh's error
-      // when the chunk loop itself succeeded.
+      // when the chunk loop itself succeeded. Still log it so a swallowed
+      // refresh failure leaves a diagnostic trail — the touched atomic
+      // updates were left with stale summaries.
+      if (chunkError !== undefined) {
+        console.error(`[pipeline] refresh failed for tenant ${tenantId} after a chunk error:`, refreshError);
+      }
       if (chunkError === undefined) throw refreshError;
     }
   }

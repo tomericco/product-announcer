@@ -42,7 +42,8 @@ export async function ingestMergedPullRequest(
   if (input.baseBranch !== repo.watchedBranch) return;
 
   // PR numbers collide across repos, so the id is namespaced by repo full name.
-  // This format must match the Task 1 migration backfill exactly.
+  // This format must match what the resolver/dedup logic and the unique index
+  // on (tenantId, provider, externalId) expect.
   const externalId = `${input.repoFullName}#${input.prNumber}`;
 
   const base = {

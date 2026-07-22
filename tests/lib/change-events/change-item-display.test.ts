@@ -25,9 +25,13 @@ describe("changeItemFacingState", () => {
 });
 
 describe("ignoredReasonLabel", () => {
-  it("labels the ignore reasons", () => {
+  it("labels every filter reason ingestion can produce", () => {
     expect(ignoredReasonLabel("merge_commit")).toBe("merge commit");
     expect(ignoredReasonLabel("empty_diff")).toBe("empty diff");
+    expect(ignoredReasonLabel("lockfile_only")).toBe("lockfile only");
+    expect(ignoredReasonLabel("test_only")).toBe("tests only");
+    expect(ignoredReasonLabel("chore_prefix")).toBe("chore/docs/CI");
+    expect(ignoredReasonLabel("empty_task")).toBe("empty task");
     expect(ignoredReasonLabel(null)).toBeNull();
   });
 });
