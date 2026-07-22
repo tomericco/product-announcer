@@ -50,8 +50,11 @@ export async function listAtomicUpdates(): Promise<AtomicUpdateRow[]> {
   // one query per card (the N+1 shape). Tenant-scoped independently of the
   // atomicIds filter above — the where clause is the security boundary, so
   // this join must not rely solely on ids already having been tenant-checked.
-  // Ordered by createdAt (always non-null, unlike committedAt/mergedAt) so a
-  // card's evidence list has a stable order across loads.
+  // Ordered by createdAt then id: createdAt is always non-null (unlike
+  // committedAt/mergedAt), but events ingested in the same webhook batch can
+  // share a createdAt, and SQL does not guarantee a deterministic order among
+  // rows with equal sort keys — id as a tiebreaker keeps a card's evidence
+  // list stable across loads.
   const events = await db
     .select({
       id: changeEvents.id,
@@ -65,10 +68,12 @@ export async function listAtomicUpdates(): Promise<AtomicUpdateRow[]> {
     .where(
       and(eq(changeEvents.tenantId, session.user.tenantId), inArray(changeEvents.atomicUpdateId, atomicIds))
     )
-    .orderBy(asc(changeEvents.createdAt));
+    .orderBy(asc(changeEvents.createdAt), asc(changeEvents.id));
 
   const eventsByAtomicId = new Map<string, AtomicUpdateEvent[]>();
   for (const event of events) {
+    // TS-nullability guard, not a reachable branch: inArray(atomicUpdateId, atomicIds)
+    // can never match a null atomicUpdateId.
     if (!event.atomicUpdateId) continue;
     const label = event.type === "commit" ? (event.commitMessage ?? "").split("\n")[0] : (event.prTitle ?? "");
     const list = eventsByAtomicId.get(event.atomicUpdateId) ?? [];

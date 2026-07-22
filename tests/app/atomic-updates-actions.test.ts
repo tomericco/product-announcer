@@ -200,12 +200,65 @@ describe("atomic update actions", () => {
     const rows = await listAtomicUpdates();
 
     // Isolation must hold at both levels: the foreign atomic update never
-    // appears, and — since a query restructure could accidentally join events
-    // by atomicUpdateId alone, ignoring changeEvents.tenantId — the returned
-    // titles must also exclude anything sourced from the other tenant.
+    // appears, and its events (scoped by atomicUpdateId, which is only ever
+    // the foreign atomic's id here) don't leak in either. Note this does NOT
+    // exercise the events query's own `eq(changeEvents.tenantId, ...)`
+    // condition, since foreignAtomic.id is never in the atomicIds list passed
+    // to `inArray` in the first place — the atomic-updates query already
+    // filtered it out upstream. See the "defends against a data-integrity
+    // bug" test below for a case that does exercise that condition.
     expect(rows.map((r) => r.title)).toEqual(["Mine"]);
     const eventLabels = rows.flatMap((r) => r.events.map((e) => e.label));
     expect(eventLabels).toEqual(["my change"]);
     expect(eventLabels).not.toContain("their change");
+  });
+
+  it("defends against a data-integrity bug where an event's tenantId disagrees with its atomicUpdateId's owner", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const [other] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const ownRepo = await seedRepo(tenant.id);
+
+    const [ownAtomic] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "Mine", summary: "S" })
+      .returning();
+
+    await db.insert(changeEvents).values({
+      tenantId: tenant.id,
+      repoId: ownRepo.id,
+      type: "commit",
+      provider: "github",
+      externalId: "sha-legit",
+      commitSha: "sha-legit",
+      commitMessage: "legit change",
+      atomicUpdateId: ownAtomic.id,
+    });
+    // Intentionally inconsistent row: atomicUpdateId points at the CALLER's
+    // own atomic update (so it passes the `inArray(atomicUpdateId, atomicIds)`
+    // filter), but tenantId is the FOREIGN tenant. Normal ingestion never
+    // produces this — atomicUpdateId and tenantId are always written together
+    // from the same tenant-scoped pipeline — this is constructed directly via
+    // insert to prove the events query's own tenantId condition is
+    // load-bearing defense-in-depth against exactly that kind of bug, not a
+    // reachable path through the resolver.
+    await db.insert(changeEvents).values({
+      tenantId: other.id,
+      repoId: ownRepo.id,
+      type: "commit",
+      provider: "github",
+      externalId: "sha-corrupt",
+      commitSha: "sha-corrupt",
+      commitMessage: "corrupt cross-tenant change",
+      atomicUpdateId: ownAtomic.id,
+    });
+
+    currentTenantId = tenant.id;
+    const rows = await listAtomicUpdates();
+
+    const row = rows.find((r) => r.id === ownAtomic.id);
+    expect(row).toBeDefined();
+    const eventLabels = row!.events.map((e) => e.label);
+    expect(eventLabels).toEqual(["legit change"]);
+    expect(eventLabels).not.toContain("corrupt cross-tenant change");
   });
 });
