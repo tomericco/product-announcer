@@ -103,12 +103,24 @@ export async function applyResolutionInTx(
       // tenant's change event to another tenant's atomic update. If the target
       // isn't this tenant's, the WHERE simply matches nothing and the event
       // stays unassigned rather than throwing.
+      // Also re-check `status = 'open'`: a claim (`claimReleaseFromAtomicUpdates`)
+      // does not take the tenant lock this resolver runs under, so the target
+      // atomic update can flip to `released` while the resolver's LLM call is
+      // in flight. If that happened, the EXISTS fails, the event stays
+      // unassigned, and the next hourly sweep re-resolves it into an open AU
+      // — rather than binding it to an atomic update that already shipped.
       conditions.push(
         exists(
           tx
             .select({ one: sql`1` })
             .from(atomicUpdates)
-            .where(and(eq(atomicUpdates.id, atomicUpdateId), eq(atomicUpdates.tenantId, tenantId)))
+            .where(
+              and(
+                eq(atomicUpdates.id, atomicUpdateId),
+                eq(atomicUpdates.tenantId, tenantId),
+                eq(atomicUpdates.status, "open")
+              )
+            )
         )
       );
     }

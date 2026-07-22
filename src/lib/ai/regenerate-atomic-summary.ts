@@ -74,6 +74,7 @@ export async function refreshAtomicUpdates(
         and(
           eq(atomicUpdates.id, id),
           eq(atomicUpdates.tenantId, tenantId),
+          eq(atomicUpdates.status, "open"),
           isNull(atomicUpdates.summaryEditedAt)
         )
       )

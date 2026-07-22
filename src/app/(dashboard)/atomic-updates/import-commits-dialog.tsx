@@ -151,6 +151,12 @@ export function ImportCommitsDialog({ repos }: { repos: ImportRepo[] }) {
       await importCommits({ selections: Array.from(selected.values()) });
       reset();
       setOpen(false);
+    } catch {
+      // The commits themselves are durably inserted before the resolver runs,
+      // so a throw here means resolution failed, not the import — the rows
+      // recover via the hourly sweep. Still, the user must see that something
+      // went wrong rather than the dialog silently sitting open.
+      setError("Import succeeded but something went wrong finishing up. It will retry automatically.");
     } finally {
       setSubmitting(false);
     }

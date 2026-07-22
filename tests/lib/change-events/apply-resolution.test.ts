@@ -154,6 +154,22 @@ describe("apply-resolution", () => {
     expect(otherAtomic.tenantId).toBe(other.id);
   });
 
+  it("never assigns an event to an atomic update already released mid-resolution", async () => {
+    const { tenant, repo } = await seed();
+    const [released] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "Shipped", summary: "S", status: "released" })
+      .returning();
+    const event = await insertEvent(tenant.id, repo.id, "sha-assign-released");
+
+    await applyResolution(db, tenant.id, [
+      { eventId: event.id, action: "assign", atomicUpdateId: released.id },
+    ]);
+
+    const [updated] = await db.select().from(changeEvents).where(eq(changeEvents.id, event.id));
+    expect(updated.atomicUpdateId).toBeNull();
+  });
+
   it("loadOpenAtomicUpdates returns only open ones for the tenant", async () => {
     const { tenant } = await seed();
     await db.insert(atomicUpdates).values({ tenantId: tenant.id, title: "Open one", summary: "S" });

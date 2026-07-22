@@ -34,17 +34,26 @@ export async function sweepUnresolvedEvents(deps: ResolveSweepDeps = {}): Promis
   const database = deps.database ?? defaultDb;
   const resolvePending = deps.resolvePending ?? resolvePendingEvents;
 
-  const rows = await database
-    .select({ id: changeEvents.id, tenantId: changeEvents.tenantId })
-    .from(changeEvents)
-    .where(
-      and(
-        eq(changeEvents.status, "pending"),
-        isNull(changeEvents.atomicUpdateId),
-        isNull(changeEvents.filterReason),
-        or(isNull(changeEvents.userFacing), eq(changeEvents.userFacing, true))
-      )
-    );
+  let rows: Array<{ id: string; tenantId: string }>;
+  try {
+    rows = await database
+      .select({ id: changeEvents.id, tenantId: changeEvents.tenantId })
+      .from(changeEvents)
+      .where(
+        and(
+          eq(changeEvents.status, "pending"),
+          isNull(changeEvents.atomicUpdateId),
+          isNull(changeEvents.filterReason),
+          or(isNull(changeEvents.userFacing), eq(changeEvents.userFacing, true))
+        )
+      );
+  } catch (error) {
+    // This runs after runSchedulerTick/retryFailedDeliveries in the cron
+    // handler; a DB error here must not reject the whole cron and undo their
+    // already-completed work. Log and return — next hour's sweep retries.
+    console.error("[resolve-sweep] failed to load candidate events:", error);
+    return;
+  }
 
   if (rows.length === 0) return;
 

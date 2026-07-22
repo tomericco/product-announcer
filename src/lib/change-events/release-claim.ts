@@ -20,7 +20,9 @@ export async function getOpenAtomicUpdates(
     .select()
     .from(atomicUpdates)
     .where(and(eq(atomicUpdates.tenantId, tenantId), eq(atomicUpdates.status, "open")))
-    .orderBy(asc(atomicUpdates.createdAt));
+    // Same-webhook-batch atomic updates can share createdAt; tie-break on id
+    // for deterministic ordering.
+    .orderBy(asc(atomicUpdates.createdAt), asc(atomicUpdates.id));
 }
 
 /**

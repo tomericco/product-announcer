@@ -102,6 +102,23 @@ describe("refreshAtomicUpdates", () => {
     expect(after.summary).toBe("New summary.");
   });
 
+  it("leaves a released atomic update untouched and does not call the model", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const repo = await seedRepo(tenant.id);
+    const [atomic] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "Old", summary: "Old summary.", status: "released" })
+      .returning();
+    await insertEvent(tenant.id, repo.id, atomic.id, "sha-released");
+
+    await refreshAtomicUpdates(db, tenant.id, [atomic.id]);
+
+    const [after] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, atomic.id));
+    expect(after.title).toBe("Old");
+    expect(after.summary).toBe("Old summary.");
+    expect(generateObject).not.toHaveBeenCalled();
+  });
+
   it("leaves an atomic update with no attached change events untouched", async () => {
     const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
     const [atomic] = await db
