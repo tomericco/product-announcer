@@ -1,17 +1,27 @@
 "use server";
 
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { db } from "@/db";
 import { atomicUpdates, changeEvents } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
+
+export type AtomicUpdateEvent = {
+  id: string;
+  type: "commit" | "pull_request" | "task";
+  // A PR's title, a commit's first message line, or (until a dedicated task
+  // pipeline exists) the same prTitle field — mirrors the fallback already
+  // used in regenerate-atomic-summary.ts.
+  label: string;
+  externalUrl: string | null;
+};
 
 export type AtomicUpdateRow = {
   id: string;
   title: string;
   summary: string;
   category: "new" | "improved" | "fixed" | null;
-  eventCount: number;
+  events: AtomicUpdateEvent[];
   summaryEditedAt: Date | null;
   updatedAt: Date;
 };
@@ -19,21 +29,57 @@ export type AtomicUpdateRow = {
 export async function listAtomicUpdates(): Promise<AtomicUpdateRow[]> {
   const session = await requireSession();
 
-  return db
+  const atomics = await db
     .select({
       id: atomicUpdates.id,
       title: atomicUpdates.title,
       summary: atomicUpdates.summary,
       category: atomicUpdates.category,
-      eventCount: sql<number>`count(${changeEvents.id})::int`,
       summaryEditedAt: atomicUpdates.summaryEditedAt,
       updatedAt: atomicUpdates.updatedAt,
     })
     .from(atomicUpdates)
-    .leftJoin(changeEvents, eq(changeEvents.atomicUpdateId, atomicUpdates.id))
     .where(and(eq(atomicUpdates.tenantId, session.user.tenantId), eq(atomicUpdates.status, "open")))
-    .groupBy(atomicUpdates.id)
     .orderBy(desc(atomicUpdates.updatedAt));
+
+  if (atomics.length === 0) return [];
+
+  const atomicIds = atomics.map((a) => a.id);
+
+  // Single query for every event behind every listed atomic update, instead of
+  // one query per card (the N+1 shape). Tenant-scoped independently of the
+  // atomicIds filter above — the where clause is the security boundary, so
+  // this join must not rely solely on ids already having been tenant-checked.
+  // Ordered by createdAt (always non-null, unlike committedAt/mergedAt) so a
+  // card's evidence list has a stable order across loads.
+  const events = await db
+    .select({
+      id: changeEvents.id,
+      atomicUpdateId: changeEvents.atomicUpdateId,
+      type: changeEvents.type,
+      prTitle: changeEvents.prTitle,
+      commitMessage: changeEvents.commitMessage,
+      externalUrl: changeEvents.externalUrl,
+    })
+    .from(changeEvents)
+    .where(
+      and(eq(changeEvents.tenantId, session.user.tenantId), inArray(changeEvents.atomicUpdateId, atomicIds))
+    )
+    .orderBy(asc(changeEvents.createdAt));
+
+  const eventsByAtomicId = new Map<string, AtomicUpdateEvent[]>();
+  for (const event of events) {
+    if (!event.atomicUpdateId) continue;
+    const label = event.type === "commit" ? (event.commitMessage ?? "").split("\n")[0] : (event.prTitle ?? "");
+    const list = eventsByAtomicId.get(event.atomicUpdateId) ?? [];
+    list.push({ id: event.id, type: event.type, label, externalUrl: event.externalUrl });
+    eventsByAtomicId.set(event.atomicUpdateId, list);
+  }
+
+  return atomics.map((atomic) => ({
+    ...atomic,
+    events: eventsByAtomicId.get(atomic.id) ?? [],
+  }));
 }
 
 export async function editAtomicUpdate(

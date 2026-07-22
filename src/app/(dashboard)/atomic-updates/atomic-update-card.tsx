@@ -2,11 +2,40 @@
 
 import { useState, useTransition } from "react";
 import { toast } from "sonner";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { editAtomicUpdate, type AtomicUpdateRow } from "./actions";
+import { editAtomicUpdate, type AtomicUpdateEvent, type AtomicUpdateRow } from "./actions";
 import { CategoryBadge } from "./page";
+
+const EVENT_TYPE_LABEL: Record<AtomicUpdateEvent["type"], string> = {
+  commit: "Commit",
+  pull_request: "PR",
+  task: "Task",
+};
+
+function EventRow({ event }: { event: AtomicUpdateEvent }) {
+  return (
+    <div className="flex items-center gap-2 text-sm">
+      <Badge variant="secondary" className="shrink-0">
+        {EVENT_TYPE_LABEL[event.type]}
+      </Badge>
+      {event.externalUrl ? (
+        <a
+          href={event.externalUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="truncate hover:underline"
+        >
+          {event.label}
+        </a>
+      ) : (
+        <span className="truncate text-muted-foreground">{event.label}</span>
+      )}
+    </div>
+  );
+}
 
 export function AtomicUpdateCard({ row }: { row: AtomicUpdateRow }) {
   const [editing, setEditing] = useState(false);
@@ -58,9 +87,16 @@ export function AtomicUpdateCard({ row }: { row: AtomicUpdateRow }) {
             <CategoryBadge category={row.category} />
           </div>
           <p className="text-sm text-muted-foreground">{row.summary}</p>
+          {row.events.length > 0 && (
+            <div className="flex flex-col gap-1.5 border-t pt-2">
+              {row.events.map((event) => (
+                <EventRow key={event.id} event={event} />
+              ))}
+            </div>
+          )}
           <div className="flex items-center gap-3 text-xs text-muted-foreground">
             <span>
-              {row.eventCount} {row.eventCount === 1 ? "change" : "changes"}
+              {row.events.length} {row.events.length === 1 ? "change" : "changes"}
             </span>
             {/* Signals to the user why this one stopped auto-updating. */}
             {row.summaryEditedAt && <span>Edited</span>}
