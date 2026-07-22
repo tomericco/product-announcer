@@ -7,12 +7,14 @@ import { releases, webflowConnections } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { reviewStatusLabel } from "@/lib/ai/review-status";
 import { containsCodeBlock } from "@/lib/publishing/markdown-to-html";
+import { computeReleaseDelta } from "@/lib/change-events/release-deltas";
 import { saveDraft, rejectDraft } from "../actions";
 import { Button } from "@/components/ui/button";
 import { DraftBodyEditor } from "./draft-body-editor";
 import { DraftTitleField } from "./draft-title-field";
 import { DraftEditorProvider, SourceToggleButton } from "./draft-editor-context";
 import { SaveChangesButton, ApproveButton } from "./draft-submit-buttons";
+import { CatchUpBanner } from "./catch-up-banner";
 
 export default async function DraftDetailPage({ params }: { params: Promise<{ releaseId: string }> }) {
   const session = await requireSession();
@@ -37,6 +39,12 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
     .where(eq(webflowConnections.tenantId, session.user.tenantId))
     .limit(1);
   const showCodeWarning = Boolean(webflow?.collectionId) && containsCodeBlock(update.body);
+
+  // Read-only — how stale this draft has gone against its `composedAt`
+  // baseline (new atomic updates since compose, or evidence changes on ones
+  // already linked). Computed server-side so the client banner only ever
+  // receives a plain number, never queries the db itself.
+  const delta = await computeReleaseDelta(update.id);
 
   return (
     <div className="mx-auto w-full max-w-3xl space-y-6">
@@ -67,6 +75,8 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
           blocks, so it will be published as plain formatted text.
         </p>
       )}
+
+      {delta.count > 0 && <CatchUpBanner count={delta.count} releaseId={update.id} />}
 
       <DraftEditorProvider>
         <form action={saveDraft} className="space-y-4">
