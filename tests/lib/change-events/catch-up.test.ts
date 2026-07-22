@@ -213,6 +213,78 @@ describe("startOverRelease", () => {
     expect(new Set(items.map((i) => i.id))).toEqual(new Set([existing1.id, existing2.id, newAu.id]));
   });
 
+  it("clears bodyEditedAt since the regenerated body carries no hand edits", async () => {
+    const [t] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const [r] = await db
+      .insert(releases)
+      .values({ tenantId: t.id, title: "R", body: "Old body", composedAt: T, bodyEditedAt: T })
+      .returning();
+    await db.insert(atomicUpdates).values({ tenantId: t.id, title: "New thing", summary: "S", createdAt: AFTER });
+
+    const generateDraft = vi.fn().mockResolvedValue({ title: "ignored", body: "From scratch body" });
+    const updated = await startOverRelease(r.id, { generateDraft });
+
+    expect(updated).not.toBeNull();
+    expect(updated!.bodyEditedAt).toBeNull();
+  });
+
+  it("adopts the regenerated title instead of keeping the old one", async () => {
+    const [t] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const [r] = await db
+      .insert(releases)
+      .values({ tenantId: t.id, title: "Old title", body: "Old body", composedAt: T })
+      .returning();
+    await db.insert(atomicUpdates).values({ tenantId: t.id, title: "New thing", summary: "S", createdAt: AFTER });
+
+    const generateDraft = vi.fn().mockResolvedValue({ title: "Fresh generated title", body: "From scratch body" });
+    const updated = await startOverRelease(r.id, { generateDraft });
+
+    expect(updated).not.toBeNull();
+    expect(updated!.title).toBe("Fresh generated title");
+  });
+
+  it("does not steal an atomic update that was already released/linked elsewhere before the delta read", async () => {
+    const [t] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const [r] = await db
+      .insert(releases)
+      .values({ tenantId: t.id, title: "R", body: "Old body", composedAt: T })
+      .returning();
+    // Qualifies time-wise (created after composedAt) but is already spoken
+    // for — simulates the "claimed/published between the delta read and the
+    // link" race: it must never end up linked to this release.
+    const [alreadyReleasedAu] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: t.id, title: "Already shipped", summary: "S", createdAt: AFTER, status: "released" })
+      .returning();
+    const [otherRelease] = await db
+      .insert(releases)
+      .values({ tenantId: t.id, title: "Other draft", body: "B", composedAt: T })
+      .returning();
+    const [alreadyLinkedAu] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: t.id, releaseId: otherRelease.id, title: "Claimed elsewhere", summary: "S", createdAt: AFTER })
+      .returning();
+    // Something must be a genuine new item, or count would be 0 and the
+    // orchestrator would no-op before ever attempting to link anything.
+    const [newAu] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: t.id, title: "Genuinely new", summary: "S", createdAt: AFTER })
+      .returning();
+
+    const generateDraft = vi.fn().mockResolvedValue({ title: "ignored", body: "From scratch body" });
+    await startOverRelease(r.id, { generateDraft });
+
+    const [releasedAfter] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, alreadyReleasedAu.id));
+    expect(releasedAfter.status).toBe("released");
+    expect(releasedAfter.releaseId).toBeNull();
+
+    const [linkedAfter] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, alreadyLinkedAu.id));
+    expect(linkedAfter.releaseId).toBe(otherRelease.id);
+
+    const [newAfter] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, newAu.id));
+    expect(newAfter.releaseId).toBe(r.id);
+  });
+
   it("never links another tenant's atomic update", async () => {
     const [t] = await db.insert(tenants).values({ name: TENANT }).returning();
     const [other] = await db.insert(tenants).values({ name: TENANT }).returning();

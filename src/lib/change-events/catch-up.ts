@@ -130,10 +130,12 @@ export async function catchUpRelease(releaseId: string, deps: CatchUpDeps = {}):
 
 /**
  * Regenerates a stale draft release FROM SCRATCH: links the membership-delta
- * atomic updates in, then re-derives the body via `generateReleaseDraft` over
- * the release's FULL atomic-update set (the ones already linked plus the
- * newly linked ones) — contrast `catchUpRelease`, which preserves existing
- * wording.
+ * atomic updates in, then re-derives the title and body via
+ * `generateReleaseDraft` over the release's FULL atomic-update set (the ones
+ * already linked plus the newly linked ones) — contrast `catchUpRelease`,
+ * which preserves existing wording (and title). Since the body is entirely
+ * machine-generated, `bodyEditedAt` is cleared — any prior hand-edit flag no
+ * longer applies to the new body.
  *
  * Same `computeReleaseDelta`-outside-any-transaction constraint as
  * `catchUpRelease`. The link happens in its own short transaction (so the
@@ -174,7 +176,7 @@ export async function startOverRelease(releaseId: string, deps: StartOverDeps = 
 
   const [updated] = await defaultDb
     .update(releases)
-    .set({ body: draft.body, composedAt: new Date() })
+    .set({ title: draft.title, body: draft.body, composedAt: new Date(), bodyEditedAt: null })
     .where(and(eq(releases.id, release.id), eq(releases.tenantId, release.tenantId)))
     .returning();
 
