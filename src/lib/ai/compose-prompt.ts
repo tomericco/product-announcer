@@ -96,3 +96,39 @@ export function composeReleasePrompt(args: {
     prompt: `Here are the changes to summarize into one product update. Format the body as Markdown (short paragraphs, and bullet lists where helpful):\n\n${serializeAtomicUpdates(args.items)}`,
   };
 }
+
+/**
+ * Builds the prompt for a catch-up MERGE regeneration: folding new/changed
+ * atomic updates into an existing draft body. Contrast with
+ * `composeReleasePrompt`, which writes fresh from a plain list of items — here
+ * the current body is the anchor, and the system prompt instructs the model to
+ * preserve its existing wording and structure rather than rewrite it.
+ */
+export function composeMergePrompt(args: {
+  currentBody: string;
+  newItems: AtomicUpdateForPrompt[];
+  changedItems: AtomicUpdateForPrompt[];
+  brandProfile: BrandProfileRow;
+  personas: ResolvedPersona[];
+  examples: ExampleRow[];
+}): { system: string; prompt: string } {
+  const base = buildSystemPrompt(args.brandProfile, args.personas, args.examples);
+  const system = `${base}\n\nYou are revising an existing draft release note to fold in new material — you are not writing a fresh one. Preserve the current body's existing wording and structure wherever it still applies; integrate the new and changed items by editing and extending that text rather than rewriting it from scratch.`;
+
+  const currentBody =
+    args.currentBody.length > DEFAULT_MAX_PROMPT_CHARS
+      ? `${args.currentBody.slice(0, DEFAULT_MAX_PROMPT_CHARS)}\n…(truncated)`
+      : args.currentBody;
+
+  const sections = [`Current body (preserve this wording and structure where it still applies):\n${currentBody}`];
+  if (args.newItems.length > 0) {
+    sections.push(`New changes to fold in:\n${serializeAtomicUpdates(args.newItems)}`);
+  }
+  if (args.changedItems.length > 0) {
+    sections.push(`Changes whose details were updated since the current body was written:\n${serializeAtomicUpdates(args.changedItems)}`);
+  }
+
+  const prompt = `Update the product release note below to incorporate the new material, preserving as much of the existing wording and structure as still applies. Format the body as Markdown (short paragraphs, and bullet lists where helpful):\n\n${sections.join("\n\n")}`;
+
+  return { system, prompt };
+}

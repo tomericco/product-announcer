@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { buildSystemPrompt } from "../../../src/lib/ai/compose-prompt";
-import { serializeAtomicUpdates, composeReleasePrompt } from "../../../src/lib/ai/compose-prompt";
+import { serializeAtomicUpdates, composeReleasePrompt, composeMergePrompt } from "../../../src/lib/ai/compose-prompt";
 
 describe("buildSystemPrompt", () => {
   const baseBrand = { tone: null, readingLevel: null, doList: [], dontList: [], examplePhrases: [], industry: null, userPersonas: [] };
@@ -62,5 +62,59 @@ describe("composeReleasePrompt", () => {
     });
     expect(system).toContain("product update");
     expect(prompt).toContain("CSV export");
+  });
+});
+
+const BASE_BRAND = {
+  tone: null,
+  readingLevel: null,
+  doList: [],
+  dontList: [],
+  examplePhrases: [],
+  industry: null,
+  updatesStyleSummary: null,
+  userPersonas: [],
+} as never;
+
+describe("composeMergePrompt", () => {
+  it("includes the current body and the new items in the prompt", () => {
+    const { prompt } = composeMergePrompt({
+      currentBody: "## What's new\nWe shipped CSV export last week.",
+      newItems: [AUS[1]],
+      changedItems: [],
+      brandProfile: BASE_BRAND,
+      personas: [],
+      examples: [],
+    });
+    expect(prompt).toContain("We shipped CSV export last week.");
+    expect(prompt).toContain("Faster search");
+    expect(prompt).toContain("Search returns in under a second.");
+  });
+
+  it("includes changed items in the prompt when present", () => {
+    const { prompt } = composeMergePrompt({
+      currentBody: "Existing body.",
+      newItems: [],
+      changedItems: [AUS[0]],
+      brandProfile: BASE_BRAND,
+      personas: [],
+      examples: [],
+    });
+    expect(prompt).toContain("CSV export");
+    expect(prompt).toContain("Export reports as CSV.");
+  });
+
+  it("instructs the model to preserve existing wording and structure in the system prompt", () => {
+    const { system } = composeMergePrompt({
+      currentBody: "Existing body.",
+      newItems: [AUS[0]],
+      changedItems: [],
+      brandProfile: BASE_BRAND,
+      personas: [],
+      examples: [],
+    });
+    expect(system).toContain("product update");
+    expect(system.toLowerCase()).toContain("preserve");
+    expect(system.toLowerCase()).toContain("existing wording");
   });
 });
