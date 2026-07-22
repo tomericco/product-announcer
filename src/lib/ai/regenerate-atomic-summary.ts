@@ -109,7 +109,15 @@ export async function refreshAtomicUpdates(
     await database
       .update(atomicUpdates)
       .set({ title: next.title, summary: next.summary, updatedAt: new Date() })
-      // Re-check the freeze: a user may have edited while the model was running.
-      .where(and(eq(atomicUpdates.id, id), isNull(atomicUpdates.summaryEditedAt)));
+      // Re-check the freeze AND the open status: while the model was running a
+      // user may have edited the summary, or a release claim may have shipped
+      // this atomic update — either must suppress the rewrite.
+      .where(
+        and(
+          eq(atomicUpdates.id, id),
+          eq(atomicUpdates.status, "open"),
+          isNull(atomicUpdates.summaryEditedAt)
+        )
+      );
   }
 }
