@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../src/db";
-import { tenants, repos, changeEvents, updates, scheduleConfigs } from "../../src/db/schema";
+import { tenants, repos, changeEvents, releases, scheduleConfigs } from "../../src/db/schema";
 
 describe("scheduler/generation schema", () => {
   afterEach(async () => {
@@ -21,7 +21,7 @@ describe("scheduler/generation schema", () => {
       .returning();
 
     const [update] = await db
-      .insert(updates)
+      .insert(releases)
       .values({
         tenantId: tenant.id,
         repoId: repo.id,
@@ -53,7 +53,7 @@ describe("scheduler/generation schema", () => {
     const [tenant] = await db.insert(tenants).values({ name: "Scheduler Schema Test Tenant" }).returning();
 
     const [update] = await db
-      .insert(updates)
+      .insert(releases)
       .values({ tenantId: tenant.id, title: "T", body: "B", sourceItems: [] })
       .returning();
     expect(update.repoId).toBeNull();

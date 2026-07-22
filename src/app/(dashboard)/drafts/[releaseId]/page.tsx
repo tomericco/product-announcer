@@ -3,7 +3,7 @@ import { GuardedLink } from "../../unsaved-changes";
 import { ArrowLeft } from "lucide-react";
 import { notFound } from "next/navigation";
 import { db } from "@/db";
-import { updates, webflowConnections } from "@/db/schema";
+import { releases, webflowConnections } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { reviewStatusLabel } from "@/lib/ai/review-status";
 import { containsCodeBlock } from "@/lib/publishing/markdown-to-html";
@@ -14,14 +14,14 @@ import { DraftTitleField } from "./draft-title-field";
 import { DraftEditorProvider, SourceToggleButton } from "./draft-editor-context";
 import { SaveChangesButton, ApproveButton } from "./draft-submit-buttons";
 
-export default async function DraftDetailPage({ params }: { params: Promise<{ updateId: string }> }) {
+export default async function DraftDetailPage({ params }: { params: Promise<{ releaseId: string }> }) {
   const session = await requireSession();
-  const { updateId } = await params;
+  const { releaseId } = await params;
 
   const [update] = await db
     .select()
-    .from(updates)
-    .where(and(eq(updates.id, updateId), eq(updates.tenantId, session.user.tenantId)));
+    .from(releases)
+    .where(and(eq(releases.id, releaseId), eq(releases.tenantId, session.user.tenantId)));
 
   if (!update) notFound();
 
@@ -70,7 +70,7 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ up
 
       <DraftEditorProvider>
         <form action={saveDraft} className="space-y-4">
-          <input type="hidden" name="updateId" value={update.id} />
+          <input type="hidden" name="releaseId" value={update.id} />
           {/* The value published_at had when this page was rendered. Approve
               submits it back so the action can detect a double-submit of this
               same form (published_at unchanged) versus an intentional
@@ -96,7 +96,7 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ up
       </DraftEditorProvider>
 
       <form action={rejectDraft} className="flex items-center gap-3 pt-2">
-        <input type="hidden" name="updateId" value={update.id} />
+        <input type="hidden" name="releaseId" value={update.id} />
         <p className="text-sm text-muted-foreground">Not right?</p>
         <Button
           type="submit"

@@ -2,7 +2,7 @@ import { createHmac } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { webhookConfigs } from "@/db/schema";
 import { decryptSecret } from "@/lib/credentials/encryption";
-import type { Destination, DeliveryResult, DbClient, Update } from "./types";
+import type { Destination, DeliveryResult, DbClient, Release } from "./types";
 
 const DELIVERY_TIMEOUT_MS = 5000;
 
@@ -12,16 +12,16 @@ function signPayload(secret: string, payload: string): string {
   return `sha256=${createHmac("sha256", secret).update(payload).digest("hex")}`;
 }
 
-function buildPayload(update: Update) {
+function buildPayload(release: Release) {
   return {
-    id: update.id,
-    tenantId: update.tenantId,
-    title: update.title,
-    body: update.body,
-    status: update.status,
-    sourceItems: update.sourceItems,
-    createdAt: update.createdAt,
-    publishedAt: update.publishedAt,
+    id: release.id,
+    tenantId: release.tenantId,
+    title: release.title,
+    body: release.body,
+    status: release.status,
+    sourceItems: release.sourceItems,
+    createdAt: release.createdAt,
+    publishedAt: release.publishedAt,
   };
 }
 
@@ -41,7 +41,7 @@ export const webhookDestination: Destination<WebhookConfig> = {
   // (webflow needs `database` to record `needs_reauth`), but webhook
   // delivery has no notion of an external id and no DB write of its own.
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  async deliver(update, config, _externalId, _database): Promise<DeliveryResult> {
+  async deliver(release, config, _externalId, _database): Promise<DeliveryResult> {
     // A decrypt failure (rotated/misconfigured CREDENTIALS_ENCRYPTION_KEY) can't be
     // fixed by retrying, and must not be logged identically to a network timeout.
     // Decrypt outside and before the fetch's try block so a decrypt failure is
@@ -61,7 +61,7 @@ export const webhookDestination: Destination<WebhookConfig> = {
       };
     }
 
-    const body = JSON.stringify(buildPayload(update));
+    const body = JSON.stringify(buildPayload(release));
     try {
       // Bound the request: delivery runs synchronously inside the publish action
       // (and sequentially inside the cron sweep), so a slow/hanging tenant

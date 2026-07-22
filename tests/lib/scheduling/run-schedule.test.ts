@@ -8,7 +8,7 @@ vi.mock("../../../src/lib/ai/review-draft", () => ({ reviewAndReconcile: vi.fn()
 import { generateObject } from "ai";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, repos, changeEvents, updates, scheduleConfigs, brandProfiles, llmUsage } from "../../../src/db/schema";
+import { tenants, repos, changeEvents, releases, scheduleConfigs, brandProfiles, llmUsage } from "../../../src/db/schema";
 import { runBatchForWorkspace, runSchedulerTick } from "../../../src/lib/scheduling/run-schedule";
 import { getPendingChangeItems } from "../../../src/lib/change-events/change-item-batch";
 import { advanceNextScheduledAt } from "../../../src/lib/scheduling/scheduler-decision";
@@ -52,7 +52,7 @@ describe("run-schedule (workspace-level)", () => {
     const created = await runBatchForWorkspace(tenant.id, pending);
 
     expect(created).toBe(true);
-    const createdUpdates = await db.select().from(updates).where(eq(updates.tenantId, tenant.id));
+    const createdUpdates = await db.select().from(releases).where(eq(releases.tenantId, tenant.id));
     expect(createdUpdates).toHaveLength(1);
     expect(createdUpdates[0].repoId).toBeNull();
     expect(await getPendingChangeItems(tenant.id)).toHaveLength(0);
@@ -93,7 +93,7 @@ describe("run-schedule (workspace-level)", () => {
 
     await runSchedulerTick(new Date("2026-07-14T00:00:00Z"));
 
-    expect(await db.select().from(updates).where(eq(updates.tenantId, tenant.id))).toHaveLength(1);
+    expect(await db.select().from(releases).where(eq(releases.tenantId, tenant.id))).toHaveLength(1);
     const [config] = await db.select().from(scheduleConfigs).where(eq(scheduleConfigs.tenantId, tenant.id));
     expect(config.nextScheduledAt).toEqual(advanceNextScheduledAt(past, "weekly"));
   });
@@ -111,7 +111,7 @@ describe("run-schedule (workspace-level)", () => {
 
     await runSchedulerTick(new Date("2026-07-14T00:00:00Z"));
 
-    expect(await db.select().from(updates).where(eq(updates.tenantId, tenant.id))).toHaveLength(1);
+    expect(await db.select().from(releases).where(eq(releases.tenantId, tenant.id))).toHaveLength(1);
     const [config] = await db.select().from(scheduleConfigs).where(eq(scheduleConfigs.tenantId, tenant.id));
     expect(config.nextScheduledAt).toEqual(future);
   });
@@ -163,7 +163,7 @@ describe("run-schedule (workspace-level)", () => {
     ]);
     const done = events.at(-1);
     expect(done?.type).toBe("done");
-    const [row] = await db.select().from(updates).where(eq(updates.tenantId, tenant.id));
+    const [row] = await db.select().from(releases).where(eq(releases.tenantId, tenant.id));
     expect(done).toEqual({ type: "done", updateId: row.id });
   });
 

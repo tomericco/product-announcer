@@ -11,7 +11,7 @@ vi.mock("../../../src/lib/publishing/dispatch", () => ({
 import { generateObject } from "ai";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, repos, changeEvents, updates, webhookConfigs } from "../../../src/db/schema";
+import { tenants, repos, changeEvents, releases, webhookConfigs } from "../../../src/db/schema";
 import { runBatchForWorkspace } from "../../../src/lib/scheduling/run-schedule";
 import { getPendingChangeItems } from "../../../src/lib/change-events/change-item-batch";
 import { reviewAndReconcile } from "../../../src/lib/ai/review-draft";
@@ -71,7 +71,7 @@ describe("runBatchForWorkspace when auto-publish fails after the draft is saved"
     expect(terminal).toHaveLength(1);
     expect(terminal[0].type).toBe("done");
 
-    const rows = await db.select().from(updates).where(eq(updates.tenantId, tenant.id));
+    const rows = await db.select().from(releases).where(eq(releases.tenantId, tenant.id));
     expect(rows).toHaveLength(1);
     expect(terminal[0]).toEqual({ type: "done", updateId: rows[0].id });
   });

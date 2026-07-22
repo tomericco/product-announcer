@@ -1,10 +1,10 @@
 import { and, eq, inArray, isNull, or } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
-import { changeEvents, updates } from "@/db/schema";
+import { changeEvents, releases } from "@/db/schema";
 import type { ReviewStatus } from "@/lib/ai/review-draft";
 
 type ChangeItemRow = typeof changeEvents.$inferSelect;
-type UpdateRow = typeof updates.$inferSelect;
+type ReleaseRow = typeof releases.$inferSelect;
 
 /**
  * The root connection or a transaction handle. Drizzle's transaction type isn't
@@ -73,7 +73,7 @@ export async function claimBatchAndCreateUpdate(
     review?: { status: ReviewStatus; issues: string[] };
   },
   database: typeof defaultDb = defaultDb
-): Promise<UpdateRow | null> {
+): Promise<ReleaseRow | null> {
   return database.transaction(async (tx) => {
     const claimed = await tx
       .update(changeEvents)
@@ -86,7 +86,7 @@ export async function claimBatchAndCreateUpdate(
     const claimedIds = claimed.map((c) => c.id);
 
     const [update] = await tx
-      .insert(updates)
+      .insert(releases)
       .values({
         tenantId: input.tenantId,
         title: input.draft.title,

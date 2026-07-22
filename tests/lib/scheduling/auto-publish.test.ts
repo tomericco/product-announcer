@@ -6,7 +6,7 @@ vi.mock("../../../src/lib/ai/review-draft", () => ({ reviewAndReconcile: vi.fn()
 import { generateObject } from "ai";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, repos, changeEvents, updates, webhookConfigs, deliveryAttempts } from "../../../src/db/schema";
+import { tenants, repos, changeEvents, releases, webhookConfigs, deliveryAttempts } from "../../../src/db/schema";
 import { runBatchForWorkspace } from "../../../src/lib/scheduling/run-schedule";
 import { getPendingChangeItems } from "../../../src/lib/change-events/change-item-batch";
 import { reviewAndReconcile } from "../../../src/lib/ai/review-draft";
@@ -53,10 +53,10 @@ describe("runBatchForWorkspace auto-publish", () => {
     const pending = await getPendingChangeItems(tenant.id);
     await runBatchForWorkspace(tenant.id, pending);
 
-    const [update] = await db.select().from(updates).where(eq(updates.tenantId, tenant.id));
+    const [update] = await db.select().from(releases).where(eq(releases.tenantId, tenant.id));
     expect(update.status).toBe("published");
     expect(update.publishedAt).not.toBeNull();
-    const deliveries = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.updateId, update.id));
+    const deliveries = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.releaseId, update.id));
     expect(deliveries).toHaveLength(1);
   });
 
@@ -73,12 +73,12 @@ describe("runBatchForWorkspace auto-publish", () => {
     const pending = await getPendingChangeItems(tenant.id);
     await runBatchForWorkspace(tenant.id, pending);
 
-    const [update] = await db.select().from(updates).where(eq(updates.tenantId, tenant.id));
+    const [update] = await db.select().from(releases).where(eq(releases.tenantId, tenant.id));
     expect(update.status).toBe("published");
     expect(update.reviewStatus).toBe("passed");
     expect(update.title).toBe("Revised title");
     expect(update.body).toBe("Revised body");
-    const deliveries = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.updateId, update.id));
+    const deliveries = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.releaseId, update.id));
     expect(deliveries).toHaveLength(1);
     expect(fetch).toHaveBeenCalled();
   });
@@ -89,7 +89,7 @@ describe("runBatchForWorkspace auto-publish", () => {
     const pending = await getPendingChangeItems(tenant.id);
     await runBatchForWorkspace(tenant.id, pending);
 
-    const [update] = await db.select().from(updates).where(eq(updates.tenantId, tenant.id));
+    const [update] = await db.select().from(releases).where(eq(releases.tenantId, tenant.id));
     expect(update.status).toBe("draft");
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -102,7 +102,7 @@ describe("runBatchForWorkspace auto-publish", () => {
     const pending = await getPendingChangeItems(tenant.id);
     await runBatchForWorkspace(tenant.id, pending);
 
-    const [update] = await db.select().from(updates).where(eq(updates.tenantId, tenant.id));
+    const [update] = await db.select().from(releases).where(eq(releases.tenantId, tenant.id));
     expect(update.status).toBe("draft");
     expect(update.reviewStatus).toBe("failed");
     expect(fetch).not.toHaveBeenCalled();
@@ -116,7 +116,7 @@ describe("runBatchForWorkspace auto-publish", () => {
     const pending = await getPendingChangeItems(tenant.id);
     await runBatchForWorkspace(tenant.id, pending);
 
-    const [update] = await db.select().from(updates).where(eq(updates.tenantId, tenant.id));
+    const [update] = await db.select().from(releases).where(eq(releases.tenantId, tenant.id));
     expect(update.status).toBe("draft");
     expect(update.reviewStatus).toBe("error");
     expect(fetch).not.toHaveBeenCalled();

@@ -169,6 +169,13 @@
       "when": 1784653544016,
       "tag": "0023_orange_captain_cross",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1784721058238,
+      "tag": "0024_eager_human_robot",
+      "breakpoints": true
     }
   ]
 }

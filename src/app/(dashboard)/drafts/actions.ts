@@ -4,16 +4,16 @@ import { and, eq, sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { db } from "@/db";
-import { updates } from "@/db/schema";
+import { releases } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { dispatchAllDestinations } from "@/lib/publishing/dispatch";
 import { releaseBatchForUpdate } from "@/lib/change-events/change-item-batch";
 
-async function loadOwnedDraft(tenantId: string, updateId: string) {
+async function loadOwnedDraft(tenantId: string, releaseId: string) {
   const [update] = await db
     .select()
-    .from(updates)
-    .where(and(eq(updates.id, updateId), eq(updates.tenantId, tenantId)));
+    .from(releases)
+    .where(and(eq(releases.id, releaseId), eq(releases.tenantId, tenantId)));
   if (!update) throw new Error("Update not found for this tenant");
   return update;
 }
@@ -40,25 +40,25 @@ function parseExpectedPublishedAt(raw: FormDataEntryValue | null): Date | null {
 
 export async function saveDraft(formData: FormData) {
   const session = await requireSession();
-  const updateId = formData.get("updateId") as string;
-  const existing = await loadOwnedDraft(session.user.tenantId, updateId);
+  const releaseId = formData.get("releaseId") as string;
+  const existing = await loadOwnedDraft(session.user.tenantId, releaseId);
 
   await db
-    .update(updates)
+    .update(releases)
     .set({
       title: formData.get("title") as string,
       body: resolveBody(formData.get("body") as string, existing.body),
       editedBy: session.user.id,
     })
-    .where(eq(updates.id, updateId));
+    .where(eq(releases.id, releaseId));
 
-  revalidatePath(`/drafts/${updateId}`);
+  revalidatePath(`/drafts/${releaseId}`);
 }
 
 export async function approveDraft(formData: FormData) {
   const session = await requireSession();
-  const updateId = formData.get("updateId") as string;
-  const existing = await loadOwnedDraft(session.user.tenantId, updateId);
+  const releaseId = formData.get("releaseId") as string;
+  const existing = await loadOwnedDraft(session.user.tenantId, releaseId);
   // The value `published_at` had when this form was rendered — a hidden
   // field, not user-editable. Guards against a double-submit of the same
   // rendered form re-triggering delivery: gate the write on it still
@@ -69,7 +69,7 @@ export async function approveDraft(formData: FormData) {
   // so approving doesn't silently discard unsaved edits in favor of the
   // last-saved DB copy.
   const [changed] = await db
-    .update(updates)
+    .update(releases)
     .set({
       title: formData.get("title") as string,
       body: resolveBody(formData.get("body") as string, existing.body),
@@ -79,21 +79,21 @@ export async function approveDraft(formData: FormData) {
     })
     .where(
       and(
-        eq(updates.id, updateId),
-        eq(updates.tenantId, session.user.tenantId),
+        eq(releases.id, releaseId),
+        eq(releases.tenantId, session.user.tenantId),
         // `= NULL` is never true in SQL, so a plain `eq` would break the very
         // first publish (published_at starts out null). IS NOT DISTINCT FROM
         // treats null-equals-null as a match.
-        sql`${updates.publishedAt} IS NOT DISTINCT FROM ${expectedPublishedAt}`
+        sql`${releases.publishedAt} IS NOT DISTINCT FROM ${expectedPublishedAt}`
       )
     )
-    .returning({ id: updates.id });
+    .returning({ id: releases.id });
 
   // A double submit's second call finds published_at already moved past what
   // it expected, matches zero rows, and skips dispatch — the update is
   // already published, which is what the user wanted, so this isn't an error.
   if (changed) {
-    await dispatchAllDestinations(updateId);
+    await dispatchAllDestinations(releaseId);
   }
 
   revalidatePath("/drafts");
@@ -102,14 +102,14 @@ export async function approveDraft(formData: FormData) {
 
 export async function rejectDraft(formData: FormData) {
   const session = await requireSession();
-  const updateId = formData.get("updateId") as string;
-  await loadOwnedDraft(session.user.tenantId, updateId);
+  const releaseId = formData.get("releaseId") as string;
+  await loadOwnedDraft(session.user.tenantId, releaseId);
 
   await db.transaction(async (tx) => {
-    await tx.update(updates).set({ status: "rejected" }).where(eq(updates.id, updateId));
+    await tx.update(releases).set({ status: "rejected" }).where(eq(releases.id, releaseId));
     // Rejecting the write-up isn't rejecting the commits — hand them back so
     // they can go into a later update instead of vanishing from Pending.
-    await releaseBatchForUpdate(updateId, tx);
+    await releaseBatchForUpdate(releaseId, tx);
   });
 
   revalidatePath("/drafts");
@@ -123,27 +123,27 @@ export async function rejectDraft(formData: FormData) {
  */
 export async function publishDraft(formData: FormData) {
   const session = await requireSession();
-  const updateId = formData.get("updateId") as string;
-  await loadOwnedDraft(session.user.tenantId, updateId);
+  const releaseId = formData.get("releaseId") as string;
+  await loadOwnedDraft(session.user.tenantId, releaseId);
   // Same guard as approveDraft: the drafts list only ever renders drafts, so
   // in practice this is always null, but the mechanism stays identical rather
   // than special-casing the list's caller.
   const expectedPublishedAt = parseExpectedPublishedAt(formData.get("publishedAt"));
 
   const [changed] = await db
-    .update(updates)
+    .update(releases)
     .set({ status: "published", publishedAt: new Date() })
     .where(
       and(
-        eq(updates.id, updateId),
-        eq(updates.tenantId, session.user.tenantId),
-        sql`${updates.publishedAt} IS NOT DISTINCT FROM ${expectedPublishedAt}`
+        eq(releases.id, releaseId),
+        eq(releases.tenantId, session.user.tenantId),
+        sql`${releases.publishedAt} IS NOT DISTINCT FROM ${expectedPublishedAt}`
       )
     )
-    .returning({ id: updates.id });
+    .returning({ id: releases.id });
 
   if (changed) {
-    await dispatchAllDestinations(updateId);
+    await dispatchAllDestinations(releaseId);
   }
 
   revalidatePath("/drafts");
@@ -151,14 +151,14 @@ export async function publishDraft(formData: FormData) {
 
 export async function deleteDraft(formData: FormData) {
   const session = await requireSession();
-  const updateId = formData.get("updateId") as string;
-  await loadOwnedDraft(session.user.tenantId, updateId);
+  const releaseId = formData.get("releaseId") as string;
+  await loadOwnedDraft(session.user.tenantId, releaseId);
 
   await db.transaction(async (tx) => {
     // Must precede the delete: change_events.update_id has no ON DELETE clause,
     // so the FK rejects removing an update that still owns items.
-    await releaseBatchForUpdate(updateId, tx);
-    await tx.delete(updates).where(eq(updates.id, updateId));
+    await releaseBatchForUpdate(releaseId, tx);
+    await tx.delete(releases).where(eq(releases.id, releaseId));
   });
 
   revalidatePath("/drafts");

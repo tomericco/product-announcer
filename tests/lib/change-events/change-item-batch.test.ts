@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, repos, changeEvents, updates } from "../../../src/db/schema";
+import { tenants, repos, changeEvents, releases } from "../../../src/db/schema";
 import {
   getPendingChangeItems,
   getBatchableChangeItems,
@@ -128,7 +128,7 @@ describe("change-item-batch", () => {
     });
 
     expect(update).toBeNull();
-    const allUpdates = await db.select().from(updates).where(eq(updates.tenantId, tenant.id));
+    const allUpdates = await db.select().from(releases).where(eq(releases.tenantId, tenant.id));
     expect(allUpdates).toHaveLength(0);
   });
 
@@ -199,12 +199,12 @@ describe("change-item-batch", () => {
     });
 
     // Deleting while the item still points at the update violates the FK.
-    await expect(db.delete(updates).where(eq(updates.id, update!.id))).rejects.toThrow();
+    await expect(db.delete(releases).where(eq(releases.id, update!.id))).rejects.toThrow();
 
     await releaseBatchForUpdate(update!.id);
-    await db.delete(updates).where(eq(updates.id, update!.id));
+    await db.delete(releases).where(eq(releases.id, update!.id));
 
-    const remaining = await db.select().from(updates).where(eq(updates.id, update!.id));
+    const remaining = await db.select().from(releases).where(eq(releases.id, update!.id));
     expect(remaining).toHaveLength(0);
   });
 });

@@ -23,7 +23,7 @@ import {
 import { publishDraft, deleteDraft } from "./actions";
 
 type Props = {
-  updateId: string;
+  releaseId: string;
   title: string;
   /** Commits batched into this draft; named in the delete confirmation. */
   sourceItemCount: number;
@@ -38,7 +38,7 @@ type Props = {
 
 type Confirming = "publish" | "delete" | null;
 
-export function DraftRowMenu({ updateId, title, sourceItemCount, publishedAt }: Props) {
+export function DraftRowMenu({ releaseId, title, sourceItemCount, publishedAt }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirming, setConfirming] = useState<Confirming>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -46,7 +46,7 @@ export function DraftRowMenu({ updateId, title, sourceItemCount, publishedAt }: 
   async function run(action: (formData: FormData) => Promise<void>, success: string) {
     setSubmitting(true);
     const formData = new FormData();
-    formData.set("updateId", updateId);
+    formData.set("releaseId", releaseId);
     formData.set("publishedAt", publishedAt ?? "");
     try {
       await action(formData);

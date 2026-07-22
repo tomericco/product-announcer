@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, repos, changeEvents, atomicUpdates, updates } from "../../../src/db/schema";
+import { tenants, repos, changeEvents, atomicUpdates, releases } from "../../../src/db/schema";
 import {
   applyResolution,
   loadOpenAtomicUpdates,
@@ -169,7 +169,7 @@ describe("apply-resolution", () => {
   it("loadOpenAtomicUpdates includes ones already in a draft release", async () => {
     const { tenant } = await seed();
     const [release] = await db
-      .insert(updates)
+      .insert(releases)
       .values({ tenantId: tenant.id, title: "Draft", body: "B", sourceItems: [] })
       .returning();
     await db

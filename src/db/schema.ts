@@ -46,7 +46,7 @@ export const tenantMembers = pgTable(
 
 export const changeItemStatusEnum = pgEnum("change_item_status", ["pending", "batched", "excluded", "ignored"]);
 export const cadenceEnum = pgEnum("cadence", ["daily", "weekly", "biweekly", "monthly", "none"]);
-export const updateStatusEnum = pgEnum("update_status", ["draft", "approved", "published", "rejected"]);
+export const releaseStatusEnum = pgEnum("release_status", ["draft", "approved", "published", "rejected"]);
 export const reviewStatusEnum = pgEnum("review_status", ["passed", "failed", "error"]);
 export const updateCategoryEnum = pgEnum("update_category", ["new", "improved", "fixed"]);
 
@@ -95,7 +95,7 @@ export const changeEvents = pgTable(
     status: changeItemStatusEnum("status").notNull().default("pending"),
     // Why tier 1 dropped this event. Null means it survived the filter.
     filterReason: filterReasonEnum("filter_reason"),
-    updateId: uuid("update_id").references(() => updates.id),
+    updateId: uuid("update_id").references(() => releases.id),
     excludedAt: timestamp("excluded_at", { withTimezone: true }),
     excludedBy: uuid("excluded_by").references(() => users.id),
     // pr-sourced fields
@@ -142,7 +142,7 @@ export const atomicUpdates = pgTable("atomic_updates", {
     .references(() => tenants.id, { onDelete: "cascade" }),
   // Set when this atomic update joins a release draft. At most one release ever,
   // so "which release is this shipping in" always has a single answer.
-  releaseId: uuid("release_id").references(() => updates.id, { onDelete: "set null" }),
+  releaseId: uuid("release_id").references(() => releases.id, { onDelete: "set null" }),
   title: text("title").notNull(),
   summary: text("summary").notNull(),
   category: updateCategoryEnum("category"),
@@ -223,7 +223,7 @@ export const systemUpdateExamples = pgTable("system_update_examples", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
-export const updates = pgTable("updates", {
+export const releases = pgTable("releases", {
   id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
   tenantId: uuid("tenant_id")
     .notNull()
@@ -231,7 +231,7 @@ export const updates = pgTable("updates", {
   repoId: uuid("repo_id").references(() => repos.id, { onDelete: "cascade" }),
   title: text("title").notNull(),
   body: text("body").notNull(),
-  status: updateStatusEnum("status").notNull().default("draft"),
+  status: releaseStatusEnum("status").notNull().default("draft"),
   sourceItems: jsonb("source_items").$type<string[]>().notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   publishedAt: timestamp("published_at", { withTimezone: true }),
@@ -263,9 +263,9 @@ export const deliveryAttempts = pgTable(
   "delivery_attempts",
   {
     id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
-    updateId: uuid("update_id")
+    releaseId: uuid("release_id")
       .notNull()
-      .references(() => updates.id, { onDelete: "cascade" }),
+      .references(() => releases.id, { onDelete: "cascade" }),
     destination: destinationEnum("destination").notNull(),
     status: webhookDeliveryStatusEnum("status").notNull().default("pending"),
     attempts: integer("attempts").notNull().default(0),
@@ -278,10 +278,10 @@ export const deliveryAttempts = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
-    // One row per update+destination: dispatch reuses this row across
+    // One row per release+destination: dispatch reuses this row across
     // re-publishes, so a race between two concurrent publishes must not be
     // able to insert two rows for the same pair.
-    uniqueIndex("delivery_attempts_update_id_destination_unique").on(table.updateId, table.destination),
+    uniqueIndex("delivery_attempts_release_id_destination_unique").on(table.releaseId, table.destination),
   ]
 );
 

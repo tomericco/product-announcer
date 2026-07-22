@@ -7,7 +7,7 @@ vi.mock("next/navigation", () => ({ redirect: vi.fn() }));
 
 import { getServerSession } from "next-auth";
 import { db } from "../../../src/db";
-import { tenants, repos, updates, webhookConfigs, deliveryAttempts, users } from "../../../src/db/schema";
+import { tenants, repos, releases, webhookConfigs, deliveryAttempts, users } from "../../../src/db/schema";
 import { encryptSecret } from "../../../src/lib/credentials/encryption";
 import { approveDraft, publishDraft } from "../../../src/app/(dashboard)/drafts/actions";
 
@@ -29,7 +29,7 @@ async function seed(tenantName = TENANT_NAME) {
     .returning();
   await db.insert(webhookConfigs).values({ tenantId: tenant.id, url: "https://example.com/hook", ...encryptedSecret() });
   const [update] = await db
-    .insert(updates)
+    .insert(releases)
     .values({
       tenantId: tenant.id,
       repoId: repo.id,
@@ -42,27 +42,27 @@ async function seed(tenantName = TENANT_NAME) {
   return { tenant, repo, update, user };
 }
 
-async function rowFor(updateId: string) {
-  const [row] = await db.select().from(updates).where(eq(updates.id, updateId));
+async function rowFor(releaseId: string) {
+  const [row] = await db.select().from(releases).where(eq(releases.id, releaseId));
   return row;
 }
 
-async function deliveriesFor(updateId: string) {
-  return db.select().from(deliveryAttempts).where(eq(deliveryAttempts.updateId, updateId));
+async function deliveriesFor(releaseId: string) {
+  return db.select().from(deliveryAttempts).where(eq(deliveryAttempts.releaseId, releaseId));
 }
 
-function approveFormData(updateId: string, publishedAt: string) {
+function approveFormData(releaseId: string, publishedAt: string) {
   const fd = new FormData();
-  fd.set("updateId", updateId);
+  fd.set("releaseId", releaseId);
   fd.set("title", "Original title");
   fd.set("body", "Original body");
   fd.set("publishedAt", publishedAt);
   return fd;
 }
 
-function publishFormData(updateId: string, publishedAt: string) {
+function publishFormData(releaseId: string, publishedAt: string) {
   const fd = new FormData();
-  fd.set("updateId", updateId);
+  fd.set("releaseId", releaseId);
   fd.set("publishedAt", publishedAt);
   return fd;
 }

@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
-import { repos, scheduleConfigs, tenants, webhookConfigs, updates, systemPersonas, systemUpdateExamples } from "@/db/schema";
+import { repos, scheduleConfigs, tenants, webhookConfigs, releases, systemPersonas, systemUpdateExamples } from "@/db/schema";
 import { getPendingChangeItems, getBatchableChangeItems, claimBatchAndCreateUpdate, batchCategories } from "@/lib/change-events/change-item-batch";
 import { generateUpdateDraft } from "@/lib/ai/generation";
 import { getOrCreateBrandProfile } from "@/lib/workspace/brand-profile";
@@ -98,9 +98,9 @@ export async function runBatchForWorkspace(
     const reviewPassed = review.status === "passed";
     if (tenant?.autoPublish && activeWebhook && reviewPassed) {
       await database
-        .update(updates)
+        .update(releases)
         .set({ status: "published", publishedAt: new Date() })
-        .where(eq(updates.id, update.id));
+        .where(eq(releases.id, update.id));
       await dispatchAllDestinations(update.id, database);
     }
   } catch (error) {
