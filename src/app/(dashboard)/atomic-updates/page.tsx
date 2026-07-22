@@ -5,12 +5,14 @@ import {
   EmptyStateIcon,
   EmptyStateTitle,
   EmptyStateDescription,
+  EmptyStateActions,
 } from "@/components/ui/empty-state";
-import { listAtomicUpdates } from "./actions";
+import { listAtomicUpdates, listImportRepos } from "./actions";
 import { AtomicUpdatesList } from "./atomic-updates-list";
+import { ImportCommitsDialog } from "./import-commits-dialog";
 
 export default async function AtomicUpdatesPage() {
-  const rows = await listAtomicUpdates();
+  const [rows, importRepos] = await Promise.all([listAtomicUpdates(), listImportRepos()]);
 
   if (rows.length === 0) {
     return (
@@ -24,6 +26,9 @@ export default async function AtomicUpdatesPage() {
             They appear here as commits and pull requests are ingested — each one a single
             user-facing change, gathered from the commits, pull requests, and tasks behind it.
           </EmptyStateDescription>
+          <EmptyStateActions>
+            <ImportCommitsDialog repos={importRepos} />
+          </EmptyStateActions>
         </EmptyState>
       </div>
     );
@@ -36,7 +41,7 @@ export default async function AtomicUpdatesPage() {
         Each one is a single user-facing change, gathered from the commits, pull requests, and tasks
         behind it.
       </p>
-      <AtomicUpdatesList rows={rows} />
+      <AtomicUpdatesList rows={rows} repos={importRepos} />
     </div>
   );
 }
