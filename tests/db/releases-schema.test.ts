@@ -14,7 +14,7 @@ describe("releases schema (renamed from updates)", () => {
     const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
     const [release] = await db
       .insert(releases)
-      .values({ tenantId: tenant.id, title: "T", body: "B", sourceItems: [] })
+      .values({ tenantId: tenant.id, title: "T", body: "B" })
       .returning();
     expect(release.status).toBe("draft");
   });
@@ -23,7 +23,7 @@ describe("releases schema (renamed from updates)", () => {
     const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
     const [release] = await db
       .insert(releases)
-      .values({ tenantId: tenant.id, title: "T", body: "B", sourceItems: [] })
+      .values({ tenantId: tenant.id, title: "T", body: "B" })
       .returning();
     const [atomic] = await db
       .insert(atomicUpdates)

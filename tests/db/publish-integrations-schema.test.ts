@@ -16,7 +16,7 @@ describe("publish/integrations schema", () => {
       .returning();
     const [release] = await db
       .insert(releases)
-      .values({ tenantId: tenant.id, repoId: repo.id, title: "T", body: "B", sourceItems: [] })
+      .values({ tenantId: tenant.id, repoId: repo.id, title: "T", body: "B" })
       .returning();
 
     const [delivery] = await db
@@ -40,7 +40,7 @@ describe("publish/integrations schema", () => {
       .returning();
     const [release] = await db
       .insert(releases)
-      .values({ tenantId: tenant.id, repoId: repo.id, title: "T", body: "B", sourceItems: [] })
+      .values({ tenantId: tenant.id, repoId: repo.id, title: "T", body: "B" })
       .returning();
 
     await db.insert(deliveryAttempts).values({ releaseId: release.id, destination: "webhook" });

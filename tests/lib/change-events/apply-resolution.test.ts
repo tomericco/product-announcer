@@ -170,7 +170,7 @@ describe("apply-resolution", () => {
     const { tenant } = await seed();
     const [release] = await db
       .insert(releases)
-      .values({ tenantId: tenant.id, title: "Draft", body: "B", sourceItems: [] })
+      .values({ tenantId: tenant.id, title: "Draft", body: "B" })
       .returning();
     await db
       .insert(atomicUpdates)

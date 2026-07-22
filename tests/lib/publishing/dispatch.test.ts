@@ -61,7 +61,6 @@ describe("dispatch", () => {
         title: "T",
         body: "B",
         status: "published",
-        sourceItems: [],
       })
       .returning();
     return { tenant, repo, update };
@@ -79,6 +78,12 @@ describe("dispatch", () => {
     expect(call[0]).toBe("https://example.com/hook");
     const headers = (call[1] as RequestInit).headers as Record<string, string>;
     expect(headers["x-product-announcer-signature"]).toMatch(/^sha256=[0-9a-f]{64}$/);
+    // Asserts the exact payload shape (rather than naming the retired field
+    // directly) so the legacy composition column can't silently reappear here.
+    const payload = JSON.parse((call[1] as RequestInit).body as string);
+    expect(Object.keys(payload).sort()).toEqual(
+      ["body", "createdAt", "id", "publishedAt", "status", "tenantId", "title"].sort()
+    );
 
     const [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.releaseId, update.id));
     expect(delivery.status).toBe("success");

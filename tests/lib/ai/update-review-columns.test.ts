@@ -15,7 +15,7 @@ describe("releases review columns", () => {
 
     const [defaulted] = await db
       .insert(releases)
-      .values({ tenantId: tenant.id, title: "t", body: "b", sourceItems: [] })
+      .values({ tenantId: tenant.id, title: "t", body: "b" })
       .returning();
     expect(defaulted.reviewStatus).toBeNull();
     expect(defaulted.reviewIssues).toEqual([]);
@@ -24,7 +24,7 @@ describe("releases review columns", () => {
     const [reviewed] = await db
       .insert(releases)
       .values({
-        tenantId: tenant.id, title: "t2", body: "b2", sourceItems: [],
+        tenantId: tenant.id, title: "t2", body: "b2",
         reviewStatus: "failed", reviewIssues: ["too salesy", "wrong tone"], reviewedAt: new Date(),
       })
       .returning();

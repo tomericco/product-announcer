@@ -1,52 +1,11 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../src/db";
-import { tenants, repos, changeEvents, releases, scheduleConfigs } from "../../src/db/schema";
+import { tenants, releases, scheduleConfigs } from "../../src/db/schema";
 
 describe("scheduler/generation schema", () => {
   afterEach(async () => {
     await db.delete(tenants).where(eq(tenants.name, "Scheduler Schema Test Tenant"));
-  });
-
-  it("links a ChangeItem to a real Update via the now-present FK", async () => {
-    const [tenant] = await db.insert(tenants).values({ name: "Scheduler Schema Test Tenant" }).returning();
-    const [repo] = await db
-      .insert(repos)
-      .values({
-        tenantId: tenant.id,
-        githubRepoFullName: "acme/widgets",
-        githubInstallationId: "1",
-        watchedBranch: "main",
-      })
-      .returning();
-
-    const [update] = await db
-      .insert(releases)
-      .values({
-        tenantId: tenant.id,
-        repoId: repo.id,
-        title: "Test update",
-        body: "Body",
-        sourceItems: [],
-      })
-      .returning();
-
-    const [item] = await db
-      .insert(changeEvents)
-      .values({
-        tenantId: tenant.id,
-        repoId: repo.id,
-        type: "pull_request",
-        provider: "github",
-        externalId: "acme/widgets#1",
-        status: "batched",
-        updateId: update.id,
-        prNumber: 1,
-        prTitle: "x",
-      })
-      .returning();
-
-    expect(item.updateId).toBe(update.id);
   });
 
   it("allows a cross-repo update (null repoId) and one schedule config per tenant", async () => {
@@ -54,7 +13,7 @@ describe("scheduler/generation schema", () => {
 
     const [update] = await db
       .insert(releases)
-      .values({ tenantId: tenant.id, title: "T", body: "B", sourceItems: [] })
+      .values({ tenantId: tenant.id, title: "T", body: "B" })
       .returning();
     expect(update.repoId).toBeNull();
 

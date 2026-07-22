@@ -19,7 +19,6 @@ function buildPayload(release: Release) {
     title: release.title,
     body: release.body,
     status: release.status,
-    sourceItems: release.sourceItems,
     createdAt: release.createdAt,
     publishedAt: release.publishedAt,
   };

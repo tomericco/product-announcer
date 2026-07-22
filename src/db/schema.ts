@@ -17,7 +17,6 @@ export const tenants = pgTable("tenants", {
   name: text("name").notNull(),
   githubInstallationId: text("github_installation_id"),
   onboardingCompletedAt: timestamp("onboarding_completed_at", { withTimezone: true }),
-  autoPublish: boolean("auto_publish").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -95,7 +94,6 @@ export const changeEvents = pgTable(
     status: changeItemStatusEnum("status").notNull().default("pending"),
     // Why tier 1 dropped this event. Null means it survived the filter.
     filterReason: filterReasonEnum("filter_reason"),
-    updateId: uuid("update_id").references(() => releases.id),
     excludedAt: timestamp("excluded_at", { withTimezone: true }),
     excludedBy: uuid("excluded_by").references(() => users.id),
     // pr-sourced fields
@@ -232,7 +230,6 @@ export const releases = pgTable("releases", {
   title: text("title").notNull(),
   body: text("body").notNull(),
   status: releaseStatusEnum("status").notNull().default("draft"),
-  sourceItems: jsonb("source_items").$type<string[]>().notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   publishedAt: timestamp("published_at", { withTimezone: true }),
   editedBy: uuid("edited_by").references(() => users.id),

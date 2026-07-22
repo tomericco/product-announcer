@@ -36,7 +36,6 @@ async function seed(tenantName = TENANT_NAME) {
       title: "Original title",
       body: "Original body",
       status: "draft",
-      sourceItems: [],
     })
     .returning();
   return { tenant, repo, update, user };

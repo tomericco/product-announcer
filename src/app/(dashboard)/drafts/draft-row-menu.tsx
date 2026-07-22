@@ -25,8 +25,8 @@ import { publishDraft, deleteDraft } from "./actions";
 type Props = {
   releaseId: string;
   title: string;
-  /** Commits batched into this draft; named in the delete confirmation. */
-  sourceItemCount: number;
+  /** Atomic updates composed into this draft; named in the delete confirmation. */
+  atomicUpdateCount: number;
   /**
    * published_at as rendered by this page load — always null/"" here since
    * this list only ever shows drafts, but threaded through rather than
@@ -38,7 +38,7 @@ type Props = {
 
 type Confirming = "publish" | "delete" | null;
 
-export function DraftRowMenu({ releaseId, title, sourceItemCount, publishedAt }: Props) {
+export function DraftRowMenu({ releaseId, title, atomicUpdateCount, publishedAt }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirming, setConfirming] = useState<Confirming>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -61,7 +61,7 @@ export function DraftRowMenu({ releaseId, title, sourceItemCount, publishedAt }:
     }
   }
 
-  const commits = `${sourceItemCount} ${sourceItemCount === 1 ? "commit" : "commits"}`;
+  const atomicUpdatesLabel = `${atomicUpdateCount} ${atomicUpdateCount === 1 ? "update" : "updates"}`;
 
   return (
     <>
@@ -122,8 +122,8 @@ export function DraftRowMenu({ releaseId, title, sourceItemCount, publishedAt }:
           <DialogHeader>
             <DialogTitle>Delete this draft?</DialogTitle>
             <DialogDescription>
-              “{title}” will be deleted permanently. Its {commits} return to Pending, so they can go
-              into a future update.
+              “{title}” will be deleted permanently. Its {atomicUpdatesLabel} become available again,
+              so they can go into a future update.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

@@ -29,11 +29,6 @@ export async function getOpenAtomicUpdates(
  * transaction. Only tenant-owned, still-open atomic updates are claimable, so a
  * re-submit or concurrent claim cannot double-claim. Returns null if nothing was
  * claimable (the release insert is rolled back).
- *
- * `sourceItems` is a legacy NOT NULL column from the change-event-batch composition
- * path (removed in Task 7); releases composed from atomic updates have no
- * meaningful value for it, so it's set to `[]` rather than claiming it tracks
- * anything here — the real composition link is `atomicUpdates.releaseId`.
  */
 export async function claimReleaseFromAtomicUpdates(
   input: {
@@ -54,7 +49,6 @@ export async function claimReleaseFromAtomicUpdates(
           tenantId: input.tenantId,
           title: input.draft.title,
           body: input.draft.body,
-          sourceItems: [],
           ...(input.review
             ? { reviewStatus: input.review.status, reviewIssues: input.review.issues, reviewedAt: new Date() }
             : {}),

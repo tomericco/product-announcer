@@ -1,8 +1,8 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import Link from "next/link";
 import { FileText, ArrowRight } from "lucide-react";
 import { db } from "@/db";
-import { releases } from "@/db/schema";
+import { releases, atomicUpdates } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -25,6 +25,26 @@ export default async function DraftsPage() {
     // Newest first — the list shows creation times, so an unordered result
     // would read as broken.
     .orderBy(desc(releases.createdAt));
+
+  // The composition link for a draft's constituent changes is
+  // `atomicUpdates.releaseId` — releases carry no column of their own for
+  // this — so the per-draft count is a small side query rather than a plain
+  // field read.
+  const atomicUpdateCounts = new Map<string, number>();
+  if (drafts.length > 0) {
+    const linked = await db
+      .select({ releaseId: atomicUpdates.releaseId })
+      .from(atomicUpdates)
+      .where(
+        inArray(
+          atomicUpdates.releaseId,
+          drafts.map((d) => d.id)
+        )
+      );
+    for (const { releaseId } of linked) {
+      if (releaseId) atomicUpdateCounts.set(releaseId, (atomicUpdateCounts.get(releaseId) ?? 0) + 1);
+    }
+  }
 
   if (drafts.length === 0) {
     return (
@@ -79,7 +99,7 @@ export default async function DraftsPage() {
               <DraftRowMenu
                 releaseId={d.id}
                 title={d.title}
-                sourceItemCount={d.sourceItems.length}
+                atomicUpdateCount={atomicUpdateCounts.get(d.id) ?? 0}
                 publishedAt={d.publishedAt ? d.publishedAt.toISOString() : null}
               />
             </div>
