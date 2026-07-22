@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { serializeBatch, buildSystemPrompt } from "../../../src/lib/ai/compose-prompt";
+import { serializeAtomicUpdates, composeReleasePrompt } from "../../../src/lib/ai/compose-prompt";
 
 type FakeChangeItem = {
   id: string; repoId: string; type: "pull_request" | "commit";
@@ -75,5 +76,42 @@ describe("buildSystemPrompt", () => {
     expect(withSummary).toContain("Match the house style of their existing updates: Short bullets, one per change.");
     const without = buildSystemPrompt({ ...baseBrand, updatesStyleSummary: null } as never, [], []);
     expect(without).not.toContain("Match the house style");
+  });
+});
+
+const AUS = [
+  { id: "a1", title: "CSV export", summary: "Export reports as CSV.", category: "new" as const },
+  { id: "a2", title: "Faster search", summary: "Search returns in under a second.", category: "improved" as const },
+];
+
+describe("serializeAtomicUpdates", () => {
+  it("renders each atomic update as a numbered title + summary line", () => {
+    const text = serializeAtomicUpdates(AUS);
+    expect(text).toContain("CSV export");
+    expect(text).toContain("Export reports as CSV.");
+    expect(text).toMatch(/1\./);
+    expect(text).toMatch(/2\./);
+  });
+
+  it("drops trailing items past maxChars with a note, keeping at least one", () => {
+    const many = Array.from({ length: 50 }, (_, i) => ({
+      id: `a${i}`, title: `Feature ${i}`, summary: "x".repeat(200), category: "new" as const,
+    }));
+    const text = serializeAtomicUpdates(many, 500);
+    expect(text).toMatch(/more updates not shown/);
+    expect(text).toContain("Feature 0");
+  });
+});
+
+describe("composeReleasePrompt", () => {
+  it("builds a system+prompt pair from atomic updates without a repo map", () => {
+    const { system, prompt } = composeReleasePrompt({
+      items: AUS,
+      brandProfile: { tone: null, readingLevel: null, doList: [], dontList: [], examplePhrases: [], industry: null, updatesStyleSummary: null, userPersonas: [] } as never,
+      personas: [],
+      examples: [],
+    });
+    expect(system).toContain("product update");
+    expect(prompt).toContain("CSV export");
   });
 });

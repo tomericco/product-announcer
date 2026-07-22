@@ -104,3 +104,53 @@ export function composePrompt(args: {
     prompt: `Here are the changes to summarize into one product update. Format the body as Markdown (short paragraphs, and bullet lists where helpful):\n\n${batchText}`,
   };
 }
+
+export type AtomicUpdateForPrompt = {
+  id: string;
+  title: string;
+  summary: string;
+  category: "new" | "improved" | "fixed" | null;
+};
+
+function formatAtomicUpdate(item: AtomicUpdateForPrompt, index: number): string {
+  const tag = item.category ? ` (${item.category})` : "";
+  return `${index + 1}. "${item.title}"${tag} — ${item.summary}`;
+}
+
+/**
+ * Renders selected atomic updates as numbered title + summary lines. Atomic
+ * updates are already distilled and repo-agnostic — no repo tag, no PR/commit
+ * branching. Trailing items past `maxChars` are dropped whole with a note.
+ */
+export function serializeAtomicUpdates(
+  items: AtomicUpdateForPrompt[],
+  maxChars = DEFAULT_MAX_PROMPT_CHARS
+): string {
+  const lines = items.map(formatAtomicUpdate);
+  const full = lines.join("\n");
+  if (full.length <= maxChars) return full;
+
+  const kept: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const droppedIfStopHere = lines.length - (i + 1);
+    const note = droppedIfStopHere > 0 ? `\n…and ${droppedIfStopHere} more updates not shown.` : "";
+    const candidate = [...kept, lines[i]].join("\n") + note;
+    if (candidate.length > maxChars && kept.length > 0) break;
+    kept.push(lines[i]);
+    if (candidate.length > maxChars) break;
+  }
+  const dropped = lines.length - kept.length;
+  return dropped > 0 ? `${kept.join("\n")}\n…and ${dropped} more updates not shown.` : kept.join("\n");
+}
+
+export function composeReleasePrompt(args: {
+  items: AtomicUpdateForPrompt[];
+  brandProfile: BrandProfileRow;
+  personas: ResolvedPersona[];
+  examples: ExampleRow[];
+}): { system: string; prompt: string } {
+  return {
+    system: buildSystemPrompt(args.brandProfile, args.personas, args.examples),
+    prompt: `Here are the changes to summarize into one product update. Format the body as Markdown (short paragraphs, and bullet lists where helpful):\n\n${serializeAtomicUpdates(args.items)}`,
+  };
+}
