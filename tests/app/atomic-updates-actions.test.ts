@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../src/db";
-import { tenants, repos, changeEvents, atomicUpdates } from "../../src/db/schema";
+import { tenants, repos, changeEvents, atomicUpdates, releases } from "../../src/db/schema";
 
 const TENANT = "Atomic Updates Actions Test Tenant";
 let currentTenantId = "";
@@ -45,6 +45,22 @@ describe("atomic update actions", () => {
 
     const rows = await listAtomicUpdates();
     expect(rows.map((r) => r.title)).toEqual(["Open"]);
+  });
+
+  it("excludes an open atomic update already linked to a draft release", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    currentTenantId = tenant.id;
+    const [release] = await db
+      .insert(releases)
+      .values({ tenantId: tenant.id, title: "Draft", body: "B" })
+      .returning();
+    await db.insert(atomicUpdates).values({ tenantId: tenant.id, title: "Open, unclaimed", summary: "S" });
+    await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "Open, but in a draft", summary: "S", releaseId: release.id });
+
+    const rows = await listAtomicUpdates();
+    expect(rows.map((r) => r.title)).toEqual(["Open, unclaimed"]);
   });
 
   it("sets summaryEditedAt when edited, freezing regeneration", async () => {

@@ -1,6 +1,6 @@
 "use server";
 
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { db } from "@/db";
 import { atomicUpdates, changeEvents, repos } from "@/db/schema";
@@ -40,7 +40,16 @@ export async function listAtomicUpdates(): Promise<AtomicUpdateRow[]> {
       updatedAt: atomicUpdates.updatedAt,
     })
     .from(atomicUpdates)
-    .where(and(eq(atomicUpdates.tenantId, session.user.tenantId), eq(atomicUpdates.status, "open")))
+    .where(
+      and(
+        eq(atomicUpdates.tenantId, session.user.tenantId),
+        eq(atomicUpdates.status, "open"),
+        // Compose candidate set: an atomic update already linked to a draft
+        // release is spoken for and shows up on that draft instead — see
+        // getOpenAtomicUpdates in release-claim.ts for the same rule.
+        isNull(atomicUpdates.releaseId)
+      )
+    )
     .orderBy(desc(atomicUpdates.updatedAt));
 
   if (atomics.length === 0) return [];

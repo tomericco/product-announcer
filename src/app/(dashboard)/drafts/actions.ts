@@ -7,7 +7,7 @@ import { db } from "@/db";
 import { releases } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { dispatchAllDestinations } from "@/lib/publishing/dispatch";
-import { revertReleaseAtomicUpdates } from "@/lib/change-events/release-claim";
+import { revertReleaseAtomicUpdates, markReleaseAtomicUpdatesReleased } from "@/lib/change-events/release-claim";
 
 async function loadOwnedDraft(tenantId: string, releaseId: string) {
   const [update] = await db
@@ -68,30 +68,45 @@ export async function approveDraft(formData: FormData) {
   // Persist whatever title/body the user currently sees before publishing,
   // so approving doesn't silently discard unsaved edits in favor of the
   // last-saved DB copy.
-  const [changed] = await db
-    .update(releases)
-    .set({
-      title: formData.get("title") as string,
-      body: resolveBody(formData.get("body") as string, existing.body),
-      editedBy: session.user.id,
-      status: "published",
-      publishedAt: new Date(),
-    })
-    .where(
-      and(
-        eq(releases.id, releaseId),
-        eq(releases.tenantId, session.user.tenantId),
-        // `= NULL` is never true in SQL, so a plain `eq` would break the very
-        // first publish (published_at starts out null). IS NOT DISTINCT FROM
-        // treats null-equals-null as a match.
-        sql`${releases.publishedAt} IS NOT DISTINCT FROM ${expectedPublishedAt}`
+  //
+  // The publish UPDATE and closing out this release's atomic updates run in
+  // one transaction: a crash between the two must not leave a published
+  // release with atomic updates still sitting `open` (visible in the compose
+  // list as if unclaimed).
+  const [changed] = await db.transaction(async (tx) => {
+    const rows = await tx
+      .update(releases)
+      .set({
+        title: formData.get("title") as string,
+        body: resolveBody(formData.get("body") as string, existing.body),
+        editedBy: session.user.id,
+        status: "published",
+        publishedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(releases.id, releaseId),
+          eq(releases.tenantId, session.user.tenantId),
+          // `= NULL` is never true in SQL, so a plain `eq` would break the very
+          // first publish (published_at starts out null). IS NOT DISTINCT FROM
+          // treats null-equals-null as a match.
+          sql`${releases.publishedAt} IS NOT DISTINCT FROM ${expectedPublishedAt}`
+        )
       )
-    )
-    .returning({ id: releases.id });
+      .returning({ id: releases.id });
 
-  // A double submit's second call finds published_at already moved past what
-  // it expected, matches zero rows, and skips dispatch — the update is
-  // already published, which is what the user wanted, so this isn't an error.
+    // A double submit's second call finds published_at already moved past what
+    // it expected, matches zero rows — skip closing out the atomic updates too,
+    // so it doesn't redundantly re-run against a release already fully published.
+    if (rows.length > 0) {
+      await markReleaseAtomicUpdatesReleased(releaseId, tx);
+    }
+
+    return rows;
+  });
+
+  // Dispatch stays outside the transaction: publishing already committed by
+  // this point, so a delivery failure here shouldn't roll back the publish.
   if (changed) {
     await dispatchAllDestinations(releaseId);
   }
@@ -131,17 +146,28 @@ export async function publishDraft(formData: FormData) {
   // than special-casing the list's caller.
   const expectedPublishedAt = parseExpectedPublishedAt(formData.get("publishedAt"));
 
-  const [changed] = await db
-    .update(releases)
-    .set({ status: "published", publishedAt: new Date() })
-    .where(
-      and(
-        eq(releases.id, releaseId),
-        eq(releases.tenantId, session.user.tenantId),
-        sql`${releases.publishedAt} IS NOT DISTINCT FROM ${expectedPublishedAt}`
+  // See approveDraft: publish UPDATE + closing out the release's atomic
+  // updates run in one transaction, so a crash between them can't leave a
+  // published release with atomic updates still `open`.
+  const [changed] = await db.transaction(async (tx) => {
+    const rows = await tx
+      .update(releases)
+      .set({ status: "published", publishedAt: new Date() })
+      .where(
+        and(
+          eq(releases.id, releaseId),
+          eq(releases.tenantId, session.user.tenantId),
+          sql`${releases.publishedAt} IS NOT DISTINCT FROM ${expectedPublishedAt}`
+        )
       )
-    )
-    .returning({ id: releases.id });
+      .returning({ id: releases.id });
+
+    if (rows.length > 0) {
+      await markReleaseAtomicUpdatesReleased(releaseId, tx);
+    }
+
+    return rows;
+  });
 
   if (changed) {
     await dispatchAllDestinations(releaseId);

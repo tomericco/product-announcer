@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
 import { atomicUpdates, releases } from "@/db/schema";
 import type { ReviewStatus } from "@/lib/ai/review-draft";
@@ -19,18 +19,31 @@ export async function getOpenAtomicUpdates(
   return database
     .select()
     .from(atomicUpdates)
-    .where(and(eq(atomicUpdates.tenantId, tenantId), eq(atomicUpdates.status, "open")))
+    .where(
+      and(
+        eq(atomicUpdates.tenantId, tenantId),
+        eq(atomicUpdates.status, "open"),
+        // Compose candidate set: an atomic update already linked to a draft
+        // release is spoken for — it must not be offered again for a second
+        // release until that draft is rejected/deleted (revertReleaseAtomicUpdates)
+        // and its releaseId cleared.
+        isNull(atomicUpdates.releaseId)
+      )
+    )
     // Same-webhook-batch atomic updates can share createdAt; tie-break on id
     // for deterministic ordering.
     .orderBy(asc(atomicUpdates.createdAt), asc(atomicUpdates.id));
 }
 
 /**
- * Claims the given OPEN atomic updates into a new draft release: inserts the
- * release, flips the atomic updates to `released` + sets `releaseId`, all in one
- * transaction. Only tenant-owned, still-open atomic updates are claimable, so a
- * re-submit or concurrent claim cannot double-claim. Returns null if nothing was
- * claimable (the release insert is rolled back).
+ * Claims the given OPEN, unlinked atomic updates into a new draft release:
+ * inserts the release and sets `releaseId` on the atomic updates, all in one
+ * transaction. Atomic updates stay `status = 'open'` — they only become
+ * `released` when the release is published (see `markReleaseAtomicUpdatesReleased`).
+ * Only tenant-owned, still-open, not-yet-linked (`releaseId IS NULL`) atomic
+ * updates are claimable, so a re-submit or concurrent claim cannot double-claim
+ * one into two releases. Returns null if nothing was claimable (the release
+ * insert is rolled back).
  */
 export async function claimReleaseFromAtomicUpdates(
   input: {
@@ -59,12 +72,13 @@ export async function claimReleaseFromAtomicUpdates(
 
       const claimed = await tx
         .update(atomicUpdates)
-        .set({ status: "released", releaseId: release.id, updatedAt: new Date() })
+        .set({ releaseId: release.id, updatedAt: new Date() })
         .where(
           and(
             inArray(atomicUpdates.id, input.atomicUpdateIds),
             eq(atomicUpdates.tenantId, input.tenantId),
-            eq(atomicUpdates.status, "open")
+            eq(atomicUpdates.status, "open"),
+            isNull(atomicUpdates.releaseId)
           )
         )
         .returning({ id: atomicUpdates.id });
@@ -76,6 +90,23 @@ export async function claimReleaseFromAtomicUpdates(
       if (err instanceof EmptyClaimError) return null;
       throw err;
     });
+}
+
+/**
+ * On publish: closes a release's atomic updates. The inverse of leaving them
+ * open while the release is a draft — this is the only place `status`
+ * transitions to `released`.
+ */
+export async function markReleaseAtomicUpdatesReleased(
+  releaseId: string,
+  database: Executor = defaultDb
+): Promise<number> {
+  const released = await database
+    .update(atomicUpdates)
+    .set({ status: "released", updatedAt: new Date() })
+    .where(eq(atomicUpdates.releaseId, releaseId))
+    .returning({ id: atomicUpdates.id });
+  return released.length;
 }
 
 /**

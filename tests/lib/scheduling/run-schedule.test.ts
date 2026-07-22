@@ -63,7 +63,13 @@ describe("run-schedule (workspace-level)", () => {
       .where(eq(atomicUpdates.tenantId, tenant.id));
     expect(linked.map((a) => a.id).sort()).toEqual([a1.id, a2.id].sort());
     expect(linked.every((a) => a.releaseId === release.id)).toBe(true);
-    expect(linked.every((a) => a.status === "released")).toBe(true);
+    // Open-until-publish: the release is still a draft, so its atomic updates
+    // stay `open` (with releaseId set) rather than flipping to `released` —
+    // that only happens when the release is published.
+    expect(linked.every((a) => a.status === "open")).toBe(true);
+    // getOpenAtomicUpdates is the compose candidate set: it excludes AUs
+    // already linked to a (draft) release via releaseId, even though they're
+    // still status='open'.
     expect(await getOpenAtomicUpdates(tenant.id)).toHaveLength(0);
   });
 
