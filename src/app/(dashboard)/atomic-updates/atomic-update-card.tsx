@@ -140,11 +140,12 @@ export function AtomicUpdateCard({
           <Input value={title} onChange={(e) => setTitle(e.target.value)} aria-label="Title" />
           <Textarea value={summary} onChange={(e) => setSummary(e.target.value)} aria-label="Summary" />
 
-          {/* Evidence editor: add/remove the change events behind this update.
-              A successful add/remove regenerates the title/summary server-side
-              (revalidatePath in the actions re-renders this card), even
-              overriding a prior hand-edit freeze — see addEventsToAtomicUpdate /
-              removeEventFromAtomicUpdate in actions.ts. */}
+          {/* Evidence editor: add (via the import selector) / remove the change
+              events behind this update. A successful add/remove regenerates the
+              title/summary server-side (revalidatePath re-renders this card),
+              even overriding a prior hand-edit freeze — see
+              add{Commits,PullRequests}ToAtomicUpdate (import-actions.ts) and
+              removeEventFromAtomicUpdate (actions.ts). */}
           <div className="flex flex-col gap-1.5 border-t pt-2">
             <span className="text-xs font-medium text-muted-foreground">Evidence</span>
             {row.events.length === 0 && (
