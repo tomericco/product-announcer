@@ -169,6 +169,13 @@ export async function listPublishTargets(
   return targets;
 }
 
+// Human-readable label for a destination id, sourced from the registry so it
+// can't drift from the labels shown in the publish modal. Falls back to the
+// raw id for an unknown value (e.g. a row from a since-removed destination).
+export function destinationLabel(id: DestinationId): string {
+  return DESTINATIONS.find((d) => d.id === id)?.label ?? id;
+}
+
 export async function dispatchAllDestinations(
   releaseId: string,
   database: typeof defaultDb = defaultDb,
