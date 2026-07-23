@@ -4,6 +4,7 @@ import { useEffect, useRef } from "react";
 import { ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 export type PickerType = "commit" | "pull_request";
@@ -32,6 +33,7 @@ export function EventMultiSelect({
   search,
   onSearchChange,
   filtersSlot,
+  searchPlaceholder = "Search…",
   submitLabel,
   submitting,
   onSubmit,
@@ -48,6 +50,7 @@ export function EventMultiSelect({
   search: string;
   onSearchChange: (s: string) => void;
   filtersSlot?: React.ReactNode;
+  searchPlaceholder?: string;
   submitLabel: string;
   submitting?: boolean;
   onSubmit: () => void;
@@ -123,6 +126,12 @@ export function EventMultiSelect({
       </Tabs>
 
       {filtersSlot}
+
+      <Input
+        placeholder={searchPlaceholder}
+        value={search}
+        onChange={(e) => onSearchChange(e.target.value)}
+      />
 
       <div className="h-80 overflow-y-auto rounded-lg border border-border">
         <label className="sticky top-0 z-10 flex cursor-pointer items-center gap-2 border-b border-border bg-background px-4 py-2.5 text-sm font-medium">

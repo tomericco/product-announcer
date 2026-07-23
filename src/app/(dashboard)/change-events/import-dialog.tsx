@@ -171,6 +171,7 @@ export function ImportDialog({ repos }: { repos: ImportRepo[] }) {
           onSelectedChange={setSelected}
           search={search}
           onSearchChange={setSearch}
+          searchPlaceholder="Search commit messages…"
           filtersSlot={
             <>
               <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as string)}>
@@ -185,12 +186,6 @@ export function ImportDialog({ repos }: { repos: ImportRepo[] }) {
               </Tabs>
 
               <div className="flex flex-wrap items-end gap-2">
-                <Input
-                  className="min-w-48 flex-1"
-                  placeholder="Search commit messages…"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                />
                 <div className="space-y-1">
                   <Label htmlFor="after" className="text-xs text-muted-foreground">
                     After
