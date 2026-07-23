@@ -15,7 +15,6 @@ import type { CommitSelection } from "@/lib/change-events/import-commits";
 import type { PullRequestSelection } from "@/lib/change-events/import-pull-requests";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Dialog,
@@ -36,6 +35,35 @@ function selectionKey(repoId: string, sha: string) {
 
 function prSelectionKey(repoId: string, number: number) {
   return `${repoId}#${number}`;
+}
+
+// A date filter whose label doubles as the placeholder. Native
+// <input type="date"> ignores `placeholder`, so this renders as a text input
+// (showing the placeholder) while empty and unfocused, and swaps to a real
+// date picker on focus or once a date is set — keeping the filter row compact
+// with no floating label above.
+function DateFilter({
+  value,
+  onChange,
+  placeholder,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder: string;
+}) {
+  const [focused, setFocused] = useState(false);
+  return (
+    <Input
+      type={value || focused ? "date" : "text"}
+      className="w-40"
+      placeholder={placeholder}
+      aria-label={placeholder}
+      value={value}
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
+      onChange={(e) => onChange(e.target.value)}
+    />
+  );
 }
 
 export function ImportDialog({ repos }: { repos: ImportRepo[] }) {
@@ -61,7 +89,11 @@ export function ImportDialog({ repos }: { repos: ImportRepo[] }) {
     setError(null);
     try {
       if (pickerType === "pull_request") {
-        const { pullRequests } = await listImportablePullRequests({ repoIds });
+        const { pullRequests } = await listImportablePullRequests({
+          repoIds,
+          since: after ? `${after}T00:00:00Z` : undefined,
+          until: before ? `${before}T23:59:59Z` : undefined,
+        });
         setPullRequests(pullRequests);
       } else {
         const { commits } = await listImportableCommits({
@@ -266,34 +298,10 @@ export function ImportDialog({ repos }: { repos: ImportRepo[] }) {
             </Tabs>
           }
           inlineFilters={
-            pickerType === "commit" ? (
-              <>
-                <div className="space-y-1">
-                  <Label htmlFor="after" className="text-xs text-muted-foreground">
-                    After
-                  </Label>
-                  <Input
-                    id="after"
-                    type="date"
-                    className="w-40"
-                    value={after}
-                    onChange={(e) => setAfter(e.target.value)}
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label htmlFor="before" className="text-xs text-muted-foreground">
-                    Before
-                  </Label>
-                  <Input
-                    id="before"
-                    type="date"
-                    className="w-40"
-                    value={before}
-                    onChange={(e) => setBefore(e.target.value)}
-                  />
-                </div>
-              </>
-            ) : null
+            <>
+              <DateFilter value={after} onChange={setAfter} placeholder="After" />
+              <DateFilter value={before} onChange={setBefore} placeholder="Before" />
+            </>
           }
           submitLabel={
             submitting

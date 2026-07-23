@@ -123,6 +123,8 @@ export type ImportablePullRequest = {
 
 export async function listImportablePullRequests(input: {
   repoIds: string[];
+  since?: string;
+  until?: string;
 }): Promise<{ pullRequests: ImportablePullRequest[] }> {
   const session = await requireSession();
   if (input.repoIds.length === 0) return { pullRequests: [] };
@@ -136,7 +138,10 @@ export async function listImportablePullRequests(input: {
     ownedRepos.map(async (repo) => {
       let prs;
       try {
-        prs = await listRepoPullRequests(repo.githubInstallationId, repo.githubRepoFullName, repo.watchedBranch);
+        prs = await listRepoPullRequests(repo.githubInstallationId, repo.githubRepoFullName, repo.watchedBranch, {
+          since: input.since,
+          until: input.until,
+        });
       } catch {
         return [] as ImportablePullRequest[];
       }

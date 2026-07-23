@@ -86,7 +86,8 @@ export type RepoPullRequest = {
 export async function listRepoPullRequests(
   installationId: string,
   repoFullName: string,
-  base: string
+  base: string,
+  opts: { since?: string; until?: string } = {}
 ): Promise<RepoPullRequest[]> {
   const [owner, repo] = repoFullName.split("/");
   const installationOctokit = await getGithubApp().getInstallationOctokit(Number(installationId));
@@ -101,8 +102,18 @@ export async function listRepoPullRequests(
     direction: "desc",
     per_page: 100,
   });
+  // GitHub's pulls.list has no merge-date filter, so bound by merged_at here —
+  // this powers the import dialog's After/Before filters on the PR tab.
+  const sinceMs = opts.since ? Date.parse(opts.since) : null;
+  const untilMs = opts.until ? Date.parse(opts.until) : null;
   return prs
     .filter((pr) => pr.merged_at != null)
+    .filter((pr) => {
+      const t = Date.parse(pr.merged_at as string);
+      if (sinceMs !== null && t < sinceMs) return false;
+      if (untilMs !== null && t > untilMs) return false;
+      return true;
+    })
     .map((pr) => ({
       number: pr.number,
       title: pr.title,

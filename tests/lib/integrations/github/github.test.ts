@@ -98,6 +98,27 @@ describe("listRepoPullRequests", () => {
     ]);
     spy.mockRestore();
   });
+
+  it("bounds merged PRs by the since/until merge-date range", async () => {
+    const fakeOctokit = {
+      paginate: vi.fn().mockResolvedValue([
+        { number: 1, title: "Too old", body: null, html_url: "u1", merged_at: "2026-06-01T00:00:00Z", user: { login: "a" } },
+        { number: 2, title: "In range", body: null, html_url: "u2", merged_at: "2026-07-10T00:00:00Z", user: { login: "b" } },
+        { number: 3, title: "Too new", body: null, html_url: "u3", merged_at: "2026-08-01T00:00:00Z", user: { login: "c" } },
+      ]),
+      rest: { pulls: { list: "PULLS_LIST_ENDPOINT" } },
+    };
+    const spy = vi.spyOn(getGithubApp(), "getInstallationOctokit").mockResolvedValue(fakeOctokit as never);
+
+    const result = await listRepoPullRequests("1", "acme/x", "main", {
+      since: "2026-07-01T00:00:00Z",
+      until: "2026-07-31T23:59:59Z",
+    });
+
+    // Only the PR merged inside the window survives; older/newer are dropped.
+    expect(result.map((p) => p.number)).toEqual([2]);
+    spy.mockRestore();
+  });
 });
 
 describe("capPushCommits", () => {

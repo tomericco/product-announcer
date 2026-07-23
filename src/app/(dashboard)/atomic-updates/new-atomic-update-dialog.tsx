@@ -153,13 +153,12 @@ export function NewAtomicUpdateDialog({ events }: { events: SelectableEventRow[]
             submitLabel={pending ? "Creating…" : `Create atomic update${selected.size > 0 ? ` (${selected.size})` : ""}`}
             submitting={pending}
             onSubmit={() => submit(Array.from(selected), false)}
+            secondaryAction={
+              <DialogClose render={<Button type="button" variant="outline" disabled={pending} />}>
+                Cancel
+              </DialogClose>
+            }
           />
-
-          <DialogFooter>
-            <DialogClose render={<Button type="button" variant="outline" disabled={pending} />}>
-              Cancel
-            </DialogClose>
-          </DialogFooter>
         </DialogContent>
       </Dialog>
 
