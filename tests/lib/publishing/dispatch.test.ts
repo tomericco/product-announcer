@@ -10,7 +10,7 @@ import {
   deliveryAttempts,
   type WebflowFieldMapping,
 } from "../../../src/db/schema";
-import { dispatchAllDestinations, retryFailedDeliveries } from "../../../src/lib/publishing/dispatch";
+import { dispatchAllDestinations, retryFailedDeliveries, listPublishTargets } from "../../../src/lib/publishing/dispatch";
 import { encryptSecret } from "../../../src/lib/credentials/encryption";
 
 const SECRET = "s3cr3t";
@@ -134,6 +134,83 @@ describe("dispatch", () => {
       .select()
       .from(deliveryAttempts)
       .where(and(eq(deliveryAttempts.releaseId, update.id), eq(deliveryAttempts.destination, "webflow")));
+    expect(deliveries).toHaveLength(0);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("listPublishTargets reports configured=true only for destinations that are ready", async () => {
+    const { tenant } = await seed();
+    await db.insert(webhookConfigs).values({ tenantId: tenant.id, url: "https://example.com/hook", ...encryptedSecret() });
+    // Webflow connection exists but no collection chosen yet → not a usable target.
+    await db.insert(webflowConnections).values({ tenantId: tenant.id, ...encryptedToken(), status: "active" });
+
+    const targets = await listPublishTargets(tenant.id);
+
+    expect(targets).toEqual([
+      { id: "webhook", label: "Webhook", configured: true },
+      { id: "webflow", label: "Webflow", configured: false },
+    ]);
+  });
+
+  it("listPublishTargets reports Webflow configured once a collection is picked", async () => {
+    const { tenant } = await seed();
+    await db.insert(webflowConnections).values({
+      tenantId: tenant.id, ...encryptedToken(), siteId: "s1", collectionId: "c1",
+      fieldMapping: webflowMapping, publishMode: "draft", status: "active",
+    });
+
+    const targets = await listPublishTargets(tenant.id);
+
+    expect(targets).toEqual([
+      { id: "webhook", label: "Webhook", configured: false },
+      { id: "webflow", label: "Webflow", configured: true },
+    ]);
+  });
+
+  it("dispatchAllDestinations with `only` delivers to just the listed destinations", async () => {
+    const { tenant, update } = await seed();
+    await db.insert(webhookConfigs).values({ tenantId: tenant.id, url: "https://example.com/hook", ...encryptedSecret() });
+    await db.insert(webflowConnections).values({
+      tenantId: tenant.id, ...encryptedToken(), siteId: "s1", collectionId: "c1",
+      fieldMapping: webflowMapping, publishMode: "draft", status: "active",
+    });
+
+    vi.mocked(fetch).mockResolvedValue({ ok: true } as Response);
+
+    await dispatchAllDestinations(update.id, db, ["webhook"]);
+
+    const deliveries = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.releaseId, update.id));
+    expect(deliveries.map((d) => d.destination)).toEqual(["webhook"]);
+    // Webflow untouched: its delivery would be 2 fetches (schema + create); webhook is 1.
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("dispatchAllDestinations with no `only` delivers to all configured destinations", async () => {
+    const { tenant, update } = await seed();
+    await db.insert(webhookConfigs).values({ tenantId: tenant.id, url: "https://example.com/hook", ...encryptedSecret() });
+    await db.insert(webflowConnections).values({
+      tenantId: tenant.id, ...encryptedToken(), siteId: "s1", collectionId: "c1",
+      fieldMapping: webflowMapping, publishMode: "draft", status: "active",
+    });
+
+    // Registry order is [webhook, webflow]: webhook = 1 fetch, webflow = schema + create.
+    vi.mocked(fetch)
+      .mockResolvedValueOnce({ ok: true } as Response)
+      .mockResolvedValueOnce(jsonResponse(WEBFLOW_SCHEMA))
+      .mockResolvedValueOnce(jsonResponse({ id: "item1" }, 202));
+
+    await dispatchAllDestinations(update.id, db);
+
+    const deliveries = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.releaseId, update.id));
+    expect(deliveries.map((d) => d.destination).sort()).toEqual(["webflow", "webhook"]);
+  });
+
+  it("dispatchAllDestinations with `only` naming an unconfigured destination delivers nothing", async () => {
+    const { update } = await seed();
+
+    await dispatchAllDestinations(update.id, db, ["webflow"]);
+
+    const deliveries = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.releaseId, update.id));
     expect(deliveries).toHaveLength(0);
     expect(fetch).not.toHaveBeenCalled();
   });

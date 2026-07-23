@@ -3,7 +3,7 @@ import { db as defaultDb } from "@/db";
 import { deliveryAttempts, releases } from "@/db/schema";
 import { webhookDestination } from "./destinations/webhook";
 import { webflowDestination } from "./destinations/webflow";
-import type { Destination, DeliveryResult, Release } from "./destinations/types";
+import type { Destination, DeliveryResult, Release, DestinationId, PublishTarget } from "./destinations/types";
 
 const MAX_ATTEMPTS = 3;
 
@@ -152,9 +152,31 @@ async function claimAndDeliver(
   });
 }
 
+// Readiness of every registered destination for this tenant, for the publish
+// modal. `configured` mirrors exactly what dispatch would act on: loadConfig
+// returning non-null (webhook active; Webflow with a picked collection). A
+// destination dispatch would skip shows here as unconfigured, so the modal
+// never offers a target that can't receive anything.
+export async function listPublishTargets(
+  tenantId: string,
+  database: typeof defaultDb = defaultDb
+): Promise<PublishTarget[]> {
+  const targets: PublishTarget[] = [];
+  for (const destination of DESTINATIONS) {
+    const config = await destination.loadConfig(tenantId, database);
+    targets.push({ id: destination.id, label: destination.label, configured: config != null });
+  }
+  return targets;
+}
+
 export async function dispatchAllDestinations(
   releaseId: string,
-  database: typeof defaultDb = defaultDb
+  database: typeof defaultDb = defaultDb,
+  // When provided, restricts delivery to these destinations — the publish
+  // modal's chosen subset. Omitted (publishDraft, the list quick-publish)
+  // keeps delivering to all configured destinations. A selected-but-now-
+  // unconfigured id is still safe: the loadConfig null-skip below drops it.
+  only?: DestinationId[]
 ): Promise<void> {
   // Runs AFTER the update is already published. Nothing here may throw — not the
   // network call, not the DB writes — or it 500s an action that already succeeded.
@@ -162,7 +184,8 @@ export async function dispatchAllDestinations(
     const [release] = await database.select().from(releases).where(eq(releases.id, releaseId)).limit(1);
     if (!release) return;
 
-    for (const destination of DESTINATIONS) {
+    const targets = only ? DESTINATIONS.filter((d) => only.includes(d.id)) : DESTINATIONS;
+    for (const destination of targets) {
       try {
         const config = await destination.loadConfig(release.tenantId, database);
         if (!config) continue;

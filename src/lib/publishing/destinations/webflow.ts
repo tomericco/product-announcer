@@ -101,6 +101,7 @@ async function classifyAndRecord(
 
 export const webflowDestination: Destination<WebflowConnection> = {
   id: "webflow",
+  label: "Webflow",
 
   async loadConfig(tenantId, database: DbClient) {
     const [connection] = await database

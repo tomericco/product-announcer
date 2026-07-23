@@ -26,6 +26,7 @@ function buildPayload(release: Release) {
 
 export const webhookDestination: Destination<WebhookConfig> = {
   id: "webhook",
+  label: "Webhook",
 
   async loadConfig(tenantId, database: DbClient) {
     const [config] = await database

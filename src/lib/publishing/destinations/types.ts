@@ -28,6 +28,14 @@ export type DeliveryResult =
 
 export interface Destination<TConfig> {
   id: DestinationId;
+  /** Human-readable name shown in the publish-destinations modal. */
+  label: string;
   loadConfig(tenantId: string, database: DbClient): Promise<TConfig | null>;
   deliver(release: Release, config: TConfig, externalId: string | null, database: DbClient): Promise<DeliveryResult>;
 }
+
+// One row in the publish modal: a destination and whether it is ready to
+// receive a publish (its loadConfig returns non-null — webhook active,
+// Webflow has a picked collection). Unconfigured targets still appear, with
+// a "Set up" link instead of a checkbox.
+export type PublishTarget = { id: DestinationId; label: string; configured: boolean };
