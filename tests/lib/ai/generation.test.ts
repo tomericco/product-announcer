@@ -14,8 +14,8 @@ describe("generateReleaseDraft", () => {
     } as never);
 
     const items = [
-      { id: "a1", title: "CSV export", summary: "Export reports as CSV.", category: "new" as const },
-      { id: "a2", title: "Faster search", summary: "Search returns in under a second.", category: "improvement" as const },
+      { id: "a1", title: "CSV export", summary: "Export reports as CSV.", category: "new" as const, size: "m" as const },
+      { id: "a2", title: "Faster search", summary: "Search returns in under a second.", category: "improvement" as const, size: "m" as const },
     ];
 
     const brandProfile = {

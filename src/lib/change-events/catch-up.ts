@@ -22,7 +22,7 @@ export type StartOverDeps = {
 };
 
 function toPromptItem(row: AtomicUpdateRow): AtomicUpdateForPrompt {
-  return { id: row.id, title: row.title, summary: row.summary, category: row.category };
+  return { id: row.id, title: row.title, summary: row.summary, category: row.category, size: row.size };
 }
 
 /** Distinct non-null categories among a set of atomic updates, used to bias

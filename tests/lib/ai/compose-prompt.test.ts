@@ -29,8 +29,8 @@ describe("buildSystemPrompt", () => {
 });
 
 const AUS = [
-  { id: "a1", title: "CSV export", summary: "Export reports as CSV.", category: "new" as const },
-  { id: "a2", title: "Faster search", summary: "Search returns in under a second.", category: "improvement" as const },
+  { id: "a1", title: "CSV export", summary: "Export reports as CSV.", category: "new" as const, size: "m" as const },
+  { id: "a2", title: "Faster search", summary: "Search returns in under a second.", category: "improvement" as const, size: "m" as const },
 ];
 
 describe("serializeAtomicUpdates", () => {
@@ -44,7 +44,7 @@ describe("serializeAtomicUpdates", () => {
 
   it("drops trailing items past maxChars with a note, keeping at least one", () => {
     const many = Array.from({ length: 50 }, (_, i) => ({
-      id: `a${i}`, title: `Feature ${i}`, summary: "x".repeat(200), category: "new" as const,
+      id: `a${i}`, title: `Feature ${i}`, summary: "x".repeat(200), category: "new" as const, size: "m" as const,
     }));
     const text = serializeAtomicUpdates(many, 500);
     expect(text).toMatch(/more updates not shown/);
@@ -116,5 +116,24 @@ describe("composeMergePrompt", () => {
     expect(system).toContain("product update");
     expect(system.toLowerCase()).toContain("preserve");
     expect(system.toLowerCase()).toContain("existing wording");
+  });
+});
+
+describe("size-aware composition", () => {
+  it("serializes size + category and includes the size guidance", () => {
+    const { prompt } = composeReleasePrompt({
+      items: [
+        { id: "1", title: "Big feature", summary: "…", category: "new", size: "xl" },
+        { id: "2", title: "Tiny fix", summary: "…", category: "fix", size: "s" },
+        { id: "3", title: "Unsized", summary: "…", category: "improvement", size: null },
+      ],
+      brandProfile: BASE_BRAND,
+      personas: [],
+      examples: [],
+    });
+    expect(prompt).toContain(`"Big feature" (new, XL)`);
+    expect(prompt).toContain(`"Tiny fix" (fix, S)`);
+    expect(prompt).toContain(`"Unsized" (improvement)`); // no size token when null
+    expect(prompt).toContain("gather them into a single bulleted list");
   });
 });

@@ -52,12 +52,21 @@ export type AtomicUpdateForPrompt = {
   title: string;
   summary: string;
   category: "new" | "improvement" | "fix" | "announcement" | null;
+  size: "s" | "m" | "l" | "xl" | null;
 };
 
 function formatAtomicUpdate(item: AtomicUpdateForPrompt, index: number): string {
-  const tag = item.category ? ` (${item.category})` : "";
+  const parts = [item.category, item.size ? item.size.toUpperCase() : null].filter(Boolean);
+  const tag = parts.length > 0 ? ` (${parts.join(", ")})` : "";
   return `${index + 1}. "${item.title}"${tag} — ${item.summary}`;
 }
+
+const SIZE_GUIDANCE =
+  "Give each update space proportional to its size. XL updates are the headline — lead with them, each in " +
+  "its own short paragraph. L updates each get their own short paragraph. M updates get a sentence or two and " +
+  "may share a paragraph. S updates are minor: when there are two or more, gather them into a single bulleted " +
+  "list (e.g. under \"Also improved\" or \"Smaller fixes\") rather than a paragraph each; a lone S update may be " +
+  "a brief one-liner. Treat an update with no stated size as M.";
 
 /**
  * Renders selected atomic updates as numbered title + summary lines. Atomic
@@ -93,7 +102,7 @@ export function composeReleasePrompt(args: {
 }): { system: string; prompt: string } {
   return {
     system: buildSystemPrompt(args.brandProfile, args.personas, args.examples),
-    prompt: `Here are the changes to summarize into one product update. Format the body as Markdown (short paragraphs, and bullet lists where helpful):\n\n${serializeAtomicUpdates(args.items)}`,
+    prompt: `Here are the changes to summarize into one product update. Format the body as Markdown (short paragraphs, and bullet lists where helpful). ${SIZE_GUIDANCE}\n\n${serializeAtomicUpdates(args.items)}`,
   };
 }
 
@@ -128,7 +137,7 @@ export function composeMergePrompt(args: {
     sections.push(`Changes whose details were updated since the current body was written:\n${serializeAtomicUpdates(args.changedItems)}`);
   }
 
-  const prompt = `Update the product release note below to incorporate the new material, preserving as much of the existing wording and structure as still applies. Format the body as Markdown (short paragraphs, and bullet lists where helpful):\n\n${sections.join("\n\n")}`;
+  const prompt = `Update the product release note below to incorporate the new material, preserving as much of the existing wording and structure as still applies. Format the body as Markdown (short paragraphs, and bullet lists where helpful). ${SIZE_GUIDANCE}\n\n${sections.join("\n\n")}`;
 
   return { system, prompt };
 }
