@@ -68,7 +68,7 @@ export async function openAtomicUpdatesForReassign(
     .where(and(eq(atomicUpdates.tenantId, tenantId), eq(atomicUpdates.status, "open")));
 }
 
-function seedFromEvent(event: typeof changeEvents.$inferSelect): {
+export function seedFromEvent(event: typeof changeEvents.$inferSelect): {
   title: string;
   summary: string;
   category: (typeof atomicUpdates.$inferInsert)["category"];
@@ -283,7 +283,7 @@ export async function reassignChangeEvent(
  * `open` source — a `released` source is rejected earlier and never reaches
  * here.
  */
-async function cleanupOrTouch(
+export async function cleanupOrTouch(
   tx: Tx,
   tenantId: string,
   atomicUpdateId: string,
