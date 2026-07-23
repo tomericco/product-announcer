@@ -52,6 +52,7 @@ export const updateCategoryEnum = pgEnum("update_category", ["new", "improvement
 export const changeEventTypeEnum = pgEnum("change_event_type", ["commit", "pull_request", "task"]);
 export const changeEventProviderEnum = pgEnum("change_event_provider", ["github", "notion"]);
 export const atomicUpdateStatusEnum = pgEnum("atomic_update_status", ["open", "released", "hidden"]);
+export const atomicUpdateSizeEnum = pgEnum("atomic_update_size", ["s", "m", "l", "xl"]);
 // Why tier 1 dropped an event. Null means it was not dropped deterministically.
 export const filterReasonEnum = pgEnum("filter_reason", [
   "merge_commit",
@@ -144,6 +145,10 @@ export const atomicUpdates = pgTable("atomic_updates", {
   title: text("title").notNull(),
   summary: text("summary").notNull(),
   category: updateCategoryEnum("category"),
+  size: atomicUpdateSizeEnum("size"),
+  // Non-null freezes size against re-derivation — the size analogue of
+  // summaryEditedAt. Set when a user manually picks a size on the card.
+  sizeEditedAt: timestamp("size_edited_at", { withTimezone: true }),
   status: atomicUpdateStatusEnum("status").notNull().default("open"),
   // Non-null freezes regeneration: once a human edits the summary, attaching a
   // new change event must not overwrite their words.
