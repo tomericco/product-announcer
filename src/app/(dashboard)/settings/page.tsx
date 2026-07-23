@@ -40,7 +40,7 @@ export default async function SettingsPage() {
         </CardHeader>
         <CardContent>
           <ToastForm action={saveWorkspaceName} successMessage="Workspace name saved" className="flex gap-2">
-            <Input name="name" defaultValue={tenant?.name ?? ""} className="flex-1" />
+            <Input key={tenant?.name ?? ""} name="name" defaultValue={tenant?.name ?? ""} className="flex-1" />
             <Button type="submit" variant="outline">
               Save
             </Button>
@@ -57,7 +57,7 @@ export default async function SettingsPage() {
           <ToastForm action={saveBrandProfile} successMessage="Brand profile saved" className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="tone">Tone</Label>
-              <Textarea id="tone" name="tone" rows={3} defaultValue={brandProfile.tone ?? ""} />
+              <Textarea key={brandProfile.tone ?? ""} id="tone" name="tone" rows={3} defaultValue={brandProfile.tone ?? ""} />
             </div>
             <div className="space-y-2">
               <Label>Industry</Label>
@@ -70,6 +70,7 @@ export default async function SettingsPage() {
             <div className="space-y-2">
               <Label htmlFor="doList">Do</Label>
               <Textarea
+                key={brandProfile.doList.join("\n")}
                 id="doList"
                 name="doList"
                 rows={3}
@@ -80,6 +81,7 @@ export default async function SettingsPage() {
             <div className="space-y-2">
               <Label htmlFor="dontList">Don&apos;t</Label>
               <Textarea
+                key={brandProfile.dontList.join("\n")}
                 id="dontList"
                 name="dontList"
                 rows={3}
@@ -90,6 +92,7 @@ export default async function SettingsPage() {
             <div className="space-y-2">
               <Label htmlFor="updatesStyleSummary">Updates page style summary</Label>
               <Textarea
+                key={brandProfile.updatesStyleSummary ?? ""}
                 id="updatesStyleSummary"
                 name="updatesStyleSummary"
                 rows={3}
