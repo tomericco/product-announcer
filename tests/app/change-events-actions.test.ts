@@ -341,6 +341,7 @@ describe("reassign", () => {
       userId: REASSIGN_USER,
       eventId: "event-1",
       target: { kind: "existing", atomicUpdateId: "au-1" },
+      confirmEmptyDeletion: false,
     });
     expect(result).toEqual({ ok: true });
     expect(revalidatePath).toHaveBeenCalledWith("/change-events");
@@ -361,6 +362,7 @@ describe("reassign", () => {
       userId: REASSIGN_USER,
       eventId: "event-2",
       target: { kind: "detach" },
+      confirmEmptyDeletion: false,
     });
   });
 
@@ -379,6 +381,7 @@ describe("reassign", () => {
       userId: REASSIGN_USER,
       eventId: "event-3",
       target: { kind: "new" },
+      confirmEmptyDeletion: false,
     });
   });
 
@@ -401,6 +404,7 @@ describe("reassign", () => {
       userId: REASSIGN_USER,
       eventId: "event-4",
       target: { kind: "detach" },
+      confirmEmptyDeletion: false,
     });
   });
 

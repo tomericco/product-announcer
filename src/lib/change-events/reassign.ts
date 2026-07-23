@@ -4,6 +4,7 @@ import { atomicUpdates, changeEvents } from "@/db/schema";
 import { refreshAtomicUpdates } from "@/lib/ai/regenerate-atomic-summary";
 
 type Database = typeof defaultDb;
+type Tx = Parameters<Parameters<Database["transaction"]>[0]>[0];
 type AtomicUpdateRow = typeof atomicUpdates.$inferSelect;
 
 export type ReassignTarget =
@@ -16,6 +17,13 @@ export type ReassignInput = {
   userId: string;
   eventId: string;
   target: ReassignTarget;
+  /**
+   * Must be `true` to proceed with a move that would leave the source atomic
+   * update with zero change events. Without it, a would-empty move performs
+   * NO mutation and comes back as `needsConfirmation` so the UI can warn the
+   * user before the atomic update is silently dissolved (Finding 2).
+   */
+  confirmEmptyDeletion?: boolean;
 };
 
 type ReassignDeps = {
@@ -23,7 +31,22 @@ type ReassignDeps = {
   refresh?: (database: Database, tenantId: string, atomicUpdateIds: string[]) => Promise<void>;
 };
 
-export type ReassignResult = { ok: true } | { ok: false; reason: string };
+export type ReassignSuccess = {
+  ok: true;
+  /** Present only when the move emptied the source atomic update and it was deleted. */
+  deletedAtomicUpdate?: { id: string; title: string };
+};
+
+export type ReassignRejection = { ok: false; reason: string };
+
+export type ReassignNeedsConfirmation = {
+  ok: false;
+  reason: "needs_confirmation";
+  needsConfirmation: true;
+  emptiedAtomicUpdate: { id: string; title: string; inDraft: boolean };
+};
+
+export type ReassignResult = ReassignSuccess | ReassignRejection | ReassignNeedsConfirmation;
 
 /**
  * All `status='open'` atomic updates for the tenant, regardless of `releaseId`
@@ -63,9 +86,26 @@ function seedFromEvent(event: typeof changeEvents.$inferSelect): {
  * a `released` source or target freezes the move (published updates are not
  * editable). All mutation is one transaction, tenant-scoped throughout.
  *
+ * A single `now` timestamp is captured for the whole transaction and used to
+ * deterministically bump `updatedAt` on every affected still-open atomic
+ * update (the target for `existing`/`new`, and the source if it survives).
+ * This is what fires a draft release's catch-up "evidence delta"
+ * (`atomicUpdates.updatedAt > release.composedAt`) reliably — it must not
+ * depend on the best-effort, freeze-skippable summary regen below.
+ *
  * Summary regeneration for the affected atomic update(s) runs best-effort
  * AFTER the transaction commits: a regen failure must never undo or fail an
- * already-committed reassignment, so it's caught and logged instead of thrown.
+ * already-committed reassignment, so it's caught and logged instead of
+ * thrown. It's fine that it skips atomic updates with a hand-edited summary
+ * (`summaryEditedAt` set) — only the summary TEXT is frozen by that; the
+ * `updatedAt` staleness signal is bumped deterministically above regardless.
+ *
+ * If the move would leave the source atomic update with zero change events,
+ * it is NOT silently deleted: unless `confirmEmptyDeletion` is `true`, the
+ * transaction performs no mutation and returns `needsConfirmation` with
+ * enough info (`emptiedAtomicUpdate`) for the UI to warn the user first —
+ * especially since an atomic update in a draft release still has its
+ * evidence described in the draft's body.
  */
 export async function reassignChangeEvent(
   input: ReassignInput,
@@ -73,13 +113,16 @@ export async function reassignChangeEvent(
 ): Promise<ReassignResult> {
   const database = deps.database ?? defaultDb;
   const refresh = deps.refresh ?? refreshAtomicUpdates;
-  const { tenantId, userId, eventId, target } = input;
+  const { tenantId, userId, eventId, target, confirmEmptyDeletion } = input;
 
   type TxOutcome =
-    | { ok: true; affectedIds: string[] }
-    | { ok: false; reason: string };
+    | { ok: true; affectedIds: string[]; deletedAtomicUpdate?: { id: string; title: string } }
+    | ReassignRejection
+    | ReassignNeedsConfirmation;
 
   const outcome = await database.transaction(async (tx): Promise<TxOutcome> => {
+    const now = new Date();
+
     const [event] = await tx
       .select()
       .from(changeEvents)
@@ -92,21 +135,29 @@ export async function reassignChangeEvent(
 
     const sourceAtomicUpdateId = event.atomicUpdateId;
     let sourceStatus: AtomicUpdateRow["status"] | null = null;
+    let sourceTitle: string | null = null;
+    let sourceReleaseId: string | null = null;
 
     if (sourceAtomicUpdateId) {
       const [source] = await tx
-        .select({ status: atomicUpdates.status })
+        .select({
+          status: atomicUpdates.status,
+          title: atomicUpdates.title,
+          releaseId: atomicUpdates.releaseId,
+        })
         .from(atomicUpdates)
         .where(and(eq(atomicUpdates.id, sourceAtomicUpdateId), eq(atomicUpdates.tenantId, tenantId)))
         .limit(1);
       sourceStatus = source?.status ?? null;
+      sourceTitle = source?.title ?? null;
+      sourceReleaseId = source?.releaseId ?? null;
 
       if (sourceStatus === "released") {
         return { ok: false, reason: "Cannot move an event out of a published atomic update." };
       }
     }
 
-    let targetAtomicUpdateId: string;
+    let targetAtomicUpdateId: string | null = null;
 
     if (target.kind === "existing") {
       const [targetAtomic] = await tx
@@ -123,16 +174,58 @@ export async function reassignChangeEvent(
       }
 
       targetAtomicUpdateId = target.atomicUpdateId;
+    }
 
+    // Every branch (detach, new, existing-onto-a-different-AU) leaves the
+    // source; "existing" onto the source's own id is the sole no-op case
+    // that never vacates it. Checked BEFORE any mutation so an unconfirmed
+    // would-empty move can bail out with zero side effects.
+    const leavesSource =
+      sourceAtomicUpdateId !== null &&
+      sourceStatus === "open" &&
+      (target.kind === "detach" || target.kind === "new" || targetAtomicUpdateId !== sourceAtomicUpdateId);
+
+    if (leavesSource) {
+      const [{ count }] = await tx
+        .select({ count: sql<number>`count(*)::int` })
+        .from(changeEvents)
+        .where(eq(changeEvents.atomicUpdateId, sourceAtomicUpdateId!));
+
+      if (count === 1 && !confirmEmptyDeletion) {
+        return {
+          ok: false,
+          reason: "needs_confirmation",
+          needsConfirmation: true,
+          emptiedAtomicUpdate: {
+            id: sourceAtomicUpdateId!,
+            title: sourceTitle ?? "",
+            inDraft: sourceReleaseId !== null,
+          },
+        };
+      }
+    }
+
+    if (target.kind === "existing") {
       await tx
         .update(changeEvents)
         .set({ atomicUpdateId: targetAtomicUpdateId, status: "pending", excludedAt: null, excludedBy: null })
         .where(and(eq(changeEvents.id, eventId), eq(changeEvents.tenantId, tenantId)));
+
+      await tx
+        .update(atomicUpdates)
+        .set({ updatedAt: now })
+        .where(and(eq(atomicUpdates.id, targetAtomicUpdateId!), eq(atomicUpdates.tenantId, tenantId)));
     } else if (target.kind === "new") {
       const seed = seedFromEvent(event);
       const [created] = await tx
         .insert(atomicUpdates)
-        .values({ tenantId, title: seed.title, summary: seed.summary, category: seed.category })
+        .values({
+          tenantId,
+          title: seed.title,
+          summary: seed.summary,
+          category: seed.category,
+          updatedAt: now,
+        })
         .returning({ id: atomicUpdates.id });
       targetAtomicUpdateId = created.id;
 
@@ -144,26 +237,27 @@ export async function reassignChangeEvent(
       // detach
       await tx
         .update(changeEvents)
-        .set({ atomicUpdateId: null, status: "excluded", excludedAt: new Date(), excludedBy: userId })
+        .set({ atomicUpdateId: null, status: "excluded", excludedAt: now, excludedBy: userId })
         .where(and(eq(changeEvents.id, eventId), eq(changeEvents.tenantId, tenantId)));
+    }
 
-      const affectedIds: string[] = [];
-      if (sourceAtomicUpdateId && sourceStatus === "open") {
-        const survived = await cleanupIfEmpty(tx, tenantId, sourceAtomicUpdateId);
-        if (survived) affectedIds.push(sourceAtomicUpdateId);
+    const affectedIds: string[] = [];
+    let deletedAtomicUpdate: { id: string; title: string } | undefined;
+
+    if (targetAtomicUpdateId) {
+      affectedIds.push(targetAtomicUpdateId);
+    }
+
+    if (sourceAtomicUpdateId && sourceStatus === "open" && sourceAtomicUpdateId !== targetAtomicUpdateId) {
+      const { survived } = await cleanupOrTouch(tx, tenantId, sourceAtomicUpdateId, now);
+      if (survived) {
+        affectedIds.push(sourceAtomicUpdateId);
+      } else {
+        deletedAtomicUpdate = { id: sourceAtomicUpdateId, title: sourceTitle ?? "" };
       }
-      return { ok: true, affectedIds };
     }
 
-    // existing/new: the target is always affected; the source is affected
-    // only if it still exists (empty-source cleanup below may delete it).
-    const affectedIds = [targetAtomicUpdateId];
-    if (sourceAtomicUpdateId && sourceAtomicUpdateId !== targetAtomicUpdateId && sourceStatus === "open") {
-      const survived = await cleanupIfEmpty(tx, tenantId, sourceAtomicUpdateId);
-      if (survived) affectedIds.push(sourceAtomicUpdateId);
-    }
-
-    return { ok: true, affectedIds };
+    return { ok: true, affectedIds, deletedAtomicUpdate };
   });
 
   if (!outcome.ok) {
@@ -178,30 +272,41 @@ export async function reassignChangeEvent(
     console.error("[reassign] best-effort summary regen failed:", error);
   }
 
-  return { ok: true };
+  return outcome.deletedAtomicUpdate ? { ok: true, deletedAtomicUpdate: outcome.deletedAtomicUpdate } : { ok: true };
 }
 
 /**
- * If the given (open) atomic update now has zero change events, deletes it.
- * Returns true if the atomic update still exists afterward (i.e. it was NOT
- * deleted), false if it was deleted. Only ever called for an `open` source —
- * a `released` source is rejected earlier and never reaches here.
+ * If the given (open) atomic update now has zero change events, deletes it
+ * and reports it did not survive. Otherwise bumps `updatedAt` to `now` — the
+ * deterministic catch-up staleness signal for a draft release's evidence
+ * delta (Finding 1) — and reports it survived. Only ever called for an
+ * `open` source — a `released` source is rejected earlier and never reaches
+ * here.
  */
-async function cleanupIfEmpty(
-  tx: Parameters<Parameters<Database["transaction"]>[0]>[0],
+async function cleanupOrTouch(
+  tx: Tx,
   tenantId: string,
-  atomicUpdateId: string
-): Promise<boolean> {
+  atomicUpdateId: string,
+  now: Date
+): Promise<{ survived: boolean }> {
   const [{ count }] = await tx
     .select({ count: sql<number>`count(*)::int` })
     .from(changeEvents)
     .where(eq(changeEvents.atomicUpdateId, atomicUpdateId));
 
-  if (count > 0) return true;
+  if (count > 0) {
+    await tx
+      .update(atomicUpdates)
+      .set({ updatedAt: now })
+      .where(and(eq(atomicUpdates.id, atomicUpdateId), eq(atomicUpdates.tenantId, tenantId)));
+    return { survived: true };
+  }
 
   await tx
     .delete(atomicUpdates)
-    .where(and(eq(atomicUpdates.id, atomicUpdateId), eq(atomicUpdates.tenantId, tenantId), eq(atomicUpdates.status, "open")));
+    .where(
+      and(eq(atomicUpdates.id, atomicUpdateId), eq(atomicUpdates.tenantId, tenantId), eq(atomicUpdates.status, "open"))
+    );
 
-  return false;
+  return { survived: false };
 }

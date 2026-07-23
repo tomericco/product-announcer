@@ -138,6 +138,10 @@ function parseTarget(formData: FormData): ReassignTarget | null {
   return null;
 }
 
+function parseConfirmEmptyDeletion(formData: FormData): boolean {
+  return formData.get("confirmEmptyDeletion") === "true";
+}
+
 /**
  * Manually reassigns a change event to a different open atomic update,
  * detaches it, or splits it into a new one (phase 3's reassignment UI).
@@ -149,8 +153,16 @@ function parseTarget(formData: FormData): ReassignTarget | null {
  * input. `eventId` and the target descriptor are the only formData reads.
  *
  * A `{ok:false}` outcome from the core (e.g. the event's atomic update was
- * already released) is returned to the caller, not thrown — the client
- * component surfaces it as a toast rather than an error boundary.
+ * already released, or the move needs confirmation because it would empty
+ * the source atomic update) is returned to the caller, not thrown — the
+ * client component surfaces it as a toast, or in the needs-confirmation case
+ * as a confirm dialog, rather than an error boundary.
+ *
+ * `confirmEmptyDeletion` is read from formData as an explicit opt-in the
+ * client only sets after the user confirms the warning dialog; omitted (the
+ * common case) it's `false`, so a first-pass move that would empty its
+ * source atomic update comes back as `needsConfirmation` instead of silently
+ * deleting it.
  */
 export async function reassign(formData: FormData): Promise<ReassignResult> {
   const session = await requireSession();
@@ -159,12 +171,13 @@ export async function reassign(formData: FormData): Promise<ReassignResult> {
 
   const eventId = formData.get("eventId");
   const target = parseTarget(formData);
+  const confirmEmptyDeletion = parseConfirmEmptyDeletion(formData);
 
   if (typeof eventId !== "string" || !eventId || !target) {
     return { ok: false, reason: "Invalid reassignment request." };
   }
 
-  const result = await reassignChangeEvent({ tenantId, userId, eventId, target });
+  const result = await reassignChangeEvent({ tenantId, userId, eventId, target, confirmEmptyDeletion });
   revalidatePath("/change-events");
   return result;
 }

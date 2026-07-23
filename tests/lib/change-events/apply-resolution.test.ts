@@ -170,6 +170,35 @@ describe("apply-resolution", () => {
     expect(updated.atomicUpdateId).toBeNull();
   });
 
+  it("never assigns an excluded (detached) event, even if targeted by id (Finding 3)", async () => {
+    const { tenant, repo } = await seed();
+    const [atomic] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "CSV export", summary: "Export as CSV." })
+      .returning();
+    const event = await insertEvent(tenant.id, repo.id, "sha-excluded");
+    await db
+      .update(changeEvents)
+      .set({ status: "excluded", excludedAt: new Date() })
+      .where(eq(changeEvents.id, event.id));
+
+    await applyResolution(db, tenant.id, [
+      { eventId: event.id, action: "assign", atomicUpdateId: atomic.id },
+    ]);
+
+    const [afterAssign] = await db.select().from(changeEvents).where(eq(changeEvents.id, event.id));
+    expect(afterAssign.atomicUpdateId).toBeNull();
+    expect(afterAssign.status).toBe("excluded");
+
+    await applyResolution(db, tenant.id, [
+      { eventId: event.id, action: "create", title: "X", summary: "Y", category: "new" },
+    ]);
+
+    const [afterCreate] = await db.select().from(changeEvents).where(eq(changeEvents.id, event.id));
+    expect(afterCreate.atomicUpdateId).toBeNull();
+    expect(afterCreate.status).toBe("excluded");
+  });
+
   it("loadOpenAtomicUpdates returns only open ones for the tenant", async () => {
     const { tenant } = await seed();
     await db.insert(atomicUpdates).values({ tenantId: tenant.id, title: "Open one", summary: "S" });

@@ -3,6 +3,7 @@ import { eq, like } from "drizzle-orm";
 import { db } from "../../../src/db";
 import { tenants, repos, changeEvents, atomicUpdates, releases, users } from "../../../src/db/schema";
 import { reassignChangeEvent, openAtomicUpdatesForReassign } from "../../../src/lib/change-events/reassign";
+import { computeReleaseDelta } from "../../../src/lib/change-events/release-deltas";
 
 const TENANT = "Reassign Test Tenant";
 let USER: string;
@@ -104,7 +105,7 @@ describe("reassignChangeEvent", () => {
     void other;
   });
 
-  it("deletes the source atomic update when the move empties it", async () => {
+  it("deletes the source atomic update when the move empties it and confirmEmptyDeletion is true", async () => {
     const { tenant, repo } = await seed();
     const source = await insertAtomic(tenant.id, "Source");
     const target = await insertAtomic(tenant.id, "Target");
@@ -112,11 +113,17 @@ describe("reassignChangeEvent", () => {
     const refresh = vi.fn().mockResolvedValue(undefined);
 
     const result = await reassignChangeEvent(
-      { tenantId: tenant.id, userId: USER, eventId: event.id, target: { kind: "existing", atomicUpdateId: target.id } },
+      {
+        tenantId: tenant.id,
+        userId: USER,
+        eventId: event.id,
+        target: { kind: "existing", atomicUpdateId: target.id },
+        confirmEmptyDeletion: true,
+      },
       { refresh }
     );
 
-    expect(result).toEqual({ ok: true });
+    expect(result).toEqual({ ok: true, deletedAtomicUpdate: { id: source.id, title: "Source" } });
 
     const [gone] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, source.id));
     expect(gone).toBeUndefined();
@@ -165,11 +172,17 @@ describe("reassignChangeEvent", () => {
     const refresh = vi.fn().mockResolvedValue(undefined);
 
     const result = await reassignChangeEvent(
-      { tenantId: tenant.id, userId: USER, eventId: event.id, target: { kind: "new" } },
+      {
+        tenantId: tenant.id,
+        userId: USER,
+        eventId: event.id,
+        target: { kind: "new" },
+        confirmEmptyDeletion: true,
+      },
       { refresh }
     );
 
-    expect(result).toEqual({ ok: true });
+    expect(result.ok).toBe(true);
 
     const [updated] = await db.select().from(changeEvents).where(eq(changeEvents.id, event.id));
     expect(updated.atomicUpdateId).not.toBeNull();
@@ -189,6 +202,7 @@ describe("reassignChangeEvent", () => {
     // Source AU is now empty (it had only `event`), so it's deleted.
     const [gone] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, source.id));
     expect(gone).toBeUndefined();
+    expect(result).toEqual({ ok: true, deletedAtomicUpdate: { id: source.id, title: "Source" } });
   });
 
   it("new falls back to first line of commitMessage and title when impactSummary/prTitle are absent", async () => {
@@ -394,5 +408,139 @@ describe("reassignChangeEvent", () => {
     expect(ids).toContain(openUnclaimed.id);
     expect(ids).toContain(openInDraft.id);
     expect(open.every((a) => a.status === "open")).toBe(true);
+  });
+
+  describe("confirm-before-empty-deletion (Finding 2)", () => {
+    it("an unconfirmed move that would empty the source AU performs no mutation and asks for confirmation", async () => {
+      const { tenant, repo } = await seed();
+      const source = await insertAtomic(tenant.id, "Source");
+      const target = await insertAtomic(tenant.id, "Target");
+      const event = await insertEvent(tenant.id, repo.id, "sha-needs-confirm", { atomicUpdateId: source.id });
+      const refresh = vi.fn().mockResolvedValue(undefined);
+
+      const result = await reassignChangeEvent(
+        { tenantId: tenant.id, userId: USER, eventId: event.id, target: { kind: "existing", atomicUpdateId: target.id } },
+        { refresh }
+      );
+
+      expect(result).toEqual({
+        ok: false,
+        reason: "needs_confirmation",
+        needsConfirmation: true,
+        emptiedAtomicUpdate: { id: source.id, title: "Source", inDraft: false },
+      });
+
+      // No mutation: the event did not move, and the source AU still exists.
+      const [unchanged] = await db.select().from(changeEvents).where(eq(changeEvents.id, event.id));
+      expect(unchanged.atomicUpdateId).toBe(source.id);
+
+      const [stillThere] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, source.id));
+      expect(stillThere).toBeDefined();
+
+      expect(refresh).not.toHaveBeenCalled();
+    });
+
+    it("the same move with confirmEmptyDeletion:true moves the event and deletes the emptied AU", async () => {
+      const { tenant, repo } = await seed();
+      const source = await insertAtomic(tenant.id, "Source");
+      const target = await insertAtomic(tenant.id, "Target");
+      const event = await insertEvent(tenant.id, repo.id, "sha-confirmed", { atomicUpdateId: source.id });
+      const refresh = vi.fn().mockResolvedValue(undefined);
+
+      const result = await reassignChangeEvent(
+        {
+          tenantId: tenant.id,
+          userId: USER,
+          eventId: event.id,
+          target: { kind: "existing", atomicUpdateId: target.id },
+          confirmEmptyDeletion: true,
+        },
+        { refresh }
+      );
+
+      expect(result).toEqual({ ok: true, deletedAtomicUpdate: { id: source.id, title: "Source" } });
+
+      const [moved] = await db.select().from(changeEvents).where(eq(changeEvents.id, event.id));
+      expect(moved.atomicUpdateId).toBe(target.id);
+
+      const [gone] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, source.id));
+      expect(gone).toBeUndefined();
+    });
+
+    it("emptiedAtomicUpdate.inDraft is true when the source AU has a releaseId", async () => {
+      const { tenant, repo } = await seed();
+      const [release] = await db
+        .insert(releases)
+        .values({ tenantId: tenant.id, title: "Draft", body: "B" })
+        .returning();
+      const source = await insertAtomic(tenant.id, "Source in draft", { releaseId: release.id });
+      const target = await insertAtomic(tenant.id, "Target");
+      const event = await insertEvent(tenant.id, repo.id, "sha-in-draft", { atomicUpdateId: source.id });
+      const refresh = vi.fn().mockResolvedValue(undefined);
+
+      const result = await reassignChangeEvent(
+        { tenantId: tenant.id, userId: USER, eventId: event.id, target: { kind: "existing", atomicUpdateId: target.id } },
+        { refresh }
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result).toMatchObject({
+        needsConfirmation: true,
+        emptiedAtomicUpdate: { id: source.id, title: "Source in draft", inDraft: true },
+      });
+    });
+
+    it("a move that does not empty the source AU never asks for confirmation", async () => {
+      const { tenant, repo } = await seed();
+      const source = await insertAtomic(tenant.id, "Source");
+      const target = await insertAtomic(tenant.id, "Target");
+      const kept = await insertEvent(tenant.id, repo.id, "sha-kept-behind", { atomicUpdateId: source.id });
+      const event = await insertEvent(tenant.id, repo.id, "sha-not-emptying", { atomicUpdateId: source.id });
+      const refresh = vi.fn().mockResolvedValue(undefined);
+
+      const result = await reassignChangeEvent(
+        { tenantId: tenant.id, userId: USER, eventId: event.id, target: { kind: "existing", atomicUpdateId: target.id } },
+        { refresh }
+      );
+
+      expect(result).toEqual({ ok: true });
+      const [moved] = await db.select().from(changeEvents).where(eq(changeEvents.id, event.id));
+      expect(moved.atomicUpdateId).toBe(target.id);
+
+      void kept;
+    });
+  });
+
+  describe("deterministic updatedAt bump fires the catch-up evidence delta (Finding 1)", () => {
+    it("bumps updatedAt on a still-open, in-draft target even when refresh is a no-op and the summary is hand-edited", async () => {
+      const { tenant, repo } = await seed();
+      const composedAt = new Date(Date.now() - 60_000);
+      const [release] = await db
+        .insert(releases)
+        .values({ tenantId: tenant.id, title: "Draft", body: "B", composedAt })
+        .returning();
+      // Hand-edited summary: `refreshAtomicUpdates` would skip regenerating
+      // this atomic update's text, so if the evidence delta depended on regen
+      // alone it would never fire for this move.
+      const target = await insertAtomic(tenant.id, "In-draft target", {
+        releaseId: release.id,
+        summaryEditedAt: new Date(),
+        updatedAt: composedAt,
+      });
+      const event = await insertEvent(tenant.id, repo.id, "sha-catch-up");
+      // A stubbed refresh that does nothing — proves the delta fires from the
+      // in-transaction bump, not from regeneration.
+      const refresh = vi.fn().mockResolvedValue(undefined);
+
+      const result = await reassignChangeEvent(
+        { tenantId: tenant.id, userId: USER, eventId: event.id, target: { kind: "existing", atomicUpdateId: target.id } },
+        { refresh }
+      );
+      expect(result).toEqual({ ok: true });
+
+      const delta = await computeReleaseDelta(release.id);
+      expect(delta.count).toBeGreaterThanOrEqual(1);
+      expect(delta.changedAtomicUpdates.map((a) => a.id)).toContain(target.id);
+    });
   });
 });

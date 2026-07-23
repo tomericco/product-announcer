@@ -1,4 +1,4 @@
-import { and, eq, exists, isNull, sql } from "drizzle-orm";
+import { and, eq, exists, isNull, ne, sql } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
 import { atomicUpdates, changeEvents } from "@/db/schema";
 import type { OpenAtomicUpdate, ResolutionAction } from "@/lib/ai/resolve-atomic-updates";
@@ -98,11 +98,16 @@ export async function applyResolutionInTx(
 
     // Tenant-scoped and unassigned-only: the resolver's plan is model output,
     // so it must not be able to reach another tenant's rows or clobber an
-    // assignment made while it was thinking.
+    // assignment made while it was thinking. `ne(status, "excluded")` is
+    // defense-in-depth: a detached event is `status='excluded'` with
+    // `atomicUpdateId` null, which already satisfies `isNull` above — no
+    // current caller feeds an excluded event's id into a resolver plan, but
+    // this guarantees a future caller can never have it auto-reassigned.
     const conditions = [
       eq(changeEvents.id, action.eventId),
       eq(changeEvents.tenantId, tenantId),
       isNull(changeEvents.atomicUpdateId),
+      ne(changeEvents.status, "excluded"),
     ];
 
     if (action.action === "assign") {
