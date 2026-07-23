@@ -10,6 +10,10 @@ import {
   type CreateFromEventsResult,
 } from "@/lib/change-events/create-from-events";
 import { reassignChangeEvent, type ReassignResult } from "@/lib/change-events/reassign";
+import {
+  addEventsToExistingAtomicUpdate,
+  type AddEventsResult,
+} from "@/lib/change-events/add-events-to-atomic-update";
 
 export type AtomicUpdateEvent = {
   id: string;
@@ -353,39 +357,35 @@ export async function createFromEvents(formData: FormData): Promise<CreateFromEv
 }
 
 /**
- * Adds an existing change event as evidence for `atomicUpdateId` (the
- * per-update "add evidence" editor, phase 4). The event may currently be
- * unassigned or sitting in a DIFFERENT open atomic update — either way this
- * is just `reassignChangeEvent`'s `existing` target, which already handles
- * both: an unassigned event is picked up directly, and one in another open
- * update is moved out, gated by the empty-source confirmation if that move
- * would leave the other update with zero events.
+ * Adds a BATCH of existing change events as evidence for `atomicUpdateId` (the
+ * per-update "add evidence" editor, multi-select). Each event may currently be
+ * unassigned or sitting in a DIFFERENT open atomic update; either way this is
+ * `addEventsToExistingAtomicUpdate`'s job — it moves all of them in one
+ * transaction with a single regeneration afterward, rather than regenerating
+ * once per event. A move that would leave a source atomic update with zero
+ * events is gated by the empty-source confirmation, same as everywhere else.
  *
- * `forceRegenerate: true` is always passed: adding evidence to an atomic
- * update must regenerate its title/summary from the new, larger evidence set
- * even if a prior hand-edit had frozen it (`summaryEditedAt` set) — the
- * owner's point in building this is that curation should reflect the
- * evidence, not a stale manual edit.
+ * The core always force-regenerates (clears `summaryEditedAt` on every
+ * affected open update before the best-effort refresh): adding evidence must
+ * reflect the new, larger evidence set even if a prior hand-edit had frozen
+ * it — the owner's point in building this is that curation should reflect
+ * the evidence, not a stale manual edit.
  *
  * tenantId/userId always come from the session, never a parameter — mirrors
  * every other action in this module and in `change-events/actions.ts`.
  */
-export async function addEventToAtomicUpdate(
+export async function addEventsToAtomicUpdate(
   atomicUpdateId: string,
-  eventId: string,
+  eventIds: string[],
   confirmEmptyDeletion?: boolean
-): Promise<ReassignResult> {
+): Promise<AddEventsResult> {
   const session = await requireSession();
-  const tenantId = session.user.tenantId;
-  const userId = session.user.id;
-
-  const result = await reassignChangeEvent({
-    tenantId,
-    userId,
-    eventId,
-    target: { kind: "existing", atomicUpdateId },
+  const result = await addEventsToExistingAtomicUpdate({
+    tenantId: session.user.tenantId,
+    userId: session.user.id,
+    atomicUpdateId,
+    eventIds,
     confirmEmptyDeletion,
-    forceRegenerate: true,
   });
   revalidatePath("/atomic-updates");
   return result;
@@ -405,7 +405,7 @@ export async function addEventToAtomicUpdate(
  * same `confirmEmptyDeletion` empty-source confirmation as every other
  * reassign path. `forceRegenerate: true` regenerates the SURVIVING update's
  * title/summary from its now-smaller evidence set, overriding any prior
- * hand-edit freeze, same rationale as `addEventToAtomicUpdate`.
+ * hand-edit freeze, same rationale as `addEventsToAtomicUpdate`.
  */
 export async function removeEventFromAtomicUpdate(
   atomicUpdateId: string,

@@ -151,7 +151,7 @@ export function AtomicUpdateCard({
           {/* Evidence editor: add/remove the change events behind this update.
               A successful add/remove regenerates the title/summary server-side
               (revalidatePath in the actions re-renders this card), even
-              overriding a prior hand-edit freeze — see addEventToAtomicUpdate /
+              overriding a prior hand-edit freeze — see addEventsToAtomicUpdate /
               removeEventFromAtomicUpdate in actions.ts. */}
           <div className="flex flex-col gap-1.5 border-t pt-2">
             <span className="text-xs font-medium text-muted-foreground">Evidence</span>

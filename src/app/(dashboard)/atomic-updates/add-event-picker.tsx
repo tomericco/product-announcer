@@ -2,9 +2,8 @@
 
 import { useState, useTransition } from "react";
 import { toast } from "sonner";
-import { ExternalLink, Plus } from "lucide-react";
+import { Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
   DialogClose,
@@ -15,7 +14,8 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { addEventToAtomicUpdate, type SelectableEventRow } from "./actions";
+import { EventMultiSelect, type PickerRow, type PickerType } from "../_components/event-multi-select";
+import { addEventsToAtomicUpdate, type SelectableEventRow } from "./actions";
 
 const TYPE_LABEL: Record<SelectableEventRow["type"], string> = {
   commit: "Commit",
@@ -31,20 +31,23 @@ const PROVIDER_LABEL: Record<SelectableEventRow["provider"], string> = {
 type EmptiedAtomicUpdate = { id: string; title: string; inDraft: boolean };
 
 /**
- * "Add change event" control on an atomic update card's evidence editor (edit
- * mode): a picker of every OTHER selectable change event — the card already
- * filtered `events` down to exclude ones already on THIS update (see
- * `atomic-update-card.tsx`'s `addableEvents`) — that folds one into this
- * atomic update on click.
+ * "Add change events" control on an atomic update card's evidence editor
+ * (edit mode): a multi-select picker, via the shared `EventMultiSelect`, of
+ * every OTHER selectable change event — the card already filtered `events`
+ * down to exclude ones already on THIS update (see `atomic-update-card.tsx`'s
+ * `addableEvents`) — that folds the whole batch into this atomic update in
+ * ONE submit, regenerating the summary once rather than once per event.
  *
- * Mirrors `NewAtomicUpdateDialog`'s list rendering, but selection is
- * single-click-to-add rather than checkbox-then-submit: there's exactly one
- * destination atomic update here (this card's), so there's nothing to batch
- * against. Also mirrors the needs-confirmation + toast + `useTransition`
- * pattern from `reassign-control.tsx`: picking an event that currently lives
- * in a different OPEN atomic update, when doing so would empty that update,
- * comes back `needsConfirmation` rather than silently deleting it — this
- * opens a confirm dialog naming the source before re-posting the same pick
+ * The `events` prop is a static snapshot (no reload while the dialog is
+ * open), so selection is a plain `Set<string>` of event ids — unlike the
+ * import dialog's `Map`, there's no per-row payload to carry alongside the
+ * key.
+ *
+ * Mirrors the needs-confirmation + toast + `useTransition` pattern from
+ * `reassign-control.tsx` / the prior single-add version of this component:
+ * a batch that would empty one or more source atomic updates comes back
+ * `needsConfirmation` rather than silently deleting them — this opens a
+ * confirm dialog naming every source before re-submitting the same selection
  * with `confirmEmptyDeletion=true`.
  *
  * No `db`/pg import here — `events` arrives as a prop, ultimately queried
@@ -58,30 +61,32 @@ export function AddEventPicker({
   events: SelectableEventRow[];
 }) {
   const [open, setOpen] = useState(false);
-  const [pendingEventId, setPendingEventId] = useState<string | null>(null);
+  const [pickerType, setPickerType] = useState<PickerType>("commit");
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [search, setSearch] = useState("");
   const [confirmState, setConfirmState] = useState<{
-    eventId: string;
-    emptiedAtomicUpdate: EmptiedAtomicUpdate;
+    eventIds: string[];
+    emptiedAtomicUpdates: EmptiedAtomicUpdate[];
   } | null>(null);
   const [pending, startTransition] = useTransition();
 
   function reset() {
+    setSelected(new Set());
+    setSearch("");
+    setPickerType("commit");
     setConfirmState(null);
-    setPendingEventId(null);
   }
 
-  function submit(eventId: string, confirmEmptyDeletion: boolean) {
-    setPendingEventId(eventId);
+  function submit(eventIds: string[], confirmEmptyDeletion: boolean) {
     startTransition(async () => {
-      const result = await addEventToAtomicUpdate(atomicUpdateId, eventId, confirmEmptyDeletion);
+      const result = await addEventsToAtomicUpdate(atomicUpdateId, eventIds, confirmEmptyDeletion);
 
       if (result.ok) {
-        if (result.deletedAtomicUpdate) {
-          toast.success(
-            `Change event added — deleted emptied atomic update "${result.deletedAtomicUpdate.title}"`
-          );
+        if (result.deletedAtomicUpdates && result.deletedAtomicUpdates.length > 0) {
+          const names = result.deletedAtomicUpdates.map((au) => `"${au.title}"`).join(", ");
+          toast.success(`Change events added — deleted emptied atomic update(s): ${names}`);
         } else {
-          toast.success("Change event added");
+          toast.success("Change events added");
         }
         reset();
         setOpen(false);
@@ -89,14 +94,22 @@ export function AddEventPicker({
       }
 
       if ("needsConfirmation" in result && result.needsConfirmation) {
-        setConfirmState({ eventId, emptiedAtomicUpdate: result.emptiedAtomicUpdate });
+        setConfirmState({ eventIds, emptiedAtomicUpdates: result.emptiedAtomicUpdates });
         return;
       }
 
-      setPendingEventId(null);
       toast.error(result.reason);
     });
   }
+
+  const filteredEvents = events.filter((event) => event.type === pickerType);
+  const rows: PickerRow[] = filteredEvents.map((event) => ({
+    key: event.id,
+    title: event.title,
+    meta: `${TYPE_LABEL[event.type]} · ${PROVIDER_LABEL[event.provider]}`,
+    externalUrl: event.externalUrl,
+    badge: event.atomicUpdateTitle ?? "Unassigned",
+  }));
 
   return (
     <>
@@ -111,69 +124,36 @@ export function AddEventPicker({
           render={
             <Button type="button" variant="outline" size="sm" disabled={events.length === 0}>
               <Plus />
-              Add change event
+              Add change events
             </Button>
           }
         />
         <DialogContent className="flex max-h-[85dvh] flex-col gap-5 p-6 sm:max-w-2xl">
           <DialogHeader>
-            <DialogTitle>Add change event</DialogTitle>
+            <DialogTitle>Add change events</DialogTitle>
             <DialogDescription>
-              Pick a commit, pull request, or task to add as evidence for this atomic update. One
-              currently sitting in another open atomic update will be moved here.
+              Pick commits or pull requests to add as evidence for this atomic update. Ones currently
+              sitting in another open atomic update will be moved here.
             </DialogDescription>
           </DialogHeader>
 
-          <div className="h-80 overflow-y-auto rounded-lg border border-border">
-            {events.length === 0 ? (
-              <p className="p-4 text-sm text-muted-foreground">No selectable change events.</p>
-            ) : (
-              <ul className="divide-y divide-border">
-                {events.map((event) => (
-                  <li key={event.id}>
-                    <button
-                      type="button"
-                      disabled={pending}
-                      onClick={() => submit(event.id, false)}
-                      className="flex w-full cursor-pointer items-start gap-3 px-4 py-3.5 text-left text-sm hover:bg-muted/50 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      <span className="min-w-0 flex-1 space-y-1">
-                        <span className="flex items-center gap-1.5">
-                          {event.externalUrl ? (
-                            <a
-                              href={event.externalUrl}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              onClick={(e) => e.stopPropagation()}
-                              className="truncate font-medium text-foreground underline-offset-2 hover:underline"
-                            >
-                              {event.title}
-                            </a>
-                          ) : (
-                            <span className="truncate font-medium">{event.title}</span>
-                          )}
-                          {event.externalUrl && (
-                            <ExternalLink className="size-3 shrink-0 text-muted-foreground" />
-                          )}
-                        </span>
-                        <span className="block text-xs text-muted-foreground">
-                          {TYPE_LABEL[event.type]} · {PROVIDER_LABEL[event.provider]}
-                        </span>
-                      </span>
-                      <Badge
-                        variant={event.atomicUpdateTitle ? "secondary" : "outline"}
-                        className="shrink-0 self-center"
-                      >
-                        {pending && pendingEventId === event.id
-                          ? "Adding…"
-                          : (event.atomicUpdateTitle ?? "Unassigned")}
-                      </Badge>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
+          <EventMultiSelect
+            activeType={pickerType}
+            onTypeChange={(t) => {
+              setPickerType(t);
+              setSelected(new Set());
+            }}
+            enabledTypes={["commit", "pull_request"]}
+            rows={rows}
+            emptyLabel="No selectable change events."
+            selected={selected}
+            onSelectedChange={setSelected}
+            search={search}
+            onSearchChange={setSearch}
+            submitLabel={pending ? "Regenerating…" : `Add ${selected.size} event${selected.size === 1 ? "" : "s"}`}
+            submitting={pending}
+            onSubmit={() => submit(Array.from(selected), false)}
+          />
 
           <DialogFooter>
             <DialogClose render={<Button type="button" variant="outline" disabled={pending} />}>
@@ -189,14 +169,21 @@ export function AddEventPicker({
       >
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Delete emptied atomic update?</DialogTitle>
+            <DialogTitle>Delete emptied atomic update(s)?</DialogTitle>
             <DialogDescription>
               {confirmState && (
                 <>
-                  Adding this event here will leave &quot;{confirmState.emptiedAtomicUpdate.title}&quot; with
-                  no change events, so it will be deleted.
-                  {confirmState.emptiedAtomicUpdate.inDraft
-                    ? " It's part of a draft release; deleting it removes a member the draft's body still describes."
+                  Adding these events here will leave{" "}
+                  {confirmState.emptiedAtomicUpdates.map((au, i) => (
+                    <span key={au.id}>
+                      {i > 0 && ", "}
+                      &quot;{au.title}&quot;
+                    </span>
+                  ))}{" "}
+                  with no change events, so{" "}
+                  {confirmState.emptiedAtomicUpdates.length === 1 ? "it" : "they"} will be deleted.
+                  {confirmState.emptiedAtomicUpdates.some((au) => au.inDraft)
+                    ? " At least one is part of a draft release; deleting it removes a member the draft's body still describes."
                     : null}
                 </>
               )}
@@ -207,7 +194,7 @@ export function AddEventPicker({
             <Button
               variant="destructive"
               disabled={pending}
-              onClick={() => confirmState && submit(confirmState.eventId, true)}
+              onClick={() => confirmState && submit(confirmState.eventIds, true)}
             >
               {pending ? "Deleting…" : "Delete and add"}
             </Button>

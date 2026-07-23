@@ -27,10 +27,10 @@ vi.mock("../../src/lib/change-events/create-from-events", () => ({
   createAtomicUpdateFromEvents: vi.fn(async () => ({ ok: true, atomicUpdateId: "au-x" })),
 }));
 
-// addEventToAtomicUpdate/removeEventFromAtomicUpdate only orchestrate: derive
-// tenant/user from the (mocked) session, build the reassign target, force
-// regen on, call the core, and revalidate. The core's own transactional
-// behavior (moving/detaching, the empty-source confirmation gate, the
+// removeEventFromAtomicUpdate only orchestrates: derive tenant/user from the
+// (mocked) session, build the reassign target, force regen on, call the
+// core, and revalidate. The core's own transactional behavior
+// (moving/detaching, the empty-source confirmation gate, the
 // released-frozen guard, and — load-bearing for this task — the
 // forceRegenerate freeze-clear) is covered by
 // tests/lib/change-events/reassign.test.ts with a stubbed `refresh`. Mocking
@@ -41,6 +41,19 @@ vi.mock("../../src/lib/change-events/reassign", () => ({
   reassignChangeEvent: vi.fn(async () => ({ ok: true })),
 }));
 
+// addEventsToAtomicUpdate only orchestrates: derive tenant/user from the
+// (mocked) session, call the batch core, and revalidate. The core's own
+// transactional behavior (moving multiple events in one transaction, the
+// single post-commit regeneration, the empty-source confirmation gate, the
+// released-frozen guard) is covered by
+// tests/lib/change-events/add-events-to-atomic-update.test.ts with a stubbed
+// `refresh`. Mocking it here keeps this test from touching the real
+// regeneration path, which would otherwise reach the live Anthropic API per
+// the task's hard constraint.
+vi.mock("../../src/lib/change-events/add-events-to-atomic-update", () => ({
+  addEventsToExistingAtomicUpdate: vi.fn(async () => ({ ok: true })),
+}));
+
 import {
   editAtomicUpdate,
   listAtomicUpdates,
@@ -49,11 +62,12 @@ import {
   markAtomicUpdateHidden,
   unhideAtomicUpdate,
   listHiddenAtomicUpdates,
-  addEventToAtomicUpdate,
+  addEventsToAtomicUpdate,
   removeEventFromAtomicUpdate,
 } from "../../src/app/(dashboard)/atomic-updates/actions";
 import { createAtomicUpdateFromEvents } from "../../src/lib/change-events/create-from-events";
 import { reassignChangeEvent } from "../../src/lib/change-events/reassign";
+import { addEventsToExistingAtomicUpdate } from "../../src/lib/change-events/add-events-to-atomic-update";
 import { revalidatePath } from "next/cache";
 import { loadOpenAtomicUpdates } from "../../src/lib/change-events/apply-resolution";
 
@@ -704,30 +718,29 @@ describe("createFromEvents", () => {
   });
 });
 
-describe("addEventToAtomicUpdate", () => {
+describe("addEventsToAtomicUpdate", () => {
   const EDIT_TENANT = "edit-evidence-session-tenant";
   const EDIT_USER = "edit-evidence-session-user";
 
   afterEach(() => {
-    vi.mocked(reassignChangeEvent).mockClear();
+    vi.mocked(addEventsToExistingAtomicUpdate).mockClear();
     vi.mocked(revalidatePath).mockClear();
     currentTenantId = "";
     currentUserId = null;
   });
 
-  it("calls reassignChangeEvent with an 'existing' target, forceRegenerate:true, and the session's tenant/user, then revalidates", async () => {
+  it("calls addEventsToExistingAtomicUpdate with the session's tenant/user and the given ids, then revalidates", async () => {
     currentTenantId = EDIT_TENANT;
     currentUserId = EDIT_USER;
 
-    const result = await addEventToAtomicUpdate("au-1", "event-1");
+    const result = await addEventsToAtomicUpdate("au-1", ["event-1", "event-2"]);
 
-    expect(reassignChangeEvent).toHaveBeenCalledWith({
+    expect(addEventsToExistingAtomicUpdate).toHaveBeenCalledWith({
       tenantId: EDIT_TENANT,
       userId: EDIT_USER,
-      eventId: "event-1",
-      target: { kind: "existing", atomicUpdateId: "au-1" },
+      atomicUpdateId: "au-1",
+      eventIds: ["event-1", "event-2"],
       confirmEmptyDeletion: undefined,
-      forceRegenerate: true,
     });
     expect(result).toEqual({ ok: true });
     expect(revalidatePath).toHaveBeenCalledWith("/atomic-updates");
@@ -737,35 +750,34 @@ describe("addEventToAtomicUpdate", () => {
     currentTenantId = EDIT_TENANT;
     currentUserId = EDIT_USER;
 
-    await addEventToAtomicUpdate("au-1", "event-1", true);
+    await addEventsToAtomicUpdate("au-1", ["event-1"], true);
 
-    expect(reassignChangeEvent).toHaveBeenCalledWith({
+    expect(addEventsToExistingAtomicUpdate).toHaveBeenCalledWith({
       tenantId: EDIT_TENANT,
       userId: EDIT_USER,
-      eventId: "event-1",
-      target: { kind: "existing", atomicUpdateId: "au-1" },
+      atomicUpdateId: "au-1",
+      eventIds: ["event-1"],
       confirmEmptyDeletion: true,
-      forceRegenerate: true,
     });
   });
 
   it("returns a needsConfirmation result from the core without throwing", async () => {
     currentTenantId = EDIT_TENANT;
     currentUserId = EDIT_USER;
-    vi.mocked(reassignChangeEvent).mockResolvedValueOnce({
+    vi.mocked(addEventsToExistingAtomicUpdate).mockResolvedValueOnce({
       ok: false,
       reason: "needs_confirmation",
       needsConfirmation: true,
-      emptiedAtomicUpdate: { id: "au-old", title: "Old one", inDraft: false },
+      emptiedAtomicUpdates: [{ id: "au-old", title: "Old one", inDraft: false }],
     });
 
-    const result = await addEventToAtomicUpdate("au-1", "event-1");
+    const result = await addEventsToAtomicUpdate("au-1", ["event-1"]);
 
     expect(result).toEqual({
       ok: false,
       reason: "needs_confirmation",
       needsConfirmation: true,
-      emptiedAtomicUpdate: { id: "au-old", title: "Old one", inDraft: false },
+      emptiedAtomicUpdates: [{ id: "au-old", title: "Old one", inDraft: false }],
     });
     expect(revalidatePath).toHaveBeenCalledWith("/atomic-updates");
   });
@@ -773,16 +785,16 @@ describe("addEventToAtomicUpdate", () => {
   it("returns a rejection from the core (e.g. event in a released atomic update) without throwing", async () => {
     currentTenantId = EDIT_TENANT;
     currentUserId = EDIT_USER;
-    vi.mocked(reassignChangeEvent).mockResolvedValueOnce({
+    vi.mocked(addEventsToExistingAtomicUpdate).mockResolvedValueOnce({
       ok: false,
-      reason: "Cannot move an event out of a published atomic update.",
+      reason: "Cannot move an event out of the published atomic update \"Shipped\".",
     });
 
-    const result = await addEventToAtomicUpdate("au-1", "event-1");
+    const result = await addEventsToAtomicUpdate("au-1", ["event-1"]);
 
     expect(result).toEqual({
       ok: false,
-      reason: "Cannot move an event out of a published atomic update.",
+      reason: "Cannot move an event out of the published atomic update \"Shipped\".",
     });
   });
 });
