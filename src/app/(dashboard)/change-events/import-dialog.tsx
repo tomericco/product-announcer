@@ -22,7 +22,6 @@ import {
   DialogClose,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
@@ -255,47 +254,46 @@ export function ImportDialog({ repos }: { repos: ImportRepo[] }) {
           onSearchChange={setSearch}
           searchPlaceholder={pickerType === "pull_request" ? "Search PR titles…" : "Search commit messages…"}
           filtersSlot={
-            <>
-              <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as string)}>
-                <TabsList className="h-auto max-w-full flex-wrap">
-                  <TabsTrigger value={ALL}>All</TabsTrigger>
-                  {repos.map((r) => (
-                    <TabsTrigger key={r.id} value={r.id}>
-                      {r.fullName.split("/").pop()}
-                    </TabsTrigger>
-                  ))}
-                </TabsList>
-              </Tabs>
-
-              {pickerType === "commit" && (
-                <div className="flex flex-wrap items-end gap-2">
-                  <div className="space-y-1">
-                    <Label htmlFor="after" className="text-xs text-muted-foreground">
-                      After
-                    </Label>
-                    <Input
-                      id="after"
-                      type="date"
-                      className="w-40"
-                      value={after}
-                      onChange={(e) => setAfter(e.target.value)}
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <Label htmlFor="before" className="text-xs text-muted-foreground">
-                      Before
-                    </Label>
-                    <Input
-                      id="before"
-                      type="date"
-                      className="w-40"
-                      value={before}
-                      onChange={(e) => setBefore(e.target.value)}
-                    />
-                  </div>
+            <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as string)}>
+              <TabsList className="h-auto max-w-full flex-wrap">
+                <TabsTrigger value={ALL}>All</TabsTrigger>
+                {repos.map((r) => (
+                  <TabsTrigger key={r.id} value={r.id}>
+                    {r.fullName.split("/").pop()}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+            </Tabs>
+          }
+          inlineFilters={
+            pickerType === "commit" ? (
+              <>
+                <div className="space-y-1">
+                  <Label htmlFor="after" className="text-xs text-muted-foreground">
+                    After
+                  </Label>
+                  <Input
+                    id="after"
+                    type="date"
+                    className="w-40"
+                    value={after}
+                    onChange={(e) => setAfter(e.target.value)}
+                  />
                 </div>
-              )}
-            </>
+                <div className="space-y-1">
+                  <Label htmlFor="before" className="text-xs text-muted-foreground">
+                    Before
+                  </Label>
+                  <Input
+                    id="before"
+                    type="date"
+                    className="w-40"
+                    value={before}
+                    onChange={(e) => setBefore(e.target.value)}
+                  />
+                </div>
+              </>
+            ) : null
           }
           submitLabel={
             submitting
@@ -306,11 +304,10 @@ export function ImportDialog({ repos }: { repos: ImportRepo[] }) {
           }
           submitting={submitting}
           onSubmit={onImport}
+          secondaryAction={
+            <DialogClose render={<Button type="button" variant="outline">Cancel</Button>} />
+          }
         />
-
-        <DialogFooter className="items-center sm:justify-end">
-          <DialogClose render={<Button type="button" variant="outline">Cancel</Button>} />
-        </DialogFooter>
       </DialogContent>
     </Dialog>
   );

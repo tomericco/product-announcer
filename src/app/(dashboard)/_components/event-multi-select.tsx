@@ -39,10 +39,12 @@ export function EventMultiSelect({
   search,
   onSearchChange,
   filtersSlot,
+  inlineFilters,
   searchPlaceholder = "Search…",
   submitLabel,
   submitting,
   onSubmit,
+  secondaryAction,
 }: {
   activeType: PickerType;
   onTypeChange: (t: PickerType) => void;
@@ -56,10 +58,17 @@ export function EventMultiSelect({
   search: string;
   onSearchChange: (s: string) => void;
   filtersSlot?: React.ReactNode;
+  // Trailing controls placed on the same line as search + the type dropdown,
+  // after the dropdown (e.g. the import dialog's After/Before date inputs).
+  inlineFilters?: React.ReactNode;
   searchPlaceholder?: string;
   submitLabel: string;
   submitting?: boolean;
   onSubmit: () => void;
+  // Optional control rendered immediately to the LEFT of the primary CTA
+  // (e.g. a Cancel button), so it shares the CTA's row instead of sitting in a
+  // separate dialog footer.
+  secondaryAction?: React.ReactNode;
 }) {
   // Anchor for shift-click range selection, by key (survives filtering).
   const anchorKey = useRef<string | null>(null);
@@ -118,11 +127,20 @@ export function EventMultiSelect({
 
   return (
     <>
-      {/* Header: caller-supplied filters (e.g. the import dialog's repo tabs)
-          on the left, the event-type dropdown right-aligned. With no
-          filtersSlot the dropdown simply sits on the right. */}
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div className="min-w-0 flex-1">{filtersSlot}</div>
+      {/* Caller-supplied controls above the filter line (e.g. the import
+          dialog's repo tabs). */}
+      {filtersSlot}
+
+      {/* One filter line, in order: search, the event-type dropdown, then any
+          caller-supplied trailing filters (e.g. the import dialog's
+          After/Before date inputs). */}
+      <div className="flex flex-wrap items-end gap-2">
+        <Input
+          className="min-w-48 flex-1"
+          placeholder={searchPlaceholder}
+          value={search}
+          onChange={(e) => onSearchChange(e.target.value)}
+        />
         <Select value={activeType} onValueChange={(v) => onTypeChange(v as PickerType)}>
           <SelectTrigger className="w-36 shrink-0">
             <SelectValue>{TYPE_LABEL[activeType]}</SelectValue>
@@ -138,13 +156,8 @@ export function EventMultiSelect({
             </SelectItem>
           </SelectContent>
         </Select>
+        {inlineFilters}
       </div>
-
-      <Input
-        placeholder={searchPlaceholder}
-        value={search}
-        onChange={(e) => onSearchChange(e.target.value)}
-      />
 
       <div className="h-80 overflow-y-auto rounded-lg border border-border">
         <label className="sticky top-0 z-10 flex cursor-pointer items-center gap-2 border-b border-border bg-background px-4 py-2.5 text-sm font-medium">
@@ -217,9 +230,12 @@ export function EventMultiSelect({
 
       <div className="flex items-center justify-between">
         <span className="text-sm text-muted-foreground">{selected.size} selected</span>
-        <Button type="button" onClick={onSubmit} disabled={selected.size === 0 || submitting}>
-          {submitLabel}
-        </Button>
+        <div className="flex items-center gap-2">
+          {secondaryAction}
+          <Button type="button" onClick={onSubmit} disabled={selected.size === 0 || submitting}>
+            {submitLabel}
+          </Button>
+        </div>
       </div>
     </>
   );
