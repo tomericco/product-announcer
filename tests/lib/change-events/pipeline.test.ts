@@ -47,7 +47,7 @@ describe("resolvePendingEvents", () => {
   it("creates an atomic update from the resolver plan", async () => {
     const { tenant, events } = await seed(1);
     const resolve = vi.fn().mockResolvedValue([
-      { eventId: events[0].id, action: "create", title: "Thing", summary: "Does a thing.", category: "new" },
+      { eventId: events[0].id, action: "create", title: "Thing", summary: "Does a thing.", category: "new", size: "m" },
     ]);
 
     await resolvePendingEvents(tenant.id, [events[0].id], { resolve, refresh: vi.fn() });
@@ -109,7 +109,7 @@ describe("resolvePendingEvents", () => {
       return batch.map((e: { id: string }) =>
         match
           ? { eventId: e.id, action: "assign", atomicUpdateId: match.id }
-          : { eventId: e.id, action: "create", title: "Shared feature", summary: "S", category: "new" }
+          : { eventId: e.id, action: "create", title: "Shared feature", summary: "S", category: "new", size: "m" }
       );
     });
 
@@ -175,7 +175,7 @@ describe("resolvePendingEvents", () => {
         return batch.map((e) =>
           match
             ? { eventId: e.id, action: "assign" as const, atomicUpdateId: match.id }
-            : { eventId: e.id, action: "create" as const, title: "Shared feature", summary: "S", category: "new" as const }
+            : { eventId: e.id, action: "create" as const, title: "Shared feature", summary: "S", category: "new" as const, size: "m" as const }
         );
       }
     );

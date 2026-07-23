@@ -50,7 +50,7 @@ describe("apply-resolution", () => {
     const event = await insertEvent(tenant.id, repo.id, "sha-create");
 
     await applyResolution(db, tenant.id, [
-      { eventId: event.id, action: "create", title: "CSV export", summary: "Export as CSV.", category: "new" },
+      { eventId: event.id, action: "create", title: "CSV export", summary: "Export as CSV.", category: "new", size: "m" },
     ]);
 
     const [updated] = await db.select().from(changeEvents).where(eq(changeEvents.id, event.id));
@@ -71,8 +71,8 @@ describe("apply-resolution", () => {
     const second = await insertEvent(tenant.id, repo.id, "sha-merge-2");
 
     await applyResolution(db, tenant.id, [
-      { eventId: first.id, action: "create", title: "CSV export", summary: "Export as CSV.", category: "new" },
-      { eventId: second.id, action: "create", title: "CSV Export", summary: "Export as CSV.", category: "new" },
+      { eventId: first.id, action: "create", title: "CSV export", summary: "Export as CSV.", category: "new", size: "m" },
+      { eventId: second.id, action: "create", title: "CSV Export", summary: "Export as CSV.", category: "new", size: "m" },
     ]);
 
     const rows = await db.select().from(atomicUpdates).where(eq(atomicUpdates.tenantId, tenant.id));
@@ -124,7 +124,7 @@ describe("apply-resolution", () => {
     const foreign = await insertEvent(other.id, otherRepo.id, "sha-foreign");
 
     await applyResolution(db, tenant.id, [
-      { eventId: foreign.id, action: "create", title: "X", summary: "Y", category: "new" },
+      { eventId: foreign.id, action: "create", title: "X", summary: "Y", category: "new", size: "m" },
     ]);
 
     const [updated] = await db.select().from(changeEvents).where(eq(changeEvents.id, foreign.id));
@@ -191,7 +191,7 @@ describe("apply-resolution", () => {
     expect(afterAssign.status).toBe("excluded");
 
     await applyResolution(db, tenant.id, [
-      { eventId: event.id, action: "create", title: "X", summary: "Y", category: "new" },
+      { eventId: event.id, action: "create", title: "X", summary: "Y", category: "new", size: "m" },
     ]);
 
     const [afterCreate] = await db.select().from(changeEvents).where(eq(changeEvents.id, event.id));

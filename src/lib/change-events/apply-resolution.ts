@@ -87,6 +87,7 @@ export async function applyResolutionInTx(
             title: action.title,
             summary: action.summary,
             category: action.category,
+            size: action.size,
           })
           .returning({ id: atomicUpdates.id });
         atomicUpdateId = created.id;

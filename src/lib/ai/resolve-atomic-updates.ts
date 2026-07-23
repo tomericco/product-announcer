@@ -23,6 +23,7 @@ export type ResolutionAction =
       title: string;
       summary: string;
       category: "new" | "improvement" | "fix" | "announcement";
+      size: "s" | "m" | "l" | "xl";
     };
 
 const ActionSchema = z.discriminatedUnion("action", [
@@ -33,6 +34,7 @@ const ActionSchema = z.discriminatedUnion("action", [
     title: z.string(),
     summary: z.string(),
     category: z.enum(["new", "improvement", "fix", "announcement"]),
+    size: z.enum(["s", "m", "l", "xl"]),
   }),
 ]);
 
@@ -52,6 +54,10 @@ export const RESOLVER_SYSTEM = [
   "a deprecation, a sunset/removal, a pricing/policy change, or an availability heads-up).",
   "Return exactly one action per event. Use only atomicUpdateId values from the provided list.",
   "Write title as a short noun phrase and summary as one plain sentence describing the user-visible benefit.",
+  "Also pick a size by USER-FACING SIGNIFICANCE (not amount of code): 's' (a minor fix, tweak, or polish —",
+  "small individual user impact), 'm' (a standard improvement or small feature noticeable to users of that",
+  "area), 'l' (a significant feature or major improvement worth calling out to many users), 'xl' (a flagship",
+  "or headline change — a major new capability or overhaul you would lead an announcement with).",
 ].join(" ");
 
 export function buildResolverPrompt(events: ResolverEvent[], open: OpenAtomicUpdate[]): string {

@@ -47,9 +47,9 @@ async function insertEvent(tenantId: string, repoId: string, atomicUpdateId: str
 describe("regenerateAtomicSummary", () => {
   afterEach(() => vi.mocked(generateObject).mockReset());
 
-  it("returns the regenerated title and summary", async () => {
+  it("returns the regenerated title, summary, and size", async () => {
     vi.mocked(generateObject).mockResolvedValue({
-      object: { title: "CSV export", summary: "Export reports as CSV, now with headers." },
+      object: { title: "CSV export", summary: "Export reports as CSV, now with headers.", size: "m" },
       usage: {},
     } as never);
 
@@ -59,7 +59,11 @@ describe("regenerateAtomicSummary", () => {
       evidence: [{ type: "commit", title: "add headers to csv", summary: "Adds a header row." }],
     });
 
-    expect(result).toEqual({ title: "CSV export", summary: "Export reports as CSV, now with headers." });
+    expect(result).toEqual({
+      title: "CSV export",
+      summary: "Export reports as CSV, now with headers.",
+      size: "m",
+    });
   });
 
   it("returns null on model error", async () => {
@@ -81,25 +85,82 @@ describe("refreshAtomicUpdates", () => {
     await db.delete(tenants).where(eq(tenants.name, TENANT));
   });
 
-  it("rewrites an unedited summary", async () => {
+  it("case (a): neither frozen — rewrites title/summary AND size", async () => {
     const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
     const repo = await seedRepo(tenant.id);
     const [atomic] = await db
       .insert(atomicUpdates)
-      .values({ tenantId: tenant.id, title: "Old", summary: "Old summary." })
+      .values({ tenantId: tenant.id, title: "Old", summary: "Old summary.", size: "s" })
       .returning();
-    await insertEvent(tenant.id, repo.id, atomic.id, "sha-rewrite");
+    await insertEvent(tenant.id, repo.id, atomic.id, "sha-rewrite-a");
 
     vi.mocked(generateObject).mockResolvedValue({
-      object: { title: "New", summary: "New summary." },
+      object: { title: "T2", summary: "S2", size: "l" },
       usage: {},
     } as never);
 
     await refreshAtomicUpdates(db, tenant.id, [atomic.id]);
 
     const [after] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, atomic.id));
-    expect(after.title).toBe("New");
-    expect(after.summary).toBe("New summary.");
+    expect(after.title).toBe("T2");
+    expect(after.summary).toBe("S2");
+    expect(after.size).toBe("l");
+  });
+
+  it("case (b): summaryEditedAt set, sizeEditedAt null — size updated, title/summary unchanged", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const repo = await seedRepo(tenant.id);
+    const [atomic] = await db
+      .insert(atomicUpdates)
+      .values({
+        tenantId: tenant.id,
+        title: "Old",
+        summary: "Old summary.",
+        size: "s",
+        summaryEditedAt: new Date(),
+      })
+      .returning();
+    await insertEvent(tenant.id, repo.id, atomic.id, "sha-rewrite-b");
+
+    vi.mocked(generateObject).mockResolvedValue({
+      object: { title: "T2", summary: "S2", size: "l" },
+      usage: {},
+    } as never);
+
+    await refreshAtomicUpdates(db, tenant.id, [atomic.id]);
+
+    const [after] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, atomic.id));
+    expect(after.title).toBe("Old");
+    expect(after.summary).toBe("Old summary.");
+    expect(after.size).toBe("l");
+  });
+
+  it("case (c): sizeEditedAt set, summaryEditedAt null — title/summary updated, size unchanged", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const repo = await seedRepo(tenant.id);
+    const [atomic] = await db
+      .insert(atomicUpdates)
+      .values({
+        tenantId: tenant.id,
+        title: "Old",
+        summary: "Old summary.",
+        size: "s",
+        sizeEditedAt: new Date(),
+      })
+      .returning();
+    await insertEvent(tenant.id, repo.id, atomic.id, "sha-rewrite-c");
+
+    vi.mocked(generateObject).mockResolvedValue({
+      object: { title: "T2", summary: "S2", size: "l" },
+      usage: {},
+    } as never);
+
+    await refreshAtomicUpdates(db, tenant.id, [atomic.id]);
+
+    const [after] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, atomic.id));
+    expect(after.title).toBe("T2");
+    expect(after.summary).toBe("S2");
+    expect(after.size).toBe("s");
   });
 
   it("leaves a released atomic update untouched and does not call the model", async () => {
@@ -134,7 +195,7 @@ describe("refreshAtomicUpdates", () => {
     expect(generateObject).not.toHaveBeenCalled();
   });
 
-  it("leaves a manually edited summary untouched and does not call the model", async () => {
+  it("case (d): both frozen — nothing changes and the model is not called", async () => {
     const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
     const [atomic] = await db
       .insert(atomicUpdates)
@@ -142,14 +203,18 @@ describe("refreshAtomicUpdates", () => {
         tenantId: tenant.id,
         title: "Hand written",
         summary: "Hand written summary.",
+        size: "s",
         summaryEditedAt: new Date(),
+        sizeEditedAt: new Date(),
       })
       .returning();
 
     await refreshAtomicUpdates(db, tenant.id, [atomic.id]);
 
     const [after] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, atomic.id));
+    expect(after.title).toBe("Hand written");
     expect(after.summary).toBe("Hand written summary.");
+    expect(after.size).toBe("s");
     expect(generateObject).not.toHaveBeenCalled();
   });
 
@@ -187,7 +252,7 @@ describe("refreshAtomicUpdates", () => {
 
     // Now let the model "respond".
     resolveGenerate({
-      object: { title: "Model title", summary: "Model summary." },
+      object: { title: "Model title", summary: "Model summary.", size: "l" },
       usage: {},
     });
 

@@ -113,6 +113,23 @@ describe("resolveAtomicUpdates", () => {
     expect(await resolveAtomicUpdates({ tenantId: "t1", events: EVENTS, open: OPEN })).toEqual([valid]);
   });
 
+  it("carries a create action's size through validation", async () => {
+    const create = {
+      eventId: "e1",
+      action: "create" as const,
+      title: "CSV export",
+      summary: "Adds CSV export.",
+      category: "new" as const,
+      size: "l" as const,
+    };
+    vi.mocked(generateObject).mockResolvedValue({
+      object: { actions: [create] },
+      usage: {},
+    } as never);
+
+    expect(await resolveAtomicUpdates({ tenantId: "t1", events: EVENTS, open: OPEN })).toEqual([create]);
+  });
+
   it("returns an empty plan on model error rather than throwing", async () => {
     vi.mocked(generateObject).mockRejectedValue(new Error("boom"));
     expect(await resolveAtomicUpdates({ tenantId: "t1", events: EVENTS, open: OPEN })).toEqual([]);
