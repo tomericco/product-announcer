@@ -85,14 +85,15 @@ export async function saveWebhookConfig(formData: FormData): Promise<ActionResul
         })
         .where(eq(webhookConfigs.id, existing.id));
     } else {
-      if (!encrypted) throw new Error("A secret is required to create a webhook config");
       await db.insert(webhookConfigs).values({
         tenantId: session.user.tenantId,
         url,
         active,
-        secretCiphertext: encrypted.ciphertext,
-        secretIv: encrypted.iv,
-        secretAuthTag: encrypted.authTag,
+        // A secret is optional: with none provided, the columns stay null and
+        // deliveries go out unsigned.
+        ...(encrypted
+          ? { secretCiphertext: encrypted.ciphertext, secretIv: encrypted.iv, secretAuthTag: encrypted.authTag }
+          : {}),
       });
     }
 

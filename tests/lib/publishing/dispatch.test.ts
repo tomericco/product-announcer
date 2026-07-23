@@ -90,6 +90,23 @@ describe("dispatch", () => {
     expect(delivery.attempts).toBe(1);
   });
 
+  it("delivers without a signature header when the webhook config has no secret", async () => {
+    const { tenant, update } = await seed();
+    await db.insert(webhookConfigs).values({ tenantId: tenant.id, url: "https://example.com/hook" });
+
+    vi.mocked(fetch).mockResolvedValue({ ok: true } as Response);
+
+    await dispatchAllDestinations(update.id);
+
+    const [call] = vi.mocked(fetch).mock.calls;
+    const headers = (call[1] as RequestInit).headers as Record<string, string>;
+    expect(headers["x-product-announcer-signature"]).toBeUndefined();
+    expect(headers["content-type"]).toBe("application/json");
+
+    const [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.releaseId, update.id));
+    expect(delivery.status).toBe("success");
+  });
+
   it("records a failed delivery without throwing when the endpoint errors", async () => {
     const { tenant, update } = await seed();
     await db.insert(webhookConfigs).values({ tenantId: tenant.id, url: "https://example.com/hook", ...encryptedSecret() });

@@ -42,26 +42,33 @@ export const webhookDestination: Destination<WebhookConfig> = {
   // delivery has no notion of an external id and no DB write of its own.
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   async deliver(release, config, _externalId, _database): Promise<DeliveryResult> {
-    // A decrypt failure (rotated/misconfigured CREDENTIALS_ENCRYPTION_KEY) can't be
-    // fixed by retrying, and must not be logged identically to a network timeout.
-    // Decrypt outside and before the fetch's try block so a decrypt failure is
-    // never caught there and misclassified as retryable.
-    let secret: string;
-    try {
-      secret = decryptSecret({
-        ciphertext: config.secretCiphertext,
-        iv: config.secretIv,
-        authTag: config.secretAuthTag,
-      });
-    } catch {
-      return {
-        status: "permanent",
-        error: "Could not decrypt the webhook secret. Check CREDENTIALS_ENCRYPTION_KEY.",
-        configFault: true,
-      };
+    // A secret is optional. With one, sign the body (HMAC) and, on a decrypt
+    // failure (rotated/misconfigured CREDENTIALS_ENCRYPTION_KEY), fail
+    // permanently as a config fault — retrying can't help, and it must not be
+    // logged identically to a network timeout. Decrypt outside and before the
+    // fetch's try block so a decrypt failure is never caught there and
+    // misclassified as retryable. Without a secret, deliver unsigned: no
+    // signature header at all.
+    const body = JSON.stringify(buildPayload(release));
+    let signature: string | null = null;
+    if (config.secretCiphertext && config.secretIv && config.secretAuthTag) {
+      let secret: string;
+      try {
+        secret = decryptSecret({
+          ciphertext: config.secretCiphertext,
+          iv: config.secretIv,
+          authTag: config.secretAuthTag,
+        });
+      } catch {
+        return {
+          status: "permanent",
+          error: "Could not decrypt the webhook secret. Check CREDENTIALS_ENCRYPTION_KEY.",
+          configFault: true,
+        };
+      }
+      signature = signPayload(secret, body);
     }
 
-    const body = JSON.stringify(buildPayload(release));
     try {
       // Bound the request: delivery runs synchronously inside the publish action
       // (and sequentially inside the cron sweep), so a slow/hanging tenant
@@ -70,7 +77,7 @@ export const webhookDestination: Destination<WebhookConfig> = {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          "x-product-announcer-signature": signPayload(secret, body),
+          ...(signature ? { "x-product-announcer-signature": signature } : {}),
         },
         body,
         signal: AbortSignal.timeout(DELIVERY_TIMEOUT_MS),
