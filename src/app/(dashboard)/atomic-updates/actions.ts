@@ -22,6 +22,7 @@ export type AtomicUpdateRow = {
   title: string;
   summary: string;
   category: "new" | "improvement" | "fix" | "announcement" | null;
+  size: "s" | "m" | "l" | "xl" | null;
   events: AtomicUpdateEvent[];
   summaryEditedAt: Date | null;
   updatedAt: Date;
@@ -36,6 +37,7 @@ export async function listAtomicUpdates(): Promise<AtomicUpdateRow[]> {
       title: atomicUpdates.title,
       summary: atomicUpdates.summary,
       category: atomicUpdates.category,
+      size: atomicUpdates.size,
       summaryEditedAt: atomicUpdates.summaryEditedAt,
       updatedAt: atomicUpdates.updatedAt,
     })
@@ -175,6 +177,7 @@ export async function listHiddenAtomicUpdates(): Promise<AtomicUpdateRow[]> {
       title: atomicUpdates.title,
       summary: atomicUpdates.summary,
       category: atomicUpdates.category,
+      size: atomicUpdates.size,
       summaryEditedAt: atomicUpdates.summaryEditedAt,
       updatedAt: atomicUpdates.updatedAt,
     })
@@ -286,4 +289,46 @@ export async function removeEventFromAtomicUpdate(
   });
   revalidatePath("/atomic-updates");
   return result;
+}
+
+export async function setAtomicUpdateSize(
+  id: string,
+  size: "s" | "m" | "l" | "xl"
+): Promise<{ ok: boolean }> {
+  const session = await requireSession();
+  const rows = await db
+    .update(atomicUpdates)
+    .set({ size, sizeEditedAt: new Date(), updatedAt: new Date() })
+    .where(
+      and(
+        eq(atomicUpdates.id, id),
+        eq(atomicUpdates.tenantId, session.user.tenantId),
+        eq(atomicUpdates.status, "open")
+      )
+    )
+    .returning({ id: atomicUpdates.id });
+  revalidatePath("/atomic-updates");
+  return { ok: rows.length > 0 };
+}
+
+export async function setAtomicUpdateCategory(
+  id: string,
+  category: "new" | "improvement" | "fix" | "announcement"
+): Promise<{ ok: boolean }> {
+  const session = await requireSession();
+  const rows = await db
+    .update(atomicUpdates)
+    // No freeze column: category is set once by the LLM and otherwise only by
+    // a user; it is never auto-regenerated, so nothing needs to be protected.
+    .set({ category, updatedAt: new Date() })
+    .where(
+      and(
+        eq(atomicUpdates.id, id),
+        eq(atomicUpdates.tenantId, session.user.tenantId),
+        eq(atomicUpdates.status, "open")
+      )
+    )
+    .returning({ id: atomicUpdates.id });
+  revalidatePath("/atomic-updates");
+  return { ok: rows.length > 0 };
 }

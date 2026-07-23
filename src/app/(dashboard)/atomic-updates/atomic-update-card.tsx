@@ -16,15 +16,38 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   editAtomicUpdate,
   markAtomicUpdateHidden,
   removeEventFromAtomicUpdate,
+  setAtomicUpdateCategory,
+  setAtomicUpdateSize,
   type AtomicUpdateEvent,
   type AtomicUpdateRow,
 } from "./actions";
 import type { ImportRepo } from "../change-events/actions";
 import { AddEventPicker } from "./add-event-picker";
-import { CategoryBadge } from "./page";
+import { CategoryBadge, CATEGORY_LABEL, SizeBadge } from "./page";
+
+const SIZE_OPTIONS: Array<{ value: "s" | "m" | "l" | "xl"; label: string }> = [
+  { value: "s", label: "S" },
+  { value: "m", label: "M" },
+  { value: "l", label: "L" },
+  { value: "xl", label: "XL" },
+];
+
+const CATEGORY_OPTIONS: Array<"new" | "improvement" | "fix" | "announcement"> = [
+  "new",
+  "improvement",
+  "fix",
+  "announcement",
+];
 
 type EmptiedAtomicUpdate = { id: string; title: string; inDraft: boolean };
 
@@ -80,6 +103,10 @@ export function AtomicUpdateCard({
   const [pending, startTransition] = useTransition();
   const [hidePending, startHideTransition] = useTransition();
   const [evidencePending, startEvidenceTransition] = useTransition();
+  const [size, setSize] = useState(row.size);
+  const [sizePending, startSizeTransition] = useTransition();
+  const [category, setCategory] = useState(row.category);
+  const [categoryPending, startCategoryTransition] = useTransition();
   const [removeConfirm, setRemoveConfirm] = useState<{
     eventId: string;
     emptiedAtomicUpdate: EmptiedAtomicUpdate;
@@ -95,6 +122,26 @@ export function AtomicUpdateCard({
         // Server actions reject with an opaque digest in production; surface
         // what we can rather than leaving the form silently stuck.
         toast.error(error instanceof Error ? error.message : "Something went wrong");
+      }
+    });
+  }
+
+  function changeSize(next: "s" | "m" | "l" | "xl") {
+    setSize(next);
+    startSizeTransition(async () => {
+      const result = await setAtomicUpdateSize(row.id, next);
+      if (!result.ok) {
+        toast.error("Could not update size");
+      }
+    });
+  }
+
+  function changeCategory(next: "new" | "improvement" | "fix" | "announcement") {
+    setCategory(next);
+    startCategoryTransition(async () => {
+      const result = await setAtomicUpdateCategory(row.id, next);
+      if (!result.ok) {
+        toast.error("Could not update category");
       }
     });
   }
@@ -139,6 +186,44 @@ export function AtomicUpdateCard({
         <div className="flex flex-col gap-3">
           <Input value={title} onChange={(e) => setTitle(e.target.value)} aria-label="Title" />
           <Textarea value={summary} onChange={(e) => setSummary(e.target.value)} aria-label="Summary" />
+
+          <div className="flex gap-2">
+            <Select
+              value={size ?? undefined}
+              onValueChange={(value) => changeSize(value as "s" | "m" | "l" | "xl")}
+              disabled={sizePending}
+            >
+              <SelectTrigger className="w-24" aria-label="Size">
+                <SelectValue placeholder="Size" />
+              </SelectTrigger>
+              <SelectContent>
+                {SIZE_OPTIONS.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            <Select
+              value={category ?? undefined}
+              onValueChange={(value) =>
+                changeCategory(value as "new" | "improvement" | "fix" | "announcement")
+              }
+              disabled={categoryPending}
+            >
+              <SelectTrigger className="w-40" aria-label="Category">
+                <SelectValue placeholder="Category" />
+              </SelectTrigger>
+              <SelectContent>
+                {CATEGORY_OPTIONS.map((option) => (
+                  <SelectItem key={option} value={option}>
+                    {CATEGORY_LABEL[option]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
 
           {/* Evidence editor: add (via the import selector) / remove the change
               events behind this update. A successful add/remove regenerates the
@@ -202,6 +287,7 @@ export function AtomicUpdateCard({
             )}
             <h2 className="font-medium">{row.title}</h2>
             <CategoryBadge category={row.category} />
+            <SizeBadge size={row.size} />
           </div>
           <p className="text-sm text-muted-foreground">{row.summary}</p>
           {row.events.length > 0 && (

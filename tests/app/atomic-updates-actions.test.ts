@@ -37,6 +37,8 @@ import {
   unhideAtomicUpdate,
   listHiddenAtomicUpdates,
   removeEventFromAtomicUpdate,
+  setAtomicUpdateSize,
+  setAtomicUpdateCategory,
 } from "../../src/app/(dashboard)/atomic-updates/actions";
 import { reassignChangeEvent } from "../../src/lib/change-events/reassign";
 import { revalidatePath } from "next/cache";
@@ -654,5 +656,93 @@ describe("removeEventFromAtomicUpdate", () => {
 
     expect(result).toEqual({ ok: false, reason: "Change event does not belong to this atomic update." });
     expect(reassignChangeEvent).not.toHaveBeenCalled();
+  });
+});
+
+describe("setAtomicUpdateSize / setAtomicUpdateCategory", () => {
+  afterEach(async () => {
+    await db.delete(tenants).where(eq(tenants.name, TENANT));
+  });
+
+  it("setAtomicUpdateSize writes the size and freezes it, tenant+open scoped", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    currentTenantId = tenant.id;
+    const [au] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "T", summary: "S", status: "open" })
+      .returning();
+
+    const res = await setAtomicUpdateSize(au.id, "l");
+
+    expect(res.ok).toBe(true);
+    const [row] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, au.id));
+    expect(row.size).toBe("l");
+    expect(row.sizeEditedAt).not.toBeNull();
+  });
+
+  it("setAtomicUpdateSize refuses a released or other-tenant update", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const [other] = await db.insert(tenants).values({ name: TENANT }).returning();
+    currentTenantId = tenant.id;
+
+    const [released] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "Released", summary: "S", status: "released" })
+      .returning();
+    const [foreign] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: other.id, title: "Foreign", summary: "S", status: "open" })
+      .returning();
+
+    const releasedResult = await setAtomicUpdateSize(released.id, "l");
+    const foreignResult = await setAtomicUpdateSize(foreign.id, "l");
+
+    expect(releasedResult).toEqual({ ok: false });
+    expect(foreignResult).toEqual({ ok: false });
+    const [releasedAfter] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, released.id));
+    const [foreignAfter] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, foreign.id));
+    expect(releasedAfter.size).toBeNull();
+    expect(foreignAfter.size).toBeNull();
+  });
+
+  it("setAtomicUpdateCategory writes the category (no freeze), tenant+open scoped", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    currentTenantId = tenant.id;
+    const [au] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "T", summary: "S", status: "open" })
+      .returning();
+
+    const res = await setAtomicUpdateCategory(au.id, "fix");
+
+    expect(res.ok).toBe(true);
+    const [row] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, au.id));
+    expect(row.category).toBe("fix");
+    expect(row.sizeEditedAt).toBeNull();
+  });
+
+  it("setAtomicUpdateCategory refuses a released or other-tenant update", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const [other] = await db.insert(tenants).values({ name: TENANT }).returning();
+    currentTenantId = tenant.id;
+
+    const [released] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "Released", summary: "S", status: "released" })
+      .returning();
+    const [foreign] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: other.id, title: "Foreign", summary: "S", status: "open" })
+      .returning();
+
+    const releasedResult = await setAtomicUpdateCategory(released.id, "fix");
+    const foreignResult = await setAtomicUpdateCategory(foreign.id, "fix");
+
+    expect(releasedResult).toEqual({ ok: false });
+    expect(foreignResult).toEqual({ ok: false });
+    const [releasedAfter] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, released.id));
+    const [foreignAfter] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, foreign.id));
+    expect(releasedAfter.category).toBeNull();
+    expect(foreignAfter.category).toBeNull();
   });
 });

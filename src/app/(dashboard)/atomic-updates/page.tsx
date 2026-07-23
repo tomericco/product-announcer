@@ -64,3 +64,8 @@ export function CategoryBadge({ category }: { category: string | null }) {
   if (!category) return null;
   return <Badge variant="secondary">{CATEGORY_LABEL[category] ?? category}</Badge>;
 }
+
+export function SizeBadge({ size }: { size: string | null }) {
+  if (!size) return null;
+  return <Badge variant="outline">{size.toUpperCase()}</Badge>;
+}
