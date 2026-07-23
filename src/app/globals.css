@@ -266,3 +266,14 @@
 .mdx-surface-insert {
   transform: translate(-2px, -2px);
 }
+
+/* MDXEditor's content-editable root (._contentEditable_*) ships
+   `padding: var(--spacing-3)` (0.75rem) in its own lazily-loaded stylesheet.
+   Our contentEditableClassName ("mdx-content …") lands on that same element,
+   so zero the padding here to align the body flush with the title and the
+   rest of the draft. Doubled class beats the vendor single-class rule
+   deterministically regardless of chunk load order — same reasoning as
+   .mdx-toolbar-host.mdx-toolbar-host above. */
+.mdx-content.mdx-content {
+  padding: 0;
+}
