@@ -55,8 +55,9 @@ export default async function AtomicUpdatesPage() {
 
 export const CATEGORY_LABEL: Record<string, string> = {
   new: "New",
-  improved: "Improved",
-  fixed: "Fixed",
+  improvement: "Improvement",
+  fix: "Fix",
+  announcement: "Announcement",
 };
 
 export function CategoryBadge({ category }: { category: string | null }) {

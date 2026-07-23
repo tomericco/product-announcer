@@ -33,9 +33,11 @@ describe("buildResolverPrompt", () => {
 
 describe("RESOLVER_SYSTEM", () => {
   it("explains what the category values mean for create actions", () => {
-    expect(RESOLVER_SYSTEM).toContain("'new' (new capability)");
-    expect(RESOLVER_SYSTEM).toContain("'improved' (better existing behavior)");
-    expect(RESOLVER_SYSTEM).toContain("'fixed' (bug fix)");
+    expect(RESOLVER_SYSTEM).toContain("'new' (a new capability)");
+    expect(RESOLVER_SYSTEM).toContain("'improvement' (better");
+    expect(RESOLVER_SYSTEM).toContain("existing behavior)");
+    expect(RESOLVER_SYSTEM).toContain("'fix' (a bug fix)");
+    expect(RESOLVER_SYSTEM).toContain("'announcement' (a user-facing notice rather than a feature/fix");
   });
 });
 

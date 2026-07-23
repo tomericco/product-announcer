@@ -21,7 +21,7 @@ export type AtomicUpdateRow = {
   id: string;
   title: string;
   summary: string;
-  category: "new" | "improved" | "fixed" | null;
+  category: "new" | "improvement" | "fix" | "announcement" | null;
   events: AtomicUpdateEvent[];
   summaryEditedAt: Date | null;
   updatedAt: Date;

@@ -39,14 +39,14 @@ describe("change_events enrichment columns", () => {
         prTitle: "b",
         userFacing: true,
         impactSummary: "Faster search",
-        suggestedCategory: "improved",
+        suggestedCategory: "improvement",
         enrichmentConfidence: 0.9,
         enrichedAt: new Date(),
       })
       .returning();
     expect(enriched.userFacing).toBe(true);
     expect(enriched.impactSummary).toBe("Faster search");
-    expect(enriched.suggestedCategory).toBe("improved");
+    expect(enriched.suggestedCategory).toBe("improvement");
     expect(enriched.enrichmentConfidence).toBeCloseTo(0.9);
     expect(enriched.enrichedAt).toBeInstanceOf(Date);
   });

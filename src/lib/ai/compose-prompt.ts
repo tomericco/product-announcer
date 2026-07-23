@@ -51,7 +51,7 @@ export type AtomicUpdateForPrompt = {
   id: string;
   title: string;
   summary: string;
-  category: "new" | "improved" | "fixed" | null;
+  category: "new" | "improvement" | "fix" | "announcement" | null;
 };
 
 function formatAtomicUpdate(item: AtomicUpdateForPrompt, index: number): string {

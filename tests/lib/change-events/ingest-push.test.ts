@@ -19,7 +19,7 @@ function commit(over: Partial<PushCommit> = {}): PushCommit {
   return { sha: "s1", message: "m", url: "https://x/s1", committedAt: "2026-07-01T00:00:00Z", parents: ["p1"], ...over };
 }
 
-const enrichAllFacing: EnrichChangeItem = async () => ({ userFacing: true, impactSummary: "does a thing", suggestedCategory: "improved", confidence: 0.9 });
+const enrichAllFacing: EnrichChangeItem = async () => ({ userFacing: true, impactSummary: "does a thing", suggestedCategory: "improvement", confidence: 0.9 });
 const noPulls = async () => [] as Array<{ number: number; merged: boolean; baseRef: string }>;
 
 describe("ingestPush classification", () => {
@@ -49,7 +49,7 @@ describe("ingestPush classification", () => {
       resolvePending: vi.fn(),
     });
     const [row] = await db.select().from(changeEvents).where(eq(changeEvents.tenantId, tenant.id));
-    expect(row).toMatchObject({ status: "pending", filterReason: null, commitSha: "feat1", userFacing: true, suggestedCategory: "improved" });
+    expect(row).toMatchObject({ status: "pending", filterReason: null, commitSha: "feat1", userFacing: true, suggestedCategory: "improvement" });
   });
 
   it("ignores a non-PR merge commit without fetching a diff or enriching", async () => {

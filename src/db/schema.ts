@@ -47,7 +47,7 @@ export const changeItemStatusEnum = pgEnum("change_item_status", ["pending", "ba
 export const cadenceEnum = pgEnum("cadence", ["daily", "weekly", "biweekly", "monthly", "none"]);
 export const releaseStatusEnum = pgEnum("release_status", ["draft", "approved", "published", "rejected"]);
 export const reviewStatusEnum = pgEnum("review_status", ["passed", "failed", "error"]);
-export const updateCategoryEnum = pgEnum("update_category", ["new", "improved", "fixed"]);
+export const updateCategoryEnum = pgEnum("update_category", ["new", "improvement", "fix", "announcement"]);
 
 export const changeEventTypeEnum = pgEnum("change_event_type", ["commit", "pull_request", "task"]);
 export const changeEventProviderEnum = pgEnum("change_event_provider", ["github", "notion"]);

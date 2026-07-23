@@ -54,14 +54,14 @@ describe("enrichChangeItem", () => {
 
   it("maps a user-facing model result through", async () => {
     vi.mocked(generateObject).mockResolvedValue({
-      object: { userFacing: true, impactSummary: "Exports finish faster", suggestedCategory: "improved", confidence: 0.8 },
+      object: { userFacing: true, impactSummary: "Exports finish faster", suggestedCategory: "improvement", confidence: 0.8 },
     } as never);
 
     const result = await enrichChangeItem({ tenantId, type: "commit", repoName: "acme/api", commitMessage: "x", diff: "y" });
     expect(result).toEqual({
       userFacing: true,
       impactSummary: "Exports finish faster",
-      suggestedCategory: "improved",
+      suggestedCategory: "improvement",
       confidence: 0.8,
     });
 
@@ -73,7 +73,7 @@ describe("enrichChangeItem", () => {
 
   it("nulls impact and category when the model says not user-facing", async () => {
     vi.mocked(generateObject).mockResolvedValue({
-      object: { userFacing: false, impactSummary: "internal refactor", suggestedCategory: "improved", confidence: 0.95 },
+      object: { userFacing: false, impactSummary: "internal refactor", suggestedCategory: "improvement", confidence: 0.95 },
     } as never);
 
     const result = await enrichChangeItem({ tenantId, type: "commit", repoName: "acme/api", commitMessage: "refactor", diff: "z" });

@@ -204,6 +204,13 @@
       "when": 1784807240776,
       "tag": "0028_red_cable",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1784821857430,
+      "tag": "0029_exotic_odin",
+      "breakpoints": true
     }
   ]
 }

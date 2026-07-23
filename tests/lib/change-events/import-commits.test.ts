@@ -18,7 +18,7 @@ describe("importSelectedCommits", () => {
   const fakeEnrich: EnrichChangeItem = async (input) => ({
     userFacing: input.commitMessage !== "chore: lint",
     impactSummary: input.commitMessage !== "chore: lint" ? "does a user thing" : null,
-    suggestedCategory: input.commitMessage !== "chore: lint" ? "improved" : null,
+    suggestedCategory: input.commitMessage !== "chore: lint" ? "improvement" : null,
     confidence: 0.7,
   });
 
@@ -68,7 +68,7 @@ describe("importSelectedCommits", () => {
     const nonFacing = items.find((i) => i.commitSha === "bbb222")!;
     expect(facing.userFacing).toBe(true);
     expect(facing.impactSummary).toBe("does a user thing");
-    expect(facing.suggestedCategory).toBe("improved");
+    expect(facing.suggestedCategory).toBe("improvement");
     expect(facing.enrichmentConfidence).toBeCloseTo(0.7);
     expect(facing.enrichedAt).toBeInstanceOf(Date);
     expect(nonFacing.userFacing).toBe(false);

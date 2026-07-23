@@ -123,7 +123,7 @@ describe("createAtomicUpdateFromEvents", () => {
     const eventSecondInserted = await insertEvent(tenant.id, repo.id, "sha-second-inserted", {
       prTitle: "SECOND",
       impactSummary: "Second summary.",
-      suggestedCategory: "improved",
+      suggestedCategory: "improvement",
     });
     const eventFirstChosen = await insertEvent(tenant.id, repo.id, "sha-first-chosen", {
       prTitle: "FIRST-CHOSEN",

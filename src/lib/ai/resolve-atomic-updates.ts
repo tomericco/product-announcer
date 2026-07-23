@@ -22,7 +22,7 @@ export type ResolutionAction =
       action: "create";
       title: string;
       summary: string;
-      category: "new" | "improved" | "fixed";
+      category: "new" | "improvement" | "fix" | "announcement";
     };
 
 const ActionSchema = z.discriminatedUnion("action", [
@@ -32,7 +32,7 @@ const ActionSchema = z.discriminatedUnion("action", [
     action: z.literal("create"),
     title: z.string(),
     summary: z.string(),
-    category: z.enum(["new", "improved", "fixed"]),
+    category: z.enum(["new", "improvement", "fix", "announcement"]),
   }),
 ]);
 
@@ -47,8 +47,9 @@ export const RESOLVER_SYSTEM = [
   "Prefer assigning over creating: a follow-up fix to work already in progress belongs to that atomic update.",
   "Several events in this batch may describe the same new change. In that case give every one of them",
   "a create action carrying the SAME title and summary — they will be merged into a single atomic update.",
-  "When you create a new atomic update, also pick category: 'new' (new capability), 'improved' (better existing",
-  "behavior), or 'fixed' (bug fix).",
+  "When you create a new atomic update, also pick category: 'new' (a new capability), 'improvement' (better",
+  "existing behavior), 'fix' (a bug fix), or 'announcement' (a user-facing notice rather than a feature/fix:",
+  "a deprecation, a sunset/removal, a pricing/policy change, or an availability heads-up).",
   "Return exactly one action per event. Use only atomicUpdateId values from the provided list.",
   "Write title as a short noun phrase and summary as one plain sentence describing the user-visible benefit.",
 ].join(" ");

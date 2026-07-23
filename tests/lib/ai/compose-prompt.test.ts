@@ -30,7 +30,7 @@ describe("buildSystemPrompt", () => {
 
 const AUS = [
   { id: "a1", title: "CSV export", summary: "Export reports as CSV.", category: "new" as const },
-  { id: "a2", title: "Faster search", summary: "Search returns in under a second.", category: "improved" as const },
+  { id: "a2", title: "Faster search", summary: "Search returns in under a second.", category: "improvement" as const },
 ];
 
 describe("serializeAtomicUpdates", () => {
