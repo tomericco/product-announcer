@@ -7,9 +7,10 @@ import {
 } from "@/components/ui/empty-state";
 import { requireSession } from "@/lib/workspace/session";
 import { openAtomicUpdatesForReassign } from "@/lib/change-events/reassign";
-import { listChangeEvents, type ChangeEventFilters } from "./actions";
+import { listChangeEvents, listImportRepos, type ChangeEventFilters } from "./actions";
 import { ChangeEventsFilters } from "./change-events-filters";
 import { ChangeEventRow } from "./change-event-row";
+import { ImportDialog } from "./import-dialog";
 
 const TYPE_VALUES = ["commit", "pull_request", "task"] as const;
 const PROVIDER_VALUES = ["github", "notion"] as const;
@@ -67,20 +68,26 @@ export default async function ChangeEventsPage({
   };
 
   const session = await requireSession();
-  const [rows, openAtomicUpdates] = await Promise.all([
+  const [rows, openAtomicUpdates, importRepos] = await Promise.all([
     listChangeEvents(filters),
     openAtomicUpdatesForReassign(session.user.tenantId),
+    listImportRepos(),
   ]);
 
   const targets = openAtomicUpdates.map((au) => ({ id: au.id, title: au.title }));
 
   return (
     <div className="space-y-4">
-      <h1 className="text-xl font-semibold">Change events</h1>
-      <p className="text-sm text-muted-foreground">
-        Every commit, pull request, and task the resolver has seen. Move one to a different
-        atomic update, detach it, or split it into a new one.
-      </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-xl font-semibold">Change events</h1>
+          <p className="text-sm text-muted-foreground">
+            Every commit, pull request, and task the resolver has seen. Move one to a different
+            atomic update, detach it, or split it into a new one.
+          </p>
+        </div>
+        <ImportDialog repos={importRepos} />
+      </div>
 
       <ChangeEventsFilters
         type={filters.type ?? "all"}

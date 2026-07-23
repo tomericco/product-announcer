@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Download, ExternalLink } from "lucide-react";
 import { listImportableCommits, importCommits, type ImportableCommit } from "./import-actions";
+import type { ImportRepo } from "./actions";
 import type { CommitSelection } from "@/lib/change-events/import-commits";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,13 +14,12 @@ import {
   Dialog,
   DialogClose,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-
-export type ImportRepo = { id: string; fullName: string; watchedBranch: string };
 
 const ALL = "all";
 
@@ -27,7 +27,7 @@ function selectionKey(repoId: string, sha: string) {
   return `${repoId}:${sha}`;
 }
 
-export function ImportCommitsDialog({ repos }: { repos: ImportRepo[] }) {
+export function ImportDialog({ repos }: { repos: ImportRepo[] }) {
   const [open, setOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<string>(ALL);
   const [commits, setCommits] = useState<ImportableCommit[]>([]);
@@ -201,13 +201,16 @@ export function ImportCommitsDialog({ repos }: { repos: ImportRepo[] }) {
         render={
           <Button variant="outline" disabled={repos.length === 0}>
             <Download />
-            Import commits
+            Import
           </Button>
         }
       />
       <DialogContent className="flex max-h-[85dvh] flex-col gap-5 p-6 sm:max-w-3xl">
         <DialogHeader>
-          <DialogTitle>Import commits</DialogTitle>
+          <DialogTitle>Import</DialogTitle>
+          {/* Commits are the first source this dialog supports; PR and Notion-task
+              import will follow into the same flow. */}
+          <DialogDescription>From commits for now — PRs and Notion tasks are next.</DialogDescription>
         </DialogHeader>
 
         <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as string)}>

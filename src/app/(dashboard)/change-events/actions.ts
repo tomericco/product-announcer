@@ -3,9 +3,11 @@
 import { and, desc, eq, isNotNull, isNull, not, or } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { db } from "@/db";
-import { atomicUpdates, changeEvents } from "@/db/schema";
+import { atomicUpdates, changeEvents, repos } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { reassignChangeEvent, type ReassignResult, type ReassignTarget } from "@/lib/change-events/reassign";
+
+export type ImportRepo = { id: string; fullName: string; watchedBranch: string };
 
 export type ChangeEventRow = {
   id: string;
@@ -180,4 +182,19 @@ export async function reassign(formData: FormData): Promise<ReassignResult> {
   const result = await reassignChangeEvent({ tenantId, userId, eventId, target, confirmEmptyDeletion });
   revalidatePath("/change-events");
   return result;
+}
+
+// Kept in this "use server" module (not queried directly in page.tsx) so the
+// page component's exports stay importable from client components without
+// dragging server-only deps like `db` into the client bundle.
+export async function listImportRepos(): Promise<ImportRepo[]> {
+  const session = await requireSession();
+
+  const tenantRepos = await db.select().from(repos).where(eq(repos.tenantId, session.user.tenantId));
+
+  return tenantRepos.map((r) => ({
+    id: r.id,
+    fullName: r.githubRepoFullName,
+    watchedBranch: r.watchedBranch,
+  }));
 }

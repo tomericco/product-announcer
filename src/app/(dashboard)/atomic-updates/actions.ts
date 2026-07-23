@@ -3,9 +3,8 @@
 import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { db } from "@/db";
-import { atomicUpdates, changeEvents, repos } from "@/db/schema";
+import { atomicUpdates, changeEvents } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
-import type { ImportRepo } from "./import-commits-dialog";
 
 export type AtomicUpdateEvent = {
   id: string;
@@ -117,20 +116,4 @@ export async function editAtomicUpdate(
     .where(and(eq(atomicUpdates.id, id), eq(atomicUpdates.tenantId, session.user.tenantId)));
 
   revalidatePath("/atomic-updates");
-}
-
-// Kept in this "use server" module (not queried directly in page.tsx) so the
-// page component's exports (CategoryBadge, CATEGORY_LABEL) stay importable
-// from client components without dragging server-only deps like `db` into
-// the client bundle.
-export async function listImportRepos(): Promise<ImportRepo[]> {
-  const session = await requireSession();
-
-  const tenantRepos = await db.select().from(repos).where(eq(repos.tenantId, session.user.tenantId));
-
-  return tenantRepos.map((r) => ({
-    id: r.id,
-    fullName: r.githubRepoFullName,
-    watchedBranch: r.watchedBranch,
-  }));
 }

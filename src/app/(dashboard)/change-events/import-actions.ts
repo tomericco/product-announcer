@@ -1,5 +1,10 @@
 "use server";
 
+// This file currently handles commit import only. It's the seam for future
+// import sources (PRs, Notion tasks) — new sources get their own
+// list/import actions here (or alongside), fanning into the same
+// `ImportDialog` UI.
+
 import { and, eq, inArray, ne } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { db } from "@/db";
@@ -96,6 +101,9 @@ export async function importCommits(input: {
     getCommitDiff
   );
 
+  // Imported commits can resolve straight into atomic updates, and the
+  // trigger now lives on /change-events — revalidate both surfaces.
   revalidatePath("/atomic-updates");
+  revalidatePath("/change-events");
   return result;
 }
