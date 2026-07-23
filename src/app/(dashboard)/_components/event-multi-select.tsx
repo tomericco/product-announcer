@@ -5,7 +5,13 @@ import { ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 export type PickerType = "commit" | "pull_request";
 
@@ -112,20 +118,27 @@ export function EventMultiSelect({
 
   return (
     <>
-      <Tabs value={activeType} onValueChange={(v) => onTypeChange(v as PickerType)}>
-        <TabsList>
-          {enabledTypes.map((t) => (
-            <TabsTrigger key={t} value={t}>
-              {TYPE_LABEL[t]}
-            </TabsTrigger>
-          ))}
-          <TabsTrigger value="task" disabled>
-            Tasks — soon
-          </TabsTrigger>
-        </TabsList>
-      </Tabs>
-
-      {filtersSlot}
+      {/* Header: caller-supplied filters (e.g. the import dialog's repo tabs)
+          on the left, the event-type dropdown right-aligned. With no
+          filtersSlot the dropdown simply sits on the right. */}
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0 flex-1">{filtersSlot}</div>
+        <Select value={activeType} onValueChange={(v) => onTypeChange(v as PickerType)}>
+          <SelectTrigger className="w-36 shrink-0">
+            <SelectValue>{TYPE_LABEL[activeType]}</SelectValue>
+          </SelectTrigger>
+          <SelectContent>
+            {enabledTypes.map((t) => (
+              <SelectItem key={t} value={t}>
+                {TYPE_LABEL[t]}
+              </SelectItem>
+            ))}
+            <SelectItem value="task" disabled>
+              Tasks — soon
+            </SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
 
       <Input
         placeholder={searchPlaceholder}

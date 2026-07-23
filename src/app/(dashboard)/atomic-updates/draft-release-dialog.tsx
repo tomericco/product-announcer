@@ -45,6 +45,9 @@ export function DraftReleaseDialog({ atomicUpdateIds }: { atomicUpdateIds: strin
   const [releaseId, setReleaseId] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const lastTransitionRef = useRef(0);
+  // Set by the Abort button so its programmatic close is allowed through the
+  // "non-dismissible while generating" guard in onOpenChange below.
+  const closingRef = useRef(false);
 
   function reset() {
     abortRef.current?.abort();
@@ -134,18 +137,32 @@ export function DraftReleaseDialog({ atomicUpdateIds }: { atomicUpdateIds: strin
     }
   }
 
+  // Aborts the in-flight generation and closes the modal. The onOpenChange
+  // guard blocks overlay/Esc dismissal while generating, so this routes the
+  // close through closingRef to get past it.
+  function abort() {
+    closingRef.current = true;
+    reset();
+    setOpen(false);
+  }
+
   const count = atomicUpdateIds.length;
 
   return (
     <Dialog
       open={open}
       onOpenChange={(next) => {
+        // While a draft is generating the modal is non-dismissible: swallow
+        // overlay-click / Esc close requests. Abort is the only way out.
+        if (!next && phase === "progress" && !closingRef.current) return;
+        closingRef.current = false;
         setOpen(next);
         if (!next) reset();
       }}
     >
       <DialogTrigger render={<Button disabled={count === 0}>Draft release ({count})</Button>} />
-      <DialogContent className="flex flex-col gap-5 p-6 sm:max-w-lg">
+      {/* No close (X) button while generating — Abort is the deliberate exit. */}
+      <DialogContent showCloseButton={phase !== "progress"} className="flex flex-col gap-5 p-6 sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Draft release</DialogTitle>
         </DialogHeader>
@@ -164,28 +181,35 @@ export function DraftReleaseDialog({ atomicUpdateIds }: { atomicUpdateIds: strin
         )}
 
         {phase === "progress" && (
-          <ol className="space-y-2">
-            {DRAFT_STEPS.map((step) => {
-              const st = statuses[step.key];
-              return (
-                <li key={step.key} className="flex items-center gap-2 text-sm">
-                  {st === "done" ? (
-                    <Check className="size-4 text-emerald-600" />
-                  ) : st === "active" ? (
-                    <Loader2 className="size-4 animate-spin text-foreground" />
-                  ) : (
-                    <Circle className="size-4 text-muted-foreground/40" />
-                  )}
-                  <span className={st === "pending" ? "text-muted-foreground" : "text-foreground"}>
-                    {step.label}
-                  </span>
-                  {st === "active" && detail && (
-                    <span className="text-xs text-muted-foreground">· {detail}</span>
-                  )}
-                </li>
-              );
-            })}
-          </ol>
+          <div className="space-y-5">
+            <ol className="space-y-2">
+              {DRAFT_STEPS.map((step) => {
+                const st = statuses[step.key];
+                return (
+                  <li key={step.key} className="flex items-center gap-2 text-sm">
+                    {st === "done" ? (
+                      <Check className="size-4 text-emerald-600" />
+                    ) : st === "active" ? (
+                      <Loader2 className="size-4 animate-spin text-foreground" />
+                    ) : (
+                      <Circle className="size-4 text-muted-foreground/40" />
+                    )}
+                    <span className={st === "pending" ? "text-muted-foreground" : "text-foreground"}>
+                      {step.label}
+                    </span>
+                    {st === "active" && detail && (
+                      <span className="text-xs text-muted-foreground">· {detail}</span>
+                    )}
+                  </li>
+                );
+              })}
+            </ol>
+            <div className="flex justify-end">
+              <Button variant="outline" onClick={abort}>
+                Abort
+              </Button>
+            </div>
+          </div>
         )}
 
         {phase === "error" && (
