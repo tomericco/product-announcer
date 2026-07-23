@@ -3,6 +3,7 @@ import { vi } from "vitest";
 import {
   truncateDiff,
   listRepoBranches,
+  listRepoPullRequests,
   getGithubApp,
   listPushCommits,
   getCommitPulls,
@@ -45,6 +46,56 @@ describe("listRepoBranches", () => {
       repo: "web",
       per_page: 100,
     });
+    spy.mockRestore();
+  });
+});
+
+describe("listRepoPullRequests", () => {
+  it("lists closed PRs targeting the base branch and filters out unmerged ones", async () => {
+    const fakeOctokit = {
+      paginate: vi.fn().mockResolvedValue([
+        {
+          number: 42,
+          title: "Add X",
+          body: "Does X",
+          html_url: "https://github.com/acme/x/pull/42",
+          merged_at: "2026-07-01T00:00:00Z",
+          user: { login: "alice" },
+        },
+        {
+          number: 43,
+          title: "Closed without merge",
+          body: null,
+          html_url: "https://github.com/acme/x/pull/43",
+          merged_at: null,
+          user: { login: "bob" },
+        },
+      ]),
+      rest: { pulls: { list: "PULLS_LIST_ENDPOINT" } },
+    };
+    const spy = vi.spyOn(getGithubApp(), "getInstallationOctokit").mockResolvedValue(fakeOctokit as never);
+
+    const result = await listRepoPullRequests("1", "acme/x", "main");
+
+    expect(fakeOctokit.paginate).toHaveBeenCalledWith("PULLS_LIST_ENDPOINT", {
+      owner: "acme",
+      repo: "x",
+      state: "closed",
+      base: "main",
+      sort: "updated",
+      direction: "desc",
+      per_page: 100,
+    });
+    expect(result).toEqual([
+      {
+        number: 42,
+        title: "Add X",
+        body: "Does X",
+        url: "https://github.com/acme/x/pull/42",
+        mergedAt: "2026-07-01T00:00:00Z",
+        authorName: "alice",
+      },
+    ]);
     spy.mockRestore();
   });
 });

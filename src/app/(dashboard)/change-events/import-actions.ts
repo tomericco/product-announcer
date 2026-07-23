@@ -10,8 +10,9 @@ import { revalidatePath } from "next/cache";
 import { db } from "@/db";
 import { changeEvents, repos } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
-import { getCommitDiff, listRepoCommits } from "@/lib/integrations/github/github";
+import { getCommitDiff, listRepoCommits, listRepoPullRequests } from "@/lib/integrations/github/github";
 import { importSelectedCommits, type CommitSelection } from "@/lib/change-events/import-commits";
+import { importSelectedPullRequests, type PullRequestSelection } from "@/lib/change-events/import-pull-requests";
 
 export type ImportableCommit = {
   repoId: string;
@@ -103,6 +104,83 @@ export async function importCommits(input: {
 
   // Imported commits can resolve straight into atomic updates, and the
   // trigger now lives on /change-events — revalidate both surfaces.
+  revalidatePath("/atomic-updates");
+  revalidatePath("/change-events");
+  return result;
+}
+
+export type ImportablePullRequest = {
+  repoId: string;
+  repoFullName: string;
+  number: number;
+  title: string;
+  body: string | null;
+  url: string;
+  mergedAt: string | null;
+  authorName: string | null;
+  imported: boolean;
+};
+
+export async function listImportablePullRequests(input: {
+  repoIds: string[];
+}): Promise<{ pullRequests: ImportablePullRequest[] }> {
+  const session = await requireSession();
+  if (input.repoIds.length === 0) return { pullRequests: [] };
+
+  const ownedRepos = await db
+    .select()
+    .from(repos)
+    .where(and(eq(repos.tenantId, session.user.tenantId), inArray(repos.id, input.repoIds)));
+
+  const perRepo = await Promise.all(
+    ownedRepos.map(async (repo) => {
+      let prs;
+      try {
+        prs = await listRepoPullRequests(repo.githubInstallationId, repo.githubRepoFullName, repo.watchedBranch);
+      } catch {
+        return [] as ImportablePullRequest[];
+      }
+      const numbers = prs.map((p) => p.number);
+      const existing = numbers.length
+        ? await db
+            .select({ number: changeEvents.prNumber })
+            .from(changeEvents)
+            .where(
+              and(
+                eq(changeEvents.repoId, repo.id),
+                inArray(changeEvents.prNumber, numbers),
+                ne(changeEvents.status, "excluded")
+              )
+            )
+        : [];
+      const importedNumbers = new Set(existing.map((e) => e.number));
+      return prs.map((p) => ({
+        repoId: repo.id,
+        repoFullName: repo.githubRepoFullName,
+        number: p.number,
+        title: p.title,
+        body: p.body,
+        url: p.url,
+        mergedAt: p.mergedAt,
+        authorName: p.authorName,
+        imported: importedNumbers.has(p.number),
+      }));
+    })
+  );
+
+  const pullRequests = perRepo.flat().sort((a, b) => {
+    const ta = a.mergedAt ? Date.parse(a.mergedAt) : 0;
+    const tb = b.mergedAt ? Date.parse(b.mergedAt) : 0;
+    return tb - ta;
+  });
+  return { pullRequests };
+}
+
+export async function importPullRequests(input: {
+  selections: PullRequestSelection[];
+}): Promise<{ importedCount: number }> {
+  const session = await requireSession();
+  const result = await importSelectedPullRequests({ tenantId: session.user.tenantId, selections: input.selections });
   revalidatePath("/atomic-updates");
   revalidatePath("/change-events");
   return result;

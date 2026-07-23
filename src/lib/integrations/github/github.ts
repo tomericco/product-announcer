@@ -74,6 +74,45 @@ export async function listRepoCommits(
   }));
 }
 
+export type RepoPullRequest = {
+  number: number;
+  title: string;
+  body: string | null;
+  url: string;
+  mergedAt: string | null;
+  authorName: string | null;
+};
+
+export async function listRepoPullRequests(
+  installationId: string,
+  repoFullName: string,
+  base: string
+): Promise<RepoPullRequest[]> {
+  const [owner, repo] = repoFullName.split("/");
+  const installationOctokit = await getGithubApp().getInstallationOctokit(Number(installationId));
+  // Closed PRs targeting the watched branch, newest-updated first. Only MERGED
+  // ones are shipped changes, so filter out closed-unmerged (merged_at null).
+  const prs = await installationOctokit.paginate(installationOctokit.rest.pulls.list, {
+    owner,
+    repo,
+    state: "closed",
+    base,
+    sort: "updated",
+    direction: "desc",
+    per_page: 100,
+  });
+  return prs
+    .filter((pr) => pr.merged_at != null)
+    .map((pr) => ({
+      number: pr.number,
+      title: pr.title,
+      body: pr.body ?? null,
+      url: pr.html_url,
+      mergedAt: pr.merged_at ?? null,
+      authorName: pr.user?.login ?? null,
+    }));
+}
+
 export async function getCommitDiff(
   installationId: string,
   repoFullName: string,
