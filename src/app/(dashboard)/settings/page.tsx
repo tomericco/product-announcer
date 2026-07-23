@@ -1,12 +1,9 @@
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
-import { repos, scheduleConfigs, tenants, systemPersonas } from "@/db/schema";
+import { scheduleConfigs, tenants, systemPersonas } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
-import { getGithubApp, listAccessibleRepos, listRepoBranches } from "@/lib/integrations/github/github";
 import { getOrCreateBrandProfile } from "@/lib/workspace/brand-profile";
-import { saveWorkspaceName, saveBrandProfile, removeRepo } from "./actions";
-import { AddRepoDialog } from "./add-repo-dialog";
-import { RepoBranchSelect } from "./repo-branch-select";
+import { saveWorkspaceName, saveBrandProfile } from "./actions";
 import { PersonasEditor } from "./personas-editor";
 import { BrandStyleImport } from "./brand-style-import";
 import { IndustrySelect } from "./industry-select";
@@ -22,7 +19,6 @@ export default async function SettingsPage() {
   const session = await requireSession();
   const brandProfile = await getOrCreateBrandProfile(session.user.tenantId);
   const [tenant] = await db.select().from(tenants).where(eq(tenants.id, session.user.tenantId)).limit(1);
-  const tenantRepos = await db.select().from(repos).where(eq(repos.tenantId, session.user.tenantId));
   const [workspaceSchedule] = await db
     .select()
     .from(scheduleConfigs)
@@ -35,43 +31,6 @@ export default async function SettingsPage() {
     })
     .from(systemPersonas)
     .orderBy(systemPersonas.sortOrder);
-
-  let installUrl: string | null = null;
-  if (!tenant?.githubInstallationId) {
-    try {
-      installUrl = await getGithubApp().getInstallationUrl({ state: `${session.user.tenantId}|settings` });
-    } catch {
-      installUrl = null;
-    }
-  }
-  const accessibleRepos = tenant?.githubInstallationId ? await listAccessibleRepos(tenant.githubInstallationId) : [];
-  const connectedFullNames = new Set(tenantRepos.map((r) => r.githubRepoFullName));
-  const availableAccessible = accessibleRepos.filter((r) => !connectedFullNames.has(r.fullName));
-
-  // Branch lists power both the per-repo branch selector (connected repos) and the
-  // Add-repo picker (not-yet-connected repos). One guarded fetch per repo — a
-  // transient GitHub error on ONE repo must not crash the whole Settings page; it
-  // simply degrades to an empty branch list for that repo.
-  const branchesByFullName = new Map<string, string[]>();
-  if (tenant?.githubInstallationId) {
-    const fullNames = [
-      ...tenantRepos.map((r) => r.githubRepoFullName),
-      ...availableAccessible.map((r) => r.fullName),
-    ];
-    for (const fullName of fullNames) {
-      try {
-        branchesByFullName.set(fullName, await listRepoBranches(tenant.githubInstallationId, fullName));
-      } catch {
-        branchesByFullName.set(fullName, []);
-      }
-    }
-  }
-
-  const availableRepos = availableAccessible.map((r) => ({
-    fullName: r.fullName,
-    defaultBranch: r.defaultBranch,
-    branches: branchesByFullName.get(r.fullName) ?? [],
-  }));
 
   return (
     <div className="space-y-8">
@@ -86,54 +45,6 @@ export default async function SettingsPage() {
               Save
             </Button>
           </ToastForm>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>GitHub repos</CardTitle>
-        </CardHeader>
-        <CardContent>
-          {!tenant?.githubInstallationId ? (
-            installUrl ? (
-              <Button variant="outline" render={<a href={installUrl} />}>
-                Connect GitHub
-              </Button>
-            ) : (
-              <p className="text-sm text-muted-foreground">GitHub integration isn&apos;t configured yet.</p>
-            )
-          ) : (
-            <div className="space-y-4">
-              {tenantRepos.length > 0 ? (
-                <ul className="divide-y divide-border">
-                  {tenantRepos.map((repo) => (
-                    <li
-                      key={repo.id}
-                      className="flex items-center justify-between gap-3 py-2 first:pt-0 last:pb-0"
-                    >
-                      <span className="min-w-0 flex-1 truncate text-sm font-medium">
-                        {repo.githubRepoFullName}
-                      </span>
-                      <RepoBranchSelect
-                        repoId={repo.id}
-                        currentBranch={repo.watchedBranch}
-                        branches={branchesByFullName.get(repo.githubRepoFullName) ?? []}
-                      />
-                      <ToastForm action={removeRepo} successMessage="Repo removed">
-                        <input type="hidden" name="repoId" value={repo.id} />
-                        <Button type="submit" variant="ghost" size="sm" className="text-muted-foreground">
-                          Remove
-                        </Button>
-                      </ToastForm>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="text-sm text-muted-foreground">No repos connected yet.</p>
-              )}
-              <AddRepoDialog availableRepos={availableRepos} />
-            </div>
-          )}
         </CardContent>
       </Card>
 

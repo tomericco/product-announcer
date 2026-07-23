@@ -50,7 +50,7 @@ export async function addRepo(formData: FormData) {
 
   await addSelectedRepos(session.user.tenantId, tenant.githubInstallationId, [{ fullName, branch }]);
 
-  revalidatePath("/settings");
+  revalidatePath("/integrations");
   revalidatePath("/atomic-updates");
 }
 
@@ -80,20 +80,7 @@ export async function updateRepoBranch(formData: FormData) {
     .set({ watchedBranch: branch })
     .where(and(eq(repos.id, repoId), eq(repos.tenantId, session.user.tenantId)));
 
-  revalidatePath("/settings");
-  revalidatePath("/atomic-updates");
-}
-
-export async function removeRepo(formData: FormData) {
-  const session = await requireSession();
-  const repoId = (formData.get("repoId") as string)?.trim();
-  if (!repoId) return;
-
-  // Tenant-scoped delete so one tenant can't remove another's repo (IDOR guard).
-  // change_events reference repos with onDelete cascade, so their rows are cleaned up.
-  await db.delete(repos).where(and(eq(repos.id, repoId), eq(repos.tenantId, session.user.tenantId)));
-
-  revalidatePath("/settings");
+  revalidatePath("/integrations");
   revalidatePath("/atomic-updates");
 }
 

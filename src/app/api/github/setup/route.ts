@@ -20,6 +20,6 @@ export async function GET(request: NextRequest) {
     .set({ githubInstallationId: installationId })
     .where(eq(tenants.id, session.user.tenantId));
 
-  const destination = returnTo === "settings" ? "/settings" : "/onboarding";
+  const destination = returnTo === "integrations" ? "/integrations" : returnTo === "settings" ? "/settings" : "/onboarding";
   return NextResponse.redirect(new URL(`${destination}?github_connect=success`, request.url));
 }

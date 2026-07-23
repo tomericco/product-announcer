@@ -1,9 +1,9 @@
 "use server";
 
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { db } from "@/db";
-import { webhookConfigs, webflowConnections } from "@/db/schema";
+import { repos, webhookConfigs, webflowConnections } from "@/db/schema";
 import type { WebflowFieldMapping } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { encryptSecret, decryptSecret } from "@/lib/credentials/encryption";
@@ -46,6 +46,19 @@ function requiredField(formData: FormData, name: string): string {
 
 function failure(error: unknown, fallback: string): ActionResult {
   return { ok: false, error: error instanceof Error ? error.message : fallback };
+}
+
+export async function removeRepo(formData: FormData) {
+  const session = await requireSession();
+  const repoId = (formData.get("repoId") as string)?.trim();
+  if (!repoId) return;
+
+  // Tenant-scoped delete so one tenant can't remove another's repo (IDOR guard).
+  // change_events reference repos with onDelete cascade, so their rows are cleaned up.
+  await db.delete(repos).where(and(eq(repos.id, repoId), eq(repos.tenantId, session.user.tenantId)));
+
+  revalidatePath("/integrations");
+  revalidatePath("/atomic-updates");
 }
 
 export async function saveWebhookConfig(formData: FormData): Promise<ActionResult> {

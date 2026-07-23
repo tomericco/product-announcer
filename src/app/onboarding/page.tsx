@@ -12,7 +12,7 @@ import {
   saveWorkspaceName,
   importBrandStyle,
 } from "./actions";
-import { RepoRow } from "@/app/(dashboard)/settings/repo-row";
+import { RepoRow } from "@/app/(dashboard)/integrations/repo-row";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";

@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Check, ChevronsUpDown } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { updateRepoBranch } from "./actions";
+import { updateRepoBranch } from "../settings/actions";
 import { Button } from "@/components/ui/button";
 import {
   Command,
