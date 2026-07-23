@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
 import { atomicUpdates, changeEvents } from "@/db/schema";
 import { refreshAtomicUpdates } from "@/lib/ai/regenerate-atomic-summary";
@@ -24,6 +24,18 @@ export type ReassignInput = {
    * user before the atomic update is silently dissolved (Finding 2).
    */
   confirmEmptyDeletion?: boolean;
+  /**
+   * When `true`, every still-open atomic update affected by this move (the
+   * target for `existing`/`new`, and the surviving source) has its
+   * `summaryEditedAt` freeze CLEARED after the transaction commits and before
+   * the best-effort `refresh` runs — so a hand-edited title/summary is
+   * overwritten by the new evidence instead of being skipped by
+   * `refreshAtomicUpdates`'s freeze check. Default (absent/false) preserves
+   * today's behavior: a hand-edited update never regenerates automatically.
+   * `refreshAtomicUpdates` itself is untouched; clearing the flag here is
+   * what unfreezes it.
+   */
+  forceRegenerate?: boolean;
 };
 
 type ReassignDeps = {
@@ -113,7 +125,7 @@ export async function reassignChangeEvent(
 ): Promise<ReassignResult> {
   const database = deps.database ?? defaultDb;
   const refresh = deps.refresh ?? refreshAtomicUpdates;
-  const { tenantId, userId, eventId, target, confirmEmptyDeletion } = input;
+  const { tenantId, userId, eventId, target, confirmEmptyDeletion, forceRegenerate } = input;
 
   type TxOutcome =
     | { ok: true; affectedIds: string[]; deletedAtomicUpdate?: { id: string; title: string } }
@@ -266,6 +278,25 @@ export async function reassignChangeEvent(
 
   try {
     if (outcome.affectedIds.length > 0) {
+      // Clear the hand-edit freeze on exactly the affected atomic updates
+      // BEFORE calling refresh, so refreshAtomicUpdates's own
+      // `summaryEditedAt IS NULL` check now passes and it regenerates from
+      // the new evidence instead of skipping. refreshAtomicUpdates itself is
+      // unchanged — this clear is what unfreezes it. Scoped to
+      // `status='open'` to match refresh's own precondition (a released
+      // update is never in affectedIds anyway, but this stays defensive).
+      if (forceRegenerate) {
+        await database
+          .update(atomicUpdates)
+          .set({ summaryEditedAt: null })
+          .where(
+            and(
+              inArray(atomicUpdates.id, outcome.affectedIds),
+              eq(atomicUpdates.tenantId, tenantId),
+              eq(atomicUpdates.status, "open")
+            )
+          );
+      }
       await refresh(database, tenantId, outcome.affectedIds);
     }
   } catch (error) {

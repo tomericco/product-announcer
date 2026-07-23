@@ -511,6 +511,119 @@ describe("reassignChangeEvent", () => {
     });
   });
 
+  describe("forceRegenerate (Task 2)", () => {
+    it("load-bearing: forceRegenerate:true clears a frozen target's summaryEditedAt before refresh runs", async () => {
+      const { tenant, repo } = await seed();
+      const target = await insertAtomic(tenant.id, "Target", { summaryEditedAt: new Date() });
+      const event = await insertEvent(tenant.id, repo.id, "sha-force-regen");
+      const refresh = vi.fn().mockResolvedValue(undefined);
+
+      const result = await reassignChangeEvent(
+        {
+          tenantId: tenant.id,
+          userId: USER,
+          eventId: event.id,
+          target: { kind: "existing", atomicUpdateId: target.id },
+          forceRegenerate: true,
+        },
+        { refresh }
+      );
+
+      expect(result).toEqual({ ok: true });
+
+      const [after] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, target.id));
+      expect(after.summaryEditedAt).toBeNull();
+
+      expect(refresh).toHaveBeenCalledTimes(1);
+      const [, , ids] = refresh.mock.calls[0];
+      expect(ids).toContain(target.id);
+    });
+
+    it("contrast: forceRegenerate false/absent leaves the target's summaryEditedAt SET (freeze intact)", async () => {
+      const { tenant, repo } = await seed();
+      const target = await insertAtomic(tenant.id, "Target", { summaryEditedAt: new Date() });
+      const event = await insertEvent(tenant.id, repo.id, "sha-no-force-regen");
+      const refresh = vi.fn().mockResolvedValue(undefined);
+
+      const result = await reassignChangeEvent(
+        {
+          tenantId: tenant.id,
+          userId: USER,
+          eventId: event.id,
+          target: { kind: "existing", atomicUpdateId: target.id },
+          // forceRegenerate omitted entirely.
+        },
+        { refresh }
+      );
+
+      expect(result).toEqual({ ok: true });
+
+      const [after] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, target.id));
+      expect(after.summaryEditedAt).not.toBeNull();
+
+      expect(refresh).toHaveBeenCalledTimes(1);
+    });
+
+    it("forceRegenerate:true also clears the freeze on the surviving source atomic update", async () => {
+      const { tenant, repo } = await seed();
+      const source = await insertAtomic(tenant.id, "Source", { summaryEditedAt: new Date() });
+      const target = await insertAtomic(tenant.id, "Target", { summaryEditedAt: new Date() });
+      const kept = await insertEvent(tenant.id, repo.id, "sha-force-kept", { atomicUpdateId: source.id });
+      const event = await insertEvent(tenant.id, repo.id, "sha-force-moved", { atomicUpdateId: source.id });
+      const refresh = vi.fn().mockResolvedValue(undefined);
+
+      const result = await reassignChangeEvent(
+        {
+          tenantId: tenant.id,
+          userId: USER,
+          eventId: event.id,
+          target: { kind: "existing", atomicUpdateId: target.id },
+          forceRegenerate: true,
+        },
+        { refresh }
+      );
+
+      expect(result).toEqual({ ok: true });
+
+      const [survivingSource] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, source.id));
+      expect(survivingSource.summaryEditedAt).toBeNull();
+      const [after] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, target.id));
+      expect(after.summaryEditedAt).toBeNull();
+
+      expect(refresh).toHaveBeenCalledTimes(1);
+      const [, , ids] = refresh.mock.calls[0];
+      expect(new Set(ids)).toEqual(new Set([target.id, source.id]));
+
+      void kept;
+    });
+
+    it("forceRegenerate:true is a no-op when refresh is never called (needs_confirmation short-circuits before the clear)", async () => {
+      const { tenant, repo } = await seed();
+      const source = await insertAtomic(tenant.id, "Source", { summaryEditedAt: new Date() });
+      const target = await insertAtomic(tenant.id, "Target");
+      const event = await insertEvent(tenant.id, repo.id, "sha-force-needs-confirm", { atomicUpdateId: source.id });
+      const refresh = vi.fn().mockResolvedValue(undefined);
+
+      const result = await reassignChangeEvent(
+        {
+          tenantId: tenant.id,
+          userId: USER,
+          eventId: event.id,
+          target: { kind: "existing", atomicUpdateId: target.id },
+          forceRegenerate: true,
+        },
+        { refresh }
+      );
+
+      expect(result.ok).toBe(false);
+      expect((result as { needsConfirmation?: boolean }).needsConfirmation).toBe(true);
+
+      const [unchangedSource] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, source.id));
+      expect(unchangedSource.summaryEditedAt).not.toBeNull();
+      expect(refresh).not.toHaveBeenCalled();
+    });
+  });
+
   describe("deterministic updatedAt bump fires the catch-up evidence delta (Finding 1)", () => {
     it("bumps updatedAt on a still-open, in-draft target even when refresh is a no-op and the summary is hand-edited", async () => {
       const { tenant, repo } = await seed();

@@ -9,6 +9,7 @@ import {
   createAtomicUpdateFromEvents,
   type CreateFromEventsResult,
 } from "@/lib/change-events/create-from-events";
+import { reassignChangeEvent, type ReassignResult } from "@/lib/change-events/reassign";
 
 export type AtomicUpdateEvent = {
   id: string;
@@ -347,6 +348,92 @@ export async function createFromEvents(formData: FormData): Promise<CreateFromEv
   const confirmEmptyDeletion = parseConfirmEmptyDeletion(formData);
 
   const result = await createAtomicUpdateFromEvents({ tenantId, userId, eventIds, confirmEmptyDeletion });
+  revalidatePath("/atomic-updates");
+  return result;
+}
+
+/**
+ * Adds an existing change event as evidence for `atomicUpdateId` (the
+ * per-update "add evidence" editor, phase 4). The event may currently be
+ * unassigned or sitting in a DIFFERENT open atomic update — either way this
+ * is just `reassignChangeEvent`'s `existing` target, which already handles
+ * both: an unassigned event is picked up directly, and one in another open
+ * update is moved out, gated by the empty-source confirmation if that move
+ * would leave the other update with zero events.
+ *
+ * `forceRegenerate: true` is always passed: adding evidence to an atomic
+ * update must regenerate its title/summary from the new, larger evidence set
+ * even if a prior hand-edit had frozen it (`summaryEditedAt` set) — the
+ * owner's point in building this is that curation should reflect the
+ * evidence, not a stale manual edit.
+ *
+ * tenantId/userId always come from the session, never a parameter — mirrors
+ * every other action in this module and in `change-events/actions.ts`.
+ */
+export async function addEventToAtomicUpdate(
+  atomicUpdateId: string,
+  eventId: string,
+  confirmEmptyDeletion?: boolean
+): Promise<ReassignResult> {
+  const session = await requireSession();
+  const tenantId = session.user.tenantId;
+  const userId = session.user.id;
+
+  const result = await reassignChangeEvent({
+    tenantId,
+    userId,
+    eventId,
+    target: { kind: "existing", atomicUpdateId },
+    confirmEmptyDeletion,
+    forceRegenerate: true,
+  });
+  revalidatePath("/atomic-updates");
+  return result;
+}
+
+/**
+ * Removes `eventId` from `atomicUpdateId` (the per-update "remove evidence"
+ * editor): detaches it via `reassignChangeEvent`'s `detach` target, which
+ * ends the event at `atomicUpdateId=null, status='excluded'`. `detach`
+ * removes the event from whatever atomic update it is CURRENTLY in — so
+ * before delegating, this checks the event actually belongs to
+ * `atomicUpdateId` as given; a mismatch (e.g. a stale client removed it from
+ * a different card, or reassigned it elsewhere first) is rejected here
+ * rather than silently detaching it from wherever it really sits.
+ *
+ * Removing the last event leaves the atomic update empty — gated behind the
+ * same `confirmEmptyDeletion` empty-source confirmation as every other
+ * reassign path. `forceRegenerate: true` regenerates the SURVIVING update's
+ * title/summary from its now-smaller evidence set, overriding any prior
+ * hand-edit freeze, same rationale as `addEventToAtomicUpdate`.
+ */
+export async function removeEventFromAtomicUpdate(
+  atomicUpdateId: string,
+  eventId: string,
+  confirmEmptyDeletion?: boolean
+): Promise<ReassignResult> {
+  const session = await requireSession();
+  const tenantId = session.user.tenantId;
+  const userId = session.user.id;
+
+  const [event] = await db
+    .select({ atomicUpdateId: changeEvents.atomicUpdateId })
+    .from(changeEvents)
+    .where(and(eq(changeEvents.id, eventId), eq(changeEvents.tenantId, tenantId)))
+    .limit(1);
+
+  if (!event || event.atomicUpdateId !== atomicUpdateId) {
+    return { ok: false, reason: "Change event does not belong to this atomic update." };
+  }
+
+  const result = await reassignChangeEvent({
+    tenantId,
+    userId,
+    eventId,
+    target: { kind: "detach" },
+    confirmEmptyDeletion,
+    forceRegenerate: true,
+  });
   revalidatePath("/atomic-updates");
   return result;
 }

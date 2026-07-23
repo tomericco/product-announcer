@@ -27,6 +27,20 @@ vi.mock("../../src/lib/change-events/create-from-events", () => ({
   createAtomicUpdateFromEvents: vi.fn(async () => ({ ok: true, atomicUpdateId: "au-x" })),
 }));
 
+// addEventToAtomicUpdate/removeEventFromAtomicUpdate only orchestrate: derive
+// tenant/user from the (mocked) session, build the reassign target, force
+// regen on, call the core, and revalidate. The core's own transactional
+// behavior (moving/detaching, the empty-source confirmation gate, the
+// released-frozen guard, and — load-bearing for this task — the
+// forceRegenerate freeze-clear) is covered by
+// tests/lib/change-events/reassign.test.ts with a stubbed `refresh`. Mocking
+// it here keeps this test from touching the real regeneration path, which
+// would otherwise reach the live Anthropic API per the task's hard
+// constraint.
+vi.mock("../../src/lib/change-events/reassign", () => ({
+  reassignChangeEvent: vi.fn(async () => ({ ok: true })),
+}));
+
 import {
   editAtomicUpdate,
   listAtomicUpdates,
@@ -35,8 +49,11 @@ import {
   markAtomicUpdateHidden,
   unhideAtomicUpdate,
   listHiddenAtomicUpdates,
+  addEventToAtomicUpdate,
+  removeEventFromAtomicUpdate,
 } from "../../src/app/(dashboard)/atomic-updates/actions";
 import { createAtomicUpdateFromEvents } from "../../src/lib/change-events/create-from-events";
+import { reassignChangeEvent } from "../../src/lib/change-events/reassign";
 import { revalidatePath } from "next/cache";
 import { loadOpenAtomicUpdates } from "../../src/lib/change-events/apply-resolution";
 
@@ -684,5 +701,255 @@ describe("createFromEvents", () => {
       needsConfirmation: true,
       emptiedAtomicUpdates: [{ id: "au-old", title: "Old one", inDraft: false }],
     });
+  });
+});
+
+describe("addEventToAtomicUpdate", () => {
+  const EDIT_TENANT = "edit-evidence-session-tenant";
+  const EDIT_USER = "edit-evidence-session-user";
+
+  afterEach(() => {
+    vi.mocked(reassignChangeEvent).mockClear();
+    vi.mocked(revalidatePath).mockClear();
+    currentTenantId = "";
+    currentUserId = null;
+  });
+
+  it("calls reassignChangeEvent with an 'existing' target, forceRegenerate:true, and the session's tenant/user, then revalidates", async () => {
+    currentTenantId = EDIT_TENANT;
+    currentUserId = EDIT_USER;
+
+    const result = await addEventToAtomicUpdate("au-1", "event-1");
+
+    expect(reassignChangeEvent).toHaveBeenCalledWith({
+      tenantId: EDIT_TENANT,
+      userId: EDIT_USER,
+      eventId: "event-1",
+      target: { kind: "existing", atomicUpdateId: "au-1" },
+      confirmEmptyDeletion: undefined,
+      forceRegenerate: true,
+    });
+    expect(result).toEqual({ ok: true });
+    expect(revalidatePath).toHaveBeenCalledWith("/atomic-updates");
+  });
+
+  it("passes confirmEmptyDeletion through when the caller confirms an empty-source deletion", async () => {
+    currentTenantId = EDIT_TENANT;
+    currentUserId = EDIT_USER;
+
+    await addEventToAtomicUpdate("au-1", "event-1", true);
+
+    expect(reassignChangeEvent).toHaveBeenCalledWith({
+      tenantId: EDIT_TENANT,
+      userId: EDIT_USER,
+      eventId: "event-1",
+      target: { kind: "existing", atomicUpdateId: "au-1" },
+      confirmEmptyDeletion: true,
+      forceRegenerate: true,
+    });
+  });
+
+  it("returns a needsConfirmation result from the core without throwing", async () => {
+    currentTenantId = EDIT_TENANT;
+    currentUserId = EDIT_USER;
+    vi.mocked(reassignChangeEvent).mockResolvedValueOnce({
+      ok: false,
+      reason: "needs_confirmation",
+      needsConfirmation: true,
+      emptiedAtomicUpdate: { id: "au-old", title: "Old one", inDraft: false },
+    });
+
+    const result = await addEventToAtomicUpdate("au-1", "event-1");
+
+    expect(result).toEqual({
+      ok: false,
+      reason: "needs_confirmation",
+      needsConfirmation: true,
+      emptiedAtomicUpdate: { id: "au-old", title: "Old one", inDraft: false },
+    });
+    expect(revalidatePath).toHaveBeenCalledWith("/atomic-updates");
+  });
+
+  it("returns a rejection from the core (e.g. event in a released atomic update) without throwing", async () => {
+    currentTenantId = EDIT_TENANT;
+    currentUserId = EDIT_USER;
+    vi.mocked(reassignChangeEvent).mockResolvedValueOnce({
+      ok: false,
+      reason: "Cannot move an event out of a published atomic update.",
+    });
+
+    const result = await addEventToAtomicUpdate("au-1", "event-1");
+
+    expect(result).toEqual({
+      ok: false,
+      reason: "Cannot move an event out of a published atomic update.",
+    });
+  });
+});
+
+describe("removeEventFromAtomicUpdate", () => {
+  const REMOVE_USER = "remove-evidence-session-user";
+
+  afterEach(async () => {
+    vi.mocked(reassignChangeEvent).mockClear();
+    vi.mocked(revalidatePath).mockClear();
+    currentTenantId = "";
+    currentUserId = null;
+    await db.delete(tenants).where(eq(tenants.name, TENANT));
+  });
+
+  it("calls reassignChangeEvent with a 'detach' target, forceRegenerate:true, and the session's tenant/user, then revalidates", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const repo = await seedRepo(tenant.id);
+    const [atomic] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "Atomic", summary: "S" })
+      .returning();
+    const [event] = await db
+      .insert(changeEvents)
+      .values({
+        tenantId: tenant.id,
+        repoId: repo.id,
+        type: "commit",
+        provider: "github",
+        externalId: "sha-belongs",
+        commitSha: "sha-belongs",
+        commitMessage: "belongs to atomic",
+        atomicUpdateId: atomic.id,
+      })
+      .returning();
+
+    currentTenantId = tenant.id;
+    currentUserId = REMOVE_USER;
+
+    const result = await removeEventFromAtomicUpdate(atomic.id, event.id);
+
+    expect(reassignChangeEvent).toHaveBeenCalledWith({
+      tenantId: tenant.id,
+      userId: REMOVE_USER,
+      eventId: event.id,
+      target: { kind: "detach" },
+      confirmEmptyDeletion: undefined,
+      forceRegenerate: true,
+    });
+    expect(result).toEqual({ ok: true });
+    expect(revalidatePath).toHaveBeenCalledWith("/atomic-updates");
+  });
+
+  it("passes confirmEmptyDeletion through when removing the last event", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const repo = await seedRepo(tenant.id);
+    const [atomic] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "Atomic", summary: "S" })
+      .returning();
+    const [event] = await db
+      .insert(changeEvents)
+      .values({
+        tenantId: tenant.id,
+        repoId: repo.id,
+        type: "commit",
+        provider: "github",
+        externalId: "sha-last",
+        commitSha: "sha-last",
+        commitMessage: "last one",
+        atomicUpdateId: atomic.id,
+      })
+      .returning();
+
+    currentTenantId = tenant.id;
+    currentUserId = REMOVE_USER;
+
+    await removeEventFromAtomicUpdate(atomic.id, event.id, true);
+
+    expect(reassignChangeEvent).toHaveBeenCalledWith({
+      tenantId: tenant.id,
+      userId: REMOVE_USER,
+      eventId: event.id,
+      target: { kind: "detach" },
+      confirmEmptyDeletion: true,
+      forceRegenerate: true,
+    });
+  });
+
+  it("rejects without calling the core when the event does not belong to the given atomic update", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const repo = await seedRepo(tenant.id);
+    const [actualAtomic] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "Actual", summary: "S" })
+      .returning();
+    const [otherAtomic] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "Other", summary: "S" })
+      .returning();
+    const [event] = await db
+      .insert(changeEvents)
+      .values({
+        tenantId: tenant.id,
+        repoId: repo.id,
+        type: "commit",
+        provider: "github",
+        externalId: "sha-mismatch",
+        commitSha: "sha-mismatch",
+        commitMessage: "elsewhere",
+        atomicUpdateId: actualAtomic.id,
+      })
+      .returning();
+
+    currentTenantId = tenant.id;
+    currentUserId = REMOVE_USER;
+
+    const result = await removeEventFromAtomicUpdate(otherAtomic.id, event.id);
+
+    expect(result).toEqual({ ok: false, reason: "Change event does not belong to this atomic update." });
+    expect(reassignChangeEvent).not.toHaveBeenCalled();
+  });
+
+  it("rejects a nonexistent event without calling the core", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const [atomic] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "Atomic", summary: "S" })
+      .returning();
+
+    currentTenantId = tenant.id;
+    currentUserId = REMOVE_USER;
+
+    const result = await removeEventFromAtomicUpdate(atomic.id, "00000000-0000-0000-0000-000000000099");
+
+    expect(result).toEqual({ ok: false, reason: "Change event does not belong to this atomic update." });
+    expect(reassignChangeEvent).not.toHaveBeenCalled();
+  });
+
+  it("rejects a cross-tenant event without calling the core", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const [other] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const foreignRepo = await seedRepo(other.id);
+    const [foreignAtomic] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: other.id, title: "Foreign", summary: "S" })
+      .returning();
+    const [foreignEvent] = await db
+      .insert(changeEvents)
+      .values({
+        tenantId: other.id,
+        repoId: foreignRepo.id,
+        type: "commit",
+        provider: "github",
+        externalId: "sha-foreign-remove",
+        commitSha: "sha-foreign-remove",
+        commitMessage: "foreign change",
+        atomicUpdateId: foreignAtomic.id,
+      })
+      .returning();
+
+    currentTenantId = tenant.id;
+    currentUserId = REMOVE_USER;
+
+    const result = await removeEventFromAtomicUpdate(foreignAtomic.id, foreignEvent.id);
+
+    expect(result).toEqual({ ok: false, reason: "Change event does not belong to this atomic update." });
+    expect(reassignChangeEvent).not.toHaveBeenCalled();
   });
 });
