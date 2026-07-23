@@ -9,7 +9,10 @@ vi.mock("../../../src/lib/change-events/pipeline", () => ({ resolvePendingEvents
 import { and, eq } from "drizzle-orm";
 import { db } from "../../../src/db";
 import { tenants, repos, changeEvents } from "../../../src/db/schema";
-import { createAtomicUpdateFromImportedCommits } from "../../../src/lib/change-events/create-from-import";
+import {
+  createAtomicUpdateFromImportedCommits,
+  createAtomicUpdateFromImportedPullRequests,
+} from "../../../src/lib/change-events/create-from-import";
 import { createAtomicUpdateFromEvents } from "../../../src/lib/change-events/create-from-events";
 import type { EnrichChangeItem } from "../../../src/lib/ai/enrich-change-item";
 
@@ -103,5 +106,37 @@ describe("createAtomicUpdateFromImportedCommits", () => {
       .from(changeEvents)
       .where(and(eq(changeEvents.tenantId, tenant.id), eq(changeEvents.commitSha, "ccc")));
     expect(event.atomicUpdateId).not.toBeNull();
+  });
+
+  it("imports the selected pull requests and groups them into ONE new atomic update", async () => {
+    const { tenant, repo } = await seedRepo();
+    const enrich: EnrichChangeItem = async () => ({
+      userFacing: true,
+      impactSummary: "does a thing",
+      suggestedCategory: "new",
+      confidence: 0.9,
+    });
+
+    const result = await createAtomicUpdateFromImportedPullRequests(
+      {
+        tenantId: tenant.id,
+        userId: "u1",
+        selections: [
+          { repoId: repo.id, number: 1, title: "A", body: "a", url: "uA", mergedAt: "2026-07-01T00:00:00Z" },
+          { repoId: repo.id, number: 2, title: "B", body: "b", url: "uB", mergedAt: "2026-07-02T00:00:00Z" },
+        ],
+      },
+      { enrich, createFromEvents: groupWithMockedRefresh }
+    );
+
+    expect(result.ok).toBe(true);
+    const events = await db
+      .select()
+      .from(changeEvents)
+      .where(and(eq(changeEvents.tenantId, tenant.id), eq(changeEvents.type, "pull_request")));
+    expect(events).toHaveLength(2);
+    const auIds = new Set(events.map((e) => e.atomicUpdateId));
+    expect(auIds.size).toBe(1);
+    expect([...auIds][0]).not.toBeNull();
   });
 });
