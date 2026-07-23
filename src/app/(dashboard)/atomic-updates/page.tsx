@@ -7,6 +7,7 @@ import {
   EmptyStateDescription,
 } from "@/components/ui/empty-state";
 import { listAtomicUpdates, listHiddenAtomicUpdates, listSelectableEvents } from "./actions";
+import { listImportRepos } from "../change-events/actions";
 import { AtomicUpdatesList } from "./atomic-updates-list";
 import { NewAtomicUpdateDialog } from "./new-atomic-update-dialog";
 
@@ -16,10 +17,11 @@ export default async function AtomicUpdatesPage() {
   // evidence added to an existing one), and the hidden (non-user-facing)
   // atomic updates for the "Show hidden" section — all tenant-scoped
   // server-side reads, so no client component here ever needs to import `db`.
-  const [rows, selectableEvents, hiddenRows] = await Promise.all([
+  const [rows, selectableEvents, hiddenRows, importRepos] = await Promise.all([
     listAtomicUpdates(),
     listSelectableEvents(),
     listHiddenAtomicUpdates(),
+    listImportRepos(),
   ]);
 
   if (rows.length === 0 && hiddenRows.length === 0) {
@@ -35,7 +37,7 @@ export default async function AtomicUpdatesPage() {
             user-facing change, gathered from the commits, pull requests, and tasks behind it.
           </EmptyStateDescription>
         </EmptyState>
-        <NewAtomicUpdateDialog events={selectableEvents} />
+        <NewAtomicUpdateDialog repos={importRepos} />
       </div>
     );
   }
@@ -47,7 +49,7 @@ export default async function AtomicUpdatesPage() {
         Each one is a single user-facing change, gathered from the commits, pull requests, and tasks
         behind it.
       </p>
-      <AtomicUpdatesList rows={rows} selectableEvents={selectableEvents} hiddenRows={hiddenRows} />
+      <AtomicUpdatesList rows={rows} selectableEvents={selectableEvents} hiddenRows={hiddenRows} repos={importRepos} />
     </div>
   );
 }

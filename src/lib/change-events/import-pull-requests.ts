@@ -33,11 +33,11 @@ export async function importSelectedPullRequests(
     database?: typeof defaultDb;
     resolvePending?: typeof resolvePendingEvents;
   } = {}
-): Promise<{ importedCount: number }> {
+): Promise<{ importedCount: number; eventIds: string[] }> {
   const database = deps.database ?? defaultDb;
   const enrich = deps.enrich ?? enrichChangeItem;
   const resolvePending = deps.resolvePending ?? resolvePendingEvents;
-  if (input.selections.length === 0) return { importedCount: 0 };
+  if (input.selections.length === 0) return { importedCount: 0, eventIds: [] };
 
   const byRepo = new Map<string, PullRequestSelection[]>();
   for (const s of input.selections) {
@@ -48,6 +48,9 @@ export async function importSelectedPullRequests(
 
   let importedCount = 0;
   const resolvableIds: string[] = [];
+  // Every (re)imported event id, regardless of user-facing — callers that
+  // group a specific selection into one atomic update need all of them.
+  const insertedIds: string[] = [];
 
   for (const [repoId, selections] of byRepo) {
     const [repo] = await database
@@ -101,7 +104,10 @@ export async function importSelectedPullRequests(
 
     importedCount += inserted.reduce((a, b) => a + b.count, 0);
     for (const r of inserted) {
-      if (r.count > 0 && r.id && r.userFacing !== false) resolvableIds.push(r.id);
+      if (r.count > 0 && r.id) {
+        insertedIds.push(r.id);
+        if (r.userFacing !== false) resolvableIds.push(r.id);
+      }
     }
   }
 
@@ -110,5 +116,5 @@ export async function importSelectedPullRequests(
   // resolvePending; tests inject a `resolvePending` mock instead).
   if (resolvableIds.length > 0) await resolvePending(input.tenantId, resolvableIds);
 
-  return { importedCount };
+  return { importedCount, eventIds: insertedIds };
 }

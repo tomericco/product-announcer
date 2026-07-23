@@ -9,6 +9,7 @@ import { NewAtomicUpdateDialog } from "./new-atomic-update-dialog";
 import { unhideAtomicUpdate } from "./actions";
 import { CategoryBadge } from "./page";
 import type { AtomicUpdateRow, SelectableEventRow } from "./actions";
+import type { ImportRepo } from "../change-events/actions";
 
 // Read-only summary of a hidden (non-user-facing) atomic update, plus its one
 // available action. Deliberately not the full `AtomicUpdateCard` — a hidden
@@ -55,10 +56,12 @@ export function AtomicUpdatesList({
   rows,
   selectableEvents,
   hiddenRows,
+  repos,
 }: {
   rows: AtomicUpdateRow[];
   selectableEvents: SelectableEventRow[];
   hiddenRows: AtomicUpdateRow[];
+  repos: ImportRepo[];
 }) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [showHidden, setShowHidden] = useState(false);
@@ -82,7 +85,7 @@ export function AtomicUpdatesList({
           {showHidden ? "Hide hidden" : "Show hidden"}
           {hiddenRows.length > 0 ? ` (${hiddenRows.length})` : ""}
         </Button>
-        <NewAtomicUpdateDialog events={selectableEvents} />
+        <NewAtomicUpdateDialog repos={repos} />
         <DraftReleaseDialog atomicUpdateIds={[...selected]} />
       </div>
       <ul className="flex flex-col gap-3">

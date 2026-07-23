@@ -13,6 +13,11 @@ import { requireSession } from "@/lib/workspace/session";
 import { getCommitDiff, listRepoCommits, listRepoPullRequests } from "@/lib/integrations/github/github";
 import { importSelectedCommits, type CommitSelection } from "@/lib/change-events/import-commits";
 import { importSelectedPullRequests, type PullRequestSelection } from "@/lib/change-events/import-pull-requests";
+import {
+  createAtomicUpdateFromImportedCommits,
+  createAtomicUpdateFromImportedPullRequests,
+} from "@/lib/change-events/create-from-import";
+import type { CreateFromEventsResult } from "@/lib/change-events/create-from-events";
 
 export type ImportableCommit = {
   repoId: string;
@@ -186,6 +191,37 @@ export async function importPullRequests(input: {
 }): Promise<{ importedCount: number }> {
   const session = await requireSession();
   const result = await importSelectedPullRequests({ tenantId: session.user.tenantId, selections: input.selections });
+  revalidatePath("/atomic-updates");
+  revalidatePath("/change-events");
+  return result;
+}
+
+// The "New atomic update" modal reuses the import selector but its CTA groups
+// the selected events into ONE new atomic update instead of just importing
+// them. Tenant/user come from the session, never the input.
+export async function createAtomicUpdateFromCommits(input: {
+  selections: CommitSelection[];
+}): Promise<CreateFromEventsResult> {
+  const session = await requireSession();
+  const result = await createAtomicUpdateFromImportedCommits({
+    tenantId: session.user.tenantId,
+    userId: session.user.id,
+    selections: input.selections,
+  });
+  revalidatePath("/atomic-updates");
+  revalidatePath("/change-events");
+  return result;
+}
+
+export async function createAtomicUpdateFromPullRequests(input: {
+  selections: PullRequestSelection[];
+}): Promise<CreateFromEventsResult> {
+  const session = await requireSession();
+  const result = await createAtomicUpdateFromImportedPullRequests({
+    tenantId: session.user.tenantId,
+    userId: session.user.id,
+    selections: input.selections,
+  });
   revalidatePath("/atomic-updates");
   revalidatePath("/change-events");
   return result;

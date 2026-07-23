@@ -66,7 +66,36 @@ function DateFilter({
   );
 }
 
-export function ImportDialog({ repos }: { repos: ImportRepo[] }) {
+/**
+ * The change-event selector. Used by the change-events "Import" flow (the
+ * defaults) and, with the same selector but a different CTA, by the atomic-
+ * updates "New atomic update" flow (which passes its own trigger/title/labels
+ * and submit actions that group the selected events into one new atomic
+ * update). Everything about the selector — repo tabs, search, type dropdown,
+ * After/Before, snapshot-map selection — is identical; only the CTA outcome
+ * differs.
+ */
+export function ImportDialog({
+  repos,
+  trigger,
+  title = "Import",
+  description = "From commits or PRs for now — Notion tasks are next.",
+  commitSubmit,
+  pullRequestSubmit,
+  submitLabel,
+  resolveErrorMessage,
+}: {
+  repos: ImportRepo[];
+  // A ReactElement (not ReactNode) — DialogTrigger's `render` requires a single
+  // element to clone the trigger behavior onto.
+  trigger?: React.ReactElement;
+  title?: string;
+  description?: React.ReactNode;
+  commitSubmit?: (selections: CommitSelection[]) => Promise<void>;
+  pullRequestSubmit?: (selections: PullRequestSelection[]) => Promise<void>;
+  submitLabel?: (opts: { type: PickerType; count: number; submitting: boolean }) => string;
+  resolveErrorMessage?: (error: unknown) => string;
+}) {
   const [open, setOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<string>(ALL);
   const [pickerType, setPickerType] = useState<PickerType>("commit");
@@ -137,24 +166,48 @@ export function ImportDialog({ repos }: { repos: ImportRepo[] }) {
     setError(null);
   }
 
+  // Defaults preserve the change-events "Import" behavior exactly; the
+  // atomic-updates caller overrides the submit actions + labels.
+  const doCommitSubmit =
+    commitSubmit ??
+    (async (sel: CommitSelection[]) => {
+      await importCommits({ selections: sel });
+    });
+  const doPullRequestSubmit =
+    pullRequestSubmit ??
+    (async (sel: PullRequestSelection[]) => {
+      await importPullRequests({ selections: sel });
+    });
+  const labelFor =
+    submitLabel ??
+    (({ type, count, submitting: isSubmitting }: { type: PickerType; count: number; submitting: boolean }) =>
+      isSubmitting
+        ? "Importing…"
+        : type === "pull_request"
+          ? `Import ${count} PR${count === 1 ? "" : "s"}`
+          : `Import ${count} commit${count === 1 ? "" : "s"}`);
+  const errorFor =
+    resolveErrorMessage ??
+    (() => "Import succeeded but something went wrong finishing up. It will retry automatically.");
+
   async function onImport() {
     const selectedCount = pickerType === "pull_request" ? selectedPRs.size : selectedCommits.size;
     if (selectedCount === 0) return;
     setSubmitting(true);
     try {
       if (pickerType === "pull_request") {
-        await importPullRequests({ selections: Array.from(selectedPRs.values()) });
+        await doPullRequestSubmit(Array.from(selectedPRs.values()));
       } else {
-        await importCommits({ selections: Array.from(selectedCommits.values()) });
+        await doCommitSubmit(Array.from(selectedCommits.values()));
       }
       reset();
       setOpen(false);
-    } catch {
-      // The commits/PRs themselves are durably inserted before the resolver
-      // runs, so a throw here means resolution failed, not the import — the
-      // rows recover via the hourly sweep. Still, the user must see that
-      // something went wrong rather than the dialog silently sitting open.
-      setError("Import succeeded but something went wrong finishing up. It will retry automatically.");
+    } catch (e) {
+      // For the default import path a throw means resolution failed (the rows
+      // are durably inserted and recover via the hourly sweep), so the default
+      // errorFor shows a reassuring, fixed message regardless of `e`. Other
+      // callers (create-atomic-update) surface the actual failure reason.
+      setError(errorFor(e));
     } finally {
       setSubmitting(false);
     }
@@ -213,18 +266,18 @@ export function ImportDialog({ repos }: { repos: ImportRepo[] }) {
     >
       <DialogTrigger
         render={
-          <Button variant="outline" disabled={repos.length === 0}>
-            <Download />
-            Import
-          </Button>
+          trigger ?? (
+            <Button variant="outline" disabled={repos.length === 0}>
+              <Download />
+              Import
+            </Button>
+          )
         }
       />
       <DialogContent className="flex max-h-[85dvh] flex-col gap-5 p-6 sm:max-w-3xl">
         <DialogHeader>
-          <DialogTitle>Import</DialogTitle>
-          {/* Commits and PRs are the sources this dialog supports so far;
-              Notion-task import will follow into the same flow. */}
-          <DialogDescription>From commits or PRs for now — Notion tasks are next.</DialogDescription>
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription>{description}</DialogDescription>
         </DialogHeader>
 
         <EventMultiSelect
@@ -303,13 +356,7 @@ export function ImportDialog({ repos }: { repos: ImportRepo[] }) {
               <DateFilter value={before} onChange={setBefore} placeholder="Before" />
             </>
           }
-          submitLabel={
-            submitting
-              ? "Importing…"
-              : pickerType === "pull_request"
-                ? `Import ${selectedCount} PR${selectedCount === 1 ? "" : "s"}`
-                : `Import ${selectedCount} commit${selectedCount === 1 ? "" : "s"}`
-          }
+          submitLabel={labelFor({ type: pickerType, count: selectedCount, submitting })}
           submitting={submitting}
           onSubmit={onImport}
           secondaryAction={

@@ -39,8 +39,8 @@ export async function importSelectedCommits(
   enrich: EnrichChangeItem = enrichChangeItem,
   database: typeof defaultDb = defaultDb,
   resolvePending: typeof resolvePendingEvents = resolvePendingEvents
-): Promise<{ importedCount: number }> {
-  if (input.selections.length === 0) return { importedCount: 0 };
+): Promise<{ importedCount: number; eventIds: string[] }> {
+  if (input.selections.length === 0) return { importedCount: 0, eventIds: [] };
 
   const byRepo = new Map<string, CommitSelection[]>();
   for (const selection of input.selections) {
@@ -51,6 +51,10 @@ export async function importSelectedCommits(
 
   let importedCount = 0;
   const resolvableIds: string[] = [];
+  // Every (re)imported event id, regardless of user-facing — callers that
+  // group a specific selection into one atomic update need all of them, not
+  // just the auto-resolvable subset.
+  const insertedIds: string[] = [];
 
   for (const [repoId, selections] of byRepo) {
     const [repo] = await database
@@ -113,13 +117,14 @@ export async function importSelectedCommits(
 
     importedCount += insertedCounts.reduce((a, b) => a + b.count, 0);
     for (const result of insertedCounts) {
-      if (result.count > 0 && result.id && result.userFacing !== false) {
-        resolvableIds.push(result.id);
+      if (result.count > 0 && result.id) {
+        insertedIds.push(result.id);
+        if (result.userFacing !== false) resolvableIds.push(result.id);
       }
     }
   }
 
   if (resolvableIds.length > 0) await resolvePending(input.tenantId, resolvableIds);
 
-  return { importedCount };
+  return { importedCount, eventIds: insertedIds };
 }
