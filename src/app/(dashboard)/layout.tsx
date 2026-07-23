@@ -15,6 +15,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { NavLinks } from "./nav-links";
+import { UserMenu } from "./user-menu";
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
   const session = await requireSession();
@@ -47,7 +48,9 @@ export default async function DashboardLayout({ children }: { children: React.Re
 
         <NavLinks draftCount={draftCount} />
 
-        <div className="mt-auto px-2 pt-3 text-xs text-muted-foreground">{session.user.email}</div>
+        <div className="mt-auto pt-3">
+          <UserMenu email={session.user.email!} name={session.user.name ?? null} />
+        </div>
       </aside>
         <main className="flex flex-1 flex-col p-8">
           <div className="mx-auto flex w-full max-w-4xl flex-1 flex-col">{children}</div>
