@@ -8,12 +8,15 @@ vi.mock("../../../src/lib/change-events/pipeline", () => ({ resolvePendingEvents
 
 import { and, eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, repos, changeEvents } from "../../../src/db/schema";
+import { tenants, repos, changeEvents, atomicUpdates } from "../../../src/db/schema";
 import {
   createAtomicUpdateFromImportedCommits,
   createAtomicUpdateFromImportedPullRequests,
+  addImportedCommitsToAtomicUpdate,
+  addImportedPullRequestsToAtomicUpdate,
 } from "../../../src/lib/change-events/create-from-import";
 import { createAtomicUpdateFromEvents } from "../../../src/lib/change-events/create-from-events";
+import { addEventsToExistingAtomicUpdate } from "../../../src/lib/change-events/add-events-to-atomic-update";
 import type { EnrichChangeItem } from "../../../src/lib/ai/enrich-change-item";
 
 const NAME = "Create From Import Test Tenant";
@@ -138,5 +141,86 @@ describe("createAtomicUpdateFromImportedCommits", () => {
     const auIds = new Set(events.map((e) => e.atomicUpdateId));
     expect(auIds.size).toBe(1);
     expect([...auIds][0]).not.toBeNull();
+  });
+});
+
+describe("addImportedCommitsToAtomicUpdate / …PullRequests…", () => {
+  afterEach(async () => {
+    await db.delete(tenants).where(eq(tenants.name, NAME));
+  });
+
+  async function seedRepoAndUpdate() {
+    const [tenant] = await db.insert(tenants).values({ name: NAME }).returning();
+    const [repo] = await db
+      .insert(repos)
+      .values({
+        tenantId: tenant.id,
+        githubRepoFullName: "acme/cfi2",
+        githubInstallationId: "80002",
+        watchedBranch: "main",
+        sourceTypes: ["commit"],
+      })
+      .returning();
+    const [au] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "Existing", summary: "S", status: "open" })
+      .returning();
+    return { tenant, repo, au };
+  }
+
+  // Real add (addEventsToExistingAtomicUpdate) against the test DB, LLM regen mocked.
+  const addWithMockedRefresh: typeof addEventsToExistingAtomicUpdate = (input) =>
+    addEventsToExistingAtomicUpdate(input, { database: db, refresh: vi.fn() });
+
+  it("imports the selected commits and attaches them to the existing atomic update", async () => {
+    const { tenant, repo, au } = await seedRepoAndUpdate();
+    const getCommitDiff = vi.fn().mockResolvedValue("diff");
+    const enrich: EnrichChangeItem = async () => ({
+      userFacing: true,
+      impactSummary: "x",
+      suggestedCategory: "new",
+      confidence: 0.9,
+    });
+
+    const result = await addImportedCommitsToAtomicUpdate(
+      {
+        tenantId: tenant.id,
+        userId: "u1",
+        atomicUpdateId: au.id,
+        selections: [
+          { repoId: repo.id, sha: "a1", message: "A", url: "uA", committedAt: null },
+          { repoId: repo.id, sha: "b1", message: "B", url: "uB", committedAt: null },
+        ],
+      },
+      { getCommitDiff, enrich, addEvents: addWithMockedRefresh }
+    );
+
+    expect(result.ok).toBe(true);
+    const events = await db.select().from(changeEvents).where(eq(changeEvents.atomicUpdateId, au.id));
+    expect(events.map((e) => e.commitSha).sort()).toEqual(["a1", "b1"]);
+  });
+
+  it("imports the selected PRs and attaches them to the existing atomic update", async () => {
+    const { tenant, repo, au } = await seedRepoAndUpdate();
+    const enrich: EnrichChangeItem = async () => ({
+      userFacing: true,
+      impactSummary: "x",
+      suggestedCategory: "new",
+      confidence: 0.9,
+    });
+
+    const result = await addImportedPullRequestsToAtomicUpdate(
+      {
+        tenantId: tenant.id,
+        userId: "u1",
+        atomicUpdateId: au.id,
+        selections: [{ repoId: repo.id, number: 5, title: "P", body: "p", url: "uP", mergedAt: "2026-07-01T00:00:00Z" }],
+      },
+      { enrich, addEvents: addWithMockedRefresh }
+    );
+
+    expect(result.ok).toBe(true);
+    const events = await db.select().from(changeEvents).where(eq(changeEvents.atomicUpdateId, au.id));
+    expect(events.map((e) => e.prNumber)).toEqual([5]);
   });
 });

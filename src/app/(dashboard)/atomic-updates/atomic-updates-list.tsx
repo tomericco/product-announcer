@@ -8,7 +8,7 @@ import { DraftReleaseDialog } from "./draft-release-dialog";
 import { NewAtomicUpdateDialog } from "./new-atomic-update-dialog";
 import { unhideAtomicUpdate } from "./actions";
 import { CategoryBadge } from "./page";
-import type { AtomicUpdateRow, SelectableEventRow } from "./actions";
+import type { AtomicUpdateRow } from "./actions";
 import type { ImportRepo } from "../change-events/actions";
 
 // Read-only summary of a hidden (non-user-facing) atomic update, plus its one
@@ -54,12 +54,10 @@ function HiddenAtomicUpdateCard({ row }: { row: AtomicUpdateRow }) {
 // release draft, scoped to the list so the page itself stays a server component.
 export function AtomicUpdatesList({
   rows,
-  selectableEvents,
   hiddenRows,
   repos,
 }: {
   rows: AtomicUpdateRow[];
-  selectableEvents: SelectableEventRow[];
   hiddenRows: AtomicUpdateRow[];
   repos: ImportRepo[];
 }) {
@@ -93,7 +91,7 @@ export function AtomicUpdatesList({
           <li key={row.id}>
             <AtomicUpdateCard
               row={row}
-              selectableEvents={selectableEvents}
+              repos={repos}
               selectable
               selected={selected.has(row.id)}
               onSelectChange={onSelectChange}

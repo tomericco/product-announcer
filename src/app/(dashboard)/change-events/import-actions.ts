@@ -16,8 +16,11 @@ import { importSelectedPullRequests, type PullRequestSelection } from "@/lib/cha
 import {
   createAtomicUpdateFromImportedCommits,
   createAtomicUpdateFromImportedPullRequests,
+  addImportedCommitsToAtomicUpdate,
+  addImportedPullRequestsToAtomicUpdate,
 } from "@/lib/change-events/create-from-import";
 import type { CreateFromEventsResult } from "@/lib/change-events/create-from-events";
+import type { AddEventsResult } from "@/lib/change-events/add-events-to-atomic-update";
 
 export type ImportableCommit = {
   repoId: string;
@@ -220,6 +223,41 @@ export async function createAtomicUpdateFromPullRequests(input: {
   const result = await createAtomicUpdateFromImportedPullRequests({
     tenantId: session.user.tenantId,
     userId: session.user.id,
+    selections: input.selections,
+  });
+  revalidatePath("/atomic-updates");
+  revalidatePath("/change-events");
+  return result;
+}
+
+// The per-card "Add change events" modal reuses the import selector; its CTA
+// imports the selected events and adds them as evidence to an EXISTING atomic
+// update (regenerating its summary). Tenant/user come from the session.
+export async function addCommitsToAtomicUpdate(input: {
+  atomicUpdateId: string;
+  selections: CommitSelection[];
+}): Promise<AddEventsResult> {
+  const session = await requireSession();
+  const result = await addImportedCommitsToAtomicUpdate({
+    tenantId: session.user.tenantId,
+    userId: session.user.id,
+    atomicUpdateId: input.atomicUpdateId,
+    selections: input.selections,
+  });
+  revalidatePath("/atomic-updates");
+  revalidatePath("/change-events");
+  return result;
+}
+
+export async function addPullRequestsToAtomicUpdate(input: {
+  atomicUpdateId: string;
+  selections: PullRequestSelection[];
+}): Promise<AddEventsResult> {
+  const session = await requireSession();
+  const result = await addImportedPullRequestsToAtomicUpdate({
+    tenantId: session.user.tenantId,
+    userId: session.user.id,
+    atomicUpdateId: input.atomicUpdateId,
     selections: input.selections,
   });
   revalidatePath("/atomic-updates");

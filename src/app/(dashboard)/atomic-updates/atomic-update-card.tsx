@@ -21,8 +21,8 @@ import {
   removeEventFromAtomicUpdate,
   type AtomicUpdateEvent,
   type AtomicUpdateRow,
-  type SelectableEventRow,
 } from "./actions";
+import type { ImportRepo } from "../change-events/actions";
 import { AddEventPicker } from "./add-event-picker";
 import { CategoryBadge } from "./page";
 
@@ -58,18 +58,16 @@ function EventRow({ event }: { event: AtomicUpdateEvent }) {
 
 export function AtomicUpdateCard({
   row,
-  selectableEvents = [],
+  repos,
   selectable = false,
   selected = false,
   onSelectChange,
 }: {
   row: AtomicUpdateRow;
-  // Candidate pool for the "Add change event" picker in edit mode — every
-  // change event selectable across the tenant, queried once by the page and
-  // filtered down here to exclude events already on THIS update. Optional/
-  // defaulted so callers that never enter edit mode (there are none today,
-  // but this keeps the prop non-breaking) don't have to pass it.
-  selectableEvents?: SelectableEventRow[];
+  // Repos for the "Add change events" picker in edit mode — that picker shares
+  // the import selector (GitHub commits/PRs) and imports the selection straight
+  // into this update.
+  repos: ImportRepo[];
   // Controlled by the page: only rendered/enabled when the page is in
   // selection mode for drafting a release.
   selectable?: boolean;
@@ -135,12 +133,6 @@ export function AtomicUpdateCard({
     });
   }
 
-  // The events already on this update are ineligible as "add" candidates —
-  // adding an event already here would be a no-op the core would happily
-  // perform, but offering it as a picker choice is just clutter (mirrors the
-  // same self-filter in reassign-control.tsx's move-target list).
-  const addableEvents = selectableEvents.filter((event) => event.atomicUpdateId !== row.id);
-
   return (
     <div className="rounded-lg border p-4">
       {editing ? (
@@ -174,7 +166,7 @@ export function AtomicUpdateCard({
               </div>
             ))}
             <div>
-              <AddEventPicker atomicUpdateId={row.id} events={addableEvents} />
+              <AddEventPicker atomicUpdateId={row.id} repos={repos} />
             </div>
           </div>
 

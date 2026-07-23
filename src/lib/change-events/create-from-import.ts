@@ -4,6 +4,7 @@ import { getCommitDiff as defaultGetCommitDiff } from "@/lib/integrations/github
 import { importSelectedCommits, type CommitSelection, type GetCommitDiff } from "./import-commits";
 import { importSelectedPullRequests, type PullRequestSelection } from "./import-pull-requests";
 import { createAtomicUpdateFromEvents, type CreateFromEventsResult } from "./create-from-events";
+import { addEventsToExistingAtomicUpdate, type AddEventsResult } from "./add-events-to-atomic-update";
 
 type Database = typeof defaultDb;
 
@@ -72,6 +73,81 @@ export async function createAtomicUpdateFromImportedPullRequests(
 
   return createFromEvents(
     { tenantId: input.tenantId, userId: input.userId, eventIds, confirmEmptyDeletion: true },
+    { database }
+  );
+}
+
+/**
+ * Imports the selected commits and adds ALL of them as evidence to an EXISTING
+ * atomic update — the per-card "Add change events" flow that shares the import
+ * selector. Auto-resolution is skipped (the events belong to a specific
+ * update, not the auto-clusterer), then `addEventsToExistingAtomicUpdate`
+ * attaches them and regenerates the update's summary from the new evidence.
+ * The freshly imported events are unassigned, so there are no source updates to
+ * empty — this never returns `needsConfirmation`.
+ */
+export async function addImportedCommitsToAtomicUpdate(
+  input: { tenantId: string; userId: string; atomicUpdateId: string; selections: CommitSelection[] },
+  deps: {
+    getCommitDiff?: GetCommitDiff;
+    enrich?: EnrichChangeItem;
+    database?: Database;
+    addEvents?: typeof addEventsToExistingAtomicUpdate;
+  } = {}
+): Promise<AddEventsResult> {
+  const database = deps.database ?? defaultDb;
+  const getCommitDiff = deps.getCommitDiff ?? defaultGetCommitDiff;
+  const enrich = deps.enrich ?? enrichChangeItem;
+  const addEvents = deps.addEvents ?? addEventsToExistingAtomicUpdate;
+
+  const { eventIds } = await importSelectedCommits(
+    { tenantId: input.tenantId, selections: input.selections },
+    getCommitDiff,
+    enrich,
+    database,
+    NO_RESOLVE
+  );
+  if (eventIds.length === 0) return { ok: false, reason: "No change events were imported." };
+
+  return addEvents(
+    {
+      tenantId: input.tenantId,
+      userId: input.userId,
+      atomicUpdateId: input.atomicUpdateId,
+      eventIds,
+      confirmEmptyDeletion: true,
+    },
+    { database }
+  );
+}
+
+/** Pull-request sibling of `addImportedCommitsToAtomicUpdate`. */
+export async function addImportedPullRequestsToAtomicUpdate(
+  input: { tenantId: string; userId: string; atomicUpdateId: string; selections: PullRequestSelection[] },
+  deps: {
+    enrich?: EnrichChangeItem;
+    database?: Database;
+    addEvents?: typeof addEventsToExistingAtomicUpdate;
+  } = {}
+): Promise<AddEventsResult> {
+  const database = deps.database ?? defaultDb;
+  const enrich = deps.enrich ?? enrichChangeItem;
+  const addEvents = deps.addEvents ?? addEventsToExistingAtomicUpdate;
+
+  const { eventIds } = await importSelectedPullRequests(
+    { tenantId: input.tenantId, selections: input.selections },
+    { enrich, database, resolvePending: NO_RESOLVE }
+  );
+  if (eventIds.length === 0) return { ok: false, reason: "No change events were imported." };
+
+  return addEvents(
+    {
+      tenantId: input.tenantId,
+      userId: input.userId,
+      atomicUpdateId: input.atomicUpdateId,
+      eventIds,
+      confirmEmptyDeletion: true,
+    },
     { database }
   );
 }
