@@ -1,9 +1,9 @@
 import { UnsavedChangesProvider, GuardedLink } from "./unsaved-changes";
-import { eq } from "drizzle-orm";
+import { and, count, eq } from "drizzle-orm";
 import { redirect } from "next/navigation";
 import { ChevronsUpDown } from "lucide-react";
 import { db } from "@/db";
-import { tenants } from "@/db/schema";
+import { releases, tenants } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { isOnboardingComplete } from "@/lib/workspace/onboarding";
 import { Button } from "@/components/ui/button";
@@ -23,6 +23,12 @@ export default async function DashboardLayout({ children }: { children: React.Re
 
   const [tenant] = await db.select().from(tenants).where(eq(tenants.id, session.user.tenantId)).limit(1);
 
+  const [draftCountRow] = await db
+    .select({ value: count() })
+    .from(releases)
+    .where(and(eq(releases.tenantId, session.user.tenantId), eq(releases.status, "draft")));
+  const draftCount = draftCountRow?.value ?? 0;
+
   return (
     <UnsavedChangesProvider>
       <div className="flex min-h-screen">
@@ -39,7 +45,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
 
         <Separator className="my-2" />
 
-        <NavLinks />
+        <NavLinks draftCount={draftCount} />
 
         <div className="mt-auto px-2 pt-3 text-xs text-muted-foreground">{session.user.email}</div>
       </aside>
