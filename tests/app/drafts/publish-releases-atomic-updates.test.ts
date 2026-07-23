@@ -24,12 +24,17 @@ async function atomicUpdatesFor(releaseId: string) {
   return db.select().from(atomicUpdates).where(eq(atomicUpdates.releaseId, releaseId));
 }
 
-function formDataFor(releaseId: string, publishedAt: string) {
+// approveDraft now requires the form to name at least one valid destination
+// (publishDraft ignores the field). Default to "webhook" so these
+// atomic-update-status tests publish successfully; delivery itself is a no-op
+// here since no webhook/webflow config is seeded (dispatch skips it).
+function formDataFor(releaseId: string, publishedAt: string, destinations: string[] = ["webhook"]) {
   const fd = new FormData();
   fd.set("releaseId", releaseId);
   fd.set("title", "R");
   fd.set("body", "B");
   fd.set("publishedAt", publishedAt);
+  for (const d of destinations) fd.append("destinations", d);
   return fd;
 }
 
