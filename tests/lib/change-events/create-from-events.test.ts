@@ -109,6 +109,49 @@ describe("createAtomicUpdateFromEvents", () => {
     expect(ids).toContain(result.atomicUpdateId);
   });
 
+  it("seeds title/summary/category from the event at eventIds[0], not physical SQL row order", async () => {
+    // `events` is fetched via `inArray(changeEvents.id, requestedIds)` with NO
+    // `ORDER BY`, so SQL row order is not guaranteed to match `eventIds`
+    // order. The contract is "seeded from the first selected event" =
+    // `eventIds[0]`. We insert "FIRST-CHOSEN" before "SECOND" (so a naive
+    // `events[0]` read of insertion/heap order — which Postgres tends to
+    // preserve for a simple `inArray` — would pick "SECOND" up first), then
+    // pass `eventIds` in the OPPOSITE order (SECOND's id first is wrong;
+    // FIRST-CHOSEN's id must be first). This pins input-order semantics
+    // regardless of what SQL row order actually comes back.
+    const { tenant, repo } = await seed();
+    const eventSecondInserted = await insertEvent(tenant.id, repo.id, "sha-second-inserted", {
+      prTitle: "SECOND",
+      impactSummary: "Second summary.",
+      suggestedCategory: "improved",
+    });
+    const eventFirstChosen = await insertEvent(tenant.id, repo.id, "sha-first-chosen", {
+      prTitle: "FIRST-CHOSEN",
+      impactSummary: "First summary.",
+      suggestedCategory: "new",
+    });
+    const refresh = vi.fn().mockResolvedValue(undefined);
+
+    // eventFirstChosen was inserted SECOND (after eventSecondInserted), so if
+    // SQL returns rows in insertion order, `events[0]` would be
+    // eventSecondInserted — but eventIds[0] here is eventFirstChosen's id.
+    const result = await createAtomicUpdateFromEvents(
+      { tenantId: tenant.id, userId: USER, eventIds: [eventFirstChosen.id, eventSecondInserted.id] },
+      { refresh }
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected ok");
+
+    const [createdAtomic] = await db
+      .select()
+      .from(atomicUpdates)
+      .where(eq(atomicUpdates.id, result.atomicUpdateId));
+    expect(createdAtomic.title).toBe("FIRST-CHOSEN");
+    expect(createdAtomic.summary).toBe("First summary.");
+    expect(createdAtomic.category).toBe("new");
+  });
+
   it("clears exclusion fields when pulling in an excluded event", async () => {
     const { tenant, repo } = await seed();
     const event = await insertEvent(tenant.id, repo.id, "sha-excluded", {

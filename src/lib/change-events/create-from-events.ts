@@ -157,7 +157,13 @@ export async function createAtomicUpdateFromEvents(
       };
     }
 
-    const seed = seedFromEvent(events[0]);
+    // `events` comes from an `inArray` query with no `ORDER BY`, so SQL row
+    // order is not guaranteed to match `eventIds` order. "Seeded from the
+    // first selected event" means `eventIds[0]`, not whichever row Postgres
+    // happens to return first.
+    const firstId = requestedIds[0]; // non-empty: checked above
+    const seedEvent = events.find((e) => e.id === firstId) ?? events[0];
+    const seed = seedFromEvent(seedEvent);
     const [created] = await tx
       .insert(atomicUpdates)
       .values({
