@@ -6,6 +6,15 @@ import { Loader2, Sparkles } from "lucide-react";
 import { importBrandStyleFromUrl } from "./actions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 /**
  * Re-derives the brand-style fields from a public updates/changelog page — the
@@ -18,18 +27,20 @@ export function BrandStyleImport({ defaultUrl }: { defaultUrl: string }) {
   const [url, setUrl] = useState(defaultUrl);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const router = useRouter();
 
+  // Overwrites hand-tuned brand fields, so the button opens a confirm modal
+  // first; `run` only fires once the user confirms in that modal.
+  function requestRun() {
+    if (!url.trim() || loading) return;
+    setConfirmOpen(true);
+  }
+
   async function run() {
+    setConfirmOpen(false);
     const trimmed = url.trim();
     if (!trimmed || loading) return;
-    if (
-      !window.confirm(
-        "This replaces your tone, industry, do/don't, and style summary with values derived from the page. Continue?"
-      )
-    ) {
-      return;
-    }
 
     setLoading(true);
     setResult(null);
@@ -61,7 +72,7 @@ export function BrandStyleImport({ defaultUrl }: { defaultUrl: string }) {
           onChange={(e) => setUrl(e.target.value)}
           className="flex-1"
         />
-        <Button type="button" variant="outline" onClick={run} disabled={loading || !url.trim()}>
+        <Button type="button" variant="outline" onClick={requestRun} disabled={loading || !url.trim()}>
           {loading ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
           {loading ? "Analyzing…" : "Re-analyze"}
         </Button>
@@ -69,6 +80,22 @@ export function BrandStyleImport({ defaultUrl }: { defaultUrl: string }) {
       {result && (
         <p className={result.ok ? "text-xs text-emerald-600" : "text-xs text-muted-foreground"}>{result.message}</p>
       )}
+
+      <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Replace your brand style?</DialogTitle>
+            <DialogDescription>
+              This replaces your tone, industry, do/don&apos;t, and style summary with values derived
+              from the page.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <DialogClose render={<Button variant="outline" />}>Cancel</DialogClose>
+            <Button onClick={run}>Continue</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

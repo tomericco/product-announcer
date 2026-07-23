@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   createContext,
   useCallback,
@@ -11,6 +12,16 @@ import {
   type ComponentProps,
   type ReactNode,
 } from "react";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 const CONFIRM_MESSAGE = "You have unsaved changes. Leave without saving?";
 
@@ -28,23 +39,36 @@ type UnsavedChanges = {
    * after a save would look clean when it actually differs from the server.
    */
   cleanToken: number;
+  /**
+   * Called by a GuardedLink when the user tries to navigate away with unsaved
+   * edits. Opens the shared confirm modal below; on confirm the provider does
+   * the client-side navigation itself.
+   */
+  requestLeave: (href: string) => void;
 };
 
 const UnsavedChangesContext = createContext<UnsavedChanges>({
   isDirty: false,
   setSectionDirty: () => {},
   cleanToken: 0,
+  requestLeave: () => {},
 });
 
 export function UnsavedChangesProvider({ children }: { children: ReactNode }) {
   const [sections, setSections] = useState<Record<string, boolean>>({});
   const [cleanToken, setCleanToken] = useState(0);
+  // The destination a GuardedLink wanted to reach, held while the confirm
+  // modal is open. Null means the modal is closed.
+  const [pendingHref, setPendingHref] = useState<string | null>(null);
+  const router = useRouter();
 
   const setSectionDirty = useCallback((key: string, dirty: boolean) => {
     // Skip the update when nothing changed, so typing doesn't re-render the
     // whole dashboard shell on every keystroke.
     setSections((prev) => (prev[key] === dirty ? prev : { ...prev, [key]: dirty }));
   }, []);
+
+  const requestLeave = useCallback((href: string) => setPendingHref(href), []);
 
   const isDirty = useMemo(() => Object.values(sections).some(Boolean), [sections]);
 
@@ -72,12 +96,39 @@ export function UnsavedChangesProvider({ children }: { children: ReactNode }) {
     return () => document.removeEventListener("submit", onSubmit, true);
   }, []);
 
+  // Confirmed "Leave": clear the dirty flags (so the programmatic navigation
+  // below isn't itself re-guarded), close the modal, then navigate.
+  function confirmLeave() {
+    const href = pendingHref;
+    setSections({});
+    setPendingHref(null);
+    if (href) router.push(href);
+  }
+
   const value = useMemo(
-    () => ({ isDirty, setSectionDirty, cleanToken }),
-    [isDirty, setSectionDirty, cleanToken]
+    () => ({ isDirty, setSectionDirty, cleanToken, requestLeave }),
+    [isDirty, setSectionDirty, cleanToken, requestLeave]
   );
 
-  return <UnsavedChangesContext.Provider value={value}>{children}</UnsavedChangesContext.Provider>;
+  return (
+    <UnsavedChangesContext.Provider value={value}>
+      {children}
+      <Dialog open={pendingHref !== null} onOpenChange={(open) => !open && setPendingHref(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Leave without saving?</DialogTitle>
+            <DialogDescription>{CONFIRM_MESSAGE}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <DialogClose render={<Button variant="outline" />}>Stay</DialogClose>
+            <Button variant="destructive" onClick={confirmLeave}>
+              Leave
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </UnsavedChangesContext.Provider>
+  );
 }
 
 export function useUnsavedChanges() {
@@ -87,15 +138,24 @@ export function useUnsavedChanges() {
 /**
  * A Link that confirms first when there are unsaved edits. `onNavigate` only
  * fires for client-side navigation, and its event can cancel it — full page
- * loads are covered by the beforeunload handler above instead.
+ * loads are covered by the beforeunload handler above instead. When dirty, the
+ * navigation is cancelled and handed to the provider's confirm modal, which
+ * performs the navigation itself if the user confirms.
  */
 export function GuardedLink(props: ComponentProps<typeof Link>) {
-  const { isDirty } = useUnsavedChanges();
+  const { isDirty, requestLeave } = useUnsavedChanges();
   return (
     <Link
       {...props}
       onNavigate={(event) => {
-        if (isDirty && !window.confirm(CONFIRM_MESSAGE)) event.preventDefault();
+        if (!isDirty) return;
+        // All GuardedLink hrefs in the app are plain strings; only those are
+        // guarded (a non-string Url would fall through to normal navigation).
+        const href = typeof props.href === "string" ? props.href : null;
+        if (href) {
+          event.preventDefault();
+          requestLeave(href);
+        }
       }}
     />
   );
