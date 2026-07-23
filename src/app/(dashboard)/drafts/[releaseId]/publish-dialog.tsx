@@ -71,7 +71,7 @@ export function PublishDialog({ targets }: { targets: PublishTarget[] }) {
       <DialogTrigger
         render={
           <Button ref={triggerRef} type="button">
-            Approve & publish
+            Publish
           </Button>
         }
       />

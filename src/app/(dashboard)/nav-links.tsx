@@ -8,7 +8,7 @@ const NAV = [
   { href: "/change-events", label: "Change events" },
   { href: "/atomic-updates", label: "Atomic updates" },
   { href: "/drafts", label: "Drafts" },
-  { href: "/history", label: "History" },
+  { href: "/history", label: "Release history" },
   { href: "/integrations", label: "Integrations" },
 ];
 

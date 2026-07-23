@@ -21,7 +21,7 @@ export default async function HistoryPage() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-xl font-semibold">History</h1>
+      <h1 className="text-xl font-semibold">Release history</h1>
       <p className="text-sm text-muted-foreground">Announcements that have actually been sent to your users.</p>
       <Table>
         <TableHeader>
