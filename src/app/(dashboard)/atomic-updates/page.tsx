@@ -6,18 +6,23 @@ import {
   EmptyStateTitle,
   EmptyStateDescription,
 } from "@/components/ui/empty-state";
-import { listAtomicUpdates, listSelectableEvents } from "./actions";
+import { listAtomicUpdates, listHiddenAtomicUpdates, listSelectableEvents } from "./actions";
 import { AtomicUpdatesList } from "./atomic-updates-list";
 import { NewAtomicUpdateDialog } from "./new-atomic-update-dialog";
 
 export default async function AtomicUpdatesPage() {
   // Fetched together: the list of existing (open, unclaimed) atomic updates
-  // for the cards, and the events selectable as input for a brand-new one —
-  // both tenant-scoped server-side reads, so the modal client component never
-  // needs to import `db`.
-  const [rows, selectableEvents] = await Promise.all([listAtomicUpdates(), listSelectableEvents()]);
+  // for the cards, the events selectable as input for a brand-new one (or as
+  // evidence added to an existing one), and the hidden (non-user-facing)
+  // atomic updates for the "Show hidden" section — all tenant-scoped
+  // server-side reads, so no client component here ever needs to import `db`.
+  const [rows, selectableEvents, hiddenRows] = await Promise.all([
+    listAtomicUpdates(),
+    listSelectableEvents(),
+    listHiddenAtomicUpdates(),
+  ]);
 
-  if (rows.length === 0) {
+  if (rows.length === 0 && hiddenRows.length === 0) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-4">
         <EmptyState>
@@ -42,7 +47,7 @@ export default async function AtomicUpdatesPage() {
         Each one is a single user-facing change, gathered from the commits, pull requests, and tasks
         behind it.
       </p>
-      <AtomicUpdatesList rows={rows} selectableEvents={selectableEvents} />
+      <AtomicUpdatesList rows={rows} selectableEvents={selectableEvents} hiddenRows={hiddenRows} />
     </div>
   );
 }
