@@ -37,7 +37,7 @@ export function ImportDialog({ repos }: { repos: ImportRepo[] }) {
   const [search, setSearch] = useState("");
   const [after, setAfter] = useState("");
   const [before, setBefore] = useState("");
-  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [selected, setSelected] = useState<Map<string, CommitSelection>>(new Map());
   const [submitting, setSubmitting] = useState(false);
 
   const repoIds = activeTab === ALL ? repos.map((r) => r.id) : [activeTab];
@@ -72,7 +72,7 @@ export function ImportDialog({ repos }: { repos: ImportRepo[] }) {
   }, [open, load]);
 
   function reset() {
-    setSelected(new Set());
+    setSelected(new Map());
     setSearch("");
     setAfter("");
     setBefore("");
@@ -85,20 +85,7 @@ export function ImportDialog({ repos }: { repos: ImportRepo[] }) {
     if (selected.size === 0) return;
     setSubmitting(true);
     try {
-      const byKey = new Map<string, CommitSelection>();
-      for (const c of commits) {
-        byKey.set(selectionKey(c.repoId, c.sha), {
-          repoId: c.repoId,
-          sha: c.sha,
-          message: c.message,
-          url: c.url,
-          committedAt: c.committedAt,
-        });
-      }
-      const selections = Array.from(selected)
-        .map((key) => byKey.get(key))
-        .filter((s): s is CommitSelection => s !== undefined);
-      await importCommits({ selections });
+      await importCommits({ selections: Array.from(selected.values()) });
       reset();
       setOpen(false);
     } catch {
@@ -160,15 +147,34 @@ export function ImportDialog({ repos }: { repos: ImportRepo[] }) {
           activeType={pickerType}
           onTypeChange={(t) => {
             setPickerType(t);
-            setSelected(new Set());
+            setSelected(new Map());
           }}
           enabledTypes={["commit"]}
           rows={rows}
           loading={loading}
           error={error}
           emptyLabel="No commits found."
-          selected={selected}
-          onSelectedChange={setSelected}
+          selected={new Set(selected.keys())}
+          onSelectedChange={(nextKeys) => {
+            setSelected((prev) => {
+              const byKey = new Map<string, CommitSelection>();
+              for (const c of commits) {
+                byKey.set(selectionKey(c.repoId, c.sha), {
+                  repoId: c.repoId,
+                  sha: c.sha,
+                  message: c.message,
+                  url: c.url,
+                  committedAt: c.committedAt,
+                });
+              }
+              const next = new Map<string, CommitSelection>();
+              for (const key of nextKeys) {
+                const entry = prev.get(key) ?? byKey.get(key);
+                if (entry) next.set(key, entry);
+              }
+              return next;
+            });
+          }}
           search={search}
           onSearchChange={setSearch}
           searchPlaceholder="Search commit messages…"
