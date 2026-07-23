@@ -1,6 +1,6 @@
 import { and, desc, eq } from "drizzle-orm";
 import { db } from "@/db";
-import { updates } from "@/db/schema";
+import { releases } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import {
   Table,
@@ -15,13 +15,13 @@ export default async function HistoryPage() {
   const session = await requireSession();
   const sentUpdates = await db
     .select()
-    .from(updates)
-    .where(and(eq(updates.tenantId, session.user.tenantId), eq(updates.status, "published")))
-    .orderBy(desc(updates.publishedAt));
+    .from(releases)
+    .where(and(eq(releases.tenantId, session.user.tenantId), eq(releases.status, "published")))
+    .orderBy(desc(releases.publishedAt));
 
   return (
     <div className="space-y-4">
-      <h1 className="text-xl font-semibold">History</h1>
+      <h1 className="text-xl font-semibold">Release history</h1>
       <p className="text-sm text-muted-foreground">Announcements that have actually been sent to your users.</p>
       <Table>
         <TableHeader>

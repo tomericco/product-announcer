@@ -1,5 +1,5 @@
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
-import type { updates } from "@/db/schema";
+import type { releases } from "@/db/schema";
 import type * as schema from "@/db/schema";
 
 export type DestinationId = "webhook" | "webflow";
@@ -10,7 +10,7 @@ export type DestinationId = "webhook" | "webflow";
 // transaction handle (`tx`) here too, and a `PgTransaction` has no `$client`.
 export type DbClient = NodePgDatabase<typeof schema>;
 
-export type Update = typeof updates.$inferSelect;
+export type Release = typeof releases.$inferSelect;
 
 export type DeliveryResult =
   // `externalId` is stored so a later re-publish can update rather than duplicate.
@@ -28,6 +28,14 @@ export type DeliveryResult =
 
 export interface Destination<TConfig> {
   id: DestinationId;
+  /** Human-readable name shown in the publish-destinations modal. */
+  label: string;
   loadConfig(tenantId: string, database: DbClient): Promise<TConfig | null>;
-  deliver(update: Update, config: TConfig, externalId: string | null, database: DbClient): Promise<DeliveryResult>;
+  deliver(release: Release, config: TConfig, externalId: string | null, database: DbClient): Promise<DeliveryResult>;
 }
+
+// One row in the publish modal: a destination and whether it is ready to
+// receive a publish (its loadConfig returns non-null — webhook active,
+// Webflow has a picked collection). Unconfigured targets still appear, with
+// a "Set up" link instead of a checkbox.
+export type PublishTarget = { id: DestinationId; label: string; configured: boolean };

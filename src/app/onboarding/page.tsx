@@ -12,7 +12,7 @@ import {
   saveWorkspaceName,
   importBrandStyle,
 } from "./actions";
-import { RepoRow } from "@/app/(dashboard)/settings/repo-row";
+import { RepoRow } from "@/app/(dashboard)/integrations/repo-row";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -31,7 +31,7 @@ export default async function OnboardingPage({
   searchParams: Promise<{ brandImport?: string }>;
 }) {
   const session = await requireSession();
-  if (await isOnboardingComplete(session.user.tenantId)) redirect("/pending");
+  if (await isOnboardingComplete(session.user.tenantId)) redirect("/atomic-updates");
   const { brandImport } = await searchParams;
 
   const [tenant] = await db.select().from(tenants).where(eq(tenants.id, session.user.tenantId)).limit(1);

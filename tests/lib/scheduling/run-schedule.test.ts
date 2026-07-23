@@ -8,9 +8,9 @@ vi.mock("../../../src/lib/ai/review-draft", () => ({ reviewAndReconcile: vi.fn()
 import { generateObject } from "ai";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, repos, changeItems, updates, scheduleConfigs, brandProfiles, llmUsage } from "../../../src/db/schema";
+import { tenants, atomicUpdates, releases, scheduleConfigs, brandProfiles, llmUsage } from "../../../src/db/schema";
 import { runBatchForWorkspace, runSchedulerTick } from "../../../src/lib/scheduling/run-schedule";
-import { getPendingChangeItems } from "../../../src/lib/change-items/change-item-batch";
+import { getOpenAtomicUpdates } from "../../../src/lib/change-events/release-claim";
 import { advanceNextScheduledAt } from "../../../src/lib/scheduling/scheduler-decision";
 import { reviewAndReconcile } from "../../../src/lib/ai/review-draft";
 
@@ -27,64 +27,77 @@ describe("run-schedule (workspace-level)", () => {
 
   async function seed() {
     const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
-    const [repoA] = await db
-      .insert(repos)
-      .values({ tenantId: tenant.id, githubRepoFullName: "acme/a", githubInstallationId: "1", watchedBranch: "main" })
-      .returning();
-    const [repoB] = await db
-      .insert(repos)
-      .values({ tenantId: tenant.id, githubRepoFullName: "acme/b", githubInstallationId: "1", watchedBranch: "main" })
-      .returning();
-    return { tenant, repoA, repoB };
+    return { tenant };
   }
 
-  it("runBatchForWorkspace makes one cross-repo Update from all pending and marks them batched", async () => {
-    const { tenant, repoA, repoB } = await seed();
-    await db.insert(changeItems).values([
-      { tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "a" },
-      { tenantId: tenant.id, repoId: repoB.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "b" },
-    ]);
+  async function seedAtomicUpdates(tenantId: string, titles: string[]) {
+    const out = [];
+    for (const title of titles) {
+      const [row] = await db.insert(atomicUpdates).values({ tenantId, title, summary: `Summary for ${title}` }).returning();
+      out.push(row);
+    }
+    return out;
+  }
+
+  it("runBatchForWorkspace makes one release from all open atomic updates and links them via releaseId", async () => {
+    const { tenant } = await seed();
+    const [a1, a2] = await seedAtomicUpdates(tenant.id, ["A", "B"]);
     vi.mocked(generateObject).mockResolvedValue({
-      object: { title: "Combined", body: "Two repos.", category: "new" },
+      object: { title: "Combined", body: "Two changes.", category: "new" },
     } as never);
 
-    const pending = await getPendingChangeItems(tenant.id);
-    const created = await runBatchForWorkspace(tenant.id, pending);
+    const open = await getOpenAtomicUpdates(tenant.id);
+    const created = await runBatchForWorkspace(tenant.id, open);
 
     expect(created).toBe(true);
-    const createdUpdates = await db.select().from(updates).where(eq(updates.tenantId, tenant.id));
-    expect(createdUpdates).toHaveLength(1);
-    expect(createdUpdates[0].repoId).toBeNull();
-    expect(await getPendingChangeItems(tenant.id)).toHaveLength(0);
+    const createdReleases = await db.select().from(releases).where(eq(releases.tenantId, tenant.id));
+    expect(createdReleases).toHaveLength(1);
+    const release = createdReleases[0];
+    // Nothing publishes: the release stays a draft awaiting review.
+    expect(release.status).toBe("draft");
+    expect(release.publishedAt).toBeNull();
+
+    const linked = await db
+      .select()
+      .from(atomicUpdates)
+      .where(eq(atomicUpdates.tenantId, tenant.id));
+    expect(linked.map((a) => a.id).sort()).toEqual([a1.id, a2.id].sort());
+    expect(linked.every((a) => a.releaseId === release.id)).toBe(true);
+    // Open-until-publish: the release is still a draft, so its atomic updates
+    // stay `open` (with releaseId set) rather than flipping to `released` —
+    // that only happens when the release is published.
+    expect(linked.every((a) => a.status === "open")).toBe(true);
+    // getOpenAtomicUpdates is the compose candidate set: it excludes AUs
+    // already linked to a (draft) release via releaseId, even though they're
+    // still status='open'.
+    expect(await getOpenAtomicUpdates(tenant.id)).toHaveLength(0);
   });
 
-  it("runBatchForWorkspace does nothing on empty pending", async () => {
+  it("runBatchForWorkspace does nothing on empty input", async () => {
     const { tenant } = await seed();
     const created = await runBatchForWorkspace(tenant.id, []);
     expect(created).toBe(false);
     expect(generateObject).not.toHaveBeenCalled();
   });
 
-  it("leaves items pending when generation fails twice", async () => {
-    const { tenant, repoA } = await seed();
-    await db.insert(changeItems).values({
-      tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "flaky",
-    });
+  it("leaves atomic updates open when generation fails twice", async () => {
+    const { tenant } = await seed();
+    const [a1] = await seedAtomicUpdates(tenant.id, ["Flaky"]);
     vi.mocked(generateObject).mockRejectedValue(new Error("model unavailable"));
 
-    const pending = await getPendingChangeItems(tenant.id);
-    const created = await runBatchForWorkspace(tenant.id, pending);
+    const open = await getOpenAtomicUpdates(tenant.id);
+    const created = await runBatchForWorkspace(tenant.id, open);
 
     expect(created).toBe(false);
     expect(generateObject).toHaveBeenCalledTimes(2);
-    expect(await getPendingChangeItems(tenant.id)).toHaveLength(1);
+    const [after] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, a1.id));
+    expect(after.status).toBe("open");
+    expect(after.releaseId).toBeNull();
   });
 
-  it("runSchedulerTick fires the workspace config, creates one Update, advances nextScheduledAt on cadence", async () => {
-    const { tenant, repoA } = await seed();
-    await db.insert(changeItems).values({
-      tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "a",
-    });
+  it("runSchedulerTick fires the workspace config, creates one release, advances nextScheduledAt on cadence", async () => {
+    const { tenant } = await seed();
+    await seedAtomicUpdates(tenant.id, ["A"]);
     const past = new Date("2026-07-01T00:00:00Z");
     await db.insert(scheduleConfigs).values({ tenantId: tenant.id, cadence: "weekly", threshold: null, nextScheduledAt: past });
     vi.mocked(generateObject).mockResolvedValue({
@@ -93,16 +106,14 @@ describe("run-schedule (workspace-level)", () => {
 
     await runSchedulerTick(new Date("2026-07-14T00:00:00Z"));
 
-    expect(await db.select().from(updates).where(eq(updates.tenantId, tenant.id))).toHaveLength(1);
+    expect(await db.select().from(releases).where(eq(releases.tenantId, tenant.id))).toHaveLength(1);
     const [config] = await db.select().from(scheduleConfigs).where(eq(scheduleConfigs.tenantId, tenant.id));
     expect(config.nextScheduledAt).toEqual(advanceNextScheduledAt(past, "weekly"));
   });
 
   it("runSchedulerTick does NOT advance nextScheduledAt on a threshold-reason fire", async () => {
-    const { tenant, repoA } = await seed();
-    await db.insert(changeItems).values({
-      tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "a",
-    });
+    const { tenant } = await seed();
+    await seedAtomicUpdates(tenant.id, ["A"]);
     const future = new Date("2026-08-01T00:00:00Z");
     await db.insert(scheduleConfigs).values({ tenantId: tenant.id, cadence: "weekly", threshold: 1, thresholdEnabled: true, nextScheduledAt: future });
     vi.mocked(generateObject).mockResolvedValue({
@@ -111,28 +122,26 @@ describe("run-schedule (workspace-level)", () => {
 
     await runSchedulerTick(new Date("2026-07-14T00:00:00Z"));
 
-    expect(await db.select().from(updates).where(eq(updates.tenantId, tenant.id))).toHaveLength(1);
+    expect(await db.select().from(releases).where(eq(releases.tenantId, tenant.id))).toHaveLength(1);
     const [config] = await db.select().from(scheduleConfigs).where(eq(scheduleConfigs.tenantId, tenant.id));
     expect(config.nextScheduledAt).toEqual(future);
   });
 
   it("selects matching seeded examples and injects them into the generation prompt", async () => {
-    const { tenant, repoA } = await seed();
+    const { tenant } = await seed();
     // Brand profile whose industry + system persona match the seeded devtools/developer examples.
     await db.insert(brandProfiles).values({
       tenantId: tenant.id,
       industry: "Developer Tools",
       userPersonas: [{ type: "system", key: "developer" }],
     });
-    await db.insert(changeItems).values({
-      tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "a",
-    });
+    await seedAtomicUpdates(tenant.id, ["A"]);
     vi.mocked(generateObject).mockResolvedValue({
       object: { title: "T", body: "B", category: "new" },
     } as never);
 
-    const pending = await getPendingChangeItems(tenant.id);
-    await runBatchForWorkspace(tenant.id, pending);
+    const open = await getOpenAtomicUpdates(tenant.id);
+    await runBatchForWorkspace(tenant.id, open);
 
     const system = vi.mocked(generateObject).mock.calls.at(-1)![0].system as string;
     expect(system).toContain("mirror their structure");
@@ -140,17 +149,15 @@ describe("run-schedule (workspace-level)", () => {
   });
 
   it("runBatchForWorkspace emits ordered progress events and a done event on success", async () => {
-    const { tenant, repoA } = await seed();
-    await db.insert(changeItems).values({
-      tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "a",
-    });
+    const { tenant } = await seed();
+    await seedAtomicUpdates(tenant.id, ["A"]);
     vi.mocked(generateObject).mockResolvedValue({
       object: { title: "T", body: "B", category: "new" },
     } as never);
 
     const events: import("../../../src/lib/scheduling/draft-progress").DraftProgressEvent[] = [];
-    const pending = await getPendingChangeItems(tenant.id);
-    const created = await runBatchForWorkspace(tenant.id, pending, db, (e) => events.push(e));
+    const open = await getOpenAtomicUpdates(tenant.id);
+    const created = await runBatchForWorkspace(tenant.id, open, db, (e) => events.push(e));
 
     expect(created).toBe(true);
     // step start/done pairs in order, then a terminal done with the update id
@@ -163,22 +170,20 @@ describe("run-schedule (workspace-level)", () => {
     ]);
     const done = events.at(-1);
     expect(done?.type).toBe("done");
-    const [row] = await db.select().from(updates).where(eq(updates.tenantId, tenant.id));
+    const [row] = await db.select().from(releases).where(eq(releases.tenantId, tenant.id));
     expect(done).toEqual({ type: "done", updateId: row.id });
   });
 
   it("records token usage for the generation call", async () => {
-    const { tenant, repoA } = await seed();
-    await db.insert(changeItems).values({
-      tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "a",
-    });
+    const { tenant } = await seed();
+    await seedAtomicUpdates(tenant.id, ["A"]);
     vi.mocked(generateObject).mockResolvedValue({
       object: { title: "T", body: "B" },
       usage: { inputTokens: 100, outputTokens: 20, totalTokens: 120 },
     } as never);
 
-    const pending = await getPendingChangeItems(tenant.id);
-    await runBatchForWorkspace(tenant.id, pending);
+    const open = await getOpenAtomicUpdates(tenant.id);
+    await runBatchForWorkspace(tenant.id, open);
 
     const rows = await db.select().from(llmUsage).where(eq(llmUsage.tenantId, tenant.id));
     const generation = rows.find((r) => r.operation === "generation");
@@ -188,15 +193,13 @@ describe("run-schedule (workspace-level)", () => {
   });
 
   it("runBatchForWorkspace emits an error event (not done) when generation fails twice", async () => {
-    const { tenant, repoA } = await seed();
-    await db.insert(changeItems).values({
-      tenantId: tenant.id, repoId: repoA.id, sourceType: "pr", status: "pending", prNumber: 1, prTitle: "flaky",
-    });
+    const { tenant } = await seed();
+    await seedAtomicUpdates(tenant.id, ["Flaky"]);
     vi.mocked(generateObject).mockRejectedValue(new Error("model unavailable"));
 
     const events: import("../../../src/lib/scheduling/draft-progress").DraftProgressEvent[] = [];
-    const pending = await getPendingChangeItems(tenant.id);
-    const created = await runBatchForWorkspace(tenant.id, pending, db, (e) => events.push(e));
+    const open = await getOpenAtomicUpdates(tenant.id);
+    const created = await runBatchForWorkspace(tenant.id, open, db, (e) => events.push(e));
 
     expect(created).toBe(false);
     expect(events.some((e) => e.type === "done")).toBe(false);

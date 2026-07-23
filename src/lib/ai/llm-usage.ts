@@ -6,7 +6,9 @@ export type LlmOperation =
   | "enrichment"
   | "review"
   | "revision"
-  | "brand_analysis";
+  | "brand_analysis"
+  | "resolution"
+  | "atomic_summary";
 
 /** The subset of the SDK's usage object we persist. Every field is optional. */
 export type TokenUsage = {

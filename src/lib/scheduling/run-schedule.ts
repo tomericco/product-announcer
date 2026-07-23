@@ -1,56 +1,55 @@
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
-import { repos, scheduleConfigs, tenants, webhookConfigs, updates, systemPersonas, systemUpdateExamples } from "@/db/schema";
-import { getPendingChangeItems, getBatchableChangeItems, claimBatchAndCreateUpdate, batchCategories } from "@/lib/change-items/change-item-batch";
-import { generateUpdateDraft } from "@/lib/ai/generation";
+import { scheduleConfigs, systemPersonas, systemUpdateExamples } from "@/db/schema";
+import { generateReleaseDraft } from "@/lib/ai/generation";
+import type { AtomicUpdateForPrompt } from "@/lib/ai/compose-prompt";
+import { getOpenAtomicUpdates, claimReleaseFromAtomicUpdates } from "@/lib/change-events/release-claim";
 import { getOrCreateBrandProfile } from "@/lib/workspace/brand-profile";
 import { resolvePersonaRefs, systemPersonaKeys } from "@/lib/workspace/personas";
 import { selectExamples } from "@/lib/ai/select-examples";
 import { shouldTriggerRun, advanceNextScheduledAt, type Cadence } from "./scheduler-decision";
-import { dispatchAllDestinations } from "@/lib/publishing/dispatch";
 import { reviewAndReconcile } from "@/lib/ai/review-draft";
 import type { OnDraftProgress } from "./draft-progress";
 
-type ChangeItemRow = Awaited<ReturnType<typeof getPendingChangeItems>>[number];
-
-async function reposByIdForTenant(
-  tenantId: string,
-  database: typeof defaultDb
-): Promise<Map<string, string>> {
-  const rows = await database.select().from(repos).where(eq(repos.tenantId, tenantId));
-  return new Map(rows.map((r) => [r.id, r.githubRepoFullName]));
+/** Distinct non-null categories among the atomic updates being composed, used to
+ * bias example selection toward examples about the same kinds of changes. */
+function atomicUpdateCategories(items: { category: string | null }[]): string[] {
+  const seen = new Set<string>();
+  for (const item of items) {
+    if (item.category !== null) seen.add(item.category);
+  }
+  return [...seen];
 }
 
 export async function runBatchForWorkspace(
   tenantId: string,
-  pending: ChangeItemRow[],
+  items: AtomicUpdateForPrompt[],
   database: typeof defaultDb = defaultDb,
   onProgress?: OnDraftProgress
 ): Promise<boolean> {
-  if (pending.length === 0) return false;
+  if (items.length === 0) return false;
 
   onProgress?.({ type: "step", key: "preparing", status: "start" });
   const brandProfile = await getOrCreateBrandProfile(tenantId, database);
-  const reposById = await reposByIdForTenant(tenantId, database);
   const catalog = await database.select().from(systemPersonas);
   const personas = resolvePersonaRefs(brandProfile.userPersonas, catalog);
   const allExamples = await database.select().from(systemUpdateExamples);
   const examples = selectExamples(allExamples, {
     industry: brandProfile.industry,
     personaKeys: systemPersonaKeys(brandProfile.userPersonas),
-    categories: batchCategories(pending),
+    categories: atomicUpdateCategories(items),
   });
   onProgress?.({ type: "step", key: "preparing", status: "done" });
 
   onProgress?.({ type: "step", key: "generating", status: "start" });
   let draft;
   try {
-    draft = await generateUpdateDraft(pending, brandProfile, reposById, personas, examples);
+    draft = await generateReleaseDraft(items, brandProfile, personas, examples);
   } catch {
     try {
-      draft = await generateUpdateDraft(pending, brandProfile, reposById, personas, examples);
+      draft = await generateReleaseDraft(items, brandProfile, personas, examples);
     } catch (err) {
-      // Both attempts failed. Leave the batch's items pending — they roll into
+      // Both attempts failed. Leave the atomic updates open — they roll into
       // the next scheduled/threshold/manual run automatically.
       onProgress?.({ type: "error", message: err instanceof Error ? err.message : String(err) });
       return false;
@@ -63,51 +62,22 @@ export async function runBatchForWorkspace(
   onProgress?.({ type: "step", key: "reviewing", status: "done" });
 
   onProgress?.({ type: "step", key: "saving", status: "start" });
-  const update = await claimBatchAndCreateUpdate(
+  const release = await claimReleaseFromAtomicUpdates(
     {
       tenantId,
-      changeItemIds: pending.map((p) => p.id),
+      atomicUpdateIds: items.map((i) => i.id),
       draft: review.finalDraft,
       review: { status: review.status, issues: review.issues },
     },
     database
   );
-  if (!update) {
+  if (!release) {
     onProgress?.({ type: "error", message: "No changes were available to draft." });
     return false;
   }
   onProgress?.({ type: "step", key: "saving", status: "done" });
 
-  // Auto-publish: only when the workspace opted in, an active webhook exists, AND
-  // the review passed/revised — otherwise the update stays a draft for review.
-  //
-  // Best-effort, and deliberately guarded: the draft is already saved and its
-  // change items are already claimed by this point. Letting a failure here
-  // propagate would report the whole run as failed — the caller would show an
-  // error for a draft that actually exists, and a retry would find nothing
-  // pending. It would also stop the scheduler from advancing its cadence, so the
-  // next tick would re-run and produce a duplicate draft.
-  try {
-    const [tenant] = await database.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1);
-    const [activeWebhook] = await database
-      .select()
-      .from(webhookConfigs)
-      .where(and(eq(webhookConfigs.tenantId, tenantId), eq(webhookConfigs.active, true)))
-      .limit(1);
-
-    const reviewPassed = review.status === "passed";
-    if (tenant?.autoPublish && activeWebhook && reviewPassed) {
-      await database
-        .update(updates)
-        .set({ status: "published", publishedAt: new Date() })
-        .where(eq(updates.id, update.id));
-      await dispatchAllDestinations(update.id, database);
-    }
-  } catch (error) {
-    console.error(`Auto-publish failed for update ${update.id}; it remains a saved draft:`, error);
-  }
-
-  onProgress?.({ type: "done", updateId: update.id });
+  onProgress?.({ type: "done", updateId: release.id });
   return true;
 }
 
@@ -116,7 +86,7 @@ export async function runSchedulerTick(now: Date, database: typeof defaultDb = d
 
   for (const config of configs) {
     try {
-      const pending = await getBatchableChangeItems(config.tenantId, database);
+      const pending = await getOpenAtomicUpdates(config.tenantId, database);
 
       const reason = shouldTriggerRun(
         {

@@ -17,7 +17,6 @@ export const tenants = pgTable("tenants", {
   name: text("name").notNull(),
   githubInstallationId: text("github_installation_id"),
   onboardingCompletedAt: timestamp("onboarding_completed_at", { withTimezone: true }),
-  autoPublish: boolean("auto_publish").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -44,13 +43,24 @@ export const tenantMembers = pgTable(
   (table) => [primaryKey({ columns: [table.tenantId, table.userId] })]
 );
 
-export const sourceTypeEnum = pgEnum("source_type", ["pr", "commit"]);
 export const changeItemStatusEnum = pgEnum("change_item_status", ["pending", "batched", "excluded", "ignored"]);
-export const ignoredReasonEnum = pgEnum("ignored_reason", ["merge_commit", "empty_diff"]);
 export const cadenceEnum = pgEnum("cadence", ["daily", "weekly", "biweekly", "monthly", "none"]);
-export const updateStatusEnum = pgEnum("update_status", ["draft", "approved", "published", "rejected"]);
+export const releaseStatusEnum = pgEnum("release_status", ["draft", "approved", "published", "rejected"]);
 export const reviewStatusEnum = pgEnum("review_status", ["passed", "failed", "error"]);
 export const updateCategoryEnum = pgEnum("update_category", ["new", "improved", "fixed"]);
+
+export const changeEventTypeEnum = pgEnum("change_event_type", ["commit", "pull_request", "task"]);
+export const changeEventProviderEnum = pgEnum("change_event_provider", ["github", "notion"]);
+export const atomicUpdateStatusEnum = pgEnum("atomic_update_status", ["open", "released", "hidden"]);
+// Why tier 1 dropped an event. Null means it was not dropped deterministically.
+export const filterReasonEnum = pgEnum("filter_reason", [
+  "merge_commit",
+  "empty_diff",
+  "lockfile_only",
+  "test_only",
+  "chore_prefix",
+  "empty_task",
+]);
 
 export const repos = pgTable("repos", {
   id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
@@ -64,8 +74,8 @@ export const repos = pgTable("repos", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
-export const changeItems = pgTable(
-  "change_items",
+export const changeEvents = pgTable(
+  "change_events",
   {
     id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
     tenantId: uuid("tenant_id")
@@ -74,10 +84,16 @@ export const changeItems = pgTable(
     repoId: uuid("repo_id")
       .notNull()
       .references(() => repos.id, { onDelete: "cascade" }),
-    sourceType: sourceTypeEnum("source_type").notNull(),
+    type: changeEventTypeEnum("type").notNull(),
+    provider: changeEventProviderEnum("provider").notNull(),
+    // Idempotency key, namespaced per provider. Commits use the SHA; PRs use
+    // `owner/repo#number` because PR numbers collide across repos.
+    externalId: text("external_id").notNull(),
+    externalUrl: text("external_url"),
+    atomicUpdateId: uuid("atomic_update_id").references(() => atomicUpdates.id, { onDelete: "set null" }),
     status: changeItemStatusEnum("status").notNull().default("pending"),
-    ignoredReason: ignoredReasonEnum("ignored_reason"),
-    updateId: uuid("update_id").references(() => updates.id),
+    // Why tier 1 dropped this event. Null means it survived the filter.
+    filterReason: filterReasonEnum("filter_reason"),
     excludedAt: timestamp("excluded_at", { withTimezone: true }),
     excludedBy: uuid("excluded_by").references(() => users.id),
     // pr-sourced fields
@@ -99,7 +115,7 @@ export const changeItems = pgTable(
     // than pretending the author date is a release.
     releasedAt: timestamp("released_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    // enrichment (sub-project A): classifier output, null until enriched
+    // tier 2 classifier output, null until classified
     userFacing: boolean("user_facing"),
     impactSummary: text("impact_summary"),
     suggestedCategory: updateCategoryEnum("suggested_category"),
@@ -107,10 +123,34 @@ export const changeItems = pgTable(
     enrichedAt: timestamp("enriched_at", { withTimezone: true }),
   },
   (table) => [
-    uniqueIndex("change_items_repo_pr_unique").on(table.repoId, table.prNumber),
-    uniqueIndex("change_items_repo_commit_unique").on(table.repoId, table.commitSha),
+    uniqueIndex("change_events_repo_pr_unique").on(table.repoId, table.prNumber),
+    uniqueIndex("change_events_repo_commit_unique").on(table.repoId, table.commitSha),
+    uniqueIndex("change_events_tenant_provider_external_unique").on(
+      table.tenantId,
+      table.provider,
+      table.externalId
+    ),
   ]
 );
+
+export const atomicUpdates = pgTable("atomic_updates", {
+  id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  tenantId: uuid("tenant_id")
+    .notNull()
+    .references(() => tenants.id, { onDelete: "cascade" }),
+  // Set when this atomic update joins a release draft. At most one release ever,
+  // so "which release is this shipping in" always has a single answer.
+  releaseId: uuid("release_id").references(() => releases.id, { onDelete: "set null" }),
+  title: text("title").notNull(),
+  summary: text("summary").notNull(),
+  category: updateCategoryEnum("category"),
+  status: atomicUpdateStatusEnum("status").notNull().default("open"),
+  // Non-null freezes regeneration: once a human edits the summary, attaching a
+  // new change event must not overwrite their words.
+  summaryEditedAt: timestamp("summary_edited_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
 
 export const scheduleConfigs = pgTable("schedule_configs", {
   id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
@@ -181,7 +221,7 @@ export const systemUpdateExamples = pgTable("system_update_examples", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
-export const updates = pgTable("updates", {
+export const releases = pgTable("releases", {
   id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
   tenantId: uuid("tenant_id")
     .notNull()
@@ -189,14 +229,21 @@ export const updates = pgTable("updates", {
   repoId: uuid("repo_id").references(() => repos.id, { onDelete: "cascade" }),
   title: text("title").notNull(),
   body: text("body").notNull(),
-  status: updateStatusEnum("status").notNull().default("draft"),
-  sourceItems: jsonb("source_items").$type<string[]>().notNull(),
+  status: releaseStatusEnum("status").notNull().default("draft"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   publishedAt: timestamp("published_at", { withTimezone: true }),
   editedBy: uuid("edited_by").references(() => users.id),
   reviewStatus: reviewStatusEnum("review_status"),
   reviewIssues: jsonb("review_issues").$type<string[]>().notNull().default([]),
   reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+  // The baseline catch-up deltas measure against: how many new atomic updates
+  // (or new commits on already-attached ones) have appeared since. Set at
+  // claim, advanced again whenever a "catch up" merges the new material in.
+  composedAt: timestamp("composed_at", { withTimezone: true }).notNull().defaultNow(),
+  // Non-null means the body was hand-edited — the body's analogue of
+  // atomicUpdates.summaryEditedAt. Lets the UI/merge know the body carries
+  // hand edits worth preserving rather than silently overwriting.
+  bodyEditedAt: timestamp("body_edited_at", { withTimezone: true }),
 });
 
 export const webhookDeliveryStatusEnum = pgEnum("webhook_delivery_status", ["pending", "success", "failed"]);
@@ -208,9 +255,9 @@ export const webhookConfigs = pgTable("webhook_configs", {
     .unique()
     .references(() => tenants.id, { onDelete: "cascade" }),
   url: text("url").notNull(),
-  secretCiphertext: text("secret_ciphertext").notNull(),
-  secretIv: text("secret_iv").notNull(),
-  secretAuthTag: text("secret_auth_tag").notNull(),
+  secretCiphertext: text("secret_ciphertext"),
+  secretIv: text("secret_iv"),
+  secretAuthTag: text("secret_auth_tag"),
   active: boolean("active").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
@@ -221,9 +268,9 @@ export const deliveryAttempts = pgTable(
   "delivery_attempts",
   {
     id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
-    updateId: uuid("update_id")
+    releaseId: uuid("release_id")
       .notNull()
-      .references(() => updates.id, { onDelete: "cascade" }),
+      .references(() => releases.id, { onDelete: "cascade" }),
     destination: destinationEnum("destination").notNull(),
     status: webhookDeliveryStatusEnum("status").notNull().default("pending"),
     attempts: integer("attempts").notNull().default(0),
@@ -236,10 +283,10 @@ export const deliveryAttempts = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
-    // One row per update+destination: dispatch reuses this row across
+    // One row per release+destination: dispatch reuses this row across
     // re-publishes, so a race between two concurrent publishes must not be
     // able to insert two rows for the same pair.
-    uniqueIndex("delivery_attempts_update_id_destination_unique").on(table.updateId, table.destination),
+    uniqueIndex("delivery_attempts_release_id_destination_unique").on(table.releaseId, table.destination),
   ]
 );
 

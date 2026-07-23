@@ -23,10 +23,10 @@ import {
 import { publishDraft, deleteDraft } from "./actions";
 
 type Props = {
-  updateId: string;
+  releaseId: string;
   title: string;
-  /** Commits batched into this draft; named in the delete confirmation. */
-  sourceItemCount: number;
+  /** Atomic updates composed into this draft; named in the delete confirmation. */
+  atomicUpdateCount: number;
   /**
    * published_at as rendered by this page load — always null/"" here since
    * this list only ever shows drafts, but threaded through rather than
@@ -38,7 +38,7 @@ type Props = {
 
 type Confirming = "publish" | "delete" | null;
 
-export function DraftRowMenu({ updateId, title, sourceItemCount, publishedAt }: Props) {
+export function DraftRowMenu({ releaseId, title, atomicUpdateCount, publishedAt }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirming, setConfirming] = useState<Confirming>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -46,7 +46,7 @@ export function DraftRowMenu({ updateId, title, sourceItemCount, publishedAt }: 
   async function run(action: (formData: FormData) => Promise<void>, success: string) {
     setSubmitting(true);
     const formData = new FormData();
-    formData.set("updateId", updateId);
+    formData.set("releaseId", releaseId);
     formData.set("publishedAt", publishedAt ?? "");
     try {
       await action(formData);
@@ -61,7 +61,7 @@ export function DraftRowMenu({ updateId, title, sourceItemCount, publishedAt }: 
     }
   }
 
-  const commits = `${sourceItemCount} ${sourceItemCount === 1 ? "commit" : "commits"}`;
+  const atomicUpdatesLabel = `${atomicUpdateCount} ${atomicUpdateCount === 1 ? "update" : "updates"}`;
 
   return (
     <>
@@ -122,8 +122,8 @@ export function DraftRowMenu({ updateId, title, sourceItemCount, publishedAt }: 
           <DialogHeader>
             <DialogTitle>Delete this draft?</DialogTitle>
             <DialogDescription>
-              “{title}” will be deleted permanently. Its {commits} return to Pending, so they can go
-              into a future update.
+              “{title}” will be deleted permanently. Its {atomicUpdatesLabel} become available again,
+              so they can go into a future update.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

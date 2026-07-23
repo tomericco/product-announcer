@@ -11,7 +11,7 @@ import {
 } from "@/lib/integrations/webflow/client";
 import { buildFieldData } from "@/lib/integrations/webflow/mapping";
 import { slugify, withSuffix } from "@/lib/publishing/slug";
-import type { Destination, DeliveryResult, DbClient, Update } from "./types";
+import type { Destination, DeliveryResult, DbClient, Release } from "./types";
 
 type WebflowConnection = typeof webflowConnections.$inferSelect;
 
@@ -101,6 +101,7 @@ async function classifyAndRecord(
 
 export const webflowDestination: Destination<WebflowConnection> = {
   id: "webflow",
+  label: "Webflow",
 
   async loadConfig(tenantId, database: DbClient) {
     const [connection] = await database
@@ -112,7 +113,7 @@ export const webflowDestination: Destination<WebflowConnection> = {
           eq(webflowConnections.status, "active"),
           // A connection row exists as soon as a token validates, before a
           // site or collection is chosen — that resumable half-finished
-          // wizard state is deliberate (see drafts/[updateId]/page.tsx's
+          // wizard state is deliberate (see drafts/[releaseId]/page.tsx's
           // identical gate). Without this, a connection someone abandoned
           // mid-wizard is treated as a live destination: `deliver` below
           // returns permanent for "missing a collection", dispatch.ts pins
@@ -125,13 +126,13 @@ export const webflowDestination: Destination<WebflowConnection> = {
     return connection ?? null;
   },
 
-  async deliver(update: Update, connection, externalId, database): Promise<DeliveryResult> {
+  async deliver(release: Release, connection, externalId, database): Promise<DeliveryResult> {
     if (!connection.collectionId) {
       return { status: "permanent", error: "Webflow connection is missing a collection.", configFault: true };
     }
     // MDXEditor can submit a blank body on a parse failure (see resolveBody in
     // drafts/actions.ts). Publishing an empty CMS item is worse than failing.
-    if (!update.body.trim()) {
+    if (!release.body.trim()) {
       return { status: "permanent", error: "Update body is empty; nothing to publish." };
     }
 
@@ -162,7 +163,7 @@ export const webflowDestination: Destination<WebflowConnection> = {
       // deleted in Webflow since setup would otherwise 400 with no explanation.
       const collection = await getCollection(token, connection.collectionId);
 
-      const baseSlug = slugify(update.title);
+      const baseSlug = slugify(release.title);
       let lastError: DeliveryResult | null = null;
       // Tracks genuine slug-collision retries only. Kept separate from the
       // 404-fallback below so a deleted-item recovery never eats into this
@@ -171,7 +172,7 @@ export const webflowDestination: Destination<WebflowConnection> = {
 
       while (slugAttempt < MAX_SLUG_ATTEMPTS) {
         const fieldData = buildFieldData(
-          update,
+          release,
           connection.fieldMapping,
           collection.fields,
           withSuffix(baseSlug, slugAttempt)

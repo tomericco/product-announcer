@@ -1,0 +1,1 @@
+ALTER TYPE "public"."atomic_update_status" ADD VALUE 'hidden';

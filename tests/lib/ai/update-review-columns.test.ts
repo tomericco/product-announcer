@@ -1,11 +1,11 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, updates } from "../../../src/db/schema";
+import { tenants, releases } from "../../../src/db/schema";
 
 const NAME = "Review Columns Test Tenant";
 
-describe("updates review columns", () => {
+describe("releases review columns", () => {
   afterEach(async () => {
     await db.delete(tenants).where(eq(tenants.name, NAME));
   });
@@ -14,17 +14,17 @@ describe("updates review columns", () => {
     const [tenant] = await db.insert(tenants).values({ name: NAME }).returning();
 
     const [defaulted] = await db
-      .insert(updates)
-      .values({ tenantId: tenant.id, title: "t", body: "b", sourceItems: [] })
+      .insert(releases)
+      .values({ tenantId: tenant.id, title: "t", body: "b" })
       .returning();
     expect(defaulted.reviewStatus).toBeNull();
     expect(defaulted.reviewIssues).toEqual([]);
     expect(defaulted.reviewedAt).toBeNull();
 
     const [reviewed] = await db
-      .insert(updates)
+      .insert(releases)
       .values({
-        tenantId: tenant.id, title: "t2", body: "b2", sourceItems: [],
+        tenantId: tenant.id, title: "t2", body: "b2",
         reviewStatus: "failed", reviewIssues: ["too salesy", "wrong tone"], reviewedAt: new Date(),
       })
       .returning();

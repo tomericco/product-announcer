@@ -1,53 +1,9 @@
-import type { changeItems, brandProfiles, ResolvedPersona, systemUpdateExamples } from "@/db/schema";
+import type { brandProfiles, ResolvedPersona, systemUpdateExamples } from "@/db/schema";
 
-type ChangeItemRow = typeof changeItems.$inferSelect;
 type BrandProfileRow = typeof brandProfiles.$inferSelect;
 type ExampleRow = typeof systemUpdateExamples.$inferSelect;
 
 const DEFAULT_MAX_PROMPT_CHARS = 24000;
-
-function formatChangeItem(item: ChangeItemRow, index: number, reposById: Map<string, string>): string {
-  const repo = reposById.get(item.repoId) ?? "unknown";
-  const n = index + 1;
-  if (item.sourceType === "pr") {
-    const detail = item.impactSummary ?? item.prDescription ?? "";
-    return `${n}. [${repo} · PR #${item.prNumber}] "${item.prTitle}"${detail ? ` — ${detail}` : ""}`;
-  }
-  const sha = item.commitSha?.slice(0, 7) ?? "unknown";
-  const detail = item.impactSummary ?? "";
-  return `${n}. [${repo} · commit ${sha}] "${item.commitMessage}"${detail ? ` — ${detail}` : ""}`;
-}
-
-/**
- * Renders the batch as numbered, repo-tagged lines using each item's enriched
- * impactSummary (falling back to title/message). Diffs are never included — A's
- * enricher already distilled them into impactSummary. If the rendered batch exceeds
- * `maxChars`, trailing whole items are dropped and a summary note is appended.
- */
-export function serializeBatch(
-  items: ChangeItemRow[],
-  reposById: Map<string, string>,
-  maxChars = DEFAULT_MAX_PROMPT_CHARS
-): string {
-  const lines = items.map((item, i) => formatChangeItem(item, i, reposById));
-  const full = lines.join("\n");
-  if (full.length <= maxChars) return full;
-
-  const kept: string[] = [];
-  for (let i = 0; i < lines.length; i++) {
-    const droppedIfStopHere = lines.length - (i + 1);
-    const note = droppedIfStopHere > 0 ? `\n…and ${droppedIfStopHere} more changes not shown.` : "";
-    const candidate = [...kept, lines[i]].join("\n") + note;
-    // Always keep at least one item (a whole-item safety cap must still make progress),
-    // even if that single item alone exceeds maxChars.
-    if (candidate.length > maxChars && kept.length > 0) break;
-    kept.push(lines[i]);
-    if (candidate.length > maxChars) break;
-  }
-
-  const dropped = lines.length - kept.length;
-  return dropped > 0 ? `${kept.join("\n")}\n…and ${dropped} more changes not shown.` : kept.join("\n");
-}
 
 function renderExample(example: ExampleRow): string {
   return `Example (${example.category}):\nTitle: ${example.title}\nBody:\n${example.body}`;
@@ -91,16 +47,88 @@ export function buildSystemPrompt(
   return `${base}\n\n${block}`;
 }
 
-export function composePrompt(args: {
-  items: ChangeItemRow[];
+export type AtomicUpdateForPrompt = {
+  id: string;
+  title: string;
+  summary: string;
+  category: "new" | "improved" | "fixed" | null;
+};
+
+function formatAtomicUpdate(item: AtomicUpdateForPrompt, index: number): string {
+  const tag = item.category ? ` (${item.category})` : "";
+  return `${index + 1}. "${item.title}"${tag} — ${item.summary}`;
+}
+
+/**
+ * Renders selected atomic updates as numbered title + summary lines. Atomic
+ * updates are already distilled and repo-agnostic — no repo tag, no PR/commit
+ * branching. Trailing items past `maxChars` are dropped whole with a note.
+ */
+export function serializeAtomicUpdates(
+  items: AtomicUpdateForPrompt[],
+  maxChars = DEFAULT_MAX_PROMPT_CHARS
+): string {
+  const lines = items.map(formatAtomicUpdate);
+  const full = lines.join("\n");
+  if (full.length <= maxChars) return full;
+
+  const kept: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const droppedIfStopHere = lines.length - (i + 1);
+    const note = droppedIfStopHere > 0 ? `\n…and ${droppedIfStopHere} more updates not shown.` : "";
+    const candidate = [...kept, lines[i]].join("\n") + note;
+    if (candidate.length > maxChars && kept.length > 0) break;
+    kept.push(lines[i]);
+    if (candidate.length > maxChars) break;
+  }
+  const dropped = lines.length - kept.length;
+  return dropped > 0 ? `${kept.join("\n")}\n…and ${dropped} more updates not shown.` : kept.join("\n");
+}
+
+export function composeReleasePrompt(args: {
+  items: AtomicUpdateForPrompt[];
   brandProfile: BrandProfileRow;
-  reposById: Map<string, string>;
   personas: ResolvedPersona[];
   examples: ExampleRow[];
 }): { system: string; prompt: string } {
-  const batchText = serializeBatch(args.items, args.reposById);
   return {
     system: buildSystemPrompt(args.brandProfile, args.personas, args.examples),
-    prompt: `Here are the changes to summarize into one product update. Format the body as Markdown (short paragraphs, and bullet lists where helpful):\n\n${batchText}`,
+    prompt: `Here are the changes to summarize into one product update. Format the body as Markdown (short paragraphs, and bullet lists where helpful):\n\n${serializeAtomicUpdates(args.items)}`,
   };
+}
+
+/**
+ * Builds the prompt for a catch-up MERGE regeneration: folding new/changed
+ * atomic updates into an existing draft body. Contrast with
+ * `composeReleasePrompt`, which writes fresh from a plain list of items — here
+ * the current body is the anchor, and the system prompt instructs the model to
+ * preserve its existing wording and structure rather than rewrite it.
+ */
+export function composeMergePrompt(args: {
+  currentBody: string;
+  newItems: AtomicUpdateForPrompt[];
+  changedItems: AtomicUpdateForPrompt[];
+  brandProfile: BrandProfileRow;
+  personas: ResolvedPersona[];
+  examples: ExampleRow[];
+}): { system: string; prompt: string } {
+  const base = buildSystemPrompt(args.brandProfile, args.personas, args.examples);
+  const system = `${base}\n\nYou are revising an existing draft release note to fold in new material — you are not writing a fresh one. Preserve the current body's existing wording and structure wherever it still applies; integrate the new and changed items by editing and extending that text rather than rewriting it from scratch.`;
+
+  const currentBody =
+    args.currentBody.length > DEFAULT_MAX_PROMPT_CHARS
+      ? `${args.currentBody.slice(0, DEFAULT_MAX_PROMPT_CHARS)}\n…(truncated)`
+      : args.currentBody;
+
+  const sections = [`Current body (preserve this wording and structure where it still applies):\n${currentBody}`];
+  if (args.newItems.length > 0) {
+    sections.push(`New changes to fold in:\n${serializeAtomicUpdates(args.newItems)}`);
+  }
+  if (args.changedItems.length > 0) {
+    sections.push(`Changes whose details were updated since the current body was written:\n${serializeAtomicUpdates(args.changedItems)}`);
+  }
+
+  const prompt = `Update the product release note below to incorporate the new material, preserving as much of the existing wording and structure as still applies. Format the body as Markdown (short paragraphs, and bullet lists where helpful):\n\n${sections.join("\n\n")}`;
+
+  return { system, prompt };
 }

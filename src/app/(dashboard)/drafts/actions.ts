@@ -4,16 +4,17 @@ import { and, eq, sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { db } from "@/db";
-import { updates } from "@/db/schema";
+import { releases } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { dispatchAllDestinations } from "@/lib/publishing/dispatch";
-import { releaseBatchForUpdate } from "@/lib/change-items/change-item-batch";
+import { revertReleaseAtomicUpdates, markReleaseAtomicUpdatesReleased } from "@/lib/change-events/release-claim";
+import type { DestinationId } from "@/lib/publishing/destinations/types";
 
-async function loadOwnedDraft(tenantId: string, updateId: string) {
+async function loadOwnedDraft(tenantId: string, releaseId: string) {
   const [update] = await db
     .select()
-    .from(updates)
-    .where(and(eq(updates.id, updateId), eq(updates.tenantId, tenantId)));
+    .from(releases)
+    .where(and(eq(releases.id, releaseId), eq(releases.tenantId, tenantId)));
   if (!update) throw new Error("Update not found for this tenant");
   return update;
 }
@@ -38,27 +39,54 @@ function parseExpectedPublishedAt(raw: FormDataEntryValue | null): Date | null {
   return new Date(raw);
 }
 
+const KNOWN_DESTINATIONS: readonly DestinationId[] = ["webhook", "webflow"];
+
+// The publish modal submits one `destinations` entry per chosen target. Never
+// trust the wire: keep only real destination ids, and require at least one —
+// publishing marks the release published/frozen and closes out its atomic
+// updates, and the product rule is that a publish must name a delivery target.
+// The modal disables Publish until one is picked; this is the server-side
+// guard for a crafted request that bypasses the UI.
+function parseSelectedDestinations(formData: FormData): DestinationId[] {
+  const raw = formData.getAll("destinations");
+  const selected = KNOWN_DESTINATIONS.filter((id) => raw.includes(id));
+  if (selected.length === 0) {
+    throw new Error("Select at least one destination to publish to.");
+  }
+  return selected;
+}
+
 export async function saveDraft(formData: FormData) {
   const session = await requireSession();
-  const updateId = formData.get("updateId") as string;
-  const existing = await loadOwnedDraft(session.user.tenantId, updateId);
+  const releaseId = formData.get("releaseId") as string;
+  const existing = await loadOwnedDraft(session.user.tenantId, releaseId);
+
+  const body = resolveBody(formData.get("body") as string, existing.body);
+  // Only a body that actually differs from what's stored counts as a hand
+  // edit — this must not fire when the blank-guard above fell back to the
+  // existing body, or when the user simply re-saved the same content.
+  const bodyChanged = body !== existing.body;
 
   await db
-    .update(updates)
+    .update(releases)
     .set({
       title: formData.get("title") as string,
-      body: resolveBody(formData.get("body") as string, existing.body),
+      body,
       editedBy: session.user.id,
+      ...(bodyChanged ? { bodyEditedAt: new Date() } : {}),
     })
-    .where(eq(updates.id, updateId));
+    .where(eq(releases.id, releaseId));
 
-  revalidatePath(`/drafts/${updateId}`);
+  revalidatePath(`/drafts/${releaseId}`);
 }
 
 export async function approveDraft(formData: FormData) {
   const session = await requireSession();
-  const updateId = formData.get("updateId") as string;
-  const existing = await loadOwnedDraft(session.user.tenantId, updateId);
+  const releaseId = formData.get("releaseId") as string;
+  const existing = await loadOwnedDraft(session.user.tenantId, releaseId);
+  // Validate the chosen destinations before publishing, so an empty/invalid
+  // set aborts without marking the release published or closing its atomic updates.
+  const destinations = parseSelectedDestinations(formData);
   // The value `published_at` had when this form was rendered — a hidden
   // field, not user-editable. Guards against a double-submit of the same
   // rendered form re-triggering delivery: gate the write on it still
@@ -68,32 +96,47 @@ export async function approveDraft(formData: FormData) {
   // Persist whatever title/body the user currently sees before publishing,
   // so approving doesn't silently discard unsaved edits in favor of the
   // last-saved DB copy.
-  const [changed] = await db
-    .update(updates)
-    .set({
-      title: formData.get("title") as string,
-      body: resolveBody(formData.get("body") as string, existing.body),
-      editedBy: session.user.id,
-      status: "published",
-      publishedAt: new Date(),
-    })
-    .where(
-      and(
-        eq(updates.id, updateId),
-        eq(updates.tenantId, session.user.tenantId),
-        // `= NULL` is never true in SQL, so a plain `eq` would break the very
-        // first publish (published_at starts out null). IS NOT DISTINCT FROM
-        // treats null-equals-null as a match.
-        sql`${updates.publishedAt} IS NOT DISTINCT FROM ${expectedPublishedAt}`
+  //
+  // The publish UPDATE and closing out this release's atomic updates run in
+  // one transaction: a crash between the two must not leave a published
+  // release with atomic updates still sitting `open` (visible in the compose
+  // list as if unclaimed).
+  const [changed] = await db.transaction(async (tx) => {
+    const rows = await tx
+      .update(releases)
+      .set({
+        title: formData.get("title") as string,
+        body: resolveBody(formData.get("body") as string, existing.body),
+        editedBy: session.user.id,
+        status: "published",
+        publishedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(releases.id, releaseId),
+          eq(releases.tenantId, session.user.tenantId),
+          // `= NULL` is never true in SQL, so a plain `eq` would break the very
+          // first publish (published_at starts out null). IS NOT DISTINCT FROM
+          // treats null-equals-null as a match.
+          sql`${releases.publishedAt} IS NOT DISTINCT FROM ${expectedPublishedAt}`
+        )
       )
-    )
-    .returning({ id: updates.id });
+      .returning({ id: releases.id });
 
-  // A double submit's second call finds published_at already moved past what
-  // it expected, matches zero rows, and skips dispatch — the update is
-  // already published, which is what the user wanted, so this isn't an error.
+    // A double submit's second call finds published_at already moved past what
+    // it expected, matches zero rows — skip closing out the atomic updates too,
+    // so it doesn't redundantly re-run against a release already fully published.
+    if (rows.length > 0) {
+      await markReleaseAtomicUpdatesReleased(releaseId, tx);
+    }
+
+    return rows;
+  });
+
+  // Dispatch stays outside the transaction: publishing already committed by
+  // this point, so a delivery failure here shouldn't roll back the publish.
   if (changed) {
-    await dispatchAllDestinations(updateId);
+    await dispatchAllDestinations(releaseId, undefined, destinations);
   }
 
   revalidatePath("/drafts");
@@ -102,14 +145,15 @@ export async function approveDraft(formData: FormData) {
 
 export async function rejectDraft(formData: FormData) {
   const session = await requireSession();
-  const updateId = formData.get("updateId") as string;
-  await loadOwnedDraft(session.user.tenantId, updateId);
+  const releaseId = formData.get("releaseId") as string;
+  await loadOwnedDraft(session.user.tenantId, releaseId);
 
   await db.transaction(async (tx) => {
-    await tx.update(updates).set({ status: "rejected" }).where(eq(updates.id, updateId));
-    // Rejecting the write-up isn't rejecting the commits — hand them back so
-    // they can go into a later update instead of vanishing from Pending.
-    await releaseBatchForUpdate(updateId, tx);
+    await tx.update(releases).set({ status: "rejected" }).where(eq(releases.id, releaseId));
+    // Rejecting the write-up isn't rejecting the underlying changes — hand the
+    // atomic updates back so they can go into a later release instead of
+    // vanishing.
+    await revertReleaseAtomicUpdates(releaseId, tx);
   });
 
   revalidatePath("/drafts");
@@ -123,27 +167,38 @@ export async function rejectDraft(formData: FormData) {
  */
 export async function publishDraft(formData: FormData) {
   const session = await requireSession();
-  const updateId = formData.get("updateId") as string;
-  await loadOwnedDraft(session.user.tenantId, updateId);
+  const releaseId = formData.get("releaseId") as string;
+  await loadOwnedDraft(session.user.tenantId, releaseId);
   // Same guard as approveDraft: the drafts list only ever renders drafts, so
   // in practice this is always null, but the mechanism stays identical rather
   // than special-casing the list's caller.
   const expectedPublishedAt = parseExpectedPublishedAt(formData.get("publishedAt"));
 
-  const [changed] = await db
-    .update(updates)
-    .set({ status: "published", publishedAt: new Date() })
-    .where(
-      and(
-        eq(updates.id, updateId),
-        eq(updates.tenantId, session.user.tenantId),
-        sql`${updates.publishedAt} IS NOT DISTINCT FROM ${expectedPublishedAt}`
+  // See approveDraft: publish UPDATE + closing out the release's atomic
+  // updates run in one transaction, so a crash between them can't leave a
+  // published release with atomic updates still `open`.
+  const [changed] = await db.transaction(async (tx) => {
+    const rows = await tx
+      .update(releases)
+      .set({ status: "published", publishedAt: new Date() })
+      .where(
+        and(
+          eq(releases.id, releaseId),
+          eq(releases.tenantId, session.user.tenantId),
+          sql`${releases.publishedAt} IS NOT DISTINCT FROM ${expectedPublishedAt}`
+        )
       )
-    )
-    .returning({ id: updates.id });
+      .returning({ id: releases.id });
+
+    if (rows.length > 0) {
+      await markReleaseAtomicUpdatesReleased(releaseId, tx);
+    }
+
+    return rows;
+  });
 
   if (changed) {
-    await dispatchAllDestinations(updateId);
+    await dispatchAllDestinations(releaseId);
   }
 
   revalidatePath("/drafts");
@@ -151,14 +206,16 @@ export async function publishDraft(formData: FormData) {
 
 export async function deleteDraft(formData: FormData) {
   const session = await requireSession();
-  const updateId = formData.get("updateId") as string;
-  await loadOwnedDraft(session.user.tenantId, updateId);
+  const releaseId = formData.get("releaseId") as string;
+  await loadOwnedDraft(session.user.tenantId, releaseId);
 
   await db.transaction(async (tx) => {
-    // Must precede the delete: change_items.update_id has no ON DELETE clause,
-    // so the FK rejects removing an update that still owns items.
-    await releaseBatchForUpdate(updateId, tx);
-    await tx.delete(updates).where(eq(updates.id, updateId));
+    // Must precede the delete: releaseId is ON DELETE SET NULL, so deleting
+    // first would null the FK before this can find the atomic updates to
+    // revert, stranding them as status='released' with no release — invisible
+    // to every open-only query.
+    await revertReleaseAtomicUpdates(releaseId, tx);
+    await tx.delete(releases).where(eq(releases.id, releaseId));
   });
 
   revalidatePath("/drafts");

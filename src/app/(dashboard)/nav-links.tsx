@@ -2,16 +2,18 @@
 
 import { GuardedLink } from "./unsaved-changes";
 import { usePathname } from "next/navigation";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 
 const NAV = [
-  { href: "/pending", label: "Pending" },
+  { href: "/change-events", label: "Change events" },
+  { href: "/atomic-updates", label: "Atomic updates" },
   { href: "/drafts", label: "Drafts" },
-  { href: "/history", label: "History" },
+  { href: "/history", label: "Release history" },
   { href: "/integrations", label: "Integrations" },
 ];
 
-export function NavLinks() {
+export function NavLinks({ draftCount }: { draftCount: number }) {
   const pathname = usePathname();
 
   return (
@@ -29,6 +31,11 @@ export function NavLinks() {
             render={<GuardedLink href={item.href} />}
           >
             {item.label}
+            {item.href === "/drafts" && draftCount > 0 && (
+              <Badge variant="secondary" className="ml-auto">
+                {draftCount}
+              </Badge>
+            )}
           </Button>
         );
       })}

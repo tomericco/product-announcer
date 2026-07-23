@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse, after } from "next/server";
 import { verifyGithubSignature, parsePushedAt } from "@/lib/integrations/github/github-webhook";
-import { ingestMergedPullRequest } from "@/lib/change-items/ingest-pull-request";
-import { ingestPush } from "@/lib/change-items/ingest-push";
+import { ingestMergedPullRequest } from "@/lib/change-events/ingest-pull-request";
+import { ingestPush } from "@/lib/change-events/ingest-push";
 
 export async function POST(request: NextRequest) {
   const rawBody = await request.text();
@@ -23,7 +23,7 @@ export async function POST(request: NextRequest) {
 
   try {
     if (event === "pull_request" && payload.action === "closed" && payload.pull_request?.merged) {
-      await ingestMergedPullRequest({
+      const prInput = {
         installationId: String(payload.installation.id),
         repoFullName: payload.repository.full_name,
         baseBranch: payload.pull_request.base.ref,
@@ -32,6 +32,13 @@ export async function POST(request: NextRequest) {
         prDescription: payload.pull_request.body ?? "",
         prUrl: payload.pull_request.html_url,
         mergedAt: new Date(payload.pull_request.merged_at),
+      };
+      after(async () => {
+        try {
+          await ingestMergedPullRequest(prInput);
+        } catch (error) {
+          console.error("Deferred PR ingestion failed:", error);
+        }
       });
     }
 

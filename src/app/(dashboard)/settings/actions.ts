@@ -31,13 +31,6 @@ export async function saveWorkspaceName(formData: FormData) {
   revalidatePath("/settings");
 }
 
-export async function saveAutoPublish(formData: FormData) {
-  const session = await requireSession();
-  const autoPublish = formData.get("autoPublish") === "on";
-  await db.update(tenants).set({ autoPublish }).where(eq(tenants.id, session.user.tenantId));
-  revalidatePath("/settings");
-}
-
 export async function addRepo(formData: FormData) {
   const session = await requireSession();
   const [tenant] = await db.select().from(tenants).where(eq(tenants.id, session.user.tenantId)).limit(1);
@@ -57,8 +50,8 @@ export async function addRepo(formData: FormData) {
 
   await addSelectedRepos(session.user.tenantId, tenant.githubInstallationId, [{ fullName, branch }]);
 
-  revalidatePath("/settings");
-  revalidatePath("/pending");
+  revalidatePath("/integrations");
+  revalidatePath("/atomic-updates");
 }
 
 export async function updateRepoBranch(formData: FormData) {
@@ -87,21 +80,8 @@ export async function updateRepoBranch(formData: FormData) {
     .set({ watchedBranch: branch })
     .where(and(eq(repos.id, repoId), eq(repos.tenantId, session.user.tenantId)));
 
-  revalidatePath("/settings");
-  revalidatePath("/pending");
-}
-
-export async function removeRepo(formData: FormData) {
-  const session = await requireSession();
-  const repoId = (formData.get("repoId") as string)?.trim();
-  if (!repoId) return;
-
-  // Tenant-scoped delete so one tenant can't remove another's repo (IDOR guard).
-  // change_items reference repos with onDelete cascade, so their rows are cleaned up.
-  await db.delete(repos).where(and(eq(repos.id, repoId), eq(repos.tenantId, session.user.tenantId)));
-
-  revalidatePath("/settings");
-  revalidatePath("/pending");
+  revalidatePath("/integrations");
+  revalidatePath("/atomic-updates");
 }
 
 export async function saveBrandProfile(formData: FormData) {
@@ -177,5 +157,5 @@ export async function saveWorkspaceSchedule(formData: FormData) {
     .onConflictDoUpdate({ target: scheduleConfigs.tenantId, set: values });
 
   revalidatePath("/settings");
-  revalidatePath("/pending");
+  revalidatePath("/atomic-updates");
 }

@@ -1,8 +1,8 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import Link from "next/link";
 import { FileText, ArrowRight } from "lucide-react";
 import { db } from "@/db";
-import { updates } from "@/db/schema";
+import { releases, atomicUpdates } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -20,11 +20,31 @@ export default async function DraftsPage() {
   const session = await requireSession();
   const drafts = await db
     .select()
-    .from(updates)
-    .where(and(eq(updates.tenantId, session.user.tenantId), eq(updates.status, "draft")))
+    .from(releases)
+    .where(and(eq(releases.tenantId, session.user.tenantId), eq(releases.status, "draft")))
     // Newest first — the list shows creation times, so an unordered result
     // would read as broken.
-    .orderBy(desc(updates.createdAt));
+    .orderBy(desc(releases.createdAt));
+
+  // The composition link for a draft's constituent changes is
+  // `atomicUpdates.releaseId` — releases carry no column of their own for
+  // this — so the per-draft count is a small side query rather than a plain
+  // field read.
+  const atomicUpdateCounts = new Map<string, number>();
+  if (drafts.length > 0) {
+    const linked = await db
+      .select({ releaseId: atomicUpdates.releaseId })
+      .from(atomicUpdates)
+      .where(
+        inArray(
+          atomicUpdates.releaseId,
+          drafts.map((d) => d.id)
+        )
+      );
+    for (const { releaseId } of linked) {
+      if (releaseId) atomicUpdateCounts.set(releaseId, (atomicUpdateCounts.get(releaseId) ?? 0) + 1);
+    }
+  }
 
   if (drafts.length === 0) {
     return (
@@ -39,8 +59,8 @@ export default async function DraftsPage() {
             scheduled run, or as soon as you generate one yourself.
           </EmptyStateDescription>
           <EmptyStateActions>
-            <Button render={<Link href="/pending" />}>
-              Review pending changes
+            <Button render={<Link href="/atomic-updates" />}>
+              Review atomic updates
               <ArrowRight />
             </Button>
           </EmptyStateActions>
@@ -77,9 +97,9 @@ export default async function DraftsPage() {
             </span>
             <div className="relative shrink-0">
               <DraftRowMenu
-                updateId={d.id}
+                releaseId={d.id}
                 title={d.title}
-                sourceItemCount={d.sourceItems.length}
+                atomicUpdateCount={atomicUpdateCounts.get(d.id) ?? 0}
                 publishedAt={d.publishedAt ? d.publishedAt.toISOString() : null}
               />
             </div>

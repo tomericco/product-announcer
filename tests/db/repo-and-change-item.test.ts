@@ -1,9 +1,9 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../src/db";
-import { tenants, repos, changeItems } from "../../src/db/schema";
+import { tenants, repos, changeEvents } from "../../src/db/schema";
 
-describe("repos and change_items", () => {
+describe("repos and change_events", () => {
   afterEach(async () => {
     await db.delete(tenants).where(eq(tenants.name, "Ingestion Test Tenant"));
   });
@@ -25,11 +25,13 @@ describe("repos and change_items", () => {
     expect(repo.sourceTypes).toEqual(["pr", "commit"]);
 
     const [item] = await db
-      .insert(changeItems)
+      .insert(changeEvents)
       .values({
         tenantId: tenant.id,
         repoId: repo.id,
-        sourceType: "pr",
+        type: "pull_request",
+        provider: "github",
+        externalId: "acme/widgets#42",
         prNumber: 42,
         prTitle: "Add dark mode",
         prUrl: "https://github.com/acme/widgets/pull/42",
@@ -37,7 +39,7 @@ describe("repos and change_items", () => {
       })
       .returning();
 
-    const found = await db.select().from(changeItems).where(eq(changeItems.id, item.id));
+    const found = await db.select().from(changeEvents).where(eq(changeEvents.id, item.id));
     expect(found).toHaveLength(1);
     expect(found[0].status).toBe("pending");
     expect(found[0].prTitle).toBe("Add dark mode");

@@ -38,8 +38,7 @@ export function WebhookConfigForm({ config }: { config: { url: string; active: b
           id="secret"
           type="password"
           name="secret"
-          placeholder={config ? "Saved — leave blank to keep" : ""}
-          required={!config}
+          placeholder={config ? "Saved — leave blank to keep" : "Optional — used to sign deliveries"}
         />
       </div>
       <label className="flex items-center gap-2 text-sm">
