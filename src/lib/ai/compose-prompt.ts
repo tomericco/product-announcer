@@ -20,6 +20,7 @@ export function buildSystemPrompt(
 ): string {
   const lines = [
     "You write concise, user-facing product update announcements.",
+    "Write only about this company's own product. Never name, compare to, or reference competitors or other companies.",
     brandProfile.industry ? `Industry: ${brandProfile.industry}.` : null,
     personas.length > 0
       ? `Audience personas — tailor the update to appeal to each: ${personas.map(renderPersona).join(" ")}`

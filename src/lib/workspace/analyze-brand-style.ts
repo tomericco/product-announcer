@@ -24,6 +24,10 @@ const ANALYSIS_SYSTEM = [
   "Derive: tone (a few adjectives), readingLevel (e.g. simple / general / technical), doList and dontList",
   "(concrete writing guidelines), examplePhrases (short signature phrases they actually use), industry,",
   "and updatesStyleSummary (a 1-3 sentence description of how they structure updates — length, sections, voice).",
+  "Also determine whether updates end with a sign-off / signature and by whom (a person, a role, or a team, e.g.",
+  "\"— The Acme Team\" or \"— Jane, Head of Product\"). If they do, add a doList guideline capturing it verbatim",
+  "(e.g. \"Sign off each update with '— The Acme Team'\"); if updates deliberately never sign off, add a dontList",
+  "guideline saying not to add a sign-off. Only assert a signature when there is clear evidence on the page.",
   "Infer only from evidence on the page. Leave a string field null and a list empty when you cannot infer it.",
 ].join(" ");
 
