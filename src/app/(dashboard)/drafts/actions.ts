@@ -8,6 +8,7 @@ import { releases } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { dispatchAllDestinations } from "@/lib/publishing/dispatch";
 import { revertReleaseAtomicUpdates, markReleaseAtomicUpdatesReleased } from "@/lib/change-events/release-claim";
+import type { DestinationId } from "@/lib/publishing/destinations/types";
 
 async function loadOwnedDraft(tenantId: string, releaseId: string) {
   const [update] = await db
@@ -38,6 +39,23 @@ function parseExpectedPublishedAt(raw: FormDataEntryValue | null): Date | null {
   return new Date(raw);
 }
 
+const KNOWN_DESTINATIONS: readonly DestinationId[] = ["webhook", "webflow"];
+
+// The publish modal submits one `destinations` entry per chosen target. Never
+// trust the wire: keep only real destination ids, and require at least one —
+// publishing marks the release published/frozen and closes out its atomic
+// updates, and the product rule is that a publish must name a delivery target.
+// The modal disables Publish until one is picked; this is the server-side
+// guard for a crafted request that bypasses the UI.
+function parseSelectedDestinations(formData: FormData): DestinationId[] {
+  const raw = formData.getAll("destinations");
+  const selected = KNOWN_DESTINATIONS.filter((id) => raw.includes(id));
+  if (selected.length === 0) {
+    throw new Error("Select at least one destination to publish to.");
+  }
+  return selected;
+}
+
 export async function saveDraft(formData: FormData) {
   const session = await requireSession();
   const releaseId = formData.get("releaseId") as string;
@@ -66,6 +84,9 @@ export async function approveDraft(formData: FormData) {
   const session = await requireSession();
   const releaseId = formData.get("releaseId") as string;
   const existing = await loadOwnedDraft(session.user.tenantId, releaseId);
+  // Validate the chosen destinations before publishing, so an empty/invalid
+  // set aborts without marking the release published or closing its atomic updates.
+  const destinations = parseSelectedDestinations(formData);
   // The value `published_at` had when this form was rendered — a hidden
   // field, not user-editable. Guards against a double-submit of the same
   // rendered form re-triggering delivery: gate the write on it still
@@ -115,7 +136,7 @@ export async function approveDraft(formData: FormData) {
   // Dispatch stays outside the transaction: publishing already committed by
   // this point, so a delivery failure here shouldn't roll back the publish.
   if (changed) {
-    await dispatchAllDestinations(releaseId);
+    await dispatchAllDestinations(releaseId, undefined, destinations);
   }
 
   revalidatePath("/drafts");

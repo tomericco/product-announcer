@@ -7,7 +7,7 @@ vi.mock("next/navigation", () => ({ redirect: vi.fn() }));
 
 import { getServerSession } from "next-auth";
 import { db } from "../../../src/db";
-import { tenants, repos, releases, webhookConfigs, deliveryAttempts, users } from "../../../src/db/schema";
+import { tenants, repos, releases, webhookConfigs, webflowConnections, deliveryAttempts, users } from "../../../src/db/schema";
 import { encryptSecret } from "../../../src/lib/credentials/encryption";
 import { approveDraft, publishDraft } from "../../../src/app/(dashboard)/drafts/actions";
 
@@ -18,6 +18,11 @@ const USER_EMAIL = "publish-idempotency-test@example.com";
 function encryptedSecret() {
   const p = encryptSecret("s3cr3t");
   return { secretCiphertext: p.ciphertext, secretIv: p.iv, secretAuthTag: p.authTag };
+}
+
+function encryptedToken() {
+  const p = encryptSecret("wf-tok");
+  return { tokenCiphertext: p.ciphertext, tokenIv: p.iv, tokenAuthTag: p.authTag };
 }
 
 async function seed(tenantName = TENANT_NAME) {
@@ -50,12 +55,13 @@ async function deliveriesFor(releaseId: string) {
   return db.select().from(deliveryAttempts).where(eq(deliveryAttempts.releaseId, releaseId));
 }
 
-function approveFormData(releaseId: string, publishedAt: string) {
+function approveFormData(releaseId: string, publishedAt: string, destinations: string[] = ["webhook"]) {
   const fd = new FormData();
   fd.set("releaseId", releaseId);
   fd.set("title", "Original title");
   fd.set("body", "Original body");
   fd.set("publishedAt", publishedAt);
+  for (const d of destinations) fd.append("destinations", d);
   return fd;
 }
 
@@ -142,6 +148,45 @@ describe("draft publish idempotency (approveDraft / publishDraft)", () => {
       vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: otherTenant.id, id: "u2" } } as never);
 
       await expect(approveDraft(approveFormData(update.id, ""))).rejects.toThrow();
+
+      const row = await rowFor(update.id);
+      expect(row.status).toBe("draft");
+      expect(fetch).not.toHaveBeenCalled();
+    });
+
+    it("publishes only to the destinations named in the form", async () => {
+      const { tenant, update, user } = await seed();
+      // A second, fully-configured destination so the filtering is observable.
+      await db.insert(webflowConnections).values({
+        tenantId: tenant.id, ...encryptedToken(), siteId: "s1", collectionId: "c1",
+        fieldMapping: { name: { source: "title" } }, publishMode: "draft", status: "active",
+      });
+      vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id, id: user.id } } as never);
+      vi.mocked(fetch).mockResolvedValue({ ok: true } as Response);
+
+      await approveDraft(approveFormData(update.id, "", ["webhook"]));
+
+      const deliveries = await deliveriesFor(update.id);
+      expect(deliveries.map((d) => d.destination)).toEqual(["webhook"]);
+    });
+
+    it("rejects a publish that names no destinations, leaving the draft unpublished", async () => {
+      const { tenant, update, user } = await seed();
+      vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id, id: user.id } } as never);
+
+      await expect(approveDraft(approveFormData(update.id, "", []))).rejects.toThrow();
+
+      const row = await rowFor(update.id);
+      expect(row.status).toBe("draft");
+      expect(fetch).not.toHaveBeenCalled();
+      expect(await deliveriesFor(update.id)).toHaveLength(0);
+    });
+
+    it("rejects a publish whose destinations are all unrecognized", async () => {
+      const { tenant, update, user } = await seed();
+      vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id, id: user.id } } as never);
+
+      await expect(approveDraft(approveFormData(update.id, "", ["bogus"]))).rejects.toThrow();
 
       const row = await rowFor(update.id);
       expect(row.status).toBe("draft");
