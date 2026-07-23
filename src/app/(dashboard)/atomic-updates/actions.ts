@@ -100,6 +100,128 @@ export async function listAtomicUpdates(): Promise<AtomicUpdateRow[]> {
   }));
 }
 
+/**
+ * Marks an OPEN, unlinked atomic update as non-user-facing ("hidden"). This
+ * is a third status alongside `open`/`released`, not a boolean flag — every
+ * candidate/list/resolver query in the codebase already filters
+ * `status = 'open'` (see `loadOpenAtomicUpdates` in apply-resolution.ts,
+ * `getOpenAtomicUpdates` in release-claim.ts, `listAtomicUpdates` above,
+ * etc.), so a `hidden` update falls out of all of them automatically: it
+ * disappears from the curation list, can't be claimed into a release, and —
+ * load-bearing — the resolver can no longer attach a follow-up commit to it,
+ * so later evidence for that feature spins up a brand-new visible atomic
+ * update instead of silently reappearing on this one.
+ *
+ * Only an open, UNLINKED update may be hidden: `status = 'open' AND
+ * releaseId IS NULL`. One already claimed into a draft release must not be
+ * hidden here — hiding a title mid-draft is a different, unhandled concern,
+ * and `listAtomicUpdates` only ever shows unlinked-open updates in the first
+ * place, so the UI never offers this action on a linked one anyway.
+ */
+export async function markAtomicUpdateHidden(id: string): Promise<{ ok: boolean }> {
+  const session = await requireSession();
+
+  const rows = await db
+    .update(atomicUpdates)
+    .set({ status: "hidden", updatedAt: new Date() })
+    .where(
+      and(
+        eq(atomicUpdates.id, id),
+        eq(atomicUpdates.tenantId, session.user.tenantId),
+        eq(atomicUpdates.status, "open"),
+        isNull(atomicUpdates.releaseId)
+      )
+    )
+    .returning({ id: atomicUpdates.id });
+
+  revalidatePath("/atomic-updates");
+  return { ok: rows.length > 0 };
+}
+
+/**
+ * Reverses `markAtomicUpdateHidden`: flips a `hidden` atomic update back to
+ * `open`, re-entering it into every candidate set (list, compose, resolver)
+ * that filters on that status.
+ */
+export async function unhideAtomicUpdate(id: string): Promise<{ ok: boolean }> {
+  const session = await requireSession();
+
+  const rows = await db
+    .update(atomicUpdates)
+    .set({ status: "open", updatedAt: new Date() })
+    .where(
+      and(
+        eq(atomicUpdates.id, id),
+        eq(atomicUpdates.tenantId, session.user.tenantId),
+        eq(atomicUpdates.status, "hidden")
+      )
+    )
+    .returning({ id: atomicUpdates.id });
+
+  revalidatePath("/atomic-updates");
+  return { ok: rows.length > 0 };
+}
+
+/**
+ * The tenant's hidden atomic updates, mirroring `listAtomicUpdates`'s shape
+ * and batched event join exactly, but filtered to `status = 'hidden'`. No
+ * `releaseId IS NULL` filter here — a hidden update is never linked to a
+ * release (only an unlinked open one can be hidden in the first place), so
+ * adding that condition would be a no-op at best and misleading at worst.
+ */
+export async function listHiddenAtomicUpdates(): Promise<AtomicUpdateRow[]> {
+  const session = await requireSession();
+
+  const atomics = await db
+    .select({
+      id: atomicUpdates.id,
+      title: atomicUpdates.title,
+      summary: atomicUpdates.summary,
+      category: atomicUpdates.category,
+      summaryEditedAt: atomicUpdates.summaryEditedAt,
+      updatedAt: atomicUpdates.updatedAt,
+    })
+    .from(atomicUpdates)
+    .where(and(eq(atomicUpdates.tenantId, session.user.tenantId), eq(atomicUpdates.status, "hidden")))
+    .orderBy(desc(atomicUpdates.updatedAt));
+
+  if (atomics.length === 0) return [];
+
+  const atomicIds = atomics.map((a) => a.id);
+
+  // Same batched join as listAtomicUpdates: one query for every event behind
+  // every listed atomic update, tenant-scoped independently of the atomicIds
+  // filter above.
+  const events = await db
+    .select({
+      id: changeEvents.id,
+      atomicUpdateId: changeEvents.atomicUpdateId,
+      type: changeEvents.type,
+      prTitle: changeEvents.prTitle,
+      commitMessage: changeEvents.commitMessage,
+      externalUrl: changeEvents.externalUrl,
+    })
+    .from(changeEvents)
+    .where(
+      and(eq(changeEvents.tenantId, session.user.tenantId), inArray(changeEvents.atomicUpdateId, atomicIds))
+    )
+    .orderBy(asc(changeEvents.createdAt), asc(changeEvents.id));
+
+  const eventsByAtomicId = new Map<string, AtomicUpdateEvent[]>();
+  for (const event of events) {
+    if (!event.atomicUpdateId) continue;
+    const label = event.type === "commit" ? (event.commitMessage ?? "").split("\n")[0] : (event.prTitle ?? "");
+    const list = eventsByAtomicId.get(event.atomicUpdateId) ?? [];
+    list.push({ id: event.id, type: event.type, label, externalUrl: event.externalUrl });
+    eventsByAtomicId.set(event.atomicUpdateId, list);
+  }
+
+  return atomics.map((atomic) => ({
+    ...atomic,
+    events: eventsByAtomicId.get(atomic.id) ?? [],
+  }));
+}
+
 export async function editAtomicUpdate(
   id: string,
   patch: { title: string; summary: string }

@@ -51,7 +51,7 @@ export const updateCategoryEnum = pgEnum("update_category", ["new", "improved", 
 
 export const changeEventTypeEnum = pgEnum("change_event_type", ["commit", "pull_request", "task"]);
 export const changeEventProviderEnum = pgEnum("change_event_provider", ["github", "notion"]);
-export const atomicUpdateStatusEnum = pgEnum("atomic_update_status", ["open", "released"]);
+export const atomicUpdateStatusEnum = pgEnum("atomic_update_status", ["open", "released", "hidden"]);
 // Why tier 1 dropped an event. Null means it was not dropped deterministically.
 export const filterReasonEnum = pgEnum("filter_reason", [
   "merge_commit",

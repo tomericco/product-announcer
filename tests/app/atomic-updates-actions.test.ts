@@ -32,9 +32,13 @@ import {
   listAtomicUpdates,
   listSelectableEvents,
   createFromEvents,
+  markAtomicUpdateHidden,
+  unhideAtomicUpdate,
+  listHiddenAtomicUpdates,
 } from "../../src/app/(dashboard)/atomic-updates/actions";
 import { createAtomicUpdateFromEvents } from "../../src/lib/change-events/create-from-events";
 import { revalidatePath } from "next/cache";
+import { loadOpenAtomicUpdates } from "../../src/lib/change-events/apply-resolution";
 
 async function seedRepo(tenantId: string) {
   const [repo] = await db
@@ -380,6 +384,192 @@ describe("listSelectableEvents", () => {
 
     const rows = await listSelectableEvents();
     expect(rows.map((r) => r.title)).not.toContain("their unassigned change");
+  });
+});
+
+describe("markAtomicUpdateHidden / unhideAtomicUpdate / listHiddenAtomicUpdates", () => {
+  afterEach(async () => {
+    await db.delete(tenants).where(eq(tenants.name, TENANT));
+  });
+
+  it("flips an open, unlinked atomic update to hidden", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    currentTenantId = tenant.id;
+    const [atomic] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "Noisy", summary: "S" })
+      .returning();
+
+    const result = await markAtomicUpdateHidden(atomic.id);
+
+    expect(result).toEqual({ ok: true });
+    const [after] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, atomic.id));
+    expect(after.status).toBe("hidden");
+    expect(revalidatePath).toHaveBeenCalledWith("/atomic-updates");
+  });
+
+  it("refuses to hide an atomic update that is already released", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    currentTenantId = tenant.id;
+    const [atomic] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "Shipped", summary: "S", status: "released" })
+      .returning();
+
+    const result = await markAtomicUpdateHidden(atomic.id);
+
+    expect(result).toEqual({ ok: false });
+    const [after] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, atomic.id));
+    expect(after.status).toBe("released");
+  });
+
+  it("refuses to hide an open atomic update already linked to a draft release", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    currentTenantId = tenant.id;
+    const [release] = await db
+      .insert(releases)
+      .values({ tenantId: tenant.id, title: "Draft", body: "B" })
+      .returning();
+    const [atomic] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "In a draft", summary: "S", releaseId: release.id })
+      .returning();
+
+    const result = await markAtomicUpdateHidden(atomic.id);
+
+    expect(result).toEqual({ ok: false });
+    const [after] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, atomic.id));
+    expect(after.status).toBe("open");
+    expect(after.releaseId).toBe(release.id);
+  });
+
+  it("refuses to hide another tenant's atomic update", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const [other] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const [foreign] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: other.id, title: "Foreign", summary: "S" })
+      .returning();
+    currentTenantId = tenant.id;
+
+    const result = await markAtomicUpdateHidden(foreign.id);
+
+    expect(result).toEqual({ ok: false });
+    const [after] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, foreign.id));
+    expect(after.status).toBe("open");
+  });
+
+  it("flips a hidden atomic update back to open", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    currentTenantId = tenant.id;
+    const [atomic] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "Was hidden", summary: "S", status: "hidden" })
+      .returning();
+
+    const result = await unhideAtomicUpdate(atomic.id);
+
+    expect(result).toEqual({ ok: true });
+    const [after] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, atomic.id));
+    expect(after.status).toBe("open");
+    expect(revalidatePath).toHaveBeenCalledWith("/atomic-updates");
+  });
+
+  it("refuses to unhide an atomic update that is not hidden", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    currentTenantId = tenant.id;
+    const [atomic] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "Already open", summary: "S" })
+      .returning();
+
+    const result = await unhideAtomicUpdate(atomic.id);
+
+    expect(result).toEqual({ ok: false });
+  });
+
+  it("refuses to unhide another tenant's atomic update", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const [other] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const [foreign] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: other.id, title: "Foreign hidden", summary: "S", status: "hidden" })
+      .returning();
+    currentTenantId = tenant.id;
+
+    const result = await unhideAtomicUpdate(foreign.id);
+
+    expect(result).toEqual({ ok: false });
+    const [after] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, foreign.id));
+    expect(after.status).toBe("hidden");
+  });
+
+  it("excludes a hidden atomic update from listAtomicUpdates", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    currentTenantId = tenant.id;
+    await db.insert(atomicUpdates).values({ tenantId: tenant.id, title: "Open", summary: "S" });
+    await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "Hidden one", summary: "S", status: "hidden" });
+
+    const rows = await listAtomicUpdates();
+    expect(rows.map((r) => r.title)).toEqual(["Open"]);
+  });
+
+  it("lists only hidden atomic updates for the tenant, with events populated", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    currentTenantId = tenant.id;
+    const repo = await seedRepo(tenant.id);
+    const [hidden] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "Hidden one", summary: "S", status: "hidden" })
+      .returning();
+    await db.insert(atomicUpdates).values({ tenantId: tenant.id, title: "Open one", summary: "S" });
+    await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "Shipped one", summary: "S", status: "released" });
+
+    await db.insert(changeEvents).values({
+      tenantId: tenant.id,
+      repoId: repo.id,
+      type: "commit",
+      provider: "github",
+      externalId: "sha-hidden-evidence",
+      commitSha: "sha-hidden-evidence",
+      commitMessage: "hidden change",
+      atomicUpdateId: hidden.id,
+    });
+
+    const rows = await listHiddenAtomicUpdates();
+
+    expect(rows.map((r) => r.title)).toEqual(["Hidden one"]);
+    expect(rows[0].events.map((e) => e.label)).toEqual(["hidden change"]);
+  });
+
+  it("never leaks another tenant's hidden atomic updates", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const [other] = await db.insert(tenants).values({ name: TENANT }).returning();
+    currentTenantId = tenant.id;
+    await db
+      .insert(atomicUpdates)
+      .values({ tenantId: other.id, title: "Foreign hidden", summary: "S", status: "hidden" });
+
+    const rows = await listHiddenAtomicUpdates();
+
+    expect(rows.map((r) => r.title)).not.toContain("Foreign hidden");
+  });
+
+  it("proves the resolver cannot attach a follow-up commit to a hidden atomic update", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    currentTenantId = tenant.id;
+    await db.insert(atomicUpdates).values({ tenantId: tenant.id, title: "Still open", summary: "S" });
+    await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "Now hidden", summary: "S", status: "hidden" });
+
+    const candidates = await loadOpenAtomicUpdates(db, tenant.id);
+
+    expect(candidates.map((c) => c.title)).toEqual(["Still open"]);
   });
 });
 
