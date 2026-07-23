@@ -5,17 +5,36 @@ import { tenants, repos, changeEvents, atomicUpdates, releases } from "../../src
 
 const TENANT = "Atomic Updates Actions Test Tenant";
 let currentTenantId = "";
+let currentUserId: string | null = null;
 
 // requireSession() returns a NextAuth Session (tenantId lives under `user`,
 // per src/types/next-auth.d.ts) — mirror that shape rather than a flat one,
 // so the mock matches what the real module actually returns.
 vi.mock("../../src/lib/workspace/session", () => ({
-  requireSession: vi.fn(async () => ({ user: { tenantId: currentTenantId, id: null } })),
+  requireSession: vi.fn(async () => ({ user: { tenantId: currentTenantId, id: currentUserId } })),
 }));
 
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 
-import { editAtomicUpdate, listAtomicUpdates } from "../../src/app/(dashboard)/atomic-updates/actions";
+// createFromEvents only orchestrates: derive tenant/user from the (mocked)
+// session, parse eventIds/confirmEmptyDeletion off formData, call the core,
+// and revalidate. The core's own transactional behavior (moving events,
+// the empty-source confirmation gate, the released-frozen guard) is covered
+// by tests/lib/change-events/create-from-events.test.ts — mocking it here
+// keeps this test from touching Postgres for that path and, per the task's
+// hard constraint, never reaches the live Anthropic API.
+vi.mock("../../src/lib/change-events/create-from-events", () => ({
+  createAtomicUpdateFromEvents: vi.fn(async () => ({ ok: true, atomicUpdateId: "au-x" })),
+}));
+
+import {
+  editAtomicUpdate,
+  listAtomicUpdates,
+  listSelectableEvents,
+  createFromEvents,
+} from "../../src/app/(dashboard)/atomic-updates/actions";
+import { createAtomicUpdateFromEvents } from "../../src/lib/change-events/create-from-events";
+import { revalidatePath } from "next/cache";
 
 async function seedRepo(tenantId: string) {
   const [repo] = await db
@@ -276,5 +295,204 @@ describe("atomic update actions", () => {
     const eventLabels = row!.events.map((e) => e.label);
     expect(eventLabels).toEqual(["legit change"]);
     expect(eventLabels).not.toContain("corrupt cross-tenant change");
+  });
+});
+
+describe("listSelectableEvents", () => {
+  afterEach(async () => {
+    await db.delete(tenants).where(eq(tenants.name, TENANT));
+  });
+
+  it("includes an unassigned event and an event in an OPEN atomic update, but excludes one in a RELEASED atomic update", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    currentTenantId = tenant.id;
+    const repo = await seedRepo(tenant.id);
+    const [openAtomic] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "Open one", summary: "S" })
+      .returning();
+    const [releasedAtomic] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "Released one", summary: "S", status: "released" })
+      .returning();
+
+    await db.insert(changeEvents).values({
+      tenantId: tenant.id,
+      repoId: repo.id,
+      type: "commit",
+      provider: "github",
+      externalId: "sha-unassigned",
+      commitSha: "sha-unassigned",
+      commitMessage: "unassigned change",
+    });
+    await db.insert(changeEvents).values({
+      tenantId: tenant.id,
+      repoId: repo.id,
+      type: "pull_request",
+      provider: "github",
+      externalId: "acme/widgets#7",
+      prNumber: 7,
+      prTitle: "In an open atomic update",
+      atomicUpdateId: openAtomic.id,
+    });
+    await db.insert(changeEvents).values({
+      tenantId: tenant.id,
+      repoId: repo.id,
+      type: "pull_request",
+      provider: "github",
+      externalId: "acme/widgets#8",
+      prNumber: 8,
+      prTitle: "In a released atomic update",
+      atomicUpdateId: releasedAtomic.id,
+    });
+
+    const rows = await listSelectableEvents();
+    const titles = rows.map((r) => r.title);
+
+    expect(titles).toContain("unassigned change");
+    expect(titles).toContain("In an open atomic update");
+    expect(titles).not.toContain("In a released atomic update");
+
+    const assignedRow = rows.find((r) => r.title === "In an open atomic update");
+    expect(assignedRow?.atomicUpdateId).toBe(openAtomic.id);
+    expect(assignedRow?.atomicUpdateTitle).toBe("Open one");
+
+    const unassignedRow = rows.find((r) => r.title === "unassigned change");
+    expect(unassignedRow?.atomicUpdateId).toBeNull();
+    expect(unassignedRow?.atomicUpdateTitle).toBeNull();
+  });
+
+  it("never leaks another tenant's change events", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const [other] = await db.insert(tenants).values({ name: TENANT }).returning();
+    currentTenantId = tenant.id;
+    const foreignRepo = await seedRepo(other.id);
+
+    await db.insert(changeEvents).values({
+      tenantId: other.id,
+      repoId: foreignRepo.id,
+      type: "commit",
+      provider: "github",
+      externalId: "sha-foreign",
+      commitSha: "sha-foreign",
+      commitMessage: "their unassigned change",
+    });
+
+    const rows = await listSelectableEvents();
+    expect(rows.map((r) => r.title)).not.toContain("their unassigned change");
+  });
+});
+
+describe("createFromEvents", () => {
+  const AU_TENANT = "au-session-tenant";
+  const AU_USER = "au-session-user";
+
+  afterEach(() => {
+    vi.mocked(createAtomicUpdateFromEvents).mockClear();
+    vi.mocked(revalidatePath).mockClear();
+    currentTenantId = "";
+    currentUserId = null;
+  });
+
+  it("calls createAtomicUpdateFromEvents with the session's tenantId/userId and the parsed eventIds/confirmEmptyDeletion, then revalidates", async () => {
+    currentTenantId = AU_TENANT;
+    currentUserId = AU_USER;
+
+    const formData = new FormData();
+    formData.append("eventIds", "event-1");
+    formData.append("eventIds", "event-2");
+
+    const result = await createFromEvents(formData);
+
+    expect(createAtomicUpdateFromEvents).toHaveBeenCalledWith({
+      tenantId: AU_TENANT,
+      userId: AU_USER,
+      eventIds: ["event-1", "event-2"],
+      confirmEmptyDeletion: false,
+    });
+    expect(result).toEqual({ ok: true, atomicUpdateId: "au-x" });
+    expect(revalidatePath).toHaveBeenCalledWith("/atomic-updates");
+  });
+
+  it("parses confirmEmptyDeletion=true when the field is set to 'true'", async () => {
+    currentTenantId = AU_TENANT;
+    currentUserId = AU_USER;
+
+    const formData = new FormData();
+    formData.append("eventIds", "event-1");
+    formData.set("confirmEmptyDeletion", "true");
+
+    await createFromEvents(formData);
+
+    expect(createAtomicUpdateFromEvents).toHaveBeenCalledWith({
+      tenantId: AU_TENANT,
+      userId: AU_USER,
+      eventIds: ["event-1"],
+      confirmEmptyDeletion: true,
+    });
+  });
+
+  it("derives tenantId/userId from the session, ignoring any tenantId/userId fields present on formData", async () => {
+    currentTenantId = AU_TENANT;
+    currentUserId = AU_USER;
+
+    const formData = new FormData();
+    formData.append("eventIds", "event-1");
+    // A malicious or stale client could stuff these in; the action must never
+    // read them.
+    formData.set("tenantId", "some-other-tenant");
+    formData.set("userId", "some-other-user");
+
+    await createFromEvents(formData);
+
+    expect(createAtomicUpdateFromEvents).toHaveBeenCalledWith({
+      tenantId: AU_TENANT,
+      userId: AU_USER,
+      eventIds: ["event-1"],
+      confirmEmptyDeletion: false,
+    });
+  });
+
+  it("returns {ok:false, reason} from the core without throwing, and still revalidates", async () => {
+    currentTenantId = AU_TENANT;
+    currentUserId = AU_USER;
+    vi.mocked(createAtomicUpdateFromEvents).mockResolvedValueOnce({
+      ok: false,
+      reason: "One or more change events were not found.",
+    });
+
+    const formData = new FormData();
+    formData.append("eventIds", "event-1");
+
+    const result = await createFromEvents(formData);
+
+    expect(result).toEqual({
+      ok: false,
+      reason: "One or more change events were not found.",
+    });
+    expect(revalidatePath).toHaveBeenCalledWith("/atomic-updates");
+  });
+
+  it("returns a needsConfirmation result without throwing", async () => {
+    currentTenantId = AU_TENANT;
+    currentUserId = AU_USER;
+    vi.mocked(createAtomicUpdateFromEvents).mockResolvedValueOnce({
+      ok: false,
+      reason: "needs_confirmation",
+      needsConfirmation: true,
+      emptiedAtomicUpdates: [{ id: "au-old", title: "Old one", inDraft: false }],
+    });
+
+    const formData = new FormData();
+    formData.append("eventIds", "event-1");
+
+    const result = await createFromEvents(formData);
+
+    expect(result).toEqual({
+      ok: false,
+      reason: "needs_confirmation",
+      needsConfirmation: true,
+      emptiedAtomicUpdates: [{ id: "au-old", title: "Old one", inDraft: false }],
+    });
   });
 });

@@ -6,15 +6,20 @@ import {
   EmptyStateTitle,
   EmptyStateDescription,
 } from "@/components/ui/empty-state";
-import { listAtomicUpdates } from "./actions";
+import { listAtomicUpdates, listSelectableEvents } from "./actions";
 import { AtomicUpdatesList } from "./atomic-updates-list";
+import { NewAtomicUpdateDialog } from "./new-atomic-update-dialog";
 
 export default async function AtomicUpdatesPage() {
-  const rows = await listAtomicUpdates();
+  // Fetched together: the list of existing (open, unclaimed) atomic updates
+  // for the cards, and the events selectable as input for a brand-new one —
+  // both tenant-scoped server-side reads, so the modal client component never
+  // needs to import `db`.
+  const [rows, selectableEvents] = await Promise.all([listAtomicUpdates(), listSelectableEvents()]);
 
   if (rows.length === 0) {
     return (
-      <div className="flex flex-1 items-center justify-center">
+      <div className="flex flex-1 flex-col items-center justify-center gap-4">
         <EmptyState>
           <EmptyStateIcon>
             <Layers />
@@ -25,6 +30,7 @@ export default async function AtomicUpdatesPage() {
             user-facing change, gathered from the commits, pull requests, and tasks behind it.
           </EmptyStateDescription>
         </EmptyState>
+        <NewAtomicUpdateDialog events={selectableEvents} />
       </div>
     );
   }
@@ -36,7 +42,7 @@ export default async function AtomicUpdatesPage() {
         Each one is a single user-facing change, gathered from the commits, pull requests, and tasks
         behind it.
       </p>
-      <AtomicUpdatesList rows={rows} />
+      <AtomicUpdatesList rows={rows} selectableEvents={selectableEvents} />
     </div>
   );
 }

@@ -3,12 +3,19 @@
 import { useState } from "react";
 import { AtomicUpdateCard } from "./atomic-update-card";
 import { DraftReleaseDialog } from "./draft-release-dialog";
-import type { AtomicUpdateRow } from "./actions";
+import { NewAtomicUpdateDialog } from "./new-atomic-update-dialog";
+import type { AtomicUpdateRow, SelectableEventRow } from "./actions";
 
 // Selection lives here rather than in the (async, server) page component: it's
 // pure client-side UI state driving which atomic updates go into the next
 // release draft, scoped to the list so the page itself stays a server component.
-export function AtomicUpdatesList({ rows }: { rows: AtomicUpdateRow[] }) {
+export function AtomicUpdatesList({
+  rows,
+  selectableEvents,
+}: {
+  rows: AtomicUpdateRow[];
+  selectableEvents: SelectableEventRow[];
+}) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
   function onSelectChange(id: string, isSelected: boolean) {
@@ -26,6 +33,7 @@ export function AtomicUpdatesList({ rows }: { rows: AtomicUpdateRow[] }) {
   return (
     <div className="space-y-4">
       <div className="flex justify-end gap-2">
+        <NewAtomicUpdateDialog events={selectableEvents} />
         <DraftReleaseDialog atomicUpdateIds={[...selected]} />
       </div>
       <ul className="flex flex-col gap-3">

@@ -1,10 +1,14 @@
 "use server";
 
-import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, or } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { db } from "@/db";
 import { atomicUpdates, changeEvents } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
+import {
+  createAtomicUpdateFromEvents,
+  type CreateFromEventsResult,
+} from "@/lib/change-events/create-from-events";
 
 export type AtomicUpdateEvent = {
   id: string;
@@ -116,4 +120,111 @@ export async function editAtomicUpdate(
     .where(and(eq(atomicUpdates.id, id), eq(atomicUpdates.tenantId, session.user.tenantId)));
 
   revalidatePath("/atomic-updates");
+}
+
+export type SelectableEventRow = {
+  id: string;
+  type: (typeof changeEvents.$inferSelect)["type"];
+  provider: (typeof changeEvents.$inferSelect)["provider"];
+  title: string;
+  externalUrl: string | null;
+  atomicUpdateId: string | null;
+  atomicUpdateTitle: string | null;
+};
+
+/**
+ * Change events selectable as input for a brand-new atomic update (the "New
+ * atomic update" modal): unassigned events, plus events currently sitting in
+ * an OPEN atomic update (picking one pulls it out and, if that empties the
+ * source, `createAtomicUpdateFromEvents` gates the deletion behind
+ * confirmation). Events whose atomic update is `released` are frozen and
+ * excluded — offering them here would just produce a rejection from the core
+ * once submitted.
+ *
+ * This is deliberately a separate, simpler query rather than an extra filter
+ * mode on `listChangeEvents` (`change-events/actions.ts`): that query's
+ * "hidden by default" predicate answers a different question (what's noise
+ * for the resolver), and overloading it with a third axis ("selectable for a
+ * new atomic update") would make both harder to reason about. The row shape
+ * and the tenant-scoped left-join to `atomicUpdates` are modeled on it
+ * directly.
+ */
+export async function listSelectableEvents(): Promise<SelectableEventRow[]> {
+  const session = await requireSession();
+  const tenantId = session.user.tenantId;
+
+  const rows = await db
+    .select({
+      id: changeEvents.id,
+      type: changeEvents.type,
+      provider: changeEvents.provider,
+      prTitle: changeEvents.prTitle,
+      commitMessage: changeEvents.commitMessage,
+      externalUrl: changeEvents.externalUrl,
+      atomicUpdateId: changeEvents.atomicUpdateId,
+      atomicUpdateTitle: atomicUpdates.title,
+    })
+    .from(changeEvents)
+    .leftJoin(atomicUpdates, eq(changeEvents.atomicUpdateId, atomicUpdates.id))
+    .where(
+      and(
+        eq(changeEvents.tenantId, tenantId),
+        or(isNull(changeEvents.atomicUpdateId), eq(atomicUpdates.status, "open"))
+      )
+    )
+    .orderBy(desc(changeEvents.createdAt), desc(changeEvents.id));
+
+  return rows.map((row) => {
+    const firstLine = row.commitMessage?.split("\n")[0]?.trim();
+    const title = row.prTitle ?? firstLine ?? "Untitled";
+    return {
+      id: row.id,
+      type: row.type,
+      provider: row.provider,
+      title,
+      externalUrl: row.externalUrl,
+      atomicUpdateId: row.atomicUpdateId,
+      atomicUpdateTitle: row.atomicUpdateTitle,
+    };
+  });
+}
+
+function parseEventIds(formData: FormData): string[] {
+  return formData
+    .getAll("eventIds")
+    .filter((v): v is string => typeof v === "string" && v.length > 0);
+}
+
+function parseConfirmEmptyDeletion(formData: FormData): boolean {
+  return formData.get("confirmEmptyDeletion") === "true";
+}
+
+/**
+ * Creates one brand-new open atomic update from a set of selected change
+ * events (the "New atomic update" modal on `/atomic-updates`).
+ *
+ * tenantId and userId ALWAYS come from the session, never from formData —
+ * mirrors `reassign` in `change-events/actions.ts`. `eventIds` is read as a
+ * repeated formData field (`getAll`, populated via multiple
+ * `formData.append("eventIds", id)` calls on the client) rather than a single
+ * delimited string, so an id can never be mis-split.
+ *
+ * A `{ok:false}` outcome from the core (e.g. one of the selected events sits
+ * in a released atomic update, or the move needs confirmation because it
+ * would empty an open source atomic update) is returned to the caller, not
+ * thrown — the client surfaces it as a toast, or in the needs-confirmation
+ * case as a confirm dialog naming the atomic updates that would be emptied,
+ * rather than an error boundary.
+ */
+export async function createFromEvents(formData: FormData): Promise<CreateFromEventsResult> {
+  const session = await requireSession();
+  const tenantId = session.user.tenantId;
+  const userId = session.user.id;
+
+  const eventIds = parseEventIds(formData);
+  const confirmEmptyDeletion = parseConfirmEmptyDeletion(formData);
+
+  const result = await createAtomicUpdateFromEvents({ tenantId, userId, eventIds, confirmEmptyDeletion });
+  revalidatePath("/atomic-updates");
+  return result;
 }
