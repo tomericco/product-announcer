@@ -3,10 +3,18 @@
 import { useState, useTransition } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { AtomicUpdateCard } from "./atomic-update-card";
 import { DraftReleaseDialog } from "./draft-release-dialog";
-import { NewAtomicUpdateDialog } from "./new-atomic-update-dialog";
-import { unhideAtomicUpdate, bulkMarkAtomicUpdatesHidden } from "./actions";
+import { unhideAtomicUpdate, bulkMarkAtomicUpdatesHidden, bulkDeleteAtomicUpdates } from "./actions";
 import { CategoryBadge } from "./page";
 import type { AtomicUpdateRow } from "./actions";
 import type { ImportRepo } from "../change-events/actions";
@@ -56,14 +64,19 @@ export function AtomicUpdatesList({
   rows,
   hiddenRows,
   repos,
+  showHidden,
 }: {
   rows: AtomicUpdateRow[];
   hiddenRows: AtomicUpdateRow[];
   repos: ImportRepo[];
+  // Whether the hidden section is expanded — driven by the URL/filter bar on
+  // the page, not local state, so it survives navigation like the filters.
+  showHidden: boolean;
 }) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [showHidden, setShowHidden] = useState(false);
   const [hiding, startHiding] = useTransition();
+  const [deleting, startDeleting] = useTransition();
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   function onSelectChange(id: string, isSelected: boolean) {
     setSelected((prev) => {
@@ -75,6 +88,12 @@ export function AtomicUpdatesList({
       }
       return next;
     });
+  }
+
+  const allSelected = rows.length > 0 && selected.size === rows.length;
+
+  function toggleAll(checked: boolean) {
+    setSelected(checked ? new Set(rows.map((r) => r.id)) : new Set());
   }
 
   // Bulk-hide the current selection. The action skips any id that isn't an
@@ -97,35 +116,83 @@ export function AtomicUpdatesList({
     });
   }
 
+  // Permanently delete the selection. Same open+unlinked guard as hide, so
+  // `count` may trail the number selected; the deleted updates' change events
+  // are detached back to the unassigned pool (FK set null), not deleted.
+  function deleteSelected() {
+    const ids = [...selected];
+    startDeleting(async () => {
+      const { count } = await bulkDeleteAtomicUpdates(ids);
+      setConfirmDelete(false);
+      if (count === 0) {
+        toast.error("Nothing was deleted — the selected updates can't be deleted");
+        return;
+      }
+      toast.success(`Deleted ${count} ${count === 1 ? "update" : "updates"}`);
+      if (count < ids.length) {
+        toast.warning(`${ids.length - count} couldn't be deleted and were left as-is`);
+      }
+      setSelected(new Set());
+    });
+  }
+
+  const busy = hiding || deleting;
+
   return (
     <div className="space-y-4">
-      <div className="flex justify-end gap-2">
-        {selected.size > 0 && (
-          <Button variant="outline" size="sm" disabled={hiding} onClick={markSelectedHidden}>
-            {hiding ? "Marking…" : `Mark ${selected.size} as not user-facing`}
-          </Button>
-        )}
-        <Button variant="ghost" size="sm" onClick={() => setShowHidden((v) => !v)}>
-          {showHidden ? "Hide hidden" : "Show hidden"}
-          {hiddenRows.length > 0 ? ` (${hiddenRows.length})` : ""}
-        </Button>
-        <NewAtomicUpdateDialog repos={repos} />
-        <DraftReleaseDialog atomicUpdateIds={[...selected]} />
-      </div>
-      <ul className="flex flex-col gap-3">
-        {rows.map((row) => (
-          <li key={row.id}>
-            <AtomicUpdateCard
-              row={row}
-              repos={repos}
-              selectable
-              selected={selected.has(row.id)}
-              anySelected={selected.size > 0}
-              onSelectChange={onSelectChange}
-            />
-          </li>
-        ))}
-      </ul>
+      {rows.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No atomic updates match these filters.</p>
+      ) : (
+        <>
+          <div className="flex flex-wrap items-center gap-3">
+            <label className="flex items-center gap-2 text-sm text-muted-foreground">
+              <input
+                type="checkbox"
+                className="size-4 rounded border-input"
+                checked={allSelected}
+                onChange={(e) => toggleAll(e.target.checked)}
+                aria-label="Select all atomic updates"
+              />
+              {selected.size > 0 ? `${selected.size} selected` : "Select all"}
+            </label>
+
+            {selected.size > 0 && (
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="sm" disabled={busy} onClick={markSelectedHidden}>
+                  {hiding ? "Marking…" : "Mark as not user-facing"}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={busy}
+                  onClick={() => setConfirmDelete(true)}
+                  className="text-destructive hover:text-destructive"
+                >
+                  Delete
+                </Button>
+              </div>
+            )}
+
+            <div className="ml-auto">
+              <DraftReleaseDialog atomicUpdateIds={[...selected]} />
+            </div>
+          </div>
+          <ul className="flex flex-col gap-3">
+            {rows.map((row) => (
+              <li key={row.id}>
+                <AtomicUpdateCard
+                  row={row}
+                  repos={repos}
+                  selectable
+                  selected={selected.has(row.id)}
+                  anySelected={selected.size > 0}
+                  onSelectChange={onSelectChange}
+                />
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
       {showHidden && (
         <div className="space-y-2 border-t pt-4">
           <h2 className="text-sm font-medium text-muted-foreground">Hidden atomic updates</h2>
@@ -142,6 +209,26 @@ export function AtomicUpdatesList({
           )}
         </div>
       )}
+
+      <Dialog open={confirmDelete} onOpenChange={(next) => !next && !deleting && setConfirmDelete(false)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              Delete {selected.size} atomic {selected.size === 1 ? "update" : "updates"}?
+            </DialogTitle>
+            <DialogDescription>
+              Can&apos;t be undone. The change events aren&apos;t deleted — they return to the unassigned
+              pool.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <DialogClose render={<Button variant="ghost" disabled={deleting} />}>Cancel</DialogClose>
+            <Button variant="destructive" disabled={deleting} onClick={deleteSelected}>
+              {deleting ? "Deleting…" : "Delete"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

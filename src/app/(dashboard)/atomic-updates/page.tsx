@@ -6,24 +6,57 @@ import {
   EmptyStateTitle,
   EmptyStateDescription,
 } from "@/components/ui/empty-state";
-import { listAtomicUpdates, listHiddenAtomicUpdates } from "./actions";
+import { listAtomicUpdates, listHiddenAtomicUpdates, type AtomicUpdateListFilters } from "./actions";
 import { listImportRepos } from "../change-events/actions";
 import { AtomicUpdatesList } from "./atomic-updates-list";
+import { AtomicUpdatesFilters } from "./atomic-updates-filters";
 import { NewAtomicUpdateDialog } from "./new-atomic-update-dialog";
 
-export default async function AtomicUpdatesPage() {
-  // Fetched together: the list of existing (open, unclaimed) atomic updates
-  // for the cards, the events selectable as input for a brand-new one (or as
-  // evidence added to an existing one), and the hidden (non-user-facing)
-  // atomic updates for the "Show hidden" section — all tenant-scoped
+const CATEGORY_VALUES = ["new", "improvement", "fix", "announcement"] as const;
+const SIZE_VALUES = ["s", "m", "l", "xl"] as const;
+
+function single(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function parseCategory(value: string | undefined): AtomicUpdateListFilters["category"] {
+  return (CATEGORY_VALUES as readonly string[]).includes(value ?? "")
+    ? (value as AtomicUpdateListFilters["category"])
+    : undefined;
+}
+
+function parseSize(value: string | undefined): AtomicUpdateListFilters["size"] {
+  return (SIZE_VALUES as readonly string[]).includes(value ?? "")
+    ? (value as AtomicUpdateListFilters["size"])
+    : undefined;
+}
+
+export default async function AtomicUpdatesPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
+}) {
+  const params = await searchParams;
+  const category = parseCategory(single(params.category));
+  const size = parseSize(single(params.size));
+  const showHidden = single(params.showHidden) === "1";
+  const hasActiveFilter = category !== undefined || size !== undefined || showHidden;
+
+  // Fetched together: the (open, unclaimed) atomic updates for the cards —
+  // narrowed by the category/size filters — the events selectable as input for
+  // a brand-new one (or as evidence added to an existing one), and the hidden
+  // (non-user-facing) updates for the "Show hidden" section. All tenant-scoped
   // server-side reads, so no client component here ever needs to import `db`.
   const [rows, hiddenRows, importRepos] = await Promise.all([
-    listAtomicUpdates(),
+    listAtomicUpdates({ category, size }),
     listHiddenAtomicUpdates(),
     listImportRepos(),
   ]);
 
-  if (rows.length === 0 && hiddenRows.length === 0) {
+  // The onboarding empty state is only for a genuinely empty workspace — never
+  // when a filter is simply narrowing the view to nothing (that keeps the
+  // header + filter bar so the user can widen it again).
+  if (rows.length === 0 && hiddenRows.length === 0 && !hasActiveFilter) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-4">
         <EmptyState>
@@ -43,12 +76,23 @@ export default async function AtomicUpdatesPage() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-xl font-semibold">Atomic updates</h1>
-      <p className="text-sm text-muted-foreground">
-        Each one is a single user-facing change, gathered from the commits, pull requests, and tasks
-        behind it.
-      </p>
-      <AtomicUpdatesList rows={rows} hiddenRows={hiddenRows} repos={importRepos} />
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-xl font-semibold">Atomic updates</h1>
+          <p className="text-sm text-muted-foreground">
+            Each one is a single user-facing change, gathered from the commits, pull requests, and
+            tasks behind it.
+          </p>
+        </div>
+        <NewAtomicUpdateDialog repos={importRepos} />
+      </div>
+      <AtomicUpdatesFilters category={category ?? "all"} size={size ?? "all"} showHidden={showHidden} />
+      <AtomicUpdatesList
+        rows={rows}
+        hiddenRows={hiddenRows}
+        repos={importRepos}
+        showHidden={showHidden}
+      />
     </div>
   );
 }

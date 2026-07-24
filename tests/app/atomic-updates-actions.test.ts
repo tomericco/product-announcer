@@ -35,6 +35,7 @@ import {
   listAtomicUpdates,
   markAtomicUpdateHidden,
   bulkMarkAtomicUpdatesHidden,
+  bulkDeleteAtomicUpdates,
   unhideAtomicUpdate,
   listHiddenAtomicUpdates,
   removeEventFromAtomicUpdate,
@@ -493,6 +494,30 @@ describe("markAtomicUpdateHidden / unhideAtomicUpdate / listHiddenAtomicUpdates"
   });
 });
 
+describe("listAtomicUpdates filters", () => {
+  afterEach(async () => {
+    await db.delete(tenants).where(eq(tenants.name, TENANT));
+  });
+
+  it("narrows by category and size, and returns all open updates when unfiltered", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    currentTenantId = tenant.id;
+    await db.insert(atomicUpdates).values([
+      { tenantId: tenant.id, title: "New S", summary: "S", category: "new", size: "s" },
+      { tenantId: tenant.id, title: "Fix L", summary: "S", category: "fix", size: "l" },
+      { tenantId: tenant.id, title: "New L", summary: "S", category: "new", size: "l" },
+    ]);
+
+    const titles = async (f?: Parameters<typeof listAtomicUpdates>[0]) =>
+      (await listAtomicUpdates(f)).map((r) => r.title).sort();
+
+    expect(await titles()).toEqual(["Fix L", "New L", "New S"]);
+    expect(await titles({ category: "new" })).toEqual(["New L", "New S"]);
+    expect(await titles({ size: "l" })).toEqual(["Fix L", "New L"]);
+    expect(await titles({ category: "new", size: "l" })).toEqual(["New L"]);
+  });
+});
+
 describe("bulkMarkAtomicUpdatesHidden", () => {
   afterEach(async () => {
     await db.delete(tenants).where(eq(tenants.name, TENANT));
@@ -557,6 +582,92 @@ describe("bulkMarkAtomicUpdatesHidden", () => {
 
   it("returns count 0 for an empty id list without touching the DB", async () => {
     const result = await bulkMarkAtomicUpdatesHidden([]);
+    expect(result).toEqual({ count: 0 });
+  });
+});
+
+describe("bulkDeleteAtomicUpdates", () => {
+  afterEach(async () => {
+    await db.delete(tenants).where(eq(tenants.name, TENANT));
+  });
+
+  it("hard-deletes open, unlinked updates and detaches their change events to the unassigned pool", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    currentTenantId = tenant.id;
+    const repo = await seedRepo(tenant.id);
+    const [a] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "A", summary: "S" })
+      .returning();
+    const [b] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "B", summary: "S" })
+      .returning();
+    const [event] = await db
+      .insert(changeEvents)
+      .values({
+        tenantId: tenant.id,
+        repoId: repo.id,
+        type: "commit",
+        provider: "github",
+        externalId: "sha-a-evidence",
+        commitSha: "sha-a-evidence",
+        commitMessage: "evidence for A",
+        atomicUpdateId: a.id,
+      })
+      .returning();
+
+    const result = await bulkDeleteAtomicUpdates([a.id, b.id]);
+
+    expect(result).toEqual({ count: 2 });
+    const remaining = await db.select().from(atomicUpdates).where(eq(atomicUpdates.tenantId, tenant.id));
+    expect(remaining).toEqual([]);
+    // FK is ON DELETE set null: the event survives, now unassigned.
+    const [survivingEvent] = await db.select().from(changeEvents).where(eq(changeEvents.id, event.id));
+    expect(survivingEvent).toBeDefined();
+    expect(survivingEvent.atomicUpdateId).toBeNull();
+    expect(revalidatePath).toHaveBeenCalledWith("/atomic-updates");
+  });
+
+  it("skips released, draft-linked, and foreign ids, deleting only open unlinked ones", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const [other] = await db.insert(tenants).values({ name: TENANT }).returning();
+    currentTenantId = tenant.id;
+
+    const [open] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "Open", summary: "S" })
+      .returning();
+    const [released] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "Released", summary: "S", status: "released" })
+      .returning();
+    const [release] = await db
+      .insert(releases)
+      .values({ tenantId: tenant.id, title: "Draft", body: "B" })
+      .returning();
+    const [linked] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "Linked", summary: "S", releaseId: release.id })
+      .returning();
+    const [foreign] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: other.id, title: "Foreign", summary: "S" })
+      .returning();
+
+    const result = await bulkDeleteAtomicUpdates([open.id, released.id, linked.id, foreign.id]);
+
+    expect(result).toEqual({ count: 1 });
+    const exists = async (id: string) =>
+      (await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, id))).length === 1;
+    expect(await exists(open.id)).toBe(false);
+    expect(await exists(released.id)).toBe(true);
+    expect(await exists(linked.id)).toBe(true);
+    expect(await exists(foreign.id)).toBe(true);
+  });
+
+  it("returns count 0 for an empty id list without touching the DB", async () => {
+    const result = await bulkDeleteAtomicUpdates([]);
     expect(result).toEqual({ count: 0 });
   });
 });

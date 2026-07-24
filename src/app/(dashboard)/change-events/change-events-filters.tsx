@@ -1,6 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
+import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -54,6 +55,9 @@ type FilterState = {
 export function ChangeEventsFilters({ type, provider, assignment, showHidden }: FilterState) {
   const router = useRouter();
 
+  const hasActiveFilters =
+    type !== "all" || provider !== "all" || assignment !== "all" || showHidden;
+
   function push(next: Partial<FilterState>) {
     const merged: FilterState = { type, provider, assignment, showHidden, ...next };
     const params = new URLSearchParams();
@@ -106,13 +110,20 @@ export function ChangeEventsFilters({ type, provider, assignment, showHidden }: 
         </SelectContent>
       </Select>
 
-      <Label className="ml-auto">
-        <Switch
-          checked={showHidden}
-          onCheckedChange={(checked) => push({ showHidden: checked })}
-        />
-        Show hidden
-      </Label>
+      <div className="ml-auto flex items-center gap-3">
+        {hasActiveFilters && (
+          <Button variant="ghost" size="sm" onClick={() => router.push("/change-events")}>
+            Clear filters
+          </Button>
+        )}
+        <Label>
+          <Switch
+            checked={showHidden}
+            onCheckedChange={(checked) => push({ showHidden: checked })}
+          />
+          Show hidden
+        </Label>
+      </div>
     </div>
   );
 }

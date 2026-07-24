@@ -28,7 +28,14 @@ export type AtomicUpdateRow = {
   updatedAt: Date;
 };
 
-export async function listAtomicUpdates(): Promise<AtomicUpdateRow[]> {
+export type AtomicUpdateListFilters = {
+  category?: "new" | "improvement" | "fix" | "announcement";
+  size?: "s" | "m" | "l" | "xl";
+};
+
+export async function listAtomicUpdates(
+  filters: AtomicUpdateListFilters = {}
+): Promise<AtomicUpdateRow[]> {
   const session = await requireSession();
 
   const atomics = await db
@@ -49,7 +56,10 @@ export async function listAtomicUpdates(): Promise<AtomicUpdateRow[]> {
         // Compose candidate set: an atomic update already linked to a draft
         // release is spoken for and shows up on that draft instead — see
         // getOpenAtomicUpdates in release-claim.ts for the same rule.
-        isNull(atomicUpdates.releaseId)
+        isNull(atomicUpdates.releaseId),
+        // Optional list filters; `and` drops the undefined ones.
+        filters.category ? eq(atomicUpdates.category, filters.category) : undefined,
+        filters.size ? eq(atomicUpdates.size, filters.size) : undefined
       )
     )
     // Ordered by creation, NOT updatedAt: an in-place edit (e.g. picking a
@@ -156,6 +166,40 @@ export async function bulkMarkAtomicUpdatesHidden(ids: string[]): Promise<{ coun
   const rows = await db
     .update(atomicUpdates)
     .set({ status: "hidden", updatedAt: new Date() })
+    .where(
+      and(
+        inArray(atomicUpdates.id, ids),
+        eq(atomicUpdates.tenantId, session.user.tenantId),
+        eq(atomicUpdates.status, "open"),
+        isNull(atomicUpdates.releaseId)
+      )
+    )
+    .returning({ id: atomicUpdates.id });
+
+  revalidatePath("/atomic-updates");
+  return { count: rows.length };
+}
+
+/**
+ * Permanently deletes open, unlinked atomic updates (a hard DB row delete,
+ * unlike `bulkMarkAtomicUpdatesHidden`, which only flips them to `hidden`).
+ * The WHERE guard matches the hide action's — `status = 'open' AND releaseId
+ * IS NULL`, tenant-scoped — so a released update or one already in a draft is
+ * skipped rather than erroring; `count` reports how many rows were removed.
+ *
+ * The `change_events.atomicUpdateId` FK is `ON DELETE set null`, so a deleted
+ * update's evidence is detached (returned to the unassigned pool), not
+ * cascade-deleted. Note this differs from hiding: a hidden update is a
+ * tombstone the resolver won't re-cluster onto, whereas after a delete the
+ * now-unassigned events are eligible to be clustered into a fresh update
+ * again.
+ */
+export async function bulkDeleteAtomicUpdates(ids: string[]): Promise<{ count: number }> {
+  const session = await requireSession();
+  if (ids.length === 0) return { count: 0 };
+
+  const rows = await db
+    .delete(atomicUpdates)
     .where(
       and(
         inArray(atomicUpdates.id, ids),
