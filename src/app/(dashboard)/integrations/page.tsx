@@ -121,7 +121,7 @@ export default async function IntegrationsPage() {
           <CardContent>
             {!tenant?.githubInstallationId ? (
               installUrl ? (
-                <Button variant="outline" render={<a href={installUrl} />}>
+                <Button variant="outline" render={<a href="/api/github/connect?returnTo=integrations" />}>
                   Connect GitHub
                 </Button>
               ) : (

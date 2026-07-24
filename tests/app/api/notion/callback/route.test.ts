@@ -22,10 +22,13 @@ vi.mock("../../../../../src/lib/integrations/notion/oauth", () => ({
 
 import { GET } from "../../../../../src/app/api/notion/callback/route";
 
-function request(params: Record<string, string>) {
+function request(params: Record<string, string>, cookieNonce?: string) {
   const url = new URL("https://app.example.com/api/notion/callback");
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-  return new Request(url);
+  return new Request(
+    url,
+    cookieNonce ? { headers: { cookie: `notion_oauth_state=${cookieNonce}` } } : undefined
+  );
 }
 
 describe("notion callback route", () => {
@@ -38,7 +41,10 @@ describe("notion callback route", () => {
   });
 
   it("stores an encrypted, misconfigured connection and redirects to integrations", async () => {
-    const res = await GET(request({ code: "the-code", state: `${currentTenantId}|integrations` }) as never);
+    const nonce = "abc123def456";
+    const res = await GET(
+      request({ code: "the-code", state: `${currentTenantId}|integrations|${nonce}` }, nonce) as never
+    );
     expect(res.status).toBe(307);
     expect(res.headers.get("location")).toContain("/integrations");
 
@@ -51,7 +57,17 @@ describe("notion callback route", () => {
   });
 
   it("redirects with an error when state's tenant does not match the session", async () => {
-    const res = await GET(request({ code: "c", state: "someone-else|integrations" }) as never);
+    const nonce = "abc123def456";
+    const res = await GET(request({ code: "c", state: `someone-else|integrations|${nonce}` }, nonce) as never);
+    expect(res.headers.get("location")).toContain("notion_connect=error");
+    const rows = await db.select().from(notionConnections).where(eq(notionConnections.tenantId, currentTenantId));
+    expect(rows).toHaveLength(0);
+  });
+
+  it("redirects with an error when the state nonce does not match the cookie", async () => {
+    const res = await GET(
+      request({ code: "c", state: `${currentTenantId}|integrations|nonce-from-state` }, "different-cookie-nonce") as never
+    );
     expect(res.headers.get("location")).toContain("notion_connect=error");
     const rows = await db.select().from(notionConnections).where(eq(notionConnections.tenantId, currentTenantId));
     expect(rows).toHaveLength(0);

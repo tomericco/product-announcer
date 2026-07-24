@@ -5,6 +5,7 @@ import { notionConnections } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { encryptSecret } from "@/lib/credentials/encryption";
 import { exchangeCode } from "@/lib/integrations/notion/oauth";
+import { parseOAuthState, OAUTH_STATE_COOKIE_OPTS } from "@/lib/integrations/oauth-state";
 
 export async function GET(request: NextRequest) {
   const session = await requireSession();
@@ -14,11 +15,24 @@ export async function GET(request: NextRequest) {
   // Both give equivalent search params for a real `NextRequest`.
   const searchParams = new URL(request.url).searchParams;
   const code = searchParams.get("code");
-  const state = searchParams.get("state");
-  const [tenantIdFromState] = (state ?? "").split("|");
+  const parsed = parseOAuthState(searchParams.get("state"));
+  // Wrap in NextRequest so `.cookies` works for both a real NextRequest and the
+  // plain `Request` the test suite passes (same rationale as `new URL` above).
+  const cookieNonce = new NextRequest(request).cookies.get("notion_oauth_state")?.value;
 
-  if (!code || tenantIdFromState !== session.user.tenantId) {
-    return NextResponse.redirect(new URL("/integrations?notion_connect=error", request.url));
+  // Always clear the state cookie on the way out — it is single-use.
+  const clearStateCookie = (response: NextResponse) => {
+    response.cookies.set("notion_oauth_state", "", { ...OAUTH_STATE_COOKIE_OPTS, maxAge: 0 });
+    return response;
+  };
+
+  if (
+    !code ||
+    parsed.tenantId !== session.user.tenantId ||
+    !parsed.nonce ||
+    parsed.nonce !== cookieNonce
+  ) {
+    return clearStateCookie(NextResponse.redirect(new URL("/integrations?notion_connect=error", request.url)));
   }
 
   try {
@@ -52,9 +66,9 @@ export async function GET(request: NextRequest) {
       await db.insert(notionConnections).values({ tenantId: session.user.tenantId, ...values });
     }
 
-    return NextResponse.redirect(new URL("/integrations?notion_connect=success", request.url));
+    return clearStateCookie(NextResponse.redirect(new URL("/integrations?notion_connect=success", request.url)));
   } catch (error) {
     console.error("Notion OAuth callback failed:", error);
-    return NextResponse.redirect(new URL("/integrations?notion_connect=error", request.url));
+    return clearStateCookie(NextResponse.redirect(new URL("/integrations?notion_connect=error", request.url)));
   }
 }
