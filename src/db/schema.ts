@@ -1,4 +1,4 @@
-import { pgTable, pgEnum, uuid, text, timestamp, primaryKey, integer, jsonb, uniqueIndex, boolean, real } from "drizzle-orm/pg-core";
+import { pgTable, pgEnum, uuid, text, timestamp, primaryKey, integer, jsonb, uniqueIndex, index, boolean, real } from "drizzle-orm/pg-core";
 
 // A persona in a tenant's brand profile is either a live reference to a seeded
 // system persona (resolved against `system_personas` at read time) or a
@@ -51,6 +51,11 @@ export const updateCategoryEnum = pgEnum("update_category", ["new", "improvement
 
 export const changeEventTypeEnum = pgEnum("change_event_type", ["commit", "pull_request", "task"]);
 export const changeEventProviderEnum = pgEnum("change_event_provider", ["github", "notion"]);
+export const notionConnectionStatusEnum = pgEnum("notion_connection_status", [
+  "active",
+  "needs_reauth",
+  "misconfigured",
+]);
 export const atomicUpdateStatusEnum = pgEnum("atomic_update_status", ["open", "released", "hidden"]);
 export const atomicUpdateSizeEnum = pgEnum("atomic_update_size", ["s", "m", "l", "xl"]);
 // Why tier 1 dropped an event. Null means it was not dropped deterministically.
@@ -82,9 +87,7 @@ export const changeEvents = pgTable(
     tenantId: uuid("tenant_id")
       .notNull()
       .references(() => tenants.id, { onDelete: "cascade" }),
-    repoId: uuid("repo_id")
-      .notNull()
-      .references(() => repos.id, { onDelete: "cascade" }),
+    repoId: uuid("repo_id").references(() => repos.id, { onDelete: "cascade" }),
     type: changeEventTypeEnum("type").notNull(),
     provider: changeEventProviderEnum("provider").notNull(),
     // Idempotency key, namespaced per provider. Commits use the SHA; PRs use
@@ -115,6 +118,10 @@ export const changeEvents = pgTable(
     // branch-landing time, so backfilled/imported commits leave it null rather
     // than pretending the author date is a release.
     releasedAt: timestamp("released_at", { withTimezone: true }),
+    // task-sourced fields (e.g. a completed Notion task)
+    taskTitle: text("task_title"),
+    taskDescription: text("task_description"),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     // tier 2 classifier output, null until classified
     userFacing: boolean("user_facing"),
@@ -348,3 +355,38 @@ export const webflowConnections = pgTable("webflow_connections", {
   lastValidatedAt: timestamp("last_validated_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+export const notionConnections = pgTable("notion_connections", {
+  id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  tenantId: uuid("tenant_id")
+    .notNull()
+    .unique()
+    .references(() => tenants.id, { onDelete: "cascade" }),
+  // OAuth access token (encrypted). Notion access tokens can expire when the
+  // integration has token rotation enabled; a refresh token is then issued.
+  accessTokenCiphertext: text("access_token_ciphertext").notNull(),
+  accessTokenIv: text("access_token_iv").notNull(),
+  accessTokenAuthTag: text("access_token_auth_tag").notNull(),
+  // Refresh token (encrypted). Nullable: an integration without token rotation
+  // issues no refresh token, and a 401 on such a connection can only flip it to
+  // needs_reauth (there is nothing to refresh with).
+  refreshTokenCiphertext: text("refresh_token_ciphertext"),
+  refreshTokenIv: text("refresh_token_iv"),
+  refreshTokenAuthTag: text("refresh_token_auth_tag"),
+  // The routing key for inbound webhooks (payload.workspace_id). Indexed.
+  workspaceId: text("workspace_id").notNull(),
+  botId: text("bot_id"),
+  // Null until the tenant completes the corresponding wizard step.
+  databaseId: text("database_id"),
+  databaseName: text("database_name"),
+  statusPropertyId: text("status_property_id"),
+  statusPropertyName: text("status_property_name"),
+  // Which values of the status property mean "done". Empty until step 3.
+  doneValues: text("done_values").array().notNull().default([]),
+  status: notionConnectionStatusEnum("status").notNull().default("misconfigured"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index("notion_connections_workspace_idx").on(table.workspaceId),
+]);
+
+export type NotionConnection = typeof notionConnections.$inferSelect;
