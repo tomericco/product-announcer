@@ -9,7 +9,7 @@ import { requireSession } from "@/lib/workspace/session";
 import { openAtomicUpdatesForReassign } from "@/lib/change-events/reassign";
 import { listChangeEvents, listImportRepos, type ChangeEventFilters } from "./actions";
 import { ChangeEventsFilters } from "./change-events-filters";
-import { ChangeEventRow } from "./change-event-row";
+import { ChangeEventsList } from "./change-events-list";
 import { ImportDialog } from "./import-dialog";
 
 const TYPE_VALUES = ["commit", "pull_request", "task"] as const;
@@ -109,13 +109,7 @@ export default async function ChangeEventsPage({
           </EmptyStateDescription>
         </EmptyState>
       ) : (
-        <ul className="flex flex-col gap-3">
-          {rows.map((row) => (
-            <li key={row.id}>
-              <ChangeEventRow row={row} openAtomicUpdates={targets} />
-            </li>
-          ))}
-        </ul>
+        <ChangeEventsList rows={rows} targets={targets} />
       )}
     </div>
   );

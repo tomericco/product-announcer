@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { AtomicUpdateCard } from "./atomic-update-card";
 import { DraftReleaseDialog } from "./draft-release-dialog";
 import { NewAtomicUpdateDialog } from "./new-atomic-update-dialog";
-import { unhideAtomicUpdate } from "./actions";
+import { unhideAtomicUpdate, bulkMarkAtomicUpdatesHidden } from "./actions";
 import { CategoryBadge } from "./page";
 import type { AtomicUpdateRow } from "./actions";
 import type { ImportRepo } from "../change-events/actions";
@@ -63,6 +63,7 @@ export function AtomicUpdatesList({
 }) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [showHidden, setShowHidden] = useState(false);
+  const [hiding, startHiding] = useTransition();
 
   function onSelectChange(id: string, isSelected: boolean) {
     setSelected((prev) => {
@@ -76,9 +77,34 @@ export function AtomicUpdatesList({
     });
   }
 
+  // Bulk-hide the current selection. The action skips any id that isn't an
+  // open, unlinked update (released / already in a draft), so `count` may be
+  // less than the number selected — surface that instead of claiming a clean
+  // sweep. Clears the selection only when something actually changed.
+  function markSelectedHidden() {
+    const ids = [...selected];
+    startHiding(async () => {
+      const { count } = await bulkMarkAtomicUpdatesHidden(ids);
+      if (count === 0) {
+        toast.error("Nothing was marked — the selected updates can't be hidden");
+        return;
+      }
+      toast.success(`Marked ${count} ${count === 1 ? "update" : "updates"} as not user-facing`);
+      if (count < ids.length) {
+        toast.warning(`${ids.length - count} couldn't be hidden and were left as-is`);
+      }
+      setSelected(new Set());
+    });
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex justify-end gap-2">
+        {selected.size > 0 && (
+          <Button variant="outline" size="sm" disabled={hiding} onClick={markSelectedHidden}>
+            {hiding ? "Marking…" : `Mark ${selected.size} as not user-facing`}
+          </Button>
+        )}
         <Button variant="ghost" size="sm" onClick={() => setShowHidden((v) => !v)}>
           {showHidden ? "Hide hidden" : "Show hidden"}
           {hiddenRows.length > 0 ? ` (${hiddenRows.length})` : ""}
@@ -94,6 +120,7 @@ export function AtomicUpdatesList({
               repos={repos}
               selectable
               selected={selected.has(row.id)}
+              anySelected={selected.size > 0}
               onSelectChange={onSelectChange}
             />
           </li>

@@ -52,7 +52,11 @@ export async function listAtomicUpdates(): Promise<AtomicUpdateRow[]> {
         isNull(atomicUpdates.releaseId)
       )
     )
-    .orderBy(desc(atomicUpdates.updatedAt));
+    // Ordered by creation, NOT updatedAt: an in-place edit (e.g. picking a
+    // size) bumps updatedAt, and a mutable sort key would make the card jump
+    // to the top of the list mid-edit. createdAt is stable; id breaks ties for
+    // updates created in the same batch so the order is deterministic.
+    .orderBy(desc(atomicUpdates.createdAt), asc(atomicUpdates.id));
 
   if (atomics.length === 0) return [];
 
@@ -135,6 +139,35 @@ export async function markAtomicUpdateHidden(id: string): Promise<{ ok: boolean 
 
   revalidatePath("/atomic-updates");
   return { ok: rows.length > 0 };
+}
+
+/**
+ * Bulk form of `markAtomicUpdateHidden`: hides every OPEN, unlinked atomic
+ * update in `ids` in one statement. The WHERE guard is identical
+ * (`status = 'open' AND releaseId IS NULL`, tenant-scoped), so ids that are
+ * released, already linked to a draft, or belong to another tenant are
+ * silently skipped rather than erroring — `count` reports how many actually
+ * flipped, letting the caller distinguish a full from a partial hide.
+ */
+export async function bulkMarkAtomicUpdatesHidden(ids: string[]): Promise<{ count: number }> {
+  const session = await requireSession();
+  if (ids.length === 0) return { count: 0 };
+
+  const rows = await db
+    .update(atomicUpdates)
+    .set({ status: "hidden", updatedAt: new Date() })
+    .where(
+      and(
+        inArray(atomicUpdates.id, ids),
+        eq(atomicUpdates.tenantId, session.user.tenantId),
+        eq(atomicUpdates.status, "open"),
+        isNull(atomicUpdates.releaseId)
+      )
+    )
+    .returning({ id: atomicUpdates.id });
+
+  revalidatePath("/atomic-updates");
+  return { count: rows.length };
 }
 
 /**

@@ -34,6 +34,7 @@ import {
   editAtomicUpdate,
   listAtomicUpdates,
   markAtomicUpdateHidden,
+  bulkMarkAtomicUpdatesHidden,
   unhideAtomicUpdate,
   listHiddenAtomicUpdates,
   removeEventFromAtomicUpdate,
@@ -489,6 +490,74 @@ describe("markAtomicUpdateHidden / unhideAtomicUpdate / listHiddenAtomicUpdates"
     const candidates = await loadOpenAtomicUpdates(db, tenant.id);
 
     expect(candidates.map((c) => c.title)).toEqual(["Still open"]);
+  });
+});
+
+describe("bulkMarkAtomicUpdatesHidden", () => {
+  afterEach(async () => {
+    await db.delete(tenants).where(eq(tenants.name, TENANT));
+  });
+
+  it("hides every open, unlinked id and reports the count", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    currentTenantId = tenant.id;
+    const [a] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "A", summary: "S" })
+      .returning();
+    const [b] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "B", summary: "S" })
+      .returning();
+
+    const result = await bulkMarkAtomicUpdatesHidden([a.id, b.id]);
+
+    expect(result).toEqual({ count: 2 });
+    const rows = await db.select().from(atomicUpdates).where(eq(atomicUpdates.tenantId, tenant.id));
+    expect(rows.every((r) => r.status === "hidden")).toBe(true);
+    expect(revalidatePath).toHaveBeenCalledWith("/atomic-updates");
+  });
+
+  it("skips released, draft-linked, and foreign ids, counting only the ones actually hidden", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const [other] = await db.insert(tenants).values({ name: TENANT }).returning();
+    currentTenantId = tenant.id;
+
+    const [open] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "Open", summary: "S" })
+      .returning();
+    const [released] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "Released", summary: "S", status: "released" })
+      .returning();
+    const [release] = await db
+      .insert(releases)
+      .values({ tenantId: tenant.id, title: "Draft", body: "B" })
+      .returning();
+    const [linked] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "Linked", summary: "S", releaseId: release.id })
+      .returning();
+    const [foreign] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: other.id, title: "Foreign", summary: "S" })
+      .returning();
+
+    const result = await bulkMarkAtomicUpdatesHidden([open.id, released.id, linked.id, foreign.id]);
+
+    expect(result).toEqual({ count: 1 });
+    const byId = async (id: string) =>
+      (await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, id)))[0];
+    expect((await byId(open.id)).status).toBe("hidden");
+    expect((await byId(released.id)).status).toBe("released");
+    expect((await byId(linked.id)).status).toBe("open");
+    expect((await byId(foreign.id)).status).toBe("open");
+  });
+
+  it("returns count 0 for an empty id list without touching the DB", async () => {
+    const result = await bulkMarkAtomicUpdatesHidden([]);
+    expect(result).toEqual({ count: 0 });
   });
 });
 

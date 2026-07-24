@@ -3,6 +3,7 @@
 import { Badge } from "@/components/ui/badge";
 import type { ChangeEventRow as ChangeEventRowData } from "./actions";
 import { ReassignControl, type ReassignTargetOption } from "./reassign-control";
+import { SelectionCheckbox } from "../_components/selection-checkbox";
 
 const TYPE_LABEL: Record<ChangeEventRowData["type"], string> = {
   commit: "Commit",
@@ -30,12 +31,31 @@ function assignmentLabel(row: ChangeEventRowData): string {
 export function ChangeEventRow({
   row,
   openAtomicUpdates,
+  selectable = false,
+  selected = false,
+  anySelected = false,
+  onSelectChange,
 }: {
   row: ChangeEventRowData;
   openAtomicUpdates: ReassignTargetOption[];
+  selectable?: boolean;
+  selected?: boolean;
+  // True when any row in the list is selected — reveals this row's checkbox
+  // even without hover, so the list shows all boxes together during selection.
+  anySelected?: boolean;
+  onSelectChange?: (id: string, isSelected: boolean) => void;
 }) {
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3">
+    <div className="group flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3">
+      {selectable && (
+        <SelectionCheckbox
+          checked={selected}
+          onCheckedChange={(next) => onSelectChange?.(row.id, next)}
+          label={`Select ${row.title}`}
+          collapsedMarginClass="-mr-3"
+          forceVisible={anySelected}
+        />
+      )}
       <div className="flex min-w-0 flex-1 flex-col gap-1.5">
         <div className="flex flex-wrap items-center gap-2">
           <Badge variant="secondary" className="shrink-0">

@@ -33,14 +33,10 @@ import {
 } from "./actions";
 import type { ImportRepo } from "../change-events/actions";
 import { AddEventPicker } from "./add-event-picker";
+import { SelectionCheckbox } from "../_components/selection-checkbox";
 import { CategoryBadge, CATEGORY_LABEL, SizeBadge } from "./page";
 
-const SIZE_OPTIONS: Array<{ value: "s" | "m" | "l" | "xl"; label: string }> = [
-  { value: "s", label: "S" },
-  { value: "m", label: "M" },
-  { value: "l", label: "L" },
-  { value: "xl", label: "XL" },
-];
+const SIZE_OPTIONS: Array<"s" | "m" | "l" | "xl"> = ["s", "m", "l", "xl"];
 
 const CATEGORY_OPTIONS: Array<"new" | "improvement" | "fix" | "announcement"> = [
   "new",
@@ -84,6 +80,7 @@ export function AtomicUpdateCard({
   repos,
   selectable = false,
   selected = false,
+  anySelected = false,
   onSelectChange,
 }: {
   row: AtomicUpdateRow;
@@ -95,6 +92,9 @@ export function AtomicUpdateCard({
   // selection mode for drafting a release.
   selectable?: boolean;
   selected?: boolean;
+  // True when any card in the list is selected — reveals this card's checkbox
+  // even without hover, so the list shows all boxes together during selection.
+  anySelected?: boolean;
   onSelectChange?: (id: string, selected: boolean) => void;
 }) {
   const [editing, setEditing] = useState(false);
@@ -103,45 +103,38 @@ export function AtomicUpdateCard({
   const [pending, startTransition] = useTransition();
   const [hidePending, startHideTransition] = useTransition();
   const [evidencePending, startEvidenceTransition] = useTransition();
+  // Size and category are staged locally while editing and only persisted on
+  // Save (below), same as title/summary — picking a value from the dropdown no
+  // longer writes through immediately.
   const [size, setSize] = useState(row.size);
-  const [sizePending, startSizeTransition] = useTransition();
   const [category, setCategory] = useState(row.category);
-  const [categoryPending, startCategoryTransition] = useTransition();
   const [removeConfirm, setRemoveConfirm] = useState<{
     eventId: string;
     emptiedAtomicUpdate: EmptiedAtomicUpdate;
   } | null>(null);
 
+  // Persists everything staged in the edit form in one Save: title/summary
+  // always, plus size/category only when they actually changed (each has its
+  // own dedicated action — setAtomicUpdateSize also stamps the size freeze —
+  // so they can't be folded into editAtomicUpdate's title/summary write).
   function save() {
     startTransition(async () => {
       try {
         await editAtomicUpdate(row.id, { title, summary });
+        if (size && size !== row.size) {
+          const result = await setAtomicUpdateSize(row.id, size);
+          if (!result.ok) toast.error("Could not update size");
+        }
+        if (category && category !== row.category) {
+          const result = await setAtomicUpdateCategory(row.id, category);
+          if (!result.ok) toast.error("Could not update category");
+        }
         setEditing(false);
         toast.success("Atomic update saved");
       } catch (error) {
         // Server actions reject with an opaque digest in production; surface
         // what we can rather than leaving the form silently stuck.
         toast.error(error instanceof Error ? error.message : "Something went wrong");
-      }
-    });
-  }
-
-  function changeSize(next: "s" | "m" | "l" | "xl") {
-    setSize(next);
-    startSizeTransition(async () => {
-      const result = await setAtomicUpdateSize(row.id, next);
-      if (!result.ok) {
-        toast.error("Could not update size");
-      }
-    });
-  }
-
-  function changeCategory(next: "new" | "improvement" | "fix" | "announcement") {
-    setCategory(next);
-    startCategoryTransition(async () => {
-      const result = await setAtomicUpdateCategory(row.id, next);
-      if (!result.ok) {
-        toast.error("Could not update category");
       }
     });
   }
@@ -181,7 +174,7 @@ export function AtomicUpdateCard({
   }
 
   return (
-    <div className="rounded-lg border p-4">
+    <div className="group rounded-lg border p-4">
       {editing ? (
         <div className="flex flex-col gap-3">
           <Input value={title} onChange={(e) => setTitle(e.target.value)} aria-label="Title" />
@@ -190,16 +183,21 @@ export function AtomicUpdateCard({
           <div className="flex gap-2">
             <Select
               value={size ?? undefined}
-              onValueChange={(value) => changeSize(value as "s" | "m" | "l" | "xl")}
-              disabled={sizePending}
+              onValueChange={(value) => setSize(value as "s" | "m" | "l" | "xl")}
+              disabled={pending}
             >
               <SelectTrigger className="w-24" aria-label="Size">
-                <SelectValue placeholder="Size" />
+                {/* Resolve the label off the value directly so the trigger and
+                    the options render identically (uppercase), regardless of
+                    Base UI's item-registration timing. */}
+                <SelectValue placeholder="Size">
+                  {(value) => (value ? String(value).toUpperCase() : "Size")}
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
                 {SIZE_OPTIONS.map((option) => (
-                  <SelectItem key={option.value} value={option.value}>
-                    {option.label}
+                  <SelectItem key={option} value={option}>
+                    {option.toUpperCase()}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -208,12 +206,16 @@ export function AtomicUpdateCard({
             <Select
               value={category ?? undefined}
               onValueChange={(value) =>
-                changeCategory(value as "new" | "improvement" | "fix" | "announcement")
+                setCategory(value as "new" | "improvement" | "fix" | "announcement")
               }
-              disabled={categoryPending}
+              disabled={pending}
             >
               <SelectTrigger className="w-40" aria-label="Category">
-                <SelectValue placeholder="Category" />
+                <SelectValue placeholder="Category">
+                  {(value) =>
+                    value ? (CATEGORY_LABEL[value as string] ?? String(value)) : "Category"
+                  }
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
                 {CATEGORY_OPTIONS.map((option) => (
@@ -266,6 +268,8 @@ export function AtomicUpdateCard({
               onClick={() => {
                 setTitle(row.title);
                 setSummary(row.summary);
+                setSize(row.size);
+                setCategory(row.category);
                 setEditing(false);
               }}
             >
@@ -277,12 +281,12 @@ export function AtomicUpdateCard({
         <div className="flex flex-col gap-2">
           <div className="flex items-center gap-2">
             {selectable && (
-              <input
-                type="checkbox"
-                className="size-4 rounded border-input"
-                aria-label={`Select "${row.title}"`}
+              <SelectionCheckbox
                 checked={selected}
-                onChange={(e) => onSelectChange?.(row.id, e.target.checked)}
+                onCheckedChange={(next) => onSelectChange?.(row.id, next)}
+                label={`Select "${row.title}"`}
+                collapsedMarginClass="-mr-2"
+                forceVisible={anySelected}
               />
             )}
             <h2 className="font-medium">{row.title}</h2>

@@ -27,7 +27,12 @@ vi.mock("../../src/lib/change-events/reassign", () => ({
   reassignChangeEvent: vi.fn(async () => ({ ok: true })),
 }));
 
-import { listChangeEvents, reassign } from "../../src/app/(dashboard)/change-events/actions";
+import {
+  listChangeEvents,
+  reassign,
+  bulkReassignChangeEvents,
+  bulkDeleteChangeEvents,
+} from "../../src/app/(dashboard)/change-events/actions";
 import { reassignChangeEvent } from "../../src/lib/change-events/reassign";
 import { revalidatePath } from "next/cache";
 
@@ -427,5 +432,163 @@ describe("reassign", () => {
       ok: false,
       reason: "Cannot move an event out of a published atomic update.",
     });
+  });
+});
+
+describe("bulkReassignChangeEvents", () => {
+  const BULK_TENANT = "bulk-reassign-session-tenant";
+  const BULK_USER = "bulk-reassign-session-user";
+
+  afterEach(() => {
+    vi.mocked(reassignChangeEvent).mockReset();
+    vi.mocked(reassignChangeEvent).mockResolvedValue({ ok: true });
+    vi.mocked(revalidatePath).mockClear();
+    currentTenantId = "";
+    currentUserId = "user-1";
+  });
+
+  it("runs each event through the core with the session identity, the given target, and confirmEmptyDeletion:true", async () => {
+    currentTenantId = BULK_TENANT;
+    currentUserId = BULK_USER;
+
+    await bulkReassignChangeEvents(["e1", "e2"], { kind: "existing", atomicUpdateId: "au-9" });
+
+    expect(reassignChangeEvent).toHaveBeenCalledTimes(2);
+    expect(reassignChangeEvent).toHaveBeenNthCalledWith(1, {
+      tenantId: BULK_TENANT,
+      userId: BULK_USER,
+      eventId: "e1",
+      target: { kind: "existing", atomicUpdateId: "au-9" },
+      confirmEmptyDeletion: true,
+    });
+    expect(reassignChangeEvent).toHaveBeenNthCalledWith(2, {
+      tenantId: BULK_TENANT,
+      userId: BULK_USER,
+      eventId: "e2",
+      target: { kind: "existing", atomicUpdateId: "au-9" },
+      confirmEmptyDeletion: true,
+    });
+    expect(revalidatePath).toHaveBeenCalledWith("/change-events");
+  });
+
+  it("aggregates successes, failures, and emptied-atomic-update deletions", async () => {
+    currentTenantId = BULK_TENANT;
+    currentUserId = BULK_USER;
+    vi.mocked(reassignChangeEvent)
+      .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce({ ok: true, deletedAtomicUpdate: { id: "au-x", title: "Emptied" } })
+      .mockResolvedValueOnce({ ok: false, reason: "Cannot move an event out of a published atomic update." });
+
+    const result = await bulkReassignChangeEvents(["e1", "e2", "e3"], { kind: "detach" });
+
+    expect(result).toEqual({ succeeded: 2, failed: 1, deletedAtomicUpdates: 1 });
+  });
+
+  it("does no work and returns zeros for an empty selection", async () => {
+    currentTenantId = BULK_TENANT;
+    currentUserId = BULK_USER;
+
+    const result = await bulkReassignChangeEvents([], { kind: "detach" });
+
+    expect(result).toEqual({ succeeded: 0, failed: 0, deletedAtomicUpdates: 0 });
+    expect(reassignChangeEvent).not.toHaveBeenCalled();
+  });
+});
+
+describe("bulkDeleteChangeEvents", () => {
+  afterEach(async () => {
+    await db.delete(tenants).where(eq(tenants.name, TENANT));
+    vi.mocked(revalidatePath).mockClear();
+    currentTenantId = "";
+  });
+
+  it("hard-deletes selected unassigned and open-linked events, keeping published-release evidence", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    currentTenantId = tenant.id;
+    const repo = await seedRepo(tenant.id);
+    const [open] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "Open AU", summary: "S" })
+      .returning();
+    const [released] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "Shipped AU", summary: "S", status: "released" })
+      .returning();
+
+    const [unassigned] = await db
+      .insert(changeEvents)
+      .values({
+        tenantId: tenant.id,
+        repoId: repo.id,
+        type: "commit",
+        provider: "github",
+        externalId: "sha-unassigned",
+        commitSha: "sha-unassigned",
+        commitMessage: "junk",
+      })
+      .returning();
+    const [linkedOpen] = await db
+      .insert(changeEvents)
+      .values({
+        tenantId: tenant.id,
+        repoId: repo.id,
+        type: "commit",
+        provider: "github",
+        externalId: "sha-open",
+        commitSha: "sha-open",
+        commitMessage: "in open au",
+        atomicUpdateId: open.id,
+      })
+      .returning();
+    const [linkedReleased] = await db
+      .insert(changeEvents)
+      .values({
+        tenantId: tenant.id,
+        repoId: repo.id,
+        type: "commit",
+        provider: "github",
+        externalId: "sha-released",
+        commitSha: "sha-released",
+        commitMessage: "shipped evidence",
+        atomicUpdateId: released.id,
+      })
+      .returning();
+
+    const result = await bulkDeleteChangeEvents([unassigned.id, linkedOpen.id, linkedReleased.id]);
+
+    expect(result).toEqual({ count: 2 });
+    const survivors = await db.select().from(changeEvents).where(eq(changeEvents.tenantId, tenant.id));
+    expect(survivors.map((r) => r.id)).toEqual([linkedReleased.id]);
+    expect(revalidatePath).toHaveBeenCalledWith("/change-events");
+  });
+
+  it("never deletes another tenant's events", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const [other] = await db.insert(tenants).values({ name: TENANT }).returning();
+    currentTenantId = tenant.id;
+    const foreignRepo = await seedRepo(other.id);
+    const [foreign] = await db
+      .insert(changeEvents)
+      .values({
+        tenantId: other.id,
+        repoId: foreignRepo.id,
+        type: "commit",
+        provider: "github",
+        externalId: "sha-foreign",
+        commitSha: "sha-foreign",
+        commitMessage: "theirs",
+      })
+      .returning();
+
+    const result = await bulkDeleteChangeEvents([foreign.id]);
+
+    expect(result).toEqual({ count: 0 });
+    const [stillThere] = await db.select().from(changeEvents).where(eq(changeEvents.id, foreign.id));
+    expect(stillThere).toBeDefined();
+  });
+
+  it("returns count 0 for an empty selection", async () => {
+    const result = await bulkDeleteChangeEvents([]);
+    expect(result).toEqual({ count: 0 });
   });
 });

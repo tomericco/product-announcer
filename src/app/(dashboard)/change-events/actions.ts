@@ -1,6 +1,6 @@
 "use server";
 
-import { and, desc, eq, isNotNull, isNull, not, or } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, not, or, sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { db } from "@/db";
 import { atomicUpdates, changeEvents, repos } from "@/db/schema";
@@ -182,6 +182,91 @@ export async function reassign(formData: FormData): Promise<ReassignResult> {
   const result = await reassignChangeEvent({ tenantId, userId, eventId, target, confirmEmptyDeletion });
   revalidatePath("/change-events");
   return result;
+}
+
+/**
+ * Bulk reassignment for the change-events list. Only the two non-ambiguous
+ * single-row targets are offered in bulk — move every selected event onto one
+ * existing atomic update, or detach them all — deliberately NOT "split to
+ * new" (which would mean one new atomic update per event, an unclear intent).
+ *
+ * Each event is run through `reassignChangeEvent` individually (its own
+ * transaction) rather than in one statement, so the core's per-event tenant
+ * checks, released-source rejection, and empty-source cleanup all still hold.
+ * `confirmEmptyDeletion: true` is passed unconditionally: at this point the
+ * user has chosen a bulk move, so a source atomic update left empty by it is
+ * dissolved rather than bouncing back a per-event confirmation dialog the
+ * bulk UI has no place to show. `failed` counts events the core rejected
+ * (e.g. one sitting in a published atomic update), which are left untouched.
+ */
+export async function bulkReassignChangeEvents(
+  eventIds: string[],
+  target: { kind: "existing"; atomicUpdateId: string } | { kind: "detach" }
+): Promise<{ succeeded: number; failed: number; deletedAtomicUpdates: number }> {
+  const session = await requireSession();
+  const tenantId = session.user.tenantId;
+  const userId = session.user.id;
+
+  let succeeded = 0;
+  let failed = 0;
+  let deletedAtomicUpdates = 0;
+
+  for (const eventId of eventIds) {
+    const result = await reassignChangeEvent({
+      tenantId,
+      userId,
+      eventId,
+      target,
+      confirmEmptyDeletion: true,
+    });
+    if (result.ok) {
+      succeeded += 1;
+      if (result.deletedAtomicUpdate) deletedAtomicUpdates += 1;
+    } else {
+      failed += 1;
+    }
+  }
+
+  revalidatePath("/change-events");
+  return { succeeded, failed, deletedAtomicUpdates };
+}
+
+/**
+ * Permanently deletes the selected change events (a hard DB row delete, unlike
+ * "detach", which only sets a row aside). Tenant-scoped via the WHERE clause —
+ * the session's tenantId is the security boundary, never client input.
+ *
+ * Events that belong to a PUBLISHED atomic update are excluded from the
+ * delete (the `NOT EXISTS … status = 'released'` guard): they are shipped
+ * history, and the reassign core likewise refuses to move an event out of a
+ * released atomic update. A NULL `atomicUpdateId` (the common case for junk /
+ * excluded events) satisfies the guard and is deleted. `count` reports how
+ * many rows were actually removed, so a partial delete is visible to the UI.
+ *
+ * This intentionally does NOT prune an atomic update left empty by the delete:
+ * silently deleting one that a draft release still references would be more
+ * destructive than the request implies. An emptied open atomic update simply
+ * remains on the atomic-updates page for the user to hide or handle there.
+ */
+export async function bulkDeleteChangeEvents(eventIds: string[]): Promise<{ count: number }> {
+  const session = await requireSession();
+  if (eventIds.length === 0) return { count: 0 };
+
+  const rows = await db
+    .delete(changeEvents)
+    .where(
+      and(
+        inArray(changeEvents.id, eventIds),
+        eq(changeEvents.tenantId, session.user.tenantId),
+        not(
+          sql`EXISTS (SELECT 1 FROM ${atomicUpdates} WHERE ${atomicUpdates.id} = ${changeEvents.atomicUpdateId} AND ${atomicUpdates.status} = 'released')`
+        )
+      )
+    )
+    .returning({ id: changeEvents.id });
+
+  revalidatePath("/change-events");
+  return { count: rows.length };
 }
 
 // Kept in this "use server" module (not queried directly in page.tsx) so the
