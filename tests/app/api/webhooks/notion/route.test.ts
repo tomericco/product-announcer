@@ -32,7 +32,9 @@ function post(body: string, signed = true): Request {
   });
 }
 
-async function seedConnection(): Promise<string> {
+async function seedConnection(
+  overrides: Partial<typeof notionConnections.$inferInsert> = {}
+): Promise<string> {
   const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning({ id: tenants.id });
   const at = encryptSecret("access");
   await db.insert(notionConnections).values({
@@ -46,6 +48,7 @@ async function seedConnection(): Promise<string> {
     statusPropertyName: "Status",
     doneValues: ["Done"],
     status: "active",
+    ...overrides,
   });
   return tenant.id;
 }
@@ -138,5 +141,75 @@ describe("notion webhook route", () => {
     expect(ingestNotionTask).toHaveBeenCalledTimes(1);
     const arg = vi.mocked(ingestNotionTask).mock.calls[0][0];
     expect(arg).toMatchObject({ tenantId: tid, pageId: "page-1", title: "Add dark mode", url: "https://notion.so/page-1" });
+  });
+
+  it("fans out to BOTH tenants that share a workspace, ingesting once per tenant", async () => {
+    // Two distinct tenants connect the SAME Notion workspace. Neither may be
+    // silently dropped: the event must ingest for both.
+    const tidA = await seedConnection({ workspaceId: "ws-shared" });
+    const tidB = await seedConnection({ workspaceId: "ws-shared" });
+    vi.mocked(getPage).mockResolvedValue({
+      url: "https://notion.so/page-1",
+      title: "Add dark mode",
+      description: "Toggle a dark theme.",
+      statusByPropertyId: { "prop-status": "Done" },
+    });
+    await processNotionEvent({
+      type: "page.properties_updated",
+      workspace_id: "ws-shared",
+      entity: { id: "page-1" },
+      data: { updated_properties: ["prop-status"] },
+      timestamp: "2026-07-24T10:00:00.000Z",
+    });
+    expect(ingestNotionTask).toHaveBeenCalledTimes(2);
+    const tenantIds = vi.mocked(ingestNotionTask).mock.calls.map((c) => c[0].tenantId).sort();
+    expect(tenantIds).toEqual([tidA, tidB].sort());
+  });
+
+  it("applies the cheap-reject per connection when connections use different status property ids", async () => {
+    // Same workspace, but each connection watches a different status property.
+    // Only the connection whose property is in updated_properties should ingest.
+    const tidA = await seedConnection({ workspaceId: "ws-shared", statusPropertyId: "prop-A" });
+    await seedConnection({ workspaceId: "ws-shared", statusPropertyId: "prop-B" });
+    vi.mocked(getPage).mockResolvedValue({
+      url: "https://notion.so/page-1",
+      title: "Add dark mode",
+      description: "d",
+      statusByPropertyId: { "prop-A": "Done" },
+    });
+    await processNotionEvent({
+      type: "page.properties_updated",
+      workspace_id: "ws-shared",
+      entity: { id: "page-1" },
+      data: { updated_properties: ["prop-A"] },
+      timestamp: "2026-07-24T10:00:00.000Z",
+    });
+    expect(ingestNotionTask).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(ingestNotionTask).mock.calls[0][0].tenantId).toBe(tidA);
+  });
+
+  it("continues to other connections when one connection's processing throws", async () => {
+    const tidA = await seedConnection({ workspaceId: "ws-shared" });
+    const tidB = await seedConnection({ workspaceId: "ws-shared" });
+    // First getPage call (whichever connection is processed first) throws; the
+    // second must still be processed and ingested.
+    vi.mocked(getPage)
+      .mockRejectedValueOnce(new Error("notion 500"))
+      .mockResolvedValue({
+        url: "https://notion.so/page-1",
+        title: "Add dark mode",
+        description: "d",
+        statusByPropertyId: { "prop-status": "Done" },
+      });
+    await processNotionEvent({
+      type: "page.properties_updated",
+      workspace_id: "ws-shared",
+      entity: { id: "page-1" },
+      data: { updated_properties: ["prop-status"] },
+      timestamp: "2026-07-24T10:00:00.000Z",
+    });
+    expect(ingestNotionTask).toHaveBeenCalledTimes(1);
+    // The surviving connection is whichever was processed second.
+    expect([tidA, tidB]).toContain(vi.mocked(ingestNotionTask).mock.calls[0][0].tenantId);
   });
 });

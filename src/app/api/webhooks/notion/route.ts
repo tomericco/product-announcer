@@ -22,36 +22,53 @@ export async function processNotionEvent(payload: NotionEvent): Promise<void> {
   const pageId = payload.entity?.id;
   if (!workspaceId || !pageId) return;
 
-  // Step 4: route to a tenant by workspace_id. Unknown workspace → drop.
-  const [connection] = await db
+  // Step 4: route by workspace_id. workspaceId is NOT unique — two tenants can
+  // connect the same Notion workspace — so fan out to ALL matching connections
+  // rather than picking one arbitrarily (which would silently drop the others).
+  const connections = await db
     .select()
     .from(notionConnections)
-    .where(eq(notionConnections.workspaceId, workspaceId))
-    .limit(1);
-  if (!connection || connection.status !== "active" || !connection.statusPropertyId) return;
+    .where(eq(notionConnections.workspaceId, workspaceId));
+  const active = connections.filter((c) => c.status === "active" && c.statusPropertyId);
+  if (active.length === 0) return;
 
-  // Step 5: cheap rejection — most property edits are not status changes.
+  // Steps 5-9 run independently per connection: each has its own
+  // statusPropertyId / doneValues / token, so each applies its own cheap-reject
+  // and done-check. Idempotency is per (tenantId, provider, externalId), so
+  // there is no cross-tenant collision. One connection's failure must not abort
+  // the others — mirror the fail-safe posture of the after() wrapper.
   const updated = payload.data?.updated_properties ?? [];
-  if (!updated.includes(connection.statusPropertyId)) return;
-
-  // Step 6: read current property values (refreshing the token on a 401).
-  const page = await withFreshToken(db, connection, (token) => getPage(token, pageId));
-
-  // Step 7: only ingest when the status value means "done".
-  const statusValue = page.statusByPropertyId[connection.statusPropertyId];
-  if (!statusValue || !connection.doneValues.includes(statusValue)) return;
-
-  // Steps 8-9: hand off to the shared ingestion pipeline. Out-of-order-safe:
-  // use the payload timestamp for completedAt, not arrival time.
   const completedAt = payload.timestamp ? new Date(payload.timestamp) : new Date();
-  await ingestNotionTask({
-    tenantId: connection.tenantId,
-    pageId,
-    title: page.title,
-    description: page.description || null,
-    url: page.url,
-    completedAt,
-  });
+
+  for (const connection of active) {
+    try {
+      // Step 5: cheap rejection — most property edits are not status changes.
+      if (!updated.includes(connection.statusPropertyId!)) continue;
+
+      // Step 6: read current property values (refreshing the token on a 401).
+      const page = await withFreshToken(db, connection, (token) => getPage(token, pageId));
+
+      // Step 7: only ingest when the status value means "done".
+      const statusValue = page.statusByPropertyId[connection.statusPropertyId!];
+      if (!statusValue || !connection.doneValues.includes(statusValue)) continue;
+
+      // Steps 8-9: hand off to the shared ingestion pipeline. Out-of-order-safe:
+      // use the payload timestamp for completedAt, not arrival time.
+      await ingestNotionTask({
+        tenantId: connection.tenantId,
+        pageId,
+        title: page.title,
+        description: page.description || null,
+        url: page.url,
+        completedAt,
+      });
+    } catch (error) {
+      console.error(
+        `Notion event processing failed for connection ${connection.id} (tenant ${connection.tenantId}):`,
+        error
+      );
+    }
+  }
 }
 
 export async function POST(request: NextRequest) {
