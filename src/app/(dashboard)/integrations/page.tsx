@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { WebflowForm } from "./webflow-form";
+import { NotionForm } from "./notion-form";
 
 const COMING_SOON = ["Customer.io", "Mailchimp", "HubSpot", "LinkedIn"];
 
@@ -28,6 +29,21 @@ function WebflowFormSkeleton() {
       </CardHeader>
       <CardContent>
         <p className="text-sm text-muted-foreground">Loading Webflow…</p>
+      </CardContent>
+    </Card>
+  );
+}
+
+// Same rationale as WebflowFormSkeleton above: NotionForm awaits a Notion
+// HTTP call (up to a 10s timeout) and must not block the rest of the page.
+function NotionFormSkeleton() {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Notion tasks</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <p className="text-sm text-muted-foreground">Loading Notion…</p>
       </CardContent>
     </Card>
   );
@@ -92,6 +108,10 @@ export default async function IntegrationsPage() {
 
         <Suspense fallback={<WebflowFormSkeleton />}>
           <WebflowForm />
+        </Suspense>
+
+        <Suspense fallback={<NotionFormSkeleton />}>
+          <NotionForm />
         </Suspense>
 
         <Card>
