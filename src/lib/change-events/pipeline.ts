@@ -44,6 +44,7 @@ export async function resolvePendingEvents(
       type: changeEvents.type,
       prTitle: changeEvents.prTitle,
       commitMessage: changeEvents.commitMessage,
+      taskTitle: changeEvents.taskTitle,
       impactSummary: changeEvents.impactSummary,
       repoName: repos.githubRepoFullName,
     })
@@ -62,7 +63,7 @@ export async function resolvePendingEvents(
   const events: ResolverEvent[] = rows.map((r) => ({
     id: r.id,
     type: r.type,
-    title: r.prTitle ?? r.commitMessage ?? "",
+    title: r.prTitle ?? r.commitMessage ?? r.taskTitle ?? "",
     summary: r.impactSummary,
     repoName: r.repoName,
   }));
