@@ -100,7 +100,7 @@ describe("notion webhook route", () => {
     expect(ingestNotionTask).not.toHaveBeenCalled();
   });
 
-  it("cheap-rejects when the status property was not among updated_properties (no getPage)", async () => {
+  it("cheap-rejects when updated_properties is non-empty but excludes the status property (no getPage)", async () => {
     await seedConnection();
     await processNotionEvent({
       type: "page.properties_updated",
@@ -110,6 +110,31 @@ describe("notion webhook route", () => {
     });
     expect(getPage).not.toHaveBeenCalled();
     expect(ingestNotionTask).not.toHaveBeenCalled();
+  });
+
+  it("does NOT cheap-reject an empty updated_properties — Notion often omits the changed property", async () => {
+    // Notion frequently delivers page.properties_updated with an empty
+    // updated_properties even when the status genuinely changed; dropping those
+    // silently lost real completions. An empty list must fall through to the
+    // authoritative done-check on the freshly read status.
+    const tid = await seedConnection();
+    vi.mocked(getPage).mockResolvedValue({
+      url: "https://notion.so/page-1",
+      title: "Add dark mode",
+      description: "",
+      statusByPropertyId: { "prop-status": "Done" },
+    });
+    vi.mocked(getPageBodyText).mockResolvedValue("Body detail.");
+    await processNotionEvent({
+      type: "page.properties_updated",
+      workspace_id: "ws-1",
+      entity: { id: "page-1" },
+      data: { updated_properties: [] },
+      timestamp: "2026-07-24T10:00:00.000Z",
+    });
+    expect(getPage).toHaveBeenCalledTimes(1);
+    expect(ingestNotionTask).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(ingestNotionTask).mock.calls[0][0]).toMatchObject({ tenantId: tid, description: "Body detail." });
   });
 
   it("stops when the status value is not in doneValues", async () => {

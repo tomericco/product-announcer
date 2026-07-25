@@ -42,8 +42,13 @@ export async function processNotionEvent(payload: NotionEvent): Promise<void> {
 
   for (const connection of active) {
     try {
-      // Step 5: cheap rejection — most property edits are not status changes.
-      if (!updated.includes(connection.statusPropertyId!)) continue;
+      // Step 5: skip only when updated_properties POSITIVELY excludes the status
+      // property. Notion's updated_properties is unreliable — it is frequently
+      // delivered empty even when the status genuinely changed — so an empty or
+      // absent list is treated as "unknown" and falls through to the
+      // authoritative done-check on the freshly read status, rather than being
+      // dropped. (An empty list previously dropped every real completion.)
+      if (updated.length > 0 && !updated.includes(connection.statusPropertyId!)) continue;
 
       // Step 6: read current property values (refreshing the token on a 401).
       const page = await withFreshToken(db, connection, (token) => getPage(token, pageId));
