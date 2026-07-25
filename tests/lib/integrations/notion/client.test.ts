@@ -3,6 +3,7 @@ import {
   listDatabases,
   getDatabaseProperties,
   getPage,
+  getPageBodyText,
   NotionApiError,
 } from "../../../../src/lib/integrations/notion/client";
 
@@ -68,5 +69,45 @@ describe("notion client", () => {
     vi.mocked(fetch).mockResolvedValue(jsonResponse({ message: "unauthorized" }, 401));
     await expect(getPage("tok", "p")).rejects.toMatchObject({ status: 401 });
     await expect(getPage("tok", "p")).rejects.toBeInstanceOf(NotionApiError);
+  });
+
+  it("reads the page body text from its blocks (bearer + version + endpoint)", async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      jsonResponse({
+        results: [
+          { type: "heading_2", heading_2: { rich_text: [{ plain_text: "Summary" }] } },
+          { type: "paragraph", paragraph: { rich_text: [{ plain_text: "Users can now export." }] } },
+          { type: "divider", divider: {} },
+        ],
+        has_more: false,
+      })
+    );
+    const text = await getPageBodyText("tok", "page-1");
+    expect(text).toBe("Summary\nUsers can now export.");
+    const [url, init] = vi.mocked(fetch).mock.calls[0];
+    expect(String(url)).toContain("/v1/blocks/page-1/children");
+    const headers = init?.headers as Record<string, string>;
+    expect(headers.Authorization).toBe("Bearer tok");
+    expect(headers["Notion-Version"]).toBe("2022-06-28");
+  });
+
+  it("follows pagination when the page body has more blocks", async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(
+        jsonResponse({
+          results: [{ type: "paragraph", paragraph: { rich_text: [{ plain_text: "one" }] } }],
+          has_more: true,
+          next_cursor: "cur-2",
+        })
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          results: [{ type: "paragraph", paragraph: { rich_text: [{ plain_text: "two" }] } }],
+          has_more: false,
+        })
+      );
+    expect(await getPageBodyText("tok", "page-1")).toBe("one\ntwo");
+    expect(vi.mocked(fetch).mock.calls.length).toBe(2);
+    expect(String(vi.mocked(fetch).mock.calls[1][0])).toContain("start_cursor=cur-2");
   });
 });

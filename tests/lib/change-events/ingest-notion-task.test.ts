@@ -28,17 +28,35 @@ describe("ingestNotionTask", () => {
     await db.delete(tenants).where(eq(tenants.name, TENANT));
   });
 
-  it("drops a task with no description in tier 1 and never enriches or resolves", async () => {
+  it("drops a title-less task in tier 1 and never enriches or resolves", async () => {
     const tid = await tenantId();
     const enrich = vi.fn();
     const resolvePending = vi.fn();
-    await ingestNotionTask(baseInput(tid, { description: null }), { enrich, resolvePending });
+    await ingestNotionTask(baseInput(tid, { title: "  " }), { enrich, resolvePending });
 
     expect(enrich).not.toHaveBeenCalled();
     expect(resolvePending).not.toHaveBeenCalled();
     const [row] = await db.select().from(changeEvents).where(eq(changeEvents.tenantId, tid));
     expect(row.status).toBe("ignored");
     expect(row.filterReason).toBe("empty_task");
+  });
+
+  it("keeps a title-only task (empty description) and enriches it", async () => {
+    const tid = await tenantId();
+    const enrich = vi.fn(async () => ({
+      userFacing: true,
+      impactSummary: "s",
+      suggestedCategory: "new" as const,
+      confidence: 0.9,
+    }));
+    const resolvePending = vi.fn(async () => {});
+    await ingestNotionTask(baseInput(tid, { description: null }), { enrich, resolvePending });
+
+    expect(enrich).toHaveBeenCalledTimes(1);
+    const [row] = await db.select().from(changeEvents).where(eq(changeEvents.tenantId, tid));
+    expect(row.status).not.toBe("ignored");
+    expect(row.filterReason).toBeNull();
+    expect(resolvePending).toHaveBeenCalledWith(tid, [row.id]);
   });
 
   it("enriches, stores a task event with null repoId, and resolves when user-facing", async () => {

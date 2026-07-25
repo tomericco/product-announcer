@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, beforeAll, afterAll, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, vi } from "vitest";
 import { createHmac } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { db } from "../../../../../src/db";
@@ -14,12 +14,12 @@ vi.mock("../../../../../src/lib/change-events/ingest-notion-task", () => ({
 }));
 vi.mock("../../../../../src/lib/integrations/notion/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../../../src/lib/integrations/notion/client")>();
-  return { ...actual, getPage: vi.fn() };
+  return { ...actual, getPage: vi.fn(), getPageBodyText: vi.fn() };
 });
 
 import { POST, processNotionEvent } from "../../../../../src/app/api/webhooks/notion/route";
 import { ingestNotionTask } from "../../../../../src/lib/change-events/ingest-notion-task";
-import { getPage } from "../../../../../src/lib/integrations/notion/client";
+import { getPage, getPageBodyText } from "../../../../../src/lib/integrations/notion/client";
 
 function sign(body: string): string {
   return "sha256=" + createHmac("sha256", TOKEN).update(body).digest("hex");
@@ -60,9 +60,15 @@ describe("notion webhook route", () => {
   afterAll(() => {
     delete process.env.NOTION_WEBHOOK_VERIFICATION_TOKEN;
   });
+  beforeEach(() => {
+    // Default: empty body unless a test overrides it. Ingest-reaching tests
+    // that don't assert the description tolerate this ("" -> null).
+    vi.mocked(getPageBodyText).mockResolvedValue("");
+  });
   afterEach(async () => {
     vi.mocked(ingestNotionTask).mockClear();
     vi.mocked(getPage).mockReset();
+    vi.mocked(getPageBodyText).mockReset();
     await db.delete(tenants).where(eq(tenants.name, TENANT));
   });
 
@@ -123,14 +129,15 @@ describe("notion webhook route", () => {
     expect(ingestNotionTask).not.toHaveBeenCalled();
   });
 
-  it("ingests a completed task", async () => {
+  it("ingests a completed task, sourcing the description from the page body", async () => {
     const tid = await seedConnection();
     vi.mocked(getPage).mockResolvedValue({
       url: "https://notion.so/page-1",
       title: "Add dark mode",
-      description: "Toggle a dark theme.",
+      description: "",
       statusByPropertyId: { "prop-status": "Done" },
     });
+    vi.mocked(getPageBodyText).mockResolvedValue("Users can toggle a dark theme in settings.");
     await processNotionEvent({
       type: "page.properties_updated",
       workspace_id: "ws-1",
@@ -140,7 +147,13 @@ describe("notion webhook route", () => {
     });
     expect(ingestNotionTask).toHaveBeenCalledTimes(1);
     const arg = vi.mocked(ingestNotionTask).mock.calls[0][0];
-    expect(arg).toMatchObject({ tenantId: tid, pageId: "page-1", title: "Add dark mode", url: "https://notion.so/page-1" });
+    expect(arg).toMatchObject({
+      tenantId: tid,
+      pageId: "page-1",
+      title: "Add dark mode",
+      url: "https://notion.so/page-1",
+      description: "Users can toggle a dark theme in settings.",
+    });
   });
 
   it("fans out to BOTH tenants that share a workspace, ingesting once per tenant", async () => {

@@ -106,8 +106,8 @@ describe("filterTask", () => {
     expect(filterTask({ title: "  ", description: "something" })).toEqual({ drop: true, reason: "empty_task" });
   });
 
-  it("drops a task with no description", () => {
-    expect(filterTask({ title: "Ship export", description: null })).toEqual({ drop: true, reason: "empty_task" });
+  it("keeps a title-only task (body/description is optional)", () => {
+    expect(filterTask({ title: "Ship export", description: null })).toEqual({ drop: false });
   });
 
   it("keeps a described task", () => {

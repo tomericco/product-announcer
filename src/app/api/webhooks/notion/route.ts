@@ -4,7 +4,7 @@ import { db } from "@/db";
 import { notionConnections } from "@/db/schema";
 import { verifyNotionSignature, parseVerificationHandshake } from "@/lib/integrations/notion/notion-webhook";
 import { withFreshToken } from "@/lib/integrations/notion/connection";
-import { getPage } from "@/lib/integrations/notion/client";
+import { getPage, getPageBodyText } from "@/lib/integrations/notion/client";
 import { ingestNotionTask } from "@/lib/change-events/ingest-notion-task";
 
 type NotionEvent = {
@@ -52,13 +52,18 @@ export async function processNotionEvent(payload: NotionEvent): Promise<void> {
       const statusValue = page.statusByPropertyId[connection.statusPropertyId!];
       if (!statusValue || !connection.doneValues.includes(statusValue)) continue;
 
-      // Steps 8-9: hand off to the shared ingestion pipeline. Out-of-order-safe:
+      // Step 8: read the page body for the task's description — task detail
+      // lives in the body, not a property. Fetched only after the done-check so
+      // we don't pay for the extra API call on non-completing edits.
+      const bodyText = await withFreshToken(db, connection, (token) => getPageBodyText(token, pageId));
+
+      // Step 9: hand off to the shared ingestion pipeline. Out-of-order-safe:
       // use the payload timestamp for completedAt, not arrival time.
       await ingestNotionTask({
         tenantId: connection.tenantId,
         pageId,
         title: page.title,
-        description: page.description || null,
+        description: bodyText || null,
         url: page.url,
         completedAt,
       });

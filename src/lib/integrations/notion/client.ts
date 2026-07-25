@@ -110,3 +110,32 @@ export async function getPage(token: string, pageId: string): Promise<NotionPage
 
   return { url: data.url, title, description: descriptionParts.join("\n"), statusByPropertyId };
 }
+
+type RawBlock = { type: string } & Record<string, unknown>;
+
+// Extract the plain-text body of a page from its top-level blocks. A task's
+// real detail lives in the page body, not in a text property, so this is the
+// source for a task's description. Paginated; nested block children are not
+// descended into — top-level text is enough signal for classification.
+export async function getPageBodyText(token: string, pageId: string): Promise<string> {
+  const parts: string[] = [];
+  let cursor: string | undefined;
+  // Cap the number of pages so a pathologically long page can't loop forever.
+  for (let i = 0; i < 10; i++) {
+    const query = cursor
+      ? `?start_cursor=${encodeURIComponent(cursor)}&page_size=100`
+      : `?page_size=100`;
+    const data = await request<{ results: RawBlock[]; has_more?: boolean; next_cursor?: string | null }>(
+      token,
+      `/v1/blocks/${pageId}/children${query}`
+    );
+    for (const block of data.results) {
+      const payload = block[block.type] as { rich_text?: { plain_text?: string }[] } | undefined;
+      const text = plainText(payload?.rich_text);
+      if (text) parts.push(text);
+    }
+    if (!data.has_more || !data.next_cursor) break;
+    cursor = data.next_cursor;
+  }
+  return parts.join("\n").trim();
+}
