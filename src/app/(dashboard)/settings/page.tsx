@@ -3,7 +3,10 @@ import { db } from "@/db";
 import { scheduleConfigs, tenants, systemPersonas } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { getOrCreateBrandProfile } from "@/lib/workspace/brand-profile";
+import { listWorkspaceMembers } from "@/lib/workspace/members";
+import { getActiveInvite } from "@/lib/workspace/invites";
 import { saveWorkspaceName, saveBrandProfile } from "./actions";
+import { MembersSection } from "./members-section";
 import { PersonasEditor } from "./personas-editor";
 import { BrandStyleImport } from "./brand-style-import";
 import { IndustrySelect } from "./industry-select";
@@ -17,6 +20,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 export default async function SettingsPage() {
   const session = await requireSession();
+  const members = await listWorkspaceMembers(session.user.tenantId);
+  const activeInvite = await getActiveInvite(session.user.tenantId);
   const brandProfile = await getOrCreateBrandProfile(session.user.tenantId);
   const [tenant] = await db.select().from(tenants).where(eq(tenants.id, session.user.tenantId)).limit(1);
   const [workspaceSchedule] = await db
@@ -47,6 +52,12 @@ export default async function SettingsPage() {
           </ToastForm>
         </CardContent>
       </Card>
+
+      <MembersSection
+        members={members}
+        isOwner={session.user.role === "owner"}
+        hasActiveInvite={activeInvite !== null}
+      />
 
       <Card>
         <CardHeader>
