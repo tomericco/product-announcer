@@ -194,7 +194,7 @@ export function MembersSection({
                           disabled={!isOwner || isSelf}
                           onClick={() => setMemberToRemove(m)}
                         >
-                          Remove from workspace
+                          Remove
                         </DropdownMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>
@@ -243,8 +243,7 @@ export function MembersSection({
             <DialogHeader>
               <DialogTitle>Remove teammate</DialogTitle>
               <DialogDescription>
-                Remove <strong>{memberToRemove?.name ?? memberToRemove?.email}</strong> from this workspace? They&apos;ll lose
-                access immediately. You can re-invite them later with an invite link.
+                Remove this member from the workspace? You can re-invite them later with an invite link.
               </DialogDescription>
             </DialogHeader>
             <DialogFooter>
