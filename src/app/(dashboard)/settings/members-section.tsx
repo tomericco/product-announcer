@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { format } from "date-fns";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -17,6 +16,21 @@ import type { WorkspaceMember } from "@/lib/workspace/members";
 // SSR/hydration mismatch. A custom event notifies same-tab subscribers, since
 // the native "storage" event only fires in *other* tabs.
 const INVITE_LINK_EVENT = "workspace-invite-link:change";
+
+// Format the joined-at date deterministically (pinned locale + UTC) so the
+// server-rendered HTML and the client match exactly — an unpinned
+// toLocaleString() differs by environment locale/timezone and breaks hydration.
+const JOINED_DATE = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  day: "numeric",
+  year: "numeric",
+  timeZone: "UTC",
+});
+const JOINED_DATETIME = new Intl.DateTimeFormat("en-US", {
+  dateStyle: "medium",
+  timeStyle: "short",
+  timeZone: "UTC",
+});
 
 function writeStoredInviteLink(storageKey: string, url: string | null) {
   if (url === null) window.localStorage.removeItem(storageKey);
@@ -124,8 +138,8 @@ export function MembersSection({
                   <TableCell>{m.name ?? "—"}</TableCell>
                   <TableCell className="text-muted-foreground">{m.email}</TableCell>
                   <TableCell className="capitalize">{m.role}</TableCell>
-                  <TableCell className="text-muted-foreground" title={joinedAt.toLocaleString()}>
-                    {format(joinedAt, "MMM d, yyyy")}
+                  <TableCell className="text-muted-foreground" title={`${JOINED_DATETIME.format(joinedAt)} UTC`}>
+                    {JOINED_DATE.format(joinedAt)}
                   </TableCell>
                 </TableRow>
               );
