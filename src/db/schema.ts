@@ -256,6 +256,12 @@ export const releases = pgTable("releases", {
   // atomicUpdates.summaryEditedAt. Lets the UI/merge know the body carries
   // hand edits worth preserving rather than silently overwriting.
   bodyEditedAt: timestamp("body_edited_at", { withTimezone: true }),
+  // AI-generated, human-editable LinkedIn post copy for this release. Null until
+  // generated. The link-back is NOT stored here — it is appended at delivery.
+  linkedinBody: text("linkedin_body"),
+  // Non-null marks a hand-edit of linkedinBody (analogue of bodyEditedAt), so
+  // regeneration can warn before overwriting hand edits.
+  linkedinBodyEditedAt: timestamp("linkedin_body_edited_at", { withTimezone: true }),
 });
 
 export const webhookDeliveryStatusEnum = pgEnum("webhook_delivery_status", ["pending", "success", "failed"]);
@@ -274,7 +280,7 @@ export const webhookConfigs = pgTable("webhook_configs", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
-export const destinationEnum = pgEnum("destination", ["webhook", "webflow"]);
+export const destinationEnum = pgEnum("destination", ["webhook", "webflow", "linkedin"]);
 
 export const deliveryAttempts = pgTable(
   "delivery_attempts",
@@ -390,3 +396,34 @@ export const notionConnections = pgTable("notion_connections", {
 ]);
 
 export type NotionConnection = typeof notionConnections.$inferSelect;
+
+export const linkedinConnectionStatusEnum = pgEnum("linkedin_connection_status", [
+  "active",
+  "needs_reauth",
+  "misconfigured",
+]);
+
+export const linkedinConnections = pgTable("linkedin_connections", {
+  id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  tenantId: uuid("tenant_id")
+    .notNull()
+    .unique()
+    .references(() => tenants.id, { onDelete: "cascade" }),
+  accessTokenCiphertext: text("access_token_ciphertext").notNull(),
+  accessTokenIv: text("access_token_iv").notNull(),
+  accessTokenAuthTag: text("access_token_auth_tag").notNull(),
+  // Null until the first token exchange returns a refresh token (requires the
+  // app to be approved for refresh tokens).
+  refreshTokenCiphertext: text("refresh_token_ciphertext"),
+  refreshTokenIv: text("refresh_token_iv"),
+  refreshTokenAuthTag: text("refresh_token_auth_tag"),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  // Null until the user selects an administered organization.
+  organizationUrn: text("organization_urn"),
+  organizationName: text("organization_name"),
+  // Tenant changelog/release base URL for link-backs. Null until set.
+  baseUrl: text("base_url"),
+  status: linkedinConnectionStatusEnum("status").notNull().default("active"),
+  lastValidatedAt: timestamp("last_validated_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
