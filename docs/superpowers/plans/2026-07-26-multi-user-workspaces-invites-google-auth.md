@@ -271,11 +271,6 @@ export type OAuthUserInput = {
   providerAccountId: string;
 };
 
-const PROVIDER_ID_COLUMN = {
-  github: users.githubId,
-  google: users.googleId,
-} as const;
-
 /**
  * Provider-agnostic sign-in bootstrap.
  *
@@ -294,8 +289,6 @@ export async function getOrCreateUserFromOAuth(
   if (!input.emailVerified) {
     throw new Error(`Refusing ${input.provider} sign-in: email address is not verified.`);
   }
-
-  const providerColumn = PROVIDER_ID_COLUMN[input.provider];
 
   // Link by email (the cross-provider key). Fall back to provider id for the
   // rare case where a row exists without an email match.
@@ -341,13 +334,7 @@ export async function getOrCreateUserFromOAuth(
 
   return { userId, tenantId: tenant.id, role: "owner" };
 }
-
-// Silence unused-import lint if PROVIDER_ID_COLUMN is only referenced above via
-// the ternaries; keep the map exported-free but referenced for future providers.
-void PROVIDER_ID_COLUMN;
 ```
-
-> Note: the `PROVIDER_ID_COLUMN`/`void` lines are a convenience for readability. If eslint flags the unused map, delete both `PROVIDER_ID_COLUMN` declaration and the `void` line — the ternaries are self-contained.
 
 - [ ] **Step 4: Run the bootstrap test to verify it passes**
 
@@ -1084,7 +1071,6 @@ Expected: FAIL — module not found.
 - [ ] **Step 3: Create `src/lib/workspace/accept-invite.ts`**
 
 ```ts
-import { and, eq, sql } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
 import { tenantMembers } from "@/db/schema";
 import { validateInvite } from "./invites";
@@ -1119,12 +1105,7 @@ export async function acceptInviteForUser(
     tenantId: validation.tenantId,
   };
 }
-
-// Keep `and`/`eq`/`sql` import usable if a future guard needs them; harmless otherwise.
-void and; void eq; void sql;
 ```
-
-> If eslint flags the unused `and`/`eq`/`sql`, remove that import line and the `void` line entirely — they aren't needed by the implementation above.
 
 - [ ] **Step 4: Run test to verify it passes**
 
