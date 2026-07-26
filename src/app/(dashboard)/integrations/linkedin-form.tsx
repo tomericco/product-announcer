@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { LinkedinOrgForm } from "./linkedin-org-form";
 import { LinkedinBaseUrlForm } from "./linkedin-base-url-form";
+import { LinkedinGuidelinesForm } from "./linkedin-guidelines-form";
 import { LinkedinDisconnectButton } from "./linkedin-disconnect-button";
 
 function describeError(error: unknown): string {
@@ -100,11 +101,14 @@ async function renderStep(connection: Connection | undefined) {
 
   // Step 4: fully configured.
   return (
-    <div className="space-y-1 text-sm">
-      <p>
-        Posting to <strong>{connection.organizationName}</strong>
-      </p>
-      <p className="text-muted-foreground">Link base: {connection.baseUrl}</p>
+    <div className="space-y-4">
+      <div className="space-y-1 text-sm">
+        <p>
+          Posting to <strong>{connection.organizationName}</strong>
+        </p>
+        <p className="text-muted-foreground">Link base: {connection.baseUrl}</p>
+      </div>
+      <LinkedinGuidelinesForm initialGuidelines={connection.postGuidelines ?? ""} />
     </div>
   );
 }

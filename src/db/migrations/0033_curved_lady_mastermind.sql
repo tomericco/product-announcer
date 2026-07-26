@@ -1,0 +1,1 @@
+ALTER TABLE "linkedin_connections" ADD COLUMN "post_guidelines" text;

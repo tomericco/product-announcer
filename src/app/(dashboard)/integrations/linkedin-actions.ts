@@ -51,6 +51,18 @@ export async function saveLinkedinBaseUrl(formData: FormData): Promise<void> {
   revalidatePath("/integrations");
 }
 
+export async function saveLinkedinGuidelines(formData: FormData): Promise<void> {
+  const session = await requireSession();
+  const raw = String(formData.get("guidelines") ?? "").trim();
+  // Store null rather than an empty string so "no guidelines" is unambiguous
+  // and the prompt builder can cleanly skip the section.
+  await db
+    .update(linkedinConnections)
+    .set({ postGuidelines: raw === "" ? null : raw })
+    .where(eq(linkedinConnections.tenantId, session.user.tenantId));
+  revalidatePath("/integrations");
+}
+
 export async function disconnectLinkedin(): Promise<void> {
   const session = await requireSession();
   await db.delete(linkedinConnections).where(eq(linkedinConnections.tenantId, session.user.tenantId));

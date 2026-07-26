@@ -423,6 +423,9 @@ export const linkedinConnections = pgTable("linkedin_connections", {
   organizationName: text("organization_name"),
   // Tenant changelog/release base URL for link-backs. Null until set.
   baseUrl: text("base_url"),
+  // Optional company-specific LinkedIn writing guidelines that extend the copy
+  // generation prompt (tone, do/don't, hashtags, etc.). Null/empty = none.
+  postGuidelines: text("post_guidelines"),
   status: linkedinConnectionStatusEnum("status").notNull().default("active"),
   lastValidatedAt: timestamp("last_validated_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
