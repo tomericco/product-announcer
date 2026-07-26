@@ -104,6 +104,12 @@ export const linkedinDestination: Destination<LinkedinConnection> = {
 
     try {
       const { postUrn } = await createPost({ accessToken, authorUrn: connection.organizationUrn, commentary });
+      if (!postUrn) {
+        return {
+          status: "permanent",
+          error: "LinkedIn accepted the post but returned no post id; not retrying to avoid duplicating it.",
+        };
+      }
       return { status: "ok", externalId: postUrn };
     } catch (error) {
       return classifyAndRecord(error, database, connection.id);

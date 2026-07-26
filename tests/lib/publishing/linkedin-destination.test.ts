@@ -83,6 +83,16 @@ describe("linkedin destination", () => {
     expect(createPost).not.toHaveBeenCalled();
   });
 
+  it("does not record success when LinkedIn returns an id-less 2xx (post-once guard)", async () => {
+    const { database } = dbStub();
+    vi.mocked(getValidAccessToken).mockResolvedValue("at");
+    vi.mocked(createPost).mockResolvedValue({ postUrn: "" });
+    const result = await linkedinDestination.deliver(release(), connection(), null, database);
+    expect(result.status).toBe("permanent");
+    expect(result.status).not.toBe("ok");
+    expect(result.status).not.toBe("retryable");
+  });
+
   it("classifies 5xx as retryable", async () => {
     const { database } = dbStub();
     vi.mocked(getValidAccessToken).mockResolvedValue("at");
