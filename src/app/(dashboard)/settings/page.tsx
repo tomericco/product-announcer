@@ -58,6 +58,7 @@ export default async function SettingsPage() {
         isOwner={session.user.role === "owner"}
         hasActiveInvite={activeInvite !== null}
         workspaceId={session.user.tenantId}
+        currentUserId={session.user.id}
       />
 
       <Card>

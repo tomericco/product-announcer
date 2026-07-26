@@ -14,6 +14,7 @@ import { addSelectedRepos } from "@/lib/workspace/repo-sync";
 import { listRepoBranches } from "@/lib/integrations/github/github";
 import { parsePersonas } from "@/lib/workspace/persona-form";
 import { createInvite, revokeActiveInvite } from "@/lib/workspace/invites";
+import { removeWorkspaceMember } from "@/lib/workspace/members";
 
 function splitList(value: FormDataEntryValue | null): string[] {
   if (!value || typeof value !== "string") return [];
@@ -184,5 +185,14 @@ export async function revokeInviteLink(): Promise<void> {
   const session = await requireSession();
   requireRole(session, "owner");
   await revokeActiveInvite(session.user.tenantId);
+  revalidatePath("/settings");
+}
+
+export async function removeMember(targetUserId: string): Promise<void> {
+  const session = await requireSession();
+  requireRole(session, "owner");
+  // Scoped to the active tenant; self-removal is refused inside the helper so
+  // the workspace always keeps at least one owner.
+  await removeWorkspaceMember(session.user.tenantId, session.user.id, targetUserId);
   revalidatePath("/settings");
 }

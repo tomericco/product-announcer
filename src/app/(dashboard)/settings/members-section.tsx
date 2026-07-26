@@ -1,12 +1,13 @@
 "use client";
 
 import { useEffect, useState, useSyncExternalStore } from "react";
+import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { generateInviteLink, revokeInviteLink } from "./actions";
+import { generateInviteLink, removeMember, revokeInviteLink } from "./actions";
 import type { WorkspaceMember } from "@/lib/workspace/members";
 
 // The raw invite token is never stored server-side (invites are hash-only), so
@@ -58,12 +59,16 @@ export function MembersSection({
   isOwner,
   hasActiveInvite,
   workspaceId,
+  currentUserId,
 }: {
   members: WorkspaceMember[];
   isOwner: boolean;
   hasActiveInvite: boolean;
   workspaceId: string;
+  currentUserId: string;
 }) {
+  const router = useRouter();
+  const [removingId, setRemovingId] = useState<string | null>(null);
   const storageKey = `workspace-invite-link:${workspaceId}`;
   const storedUrl = useStoredInviteLink(storageKey);
   // `active` starts from the server's view and flips on generate/revoke, so a
@@ -115,6 +120,21 @@ export function MembersSection({
     }
   }
 
+  async function onRemove(member: WorkspaceMember) {
+    const label = member.name ?? member.email;
+    if (!window.confirm(`Remove ${label} from this workspace? They'll lose access immediately.`)) return;
+    setRemovingId(member.userId);
+    try {
+      await removeMember(member.userId);
+      toast.success(`Removed ${label}`);
+      router.refresh();
+    } catch {
+      toast.error("Could not remove this member");
+    } finally {
+      setRemovingId(null);
+    }
+  }
+
   return (
     <Card>
       <CardHeader>
@@ -128,6 +148,7 @@ export function MembersSection({
               <TableHead>Email</TableHead>
               <TableHead>Role</TableHead>
               <TableHead>Joined</TableHead>
+              {isOwner && <TableHead className="text-right">Actions</TableHead>}
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -141,6 +162,22 @@ export function MembersSection({
                   <TableCell className="text-muted-foreground" title={`${JOINED_DATETIME.format(joinedAt)} UTC`}>
                     {JOINED_DATE.format(joinedAt)}
                   </TableCell>
+                  {isOwner && (
+                    <TableCell className="text-right">
+                      {m.userId === currentUserId ? (
+                        <span className="text-xs text-muted-foreground">You</span>
+                      ) : (
+                        <Button
+                          variant="ghost"
+                          onClick={() => onRemove(m)}
+                          disabled={removingId === m.userId}
+                          className="h-8 px-2 text-destructive hover:text-destructive"
+                        >
+                          {removingId === m.userId ? "Removing…" : "Remove"}
+                        </Button>
+                      )}
+                    </TableCell>
+                  )}
                 </TableRow>
               );
             })}
