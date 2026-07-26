@@ -12,12 +12,14 @@ export type EnrichmentResult = {
 
 export type EnrichmentInput = {
   tenantId: string;
-  type: "pull_request" | "commit";
+  type: "pull_request" | "commit" | "task";
   repoName: string;
   commitMessage?: string | null;
   diff?: string | null;
   prTitle?: string | null;
   prDescription?: string | null;
+  taskTitle?: string | null;
+  taskDescription?: string | null;
 };
 
 export type EnrichChangeItem = (input: EnrichmentInput) => Promise<EnrichmentResult>;
@@ -43,10 +45,14 @@ const ENRICHMENT_SYSTEM = [
 ].join(" ");
 
 export function buildEnrichmentPrompt(input: EnrichmentInput): string {
-  const source =
-    input.type === "pull_request"
-      ? `Pull request in ${input.repoName}:\nTitle: ${input.prTitle ?? ""}\nDescription: ${input.prDescription ?? ""}`
-      : `Commit in ${input.repoName}:\nMessage: ${input.commitMessage ?? ""}\nDiff:\n${input.diff ?? "(no diff available)"}`;
+  let source: string;
+  if (input.type === "pull_request") {
+    source = `Pull request in ${input.repoName}:\nTitle: ${input.prTitle ?? ""}\nDescription: ${input.prDescription ?? ""}`;
+  } else if (input.type === "task") {
+    source = `Task:\nTitle: ${input.taskTitle ?? ""}\nDescription: ${input.taskDescription ?? ""}`;
+  } else {
+    source = `Commit in ${input.repoName}:\nMessage: ${input.commitMessage ?? ""}\nDiff:\n${input.diff ?? "(no diff available)"}`;
+  }
 
   return `Classify the following code change.\n\n${source}`;
 }

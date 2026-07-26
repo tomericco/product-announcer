@@ -122,7 +122,7 @@ export default async function OnboardingPage({
           {tenant?.githubInstallationId ? (
             <p className="text-sm">Connected.</p>
           ) : installUrl ? (
-            <Button variant="outline" render={<a href={installUrl} />}>
+            <Button variant="outline" render={<a href="/api/github/connect?returnTo=onboarding" />}>
               Connect GitHub
             </Button>
           ) : (

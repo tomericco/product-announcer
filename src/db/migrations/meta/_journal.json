@@ -218,6 +218,13 @@
       "when": 1784822182298,
       "tag": "0030_faithful_scarlet_spider",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1784880755195,
+      "tag": "0031_remarkable_moira_mactaggert",
+      "breakpoints": true
     }
   ]
 }

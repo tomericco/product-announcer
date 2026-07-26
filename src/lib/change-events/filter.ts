@@ -63,7 +63,9 @@ export function filterPullRequest(input: { title: string }): FilterVerdict {
 }
 
 export function filterTask(input: { title: string; description: string | null }): FilterVerdict {
+  // A task with a clear title is meaningful even when its body is empty — task
+  // trackers often carry the whole signal in the title, and the tier-2
+  // classifier weeds out low-signal ones. Only a title-less task is noise.
   if (input.title.trim() === "") return { drop: true, reason: "empty_task" };
-  if ((input.description ?? "").trim() === "") return { drop: true, reason: "empty_task" };
   return KEEP;
 }
