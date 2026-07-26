@@ -2,8 +2,14 @@ import { generateObject } from "ai";
 import { z } from "zod";
 import { resolveModel, modelId } from "./model";
 import { recordLlmUsage } from "./llm-usage";
+import { LINKEDIN_MAX_CHARS } from "@/lib/publishing/linkedin-constants";
 
-export const LINKEDIN_MAX_CHARS = 2900;
+// Re-exported so existing server-side callers of this module can keep
+// importing the cap alongside `generateLinkedinCopy`. The client-safe
+// drafts panel imports the constant directly from
+// `@/lib/publishing/linkedin-constants` instead, so that importing it never
+// drags this module's server-only `ai` SDK dependency into a client bundle.
+export { LINKEDIN_MAX_CHARS };
 
 const LinkedinCopySchema = z.object({ post: z.string() });
 

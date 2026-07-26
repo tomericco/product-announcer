@@ -16,6 +16,9 @@ import { SaveChangesButton, RejectButton } from "./draft-submit-buttons";
 import { PublishDialog } from "./publish-dialog";
 import { CatchUpBanner } from "./catch-up-banner";
 import { listPublishTargets } from "@/lib/publishing/dispatch";
+import { linkedinDestination } from "@/lib/publishing/destinations/linkedin";
+import { slugify } from "@/lib/publishing/slug";
+import { LinkedinPanel } from "./linkedin-panel";
 
 export default async function DraftDetailPage({ params }: { params: Promise<{ releaseId: string }> }) {
   const session = await requireSession();
@@ -48,6 +51,11 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
   const delta = await computeReleaseDelta(update.id);
 
   const publishTargets = await listPublishTargets(session.user.tenantId);
+
+  // Reuse the destination's own `loadConfig` for the gate (rather than a
+  // separate "is LinkedIn set up" check) so this panel can never drift out
+  // of sync with what `deliver()` actually requires at publish time.
+  const linkedinConfig = await linkedinDestination.loadConfig(session.user.tenantId, db);
 
   return (
     <div className="mx-auto w-full max-w-3xl space-y-6">
@@ -111,6 +119,17 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
             </div>
           </div>
         </form>
+
+        {/* Own <form>s, so rendered as a sibling of the saveDraft form
+            rather than nested inside it (nested <form>s are invalid HTML). */}
+        {linkedinConfig && (
+          <LinkedinPanel
+            releaseId={update.id}
+            initialBody={update.linkedinBody ?? ""}
+            baseUrl={linkedinConfig.baseUrl!}
+            slug={slugify(update.title)}
+          />
+        )}
       </DraftEditorProvider>
     </div>
   );
