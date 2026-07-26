@@ -17,13 +17,12 @@ import { listAdminOrganizations } from "@/lib/integrations/linkedin/client";
 import { db } from "@/db";
 import { tenants, linkedinConnections } from "@/db/schema";
 import {
-  normalizeBaseUrl,
-  isOrganizationUrn,
   listLinkedinOrganizations,
   saveLinkedinOrganization,
   saveLinkedinBaseUrl,
   disconnectLinkedin,
 } from "@/app/(dashboard)/integrations/linkedin-actions";
+import { normalizeBaseUrl, isOrganizationUrn } from "@/app/(dashboard)/integrations/linkedin-helpers";
 
 describe("normalizeBaseUrl", () => {
   it("appends a trailing slash", () => {

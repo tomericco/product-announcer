@@ -14,8 +14,9 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { WebflowForm } from "./webflow-form";
 import { NotionForm } from "./notion-form";
+import { LinkedinForm } from "./linkedin-form";
 
-const COMING_SOON = ["Customer.io", "Mailchimp", "HubSpot", "LinkedIn"];
+const COMING_SOON = ["Customer.io", "Mailchimp", "HubSpot"];
 
 // WebflowForm is an async Server Component that awaits a Webflow HTTP call
 // (up to a 10s timeout). Without a boundary, that await blocks this entire
@@ -44,6 +45,21 @@ function NotionFormSkeleton() {
       </CardHeader>
       <CardContent>
         <p className="text-sm text-muted-foreground">Loading Notion…</p>
+      </CardContent>
+    </Card>
+  );
+}
+
+// Same rationale as WebflowFormSkeleton above: LinkedinForm awaits a LinkedIn
+// HTTP call (up to a 10s timeout) and must not block the rest of the page.
+function LinkedinFormSkeleton() {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>LinkedIn company page</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <p className="text-sm text-muted-foreground">Loading LinkedIn…</p>
       </CardContent>
     </Card>
   );
@@ -112,6 +128,10 @@ export default async function IntegrationsPage() {
 
         <Suspense fallback={<NotionFormSkeleton />}>
           <NotionForm />
+        </Suspense>
+
+        <Suspense fallback={<LinkedinFormSkeleton />}>
+          <LinkedinForm />
         </Suspense>
 
         <Card>

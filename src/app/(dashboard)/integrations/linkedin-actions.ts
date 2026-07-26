@@ -7,20 +7,7 @@ import { linkedinConnections } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { listAdminOrganizations } from "@/lib/integrations/linkedin/client";
 import { getValidAccessToken } from "@/lib/integrations/linkedin/token";
-
-export function normalizeBaseUrl(raw: string): string {
-  const url = new URL(raw); // throws on relative
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new Error("Base URL must be an http(s) URL.");
-  }
-  const s = url.toString();
-  return s.endsWith("/") ? s : `${s}/`;
-}
-
-// Company-only backstop, shared by the save action and the destination guard.
-export function isOrganizationUrn(urn: string): boolean {
-  return urn.startsWith("urn:li:organization:");
-}
+import { normalizeBaseUrl, isOrganizationUrn } from "./linkedin-helpers";
 
 async function loadConnectionOrThrow(tenantId: string) {
   const [connection] = await db
