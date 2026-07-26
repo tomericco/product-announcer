@@ -79,8 +79,30 @@ export const linkedinDestination: Destination<LinkedinConnection> = {
     const link = new URL(slugify(release.title), connection.baseUrl).toString();
     const commentary = `${release.linkedinBody.trim()}\n\n${link}`;
 
+    // Acquire the token BEFORE the network try-block. getValidAccessToken can
+    // fail two ways that must NOT be lumped in with a retryable network error:
+    //   - LinkedinApiError 401/403: token dead / refresh impossible -> permanent
+    //     + configFault, and mark the connection needs_reauth.
+    //   - a plain Error from decryptSecret (rotated/misconfigured
+    //     CREDENTIALS_ENCRYPTION_KEY): retrying can never help -> permanent +
+    //     configFault. Falling through to the network classifier would retry a
+    //     decrypt failure forever. Mirrors webflow.ts's decrypt guard.
+    let accessToken: string;
     try {
-      const accessToken = await getValidAccessToken(connection, database);
+      accessToken = await getValidAccessToken(connection, database);
+    } catch (error) {
+      if (isAuthFailure(error)) {
+        await recordNeedsReauth(database, connection.id);
+        return classify(error);
+      }
+      return {
+        status: "permanent",
+        error: "Could not obtain a LinkedIn access token. Check the connection and CREDENTIALS_ENCRYPTION_KEY.",
+        configFault: true,
+      };
+    }
+
+    try {
       const { postUrn } = await createPost({ accessToken, authorUrn: connection.organizationUrn, commentary });
       return { status: "ok", externalId: postUrn };
     } catch (error) {

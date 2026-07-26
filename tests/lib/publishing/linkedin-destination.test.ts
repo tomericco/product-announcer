@@ -75,6 +75,14 @@ describe("linkedin destination", () => {
     expect(sets).toContainEqual(expect.objectContaining({ status: "needs_reauth" }));
   });
 
+  it("classifies a plain decrypt error from token acquisition as permanent configFault, not retryable", async () => {
+    const { database } = dbStub();
+    vi.mocked(getValidAccessToken).mockRejectedValue(new Error("decrypt failed"));
+    const result = await linkedinDestination.deliver(release(), connection(), null, database);
+    expect(result).toMatchObject({ status: "permanent", configFault: true });
+    expect(createPost).not.toHaveBeenCalled();
+  });
+
   it("classifies 5xx as retryable", async () => {
     const { database } = dbStub();
     vi.mocked(getValidAccessToken).mockResolvedValue("at");
