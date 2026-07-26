@@ -4,10 +4,11 @@ import { eq } from "drizzle-orm";
 vi.mock("next-auth", () => ({ getServerSession: vi.fn() }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 vi.mock("next/navigation", () => ({ redirect: vi.fn() }));
+vi.mock("next/headers", () => ({ cookies: vi.fn(async () => ({ get: () => undefined, set: () => {} })) }));
 
 import { getServerSession } from "next-auth";
 import { db } from "../../../src/db";
-import { tenants, repos, releases, webhookConfigs, webflowConnections, deliveryAttempts, users } from "../../../src/db/schema";
+import { tenants, repos, releases, webhookConfigs, webflowConnections, deliveryAttempts, users, tenantMembers } from "../../../src/db/schema";
 import { encryptSecret } from "../../../src/lib/credentials/encryption";
 import { approveDraft, publishDraft } from "../../../src/app/(dashboard)/drafts/actions";
 
@@ -28,6 +29,7 @@ function encryptedToken() {
 async function seed(tenantName = TENANT_NAME) {
   const [tenant] = await db.insert(tenants).values({ name: tenantName }).returning();
   const [user] = await db.insert(users).values({ email: USER_EMAIL }).returning();
+  await db.insert(tenantMembers).values({ tenantId: tenant.id, userId: user.id, role: "owner" });
   const [repo] = await db
     .insert(repos)
     .values({ tenantId: tenant.id, githubRepoFullName: "acme/x", githubInstallationId: "1", watchedBranch: "main" })

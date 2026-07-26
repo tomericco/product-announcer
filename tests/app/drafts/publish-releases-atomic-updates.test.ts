@@ -4,10 +4,11 @@ import { eq } from "drizzle-orm";
 vi.mock("next-auth", () => ({ getServerSession: vi.fn() }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 vi.mock("next/navigation", () => ({ redirect: vi.fn() }));
+vi.mock("next/headers", () => ({ cookies: vi.fn(async () => ({ get: () => undefined, set: () => {} })) }));
 
 import { getServerSession } from "next-auth";
 import { db } from "../../../src/db";
-import { tenants, atomicUpdates, users } from "../../../src/db/schema";
+import { tenants, atomicUpdates, users, tenantMembers } from "../../../src/db/schema";
 import { claimReleaseFromAtomicUpdates } from "../../../src/lib/change-events/release-claim";
 import { approveDraft, publishDraft } from "../../../src/app/(dashboard)/drafts/actions";
 
@@ -17,6 +18,7 @@ const USER_EMAIL = "publish-releases-atomic-updates-test@example.com";
 async function seedTenantAndUser() {
   const [tenant] = await db.insert(tenants).values({ name: TENANT_NAME }).returning();
   const [user] = await db.insert(users).values({ email: USER_EMAIL }).returning();
+  await db.insert(tenantMembers).values({ tenantId: tenant.id, userId: user.id, role: "owner" });
   return { tenant, user };
 }
 

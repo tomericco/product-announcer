@@ -1,18 +1,20 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 
 vi.mock("next-auth", () => ({ getServerSession: vi.fn() }));
+vi.mock("next/headers", () => ({ cookies: vi.fn(async () => ({ get: () => undefined, set: () => {} })) }));
 vi.mock("../../../../../src/lib/scheduling/run-schedule", () => ({ runBatchForWorkspace: vi.fn() }));
 vi.mock("../../../../../src/lib/change-events/release-claim", () => ({ getOpenAtomicUpdates: vi.fn() }));
 
 import { getServerSession } from "next-auth";
 import { db } from "../../../../../src/db";
-import { tenants } from "../../../../../src/db/schema";
+import { users, tenants, tenantMembers } from "../../../../../src/db/schema";
 import { runBatchForWorkspace } from "../../../../../src/lib/scheduling/run-schedule";
 import { getOpenAtomicUpdates } from "../../../../../src/lib/change-events/release-claim";
 import { POST } from "../../../../../src/app/api/atomic-updates/draft/route";
 
 const TENANT_NAME = "Atomic Updates Draft Route Test Tenant";
+const emails = ["atomic-updates-draft-route-test@example.com"];
 
 function postRequest(body: unknown) {
   return new Request("http://x/api/atomic-updates/draft", {
@@ -26,6 +28,15 @@ async function readNdjson(res: Response) {
   return text.split("\n").filter(Boolean).map((l) => JSON.parse(l));
 }
 
+// Seeds a real user + tenant + owner membership so resolveActiveTenant()
+// (called inside the route) resolves to a real, membership-checked tenant.
+async function makeAuthedUserAndTenant() {
+  const [user] = await db.insert(users).values({ email: emails[0] }).returning();
+  const [tenant] = await db.insert(tenants).values({ name: TENANT_NAME }).returning();
+  await db.insert(tenantMembers).values({ tenantId: tenant.id, userId: user.id, role: "owner" });
+  return { user, tenant };
+}
+
 beforeEach(() => {
   vi.mocked(getServerSession).mockReset();
   vi.mocked(runBatchForWorkspace).mockReset();
@@ -33,6 +44,11 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  const us = await db.select().from(users).where(inArray(users.email, emails));
+  for (const u of us) {
+    await db.delete(tenantMembers).where(eq(tenantMembers.userId, u.id));
+    await db.delete(users).where(eq(users.id, u.id));
+  }
   await db.delete(tenants).where(eq(tenants.name, TENANT_NAME));
 });
 
@@ -44,14 +60,14 @@ describe("POST /api/atomic-updates/draft", () => {
   });
 
   // Regression coverage for the orphaned-session bug: a JWT can keep
-  // carrying a tenantId whose row has since been deleted (or the DB was
-  // restored from an older backup). Unlike page/layout callers of
-  // requireSession(), this is a fetch-based JSON/ndjson API — it must
-  // return a plain 401, not attempt a redirect the client-side fetch
-  // wouldn't follow into a page render.
-  it("returns 401 when the session's tenant no longer exists", async () => {
-    const orphanedTenantId = "00000000-0000-0000-0000-000000000000";
-    vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: orphanedTenantId } } as never);
+  // carrying a user id whose memberships have since disappeared (tenant
+  // deleted, membership removed, or the DB was restored from an older
+  // backup). Unlike page/layout callers of requireSession(), this is a
+  // fetch-based JSON/ndjson API — it must return a plain 401, not attempt a
+  // redirect the client-side fetch wouldn't follow into a page render.
+  it("returns 401 when the user has no membership", async () => {
+    const [user] = await db.insert(users).values({ email: emails[0] }).returning();
+    vi.mocked(getServerSession).mockResolvedValue({ user: { id: user.id } } as never);
     const res = await POST(postRequest({ atomicUpdateIds: ["a1"] }));
     expect(res.status).toBe(401);
     expect(getOpenAtomicUpdates).not.toHaveBeenCalled();
@@ -59,8 +75,8 @@ describe("POST /api/atomic-updates/draft", () => {
   });
 
   it("streams collecting + an error event when none of the requested ids are open", async () => {
-    const [tenant] = await db.insert(tenants).values({ name: TENANT_NAME }).returning();
-    vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id } } as never);
+    const { user } = await makeAuthedUserAndTenant();
+    vi.mocked(getServerSession).mockResolvedValue({ user: { id: user.id } } as never);
     vi.mocked(getOpenAtomicUpdates).mockResolvedValue([] as never);
     const res = await POST(postRequest({ atomicUpdateIds: ["a1"] }));
     const events = await readNdjson(res);
@@ -70,8 +86,8 @@ describe("POST /api/atomic-updates/draft", () => {
   });
 
   it("filters the requested ids down to the tenant's owned, open atomic updates before drafting", async () => {
-    const [tenant] = await db.insert(tenants).values({ name: TENANT_NAME }).returning();
-    vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id } } as never);
+    const { user } = await makeAuthedUserAndTenant();
+    vi.mocked(getServerSession).mockResolvedValue({ user: { id: user.id } } as never);
     // Only "a1" is open for this tenant; "a2" in the request is foreign/stale
     // and must be dropped rather than passed through to generation.
     vi.mocked(getOpenAtomicUpdates).mockResolvedValue([{ id: "a1", title: "T", summary: "S", category: null }] as never);
@@ -86,8 +102,8 @@ describe("POST /api/atomic-updates/draft", () => {
   });
 
   it("forwards runBatchForWorkspace progress events to the stream", async () => {
-    const [tenant] = await db.insert(tenants).values({ name: TENANT_NAME }).returning();
-    vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id } } as never);
+    const { user } = await makeAuthedUserAndTenant();
+    vi.mocked(getServerSession).mockResolvedValue({ user: { id: user.id } } as never);
     vi.mocked(getOpenAtomicUpdates).mockResolvedValue([{ id: "a1", title: "T", summary: "S", category: null }] as never);
     vi.mocked(runBatchForWorkspace).mockImplementation(async (_t, _items, _db, onProgress) => {
       onProgress?.({ type: "step", key: "generating", status: "start" });
