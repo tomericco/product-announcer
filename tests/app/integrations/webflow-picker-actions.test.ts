@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, like } from "drizzle-orm";
 
 vi.mock("next-auth", () => ({ getServerSession: vi.fn() }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
+vi.mock("next/headers", () => ({ cookies: vi.fn(async () => ({ get: () => undefined, set: () => {} })) }));
 // The no-op-guard branches never touch these, but the "actually changed"
 // branches do (saveWebflowSite writes need no token; saveWebflowCollection
 // calls getCollection). Stub both so this file stays a pure DB/action test
@@ -19,7 +20,7 @@ vi.mock("@/lib/integrations/webflow/client", async (importOriginal) => {
 import { getServerSession } from "next-auth";
 import { getCollection, listSites, WebflowApiError } from "@/lib/integrations/webflow/client";
 import { db } from "@/db";
-import { tenants, webflowConnections, type WebflowFieldMapping } from "@/db/schema";
+import { tenants, webflowConnections, users, tenantMembers, type WebflowFieldMapping } from "@/db/schema";
 import {
   saveWebflowSite,
   saveWebflowCollection,
@@ -37,6 +38,7 @@ import {
 // per action proves the guard didn't also break the legitimate change path.
 
 const TENANT_NAME = "Webflow Picker No-Op Guard Test Tenant";
+const USER_EMAIL_PREFIX = "webflow-picker-actions-test-";
 
 const HAND_TUNED_MAPPING: WebflowFieldMapping = {
   name: { source: "title" },
@@ -44,8 +46,17 @@ const HAND_TUNED_MAPPING: WebflowFieldMapping = {
   "post-body": { source: "static", value: "Hand-picked value that took forever to configure" },
 };
 
+// Each seeded tenant needs its own owner membership so requireSession()'s
+// cookie-based active-tenant resolution (Task 3) resolves back to it.
+async function seedMember(tenantId: string) {
+  const [user] = await db.insert(users).values({ email: `${USER_EMAIL_PREFIX}${crypto.randomUUID()}@example.com` }).returning();
+  await db.insert(tenantMembers).values({ tenantId, userId: user.id, role: "owner" });
+  return user;
+}
+
 async function seedConnection(overrides: Partial<typeof webflowConnections.$inferInsert> = {}) {
   const [tenant] = await db.insert(tenants).values({ name: TENANT_NAME }).returning();
+  const user = await seedMember(tenant.id);
   const [connection] = await db
     .insert(webflowConnections)
     .values({
@@ -63,7 +74,7 @@ async function seedConnection(overrides: Partial<typeof webflowConnections.$infe
       ...overrides,
     })
     .returning();
-  return { tenant, connection };
+  return { tenant, connection, user };
 }
 
 async function rowFor(connectionId: string) {
@@ -79,11 +90,12 @@ describe("saveWebflowSite / saveWebflowCollection — no-op guard preserves the 
 
   afterEach(async () => {
     await db.delete(tenants).where(eq(tenants.name, TENANT_NAME));
+    await db.delete(users).where(like(users.email, `${USER_EMAIL_PREFIX}%`));
   });
 
   it("saveWebflowSite: re-selecting the SAME site leaves the row untouched", async () => {
-    const { tenant, connection } = await seedConnection();
-    vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id } } as never);
+    const { tenant, connection, user } = await seedConnection();
+    vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id, id: user.id } } as never);
 
     const formData = new FormData();
     formData.set("siteId", "site-marketing");
@@ -99,8 +111,8 @@ describe("saveWebflowSite / saveWebflowCollection — no-op guard preserves the 
   });
 
   it("saveWebflowSite: selecting a DIFFERENT site still clears the collection and mapping", async () => {
-    const { tenant, connection } = await seedConnection();
-    vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id } } as never);
+    const { tenant, connection, user } = await seedConnection();
+    vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id, id: user.id } } as never);
 
     const formData = new FormData();
     formData.set("siteId", "site-blog-hub");
@@ -117,8 +129,8 @@ describe("saveWebflowSite / saveWebflowCollection — no-op guard preserves the 
   });
 
   it("saveWebflowCollection: re-selecting the SAME collection leaves the row untouched and never calls getCollection", async () => {
-    const { tenant, connection } = await seedConnection();
-    vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id } } as never);
+    const { tenant, connection, user } = await seedConnection();
+    vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id, id: user.id } } as never);
 
     const formData = new FormData();
     formData.set("collectionId", "collection-blog");
@@ -133,8 +145,8 @@ describe("saveWebflowSite / saveWebflowCollection — no-op guard preserves the 
   });
 
   it("saveWebflowCollection: selecting a DIFFERENT collection re-suggests the mapping for the new schema", async () => {
-    const { tenant, connection } = await seedConnection();
-    vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id } } as never);
+    const { tenant, connection, user } = await seedConnection();
+    vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id, id: user.id } } as never);
     vi.mocked(getCollection).mockResolvedValue({
       id: "collection-changelog",
       displayName: "Changelog",
@@ -154,8 +166,8 @@ describe("saveWebflowSite / saveWebflowCollection — no-op guard preserves the 
   });
 
   it("saveWebflowSite: requires siteName, matching the required-field gate used everywhere else", async () => {
-    const { tenant } = await seedConnection();
-    vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id } } as never);
+    const { tenant, user } = await seedConnection();
+    vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id, id: user.id } } as never);
 
     const formData = new FormData();
     formData.set("siteId", "site-blog-hub");
@@ -179,11 +191,12 @@ describe("saveWebflowMapping — returns a result object instead of throwing", (
 
   afterEach(async () => {
     await db.delete(tenants).where(eq(tenants.name, TENANT_NAME));
+    await db.delete(users).where(like(users.email, `${USER_EMAIL_PREFIX}%`));
   });
 
   it("returns { ok: false, error } when a required field is left unmapped, without throwing", async () => {
-    const { tenant, connection } = await seedConnection();
-    vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id } } as never);
+    const { tenant, connection, user } = await seedConnection();
+    vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id, id: user.id } } as never);
     vi.mocked(getCollection).mockResolvedValue({
       id: "collection-blog",
       displayName: "Blog",
@@ -206,8 +219,8 @@ describe("saveWebflowMapping — returns a result object instead of throwing", (
   });
 
   it("returns { ok: true } and persists the mapping when every required field is mapped", async () => {
-    const { tenant, connection } = await seedConnection();
-    vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id } } as never);
+    const { tenant, connection, user } = await seedConnection();
+    vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id, id: user.id } } as never);
     vi.mocked(getCollection).mockResolvedValue({
       id: "collection-blog",
       displayName: "Blog",
@@ -237,11 +250,13 @@ describe("saveWebflowToken — returns a result object instead of throwing", () 
 
   afterEach(async () => {
     await db.delete(tenants).where(eq(tenants.name, TOKEN_TENANT_NAME));
+    await db.delete(users).where(like(users.email, `${USER_EMAIL_PREFIX}%`));
   });
 
   it("returns { ok: false, error } with the real message when the token fails validation, and never stores it", async () => {
     const [tenant] = await db.insert(tenants).values({ name: TOKEN_TENANT_NAME }).returning();
-    vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id } } as never);
+    const user = await seedMember(tenant.id);
+    vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id, id: user.id } } as never);
     // A bad Site API token: listSites (called to validate before storing)
     // rejects with a WebflowApiError, same as a real 401 from Webflow.
     vi.mocked(listSites).mockRejectedValue(new WebflowApiError(401, "Webflow rejected the request (401)."));
@@ -258,7 +273,8 @@ describe("saveWebflowToken — returns a result object instead of throwing", () 
 
   it("returns { ok: true } and stores the connection when the token validates", async () => {
     const [tenant] = await db.insert(tenants).values({ name: TOKEN_TENANT_NAME }).returning();
-    vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id } } as never);
+    const user = await seedMember(tenant.id);
+    vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id, id: user.id } } as never);
     vi.mocked(listSites).mockResolvedValue([{ id: "site-1", displayName: "Marketing" }]);
 
     const formData = new FormData();

@@ -1,33 +1,36 @@
 import type { NextAuthOptions, Session } from "next-auth";
-import GithubProvider, { type GithubProfile } from "next-auth/providers/github";
+import GithubProvider from "next-auth/providers/github";
+import GoogleProvider from "next-auth/providers/google";
 import type { JWT } from "next-auth/jwt";
-import { getOrCreateTenantForUser } from "./tenant-bootstrap";
+import { getOrCreateUserFromOAuth, type OAuthProvider } from "./tenant-bootstrap";
+import { mapOAuthProfile } from "./oauth-profile";
+
+const providers: NextAuthOptions["providers"] = [
+  GithubProvider({
+    clientId: process.env.GITHUB_CLIENT_ID as string,
+    clientSecret: process.env.GITHUB_CLIENT_SECRET as string,
+  }),
+];
+
+// Only offer Google when it's configured, so unset env doesn't 500 the button.
+if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
+  providers.push(
+    GoogleProvider({
+      clientId: process.env.GOOGLE_CLIENT_ID,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+    })
+  );
+}
 
 export const authOptions: NextAuthOptions = {
-  providers: [
-    GithubProvider({
-      clientId: process.env.GITHUB_CLIENT_ID as string,
-      clientSecret: process.env.GITHUB_CLIENT_SECRET as string,
-    }),
-  ],
-  session: {
-    strategy: "jwt",
-  },
+  providers,
+  session: { strategy: "jwt" },
+  pages: { signIn: "/signin" },
   callbacks: {
     async jwt({ token, account, profile }) {
       if (account && profile) {
-        const githubProfile = profile as GithubProfile;
-        const email = githubProfile.email ?? (token.email as string | undefined);
-        if (!email) {
-          throw new Error(
-            "GitHub sign-in did not return an email address. Please make your GitHub email public or grant email access, then try again."
-          );
-        }
-        const { userId, tenantId, role } = await getOrCreateTenantForUser({
-          email,
-          name: githubProfile.name,
-          githubId: String(githubProfile.id),
-        });
+        const input = mapOAuthProfile(account.provider as OAuthProvider, profile);
+        const { userId, tenantId, role } = await getOrCreateUserFromOAuth(input);
         token.userId = userId;
         token.tenantId = tenantId;
         token.role = role;

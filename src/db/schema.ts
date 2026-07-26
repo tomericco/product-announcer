@@ -1,4 +1,5 @@
 import { pgTable, pgEnum, uuid, text, timestamp, primaryKey, integer, jsonb, uniqueIndex, index, boolean, real } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 
 // A persona in a tenant's brand profile is either a live reference to a seeded
 // system persona (resolved against `system_personas` at read time) or a
@@ -25,6 +26,7 @@ export const users = pgTable("users", {
   email: text("email").notNull().unique(),
   name: text("name"),
   githubId: text("github_id").unique(),
+  googleId: text("google_id").unique(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -41,6 +43,29 @@ export const tenantMembers = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [primaryKey({ columns: [table.tenantId, table.userId] })]
+);
+
+export const tenantInvites = pgTable(
+  "tenant_invites",
+  {
+    id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    // SHA-256 hex of the raw token. The raw token is never persisted.
+    tokenHash: text("token_hash").notNull().unique(),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    // At most one *active* (non-revoked) invite per tenant. Also makes concurrent
+    // "regenerate" safe: two simultaneous active inserts → one wins, the other retries.
+    uniqueIndex("tenant_invites_one_active_per_tenant")
+      .on(table.tenantId)
+      .where(sql`${table.revokedAt} IS NULL`),
+  ]
 );
 
 export const changeItemStatusEnum = pgEnum("change_item_status", ["pending", "batched", "excluded", "ignored"]);

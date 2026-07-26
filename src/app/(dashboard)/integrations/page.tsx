@@ -65,8 +65,21 @@ function LinkedinFormSkeleton() {
   );
 }
 
-export default async function IntegrationsPage() {
+export default async function IntegrationsPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
   const session = await requireSession();
+  const sp = await searchParams;
+  // Surface a LinkedIn OAuth failure reason passed back by the callback route
+  // (e.g. unauthorized_scope_error) instead of failing silently.
+  const linkedinError =
+    sp.linkedin_connect === "error"
+      ? typeof sp.reason === "string" && sp.reason
+        ? sp.reason
+        : "Could not connect LinkedIn. Please try again."
+      : null;
   const [config] = await db.select().from(webhookConfigs).where(eq(webhookConfigs.tenantId, session.user.tenantId));
 
   const [tenant] = await db.select().from(tenants).where(eq(tenants.id, session.user.tenantId)).limit(1);
@@ -113,6 +126,11 @@ export default async function IntegrationsPage() {
     <div className="space-y-10">
       <section className="space-y-4">
         <h1 className="text-xl font-semibold">Integrations</h1>
+        {linkedinError && (
+          <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            LinkedIn: {linkedinError}
+          </div>
+        )}
         <Card>
           <CardHeader>
             <CardTitle>Generic Webhook</CardTitle>

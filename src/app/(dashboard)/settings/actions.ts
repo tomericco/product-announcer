@@ -2,15 +2,19 @@
 
 import { and, eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
+import { headers } from "next/headers";
 import { db } from "@/db";
 import { brandProfiles, repos, scheduleConfigs, tenants } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
+import { requireRole } from "@/lib/workspace/active-tenant";
 import { getOrCreateBrandProfile } from "@/lib/workspace/brand-profile";
 import { importBrandStyleForTenant } from "@/lib/workspace/brand-import";
 import { computeNextScheduledAt, type Cadence } from "@/lib/scheduling/scheduler-decision";
 import { addSelectedRepos } from "@/lib/workspace/repo-sync";
 import { listRepoBranches } from "@/lib/integrations/github/github";
 import { parsePersonas } from "@/lib/workspace/persona-form";
+import { createInvite, revokeActiveInvite } from "@/lib/workspace/invites";
+import { removeWorkspaceMember } from "@/lib/workspace/members";
 
 function splitList(value: FormDataEntryValue | null): string[] {
   if (!value || typeof value !== "string") return [];
@@ -158,4 +162,37 @@ export async function saveWorkspaceSchedule(formData: FormData) {
 
   revalidatePath("/settings");
   revalidatePath("/atomic-updates");
+}
+
+export async function generateInviteLink(): Promise<{ url: string; expiresAt: string }> {
+  const session = await requireSession();
+  requireRole(session, "owner");
+
+  const { token, expiresAt } = await createInvite(session.user.tenantId, session.user.id);
+
+  // Build an absolute URL from the request origin (never embeds the tenant id).
+  const h = await headers();
+  const host = h.get("x-forwarded-host") ?? h.get("host");
+  const proto = h.get("x-forwarded-proto") ?? "https";
+  const origin = process.env.NEXTAUTH_URL ?? (host ? `${proto}://${host}` : "");
+  const url = `${origin}/invite/${token}`;
+
+  revalidatePath("/settings");
+  return { url, expiresAt: expiresAt.toISOString() };
+}
+
+export async function revokeInviteLink(): Promise<void> {
+  const session = await requireSession();
+  requireRole(session, "owner");
+  await revokeActiveInvite(session.user.tenantId);
+  revalidatePath("/settings");
+}
+
+export async function removeMember(targetUserId: string): Promise<void> {
+  const session = await requireSession();
+  requireRole(session, "owner");
+  // Scoped to the active tenant; self-removal is refused inside the helper so
+  // the workspace always keeps at least one owner.
+  await removeWorkspaceMember(session.user.tenantId, session.user.id, targetUserId);
+  revalidatePath("/settings");
 }

@@ -90,6 +90,27 @@ describe("GET /api/linkedin/callback", () => {
     expect(row).toBeUndefined();
   });
 
+  it("surfaces a LinkedIn OAuth error via the reason param and stores nothing", async () => {
+    const tenantId = await seedTenant();
+    vi.mocked(requireSession).mockResolvedValue({ user: { tenantId } } as never);
+    const nonce = "li-nonce-err";
+    const req = request(
+      {
+        error: "unauthorized_scope_error",
+        error_description: "Scope w_organization_social is not authorized for your application",
+        state: `${tenantId}|integrations|${nonce}`,
+      },
+      nonce
+    );
+    const res = await GET(req);
+    const location = new URL(res.headers.get("location") ?? "");
+    expect(location.searchParams.get("linkedin_connect")).toBe("error");
+    // searchParams.get decodes the `+`-encoded spaces back to a readable reason.
+    expect(location.searchParams.get("reason")).toContain("not authorized for your application");
+    const [row] = await db.select().from(linkedinConnections).where(eq(linkedinConnections.tenantId, tenantId));
+    expect(row).toBeUndefined();
+  });
+
   it("does not write any row when code is missing", async () => {
     const tenantId = await seedTenant();
     vi.mocked(requireSession).mockResolvedValue({ user: { tenantId } } as never);

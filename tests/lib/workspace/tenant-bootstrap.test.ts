@@ -1,61 +1,52 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { db } from "../../../src/db";
 import { users, tenants, tenantMembers } from "../../../src/db/schema";
-import { getOrCreateTenantForUser } from "../../../src/lib/workspace/tenant-bootstrap";
+import { getOrCreateUserFromOAuth } from "../../../src/lib/workspace/tenant-bootstrap";
 
-describe("getOrCreateTenantForUser", () => {
-  const githubId = "test-github-12345";
+const EMAIL = "newperson@frontitude.com";
 
+describe("getOrCreateUserFromOAuth", () => {
   afterEach(async () => {
-    const [user] = await db.select().from(users).where(eq(users.githubId, githubId));
+    const [user] = await db.select().from(users).where(eq(users.email, EMAIL));
     if (!user) return;
-
     const memberships = await db.select().from(tenantMembers).where(eq(tenantMembers.userId, user.id));
     await db.delete(tenantMembers).where(eq(tenantMembers.userId, user.id));
-    for (const membership of memberships) {
-      await db.delete(tenants).where(eq(tenants.id, membership.tenantId));
-    }
+    const tenantIds = memberships.map((m) => m.tenantId);
+    if (tenantIds.length) await db.delete(tenants).where(inArray(tenants.id, tenantIds));
     await db.delete(users).where(eq(users.id, user.id));
   });
 
-  it("creates a new user, tenant, and owner membership on first call", async () => {
-    const result = await getOrCreateTenantForUser({
-      email: "newperson@frontitude.com",
-      name: "New Person",
-      githubId,
+  it("creates user + tenant + owner membership for a new Google user", async () => {
+    const result = await getOrCreateUserFromOAuth({
+      email: EMAIL, emailVerified: true, name: "New Person", provider: "google", providerAccountId: "g-1",
     });
-
     expect(result.role).toBe("owner");
-
+    const [user] = await db.select().from(users).where(eq(users.id, result.userId));
+    expect(user.googleId).toBe("g-1");
     const [tenant] = await db.select().from(tenants).where(eq(tenants.id, result.tenantId));
     expect(tenant.name).toBe("Frontitude's Workspace");
-
-    const [membership] = await db
-      .select()
-      .from(tenantMembers)
-      .where(eq(tenantMembers.userId, result.userId));
-    expect(membership.tenantId).toBe(result.tenantId);
-    expect(membership.role).toBe("owner");
   });
 
-  it("is idempotent — a second call for the same githubId returns the same tenant", async () => {
-    const first = await getOrCreateTenantForUser({
-      email: "newperson@frontitude.com",
-      name: "New Person",
-      githubId,
+  it("links a matching verified email to the existing account instead of duplicating", async () => {
+    const first = await getOrCreateUserFromOAuth({
+      email: EMAIL, emailVerified: true, name: "GH", provider: "github", providerAccountId: "gh-9",
     });
-    const second = await getOrCreateTenantForUser({
-      email: "newperson@frontitude.com",
-      name: "New Person",
-      githubId,
+    const second = await getOrCreateUserFromOAuth({
+      email: EMAIL, emailVerified: true, name: "GO", provider: "google", providerAccountId: "go-9",
     });
-
     expect(second.userId).toBe(first.userId);
-    expect(second.tenantId).toBe(first.tenantId);
-    expect(second.role).toBe(first.role);
+    expect(second.tenantId).toBe(first.tenantId); // no new tenant
+    const [user] = await db.select().from(users).where(eq(users.id, first.userId));
+    expect(user.githubId).toBe("gh-9");
+    expect(user.googleId).toBe("go-9");
+    const allUsers = await db.select().from(users).where(eq(users.email, EMAIL));
+    expect(allUsers).toHaveLength(1);
+  });
 
-    const allTenants = await db.select().from(tenants).where(eq(tenants.id, first.tenantId));
-    expect(allTenants).toHaveLength(1);
+  it("rejects an unverified email", async () => {
+    await expect(
+      getOrCreateUserFromOAuth({ email: EMAIL, emailVerified: false, name: "x", provider: "google", providerAccountId: "go-x" })
+    ).rejects.toThrow();
   });
 });

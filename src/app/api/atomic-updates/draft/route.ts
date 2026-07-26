@@ -1,6 +1,8 @@
 import { getServerSession } from "next-auth";
+import { cookies } from "next/headers";
 import { authOptions } from "@/lib/workspace/auth";
-import { hasValidSession, tenantExists } from "@/lib/workspace/session";
+import { hasValidSession } from "@/lib/workspace/session";
+import { ACTIVE_TENANT_COOKIE, resolveActiveTenant } from "@/lib/workspace/active-tenant";
 import { db } from "@/db";
 import { getOpenAtomicUpdates } from "@/lib/change-events/release-claim";
 import { runBatchForWorkspace } from "@/lib/scheduling/run-schedule";
@@ -18,14 +20,19 @@ export async function POST(req: Request): Promise<Response> {
   if (!hasValidSession(session)) {
     return unauthorized();
   }
-  const tenantId = session.user.tenantId;
-  // A JWT can outlive the tenant row it points at (deleted tenant, restored
-  // backup). This is a fetch-based JSON/ndjson API, not a browser-navigated
-  // page, so it must fail with a plain 401 rather than requireSession()'s
-  // redirect (a fetch() caller won't follow a redirect into a page render).
-  if (!(await tenantExists(tenantId))) {
+  // A JWT can outlive the tenant/membership row it points at (deleted
+  // tenant, removed membership, restored backup). This is a fetch-based
+  // JSON/ndjson API, not a browser-navigated page, so it must fail with a
+  // plain 401 rather than requireSession()'s redirect (a fetch() caller
+  // won't follow a redirect into a page render). Resolve the active tenant
+  // the same way requireSession() does, from real membership rows.
+  const store = await cookies();
+  const cookieTenantId = store.get(ACTIVE_TENANT_COOKIE)?.value;
+  const active = await resolveActiveTenant(session.user.id, cookieTenantId);
+  if (!active) {
     return unauthorized();
   }
+  const tenantId = active.tenantId;
 
   const body = await req.json().catch(() => null);
   const requestedIds: string[] = Array.isArray(body?.atomicUpdateIds)

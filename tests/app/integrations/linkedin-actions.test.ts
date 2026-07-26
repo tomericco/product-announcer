@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, like } from "drizzle-orm";
 
 vi.mock("next-auth", () => ({ getServerSession: vi.fn() }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
+vi.mock("next/headers", () => ({ cookies: vi.fn(async () => ({ get: () => undefined, set: () => {} })) }));
 vi.mock("@/lib/credentials/encryption", () => ({
   encryptSecret: () => ({ ciphertext: "x", iv: "x", authTag: "x" }),
   decryptSecret: () => "tok",
@@ -15,7 +16,7 @@ vi.mock("@/lib/integrations/linkedin/client", async (importOriginal) => {
 import { getServerSession } from "next-auth";
 import { listAdminOrganizations } from "@/lib/integrations/linkedin/client";
 import { db } from "@/db";
-import { tenants, linkedinConnections } from "@/db/schema";
+import { tenants, linkedinConnections, users, tenantMembers } from "@/db/schema";
 import {
   listLinkedinOrganizations,
   saveLinkedinOrganization,
@@ -48,9 +49,20 @@ describe("isOrganizationUrn", () => {
 
 const TENANT_NAME = "LinkedIn Actions Test Tenant";
 const OTHER_TENANT_NAME = "LinkedIn Actions Other Tenant";
+const USER_EMAIL_PREFIX = "linkedin-actions-test-";
+
+// Each seeded tenant needs its own owner membership so requireSession()'s
+// cookie-based active-tenant resolution (Task 3) resolves back to it. Emails
+// are randomized per call since a single test can seed two tenants/users.
+async function seedMember(tenantId: string) {
+  const [user] = await db.insert(users).values({ email: `${USER_EMAIL_PREFIX}${crypto.randomUUID()}@example.com` }).returning();
+  await db.insert(tenantMembers).values({ tenantId, userId: user.id, role: "owner" });
+  return user;
+}
 
 async function seedConnection(overrides: Partial<typeof linkedinConnections.$inferInsert> = {}, name = TENANT_NAME) {
   const [tenant] = await db.insert(tenants).values({ name }).returning();
+  const user = await seedMember(tenant.id);
   const [connection] = await db
     .insert(linkedinConnections)
     .values({
@@ -63,7 +75,7 @@ async function seedConnection(overrides: Partial<typeof linkedinConnections.$inf
       ...overrides,
     })
     .returning();
-  return { tenant, connection };
+  return { tenant, connection, user };
 }
 
 async function rowFor(tenantId: string) {
@@ -80,11 +92,12 @@ describe("linkedin server actions", () => {
   afterEach(async () => {
     await db.delete(tenants).where(eq(tenants.name, TENANT_NAME));
     await db.delete(tenants).where(eq(tenants.name, OTHER_TENANT_NAME));
+    await db.delete(users).where(like(users.email, `${USER_EMAIL_PREFIX}%`));
   });
 
   it("saveLinkedinOrganization stores a valid organization urn", async () => {
-    const { tenant } = await seedConnection();
-    vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id } } as never);
+    const { tenant, user } = await seedConnection();
+    vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id, id: user.id } } as never);
 
     const formData = new FormData();
     formData.set("urn", "urn:li:organization:456");
@@ -97,8 +110,8 @@ describe("linkedin server actions", () => {
   });
 
   it("saveLinkedinOrganization rejects a non-organization urn", async () => {
-    const { tenant } = await seedConnection();
-    vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id } } as never);
+    const { tenant, user } = await seedConnection();
+    vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id, id: user.id } } as never);
 
     const formData = new FormData();
     formData.set("urn", "urn:li:person:456");
@@ -110,8 +123,8 @@ describe("linkedin server actions", () => {
   });
 
   it("saveLinkedinOrganization rejects an empty urn", async () => {
-    const { tenant } = await seedConnection();
-    vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id } } as never);
+    const { tenant, user } = await seedConnection();
+    vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id, id: user.id } } as never);
 
     const formData = new FormData();
     formData.set("urn", "");
@@ -119,8 +132,8 @@ describe("linkedin server actions", () => {
   });
 
   it("saveLinkedinBaseUrl normalizes and stores the base URL", async () => {
-    const { tenant } = await seedConnection();
-    vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id } } as never);
+    const { tenant, user } = await seedConnection();
+    vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id, id: user.id } } as never);
 
     const formData = new FormData();
     formData.set("baseUrl", "https://acme.com/changelog");
@@ -131,9 +144,9 @@ describe("linkedin server actions", () => {
   });
 
   it("disconnectLinkedin removes only the session tenant's connection", async () => {
-    const { tenant } = await seedConnection(undefined, TENANT_NAME);
+    const { tenant, user } = await seedConnection(undefined, TENANT_NAME);
     const { tenant: otherTenant } = await seedConnection(undefined, OTHER_TENANT_NAME);
-    vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id } } as never);
+    vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id, id: user.id } } as never);
 
     await disconnectLinkedin();
 
@@ -144,8 +157,8 @@ describe("linkedin server actions", () => {
   });
 
   it("listLinkedinOrganizations loads the tenant-scoped connection and delegates to listAdminOrganizations", async () => {
-    const { tenant } = await seedConnection();
-    vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id } } as never);
+    const { tenant, user } = await seedConnection();
+    vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id, id: user.id } } as never);
     vi.mocked(listAdminOrganizations).mockResolvedValue([{ urn: "urn:li:organization:1", name: "Acme" }]);
 
     const orgs = await listLinkedinOrganizations();
@@ -156,7 +169,8 @@ describe("linkedin server actions", () => {
 
   it("listLinkedinOrganizations throws when the tenant has no connection", async () => {
     const [tenant] = await db.insert(tenants).values({ name: TENANT_NAME }).returning();
-    vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id } } as never);
+    const user = await seedMember(tenant.id);
+    vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id, id: user.id } } as never);
 
     await expect(listLinkedinOrganizations()).rejects.toThrow("LinkedIn is not connected.");
   });
