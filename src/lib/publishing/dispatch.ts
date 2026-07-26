@@ -3,12 +3,13 @@ import { db as defaultDb } from "@/db";
 import { deliveryAttempts, releases } from "@/db/schema";
 import { webhookDestination } from "./destinations/webhook";
 import { webflowDestination } from "./destinations/webflow";
+import { linkedinDestination } from "./destinations/linkedin";
 import type { Destination, DeliveryResult, Release, DestinationId, PublishTarget } from "./destinations/types";
 
 const MAX_ATTEMPTS = 3;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const DESTINATIONS: Destination<any>[] = [webhookDestination, webflowDestination];
+const DESTINATIONS: Destination<any>[] = [webhookDestination, webflowDestination, linkedinDestination];
 
 function statusFor(result: DeliveryResult) {
   if (result.status === "ok") return "success" as const;

@@ -166,6 +166,7 @@ describe("dispatch", () => {
     expect(targets).toEqual([
       { id: "webhook", label: "Webhook", configured: true },
       { id: "webflow", label: "Webflow", configured: false },
+      { id: "linkedin", label: "LinkedIn", configured: false },
     ]);
   });
 
@@ -181,6 +182,7 @@ describe("dispatch", () => {
     expect(targets).toEqual([
       { id: "webhook", label: "Webhook", configured: false },
       { id: "webflow", label: "Webflow", configured: true },
+      { id: "linkedin", label: "LinkedIn", configured: false },
     ]);
   });
 

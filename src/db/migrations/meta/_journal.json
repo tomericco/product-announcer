@@ -225,6 +225,20 @@
       "when": 1784880755195,
       "tag": "0031_remarkable_moira_mactaggert",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1785051328056,
+      "tag": "0032_ordinary_snowbird",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1785071231322,
+      "tag": "0033_curved_lady_mastermind",
+      "breakpoints": true
     }
   ]
 }
