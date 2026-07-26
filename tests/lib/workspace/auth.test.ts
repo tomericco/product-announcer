@@ -1,19 +1,19 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 vi.mock("../../../src/lib/workspace/tenant-bootstrap", () => ({
-  getOrCreateTenantForUser: vi.fn(),
+  getOrCreateUserFromOAuth: vi.fn(),
 }));
 
 import { authOptions } from "../../../src/lib/workspace/auth";
-import { getOrCreateTenantForUser } from "../../../src/lib/workspace/tenant-bootstrap";
+import { getOrCreateUserFromOAuth } from "../../../src/lib/workspace/tenant-bootstrap";
 
 describe("authOptions.callbacks.jwt", () => {
   beforeEach(() => {
-    vi.mocked(getOrCreateTenantForUser).mockReset();
+    vi.mocked(getOrCreateUserFromOAuth).mockReset();
   });
 
   it("attaches tenant info to the token on first sign-in", async () => {
-    vi.mocked(getOrCreateTenantForUser).mockResolvedValue({
+    vi.mocked(getOrCreateUserFromOAuth).mockResolvedValue({
       userId: "user-1",
       tenantId: "tenant-1",
       role: "owner",
@@ -28,10 +28,12 @@ describe("authOptions.callbacks.jwt", () => {
     expect(token.userId).toBe("user-1");
     expect(token.tenantId).toBe("tenant-1");
     expect(token.role).toBe("owner");
-    expect(getOrCreateTenantForUser).toHaveBeenCalledWith({
+    expect(getOrCreateUserFromOAuth).toHaveBeenCalledWith({
       email: "tomer@frontitude.com",
+      emailVerified: true,
       name: "Tomer",
-      githubId: "42",
+      provider: "github",
+      providerAccountId: "42",
     });
   });
 
@@ -45,6 +47,6 @@ describe("authOptions.callbacks.jwt", () => {
     } as unknown as Parameters<NonNullable<NonNullable<typeof authOptions.callbacks>["jwt"]>>[0]);
 
     expect(token).toEqual(existingToken);
-    expect(getOrCreateTenantForUser).not.toHaveBeenCalled();
+    expect(getOrCreateUserFromOAuth).not.toHaveBeenCalled();
   });
 });
