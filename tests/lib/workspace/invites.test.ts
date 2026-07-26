@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { eq } from "drizzle-orm";
+import { and, eq, gt, isNull } from "drizzle-orm";
 import { db } from "../../../src/db";
 import { tenants, tenantInvites } from "../../../src/db/schema";
 import { createInvite, validateInvite, revokeActiveInvite, getActiveInvite, hashInviteToken } from "../../../src/lib/workspace/invites";
@@ -16,6 +16,21 @@ describe("invites", () => {
     const [t] = await db.insert(tenants).values({ name }).returning();
     tenantId = t.id;
     return t;
+  }
+  // Counts rows that actually satisfy "active" (not revoked, not expired) —
+  // unlike getActiveInvite's LIMIT 1 select, this proves there is exactly one.
+  async function activeInviteCount(tid: string): Promise<number> {
+    const rows = await db
+      .select({ id: tenantInvites.id })
+      .from(tenantInvites)
+      .where(
+        and(
+          eq(tenantInvites.tenantId, tid),
+          isNull(tenantInvites.revokedAt),
+          gt(tenantInvites.expiresAt, new Date())
+        )
+      );
+    return rows.length;
   }
 
   it("creates a valid, resolvable invite", async () => {
@@ -39,8 +54,21 @@ describe("invites", () => {
     const second = await createInvite(t.id, null as unknown as string);
     expect(await validateInvite(first.token)).toEqual({ status: "revoked" });
     expect((await validateInvite(second.token)).status).toBe("valid");
-    // exactly one active row
-    expect(await getActiveInvite(t.id)).not.toBeNull();
+    expect(await activeInviteCount(t.id)).toBe(1);
+  });
+
+  it("converges to exactly one active row under concurrent creates", async () => {
+    const t = await tenant();
+    const results = await Promise.all([
+      createInvite(t.id, null as unknown as string),
+      createInvite(t.id, null as unknown as string),
+      createInvite(t.id, null as unknown as string),
+    ]);
+    expect(results).toHaveLength(3);
+    for (const r of results) {
+      expect(typeof r.token).toBe("string");
+    }
+    expect(await activeInviteCount(t.id)).toBe(1);
   });
 
   it("revoking invalidates the active link", async () => {
