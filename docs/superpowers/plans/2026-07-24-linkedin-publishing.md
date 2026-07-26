@@ -13,7 +13,7 @@
 - **This is NOT stock Next.js** — read the relevant guide in `node_modules/next/dist/docs/` before writing route/server-action/RSC code (per `AGENTS.md`).
 - **LLM provider is direct Anthropic** via `@ai-sdk/anthropic` — do NOT route through the Vercel AI Gateway. Mirror `src/lib/ai/generation.ts` exactly (model via `resolveModel(spec)` / `modelId(spec)`, usage via `recordLlmUsage`).
 - **Secrets are encrypted** with `encryptSecret` / `decryptSecret` from `src/lib/credentials/encryption.ts` (AES-256-GCM, hex `ciphertext`/`iv`/`authTag` columns). Never store a raw token.
-- **Company accounts only:** post `author` is always `urn:li:organization:{id}`; only organizations where the authenticated member is an `ADMINISTRATOR` (state `APPROVED`) may be selected. Never post as a personal member.
+- **Company accounts only** (three enforced guarantees): (1) request `w_organization_social` and NOT `w_member_social`, so the token cannot create a personal post; (2) post `author` is always `urn:li:organization:{id}` — both the save action and `deliver` reject any non-`urn:li:organization:` value via `isOrganizationUrn`; (3) only orgs where the member is `ADMINISTRATOR`/`APPROVED` (from `organizationAcls`) are selectable.
 - **Post-once:** if a `deliveryAttempts` row already has an `externalId` for the LinkedIn destination, delivery is a no-op success (no re-post).
 - **New env vars** (add to `.env.local` and deployment env): `LINKEDIN_CLIENT_ID`, `LINKEDIN_CLIENT_SECRET`, `LINKEDIN_REDIRECT_URI` (absolute URL to `/api/linkedin/callback`), `LINKEDIN_API_VERSION` (LinkedIn versioning header value, format `YYYYMM`, e.g. `202506`).
 - **Run tests with** `npm test` (`vitest run`). DB tests run against the test database configured in `drizzle.config.test.ts`; migrations applied with `npm run db:migrate:test`.
@@ -831,6 +831,18 @@ describe("linkedin destination", () => {
     expect(result.status).toBe("permanent");
   });
 
+  it("refuses to post when the author is not an organization urn (company-only)", async () => {
+    const { database } = dbStub();
+    const result = await linkedinDestination.deliver(
+      release(),
+      connection({ organizationUrn: "urn:li:person:123" }),
+      null,
+      database
+    );
+    expect(result).toMatchObject({ status: "permanent", configFault: true });
+    expect(createPost).not.toHaveBeenCalled();
+  });
+
   it("posts commentary with the appended slug link and stores the urn", async () => {
     const { database } = dbStub();
     vi.mocked(getValidAccessToken).mockResolvedValue("at");
@@ -944,6 +956,11 @@ export const linkedinDestination: Destination<LinkedinConnection> = {
 
     if (!connection.organizationUrn || !connection.baseUrl) {
       return { status: "permanent", error: "LinkedIn connection is missing an organization or base URL.", configFault: true };
+    }
+    // Company-only guarantee 2: never post as a personal member. The author
+    // must be an organization URN; anything else is a config fault, not a post.
+    if (!connection.organizationUrn.startsWith("urn:li:organization:")) {
+      return { status: "permanent", error: "LinkedIn author must be an organization page.", configFault: true };
     }
     if (!release.linkedinBody || !release.linkedinBody.trim()) {
       return { status: "permanent", error: "Generate a LinkedIn post before publishing." };
@@ -1175,6 +1192,7 @@ git commit -m "feat: linkedin oauth callback route"
   - `saveLinkedinBaseUrl(formData: FormData): Promise<void>` — reads `baseUrl`, validates it is an absolute http(s) URL, normalizes to a trailing slash, stores it.
   - `disconnectLinkedin(): Promise<void>` — deletes the tenant's connection row.
   - `normalizeBaseUrl(raw: string): string` (exported pure helper) — throws on non-http(s)/relative; appends `/` if missing.
+  - `isOrganizationUrn(urn: string): boolean` (exported pure helper) — true only for `urn:li:organization:*`; used by `saveLinkedinOrganization` and mirrored by the Task 5 `deliver` guard.
 
 - [ ] **Step 1: Write the failing test** (pure helper — no session needed)
 
@@ -1182,7 +1200,7 @@ Create `tests/app/integrations/linkedin-actions.test.ts`:
 
 ```typescript
 import { describe, it, expect } from "vitest";
-import { normalizeBaseUrl } from "../../../src/app/(dashboard)/integrations/linkedin-actions";
+import { normalizeBaseUrl, isOrganizationUrn } from "../../../src/app/(dashboard)/integrations/linkedin-actions";
 
 describe("normalizeBaseUrl", () => {
   it("appends a trailing slash", () => {
@@ -1194,6 +1212,15 @@ describe("normalizeBaseUrl", () => {
   it("rejects a relative or non-http URL", () => {
     expect(() => normalizeBaseUrl("/changelog")).toThrow();
     expect(() => normalizeBaseUrl("ftp://acme.com")).toThrow();
+  });
+});
+
+describe("isOrganizationUrn", () => {
+  it("accepts an organization urn", () => {
+    expect(isOrganizationUrn("urn:li:organization:123")).toBe(true);
+  });
+  it("rejects a personal member urn", () => {
+    expect(isOrganizationUrn("urn:li:person:123")).toBe(false);
   });
 });
 ```
@@ -1225,6 +1252,11 @@ export function normalizeBaseUrl(raw: string): string {
   return s.endsWith("/") ? s : `${s}/`;
 }
 
+// Company-only backstop, shared by the save action and the destination guard.
+export function isOrganizationUrn(urn: string): boolean {
+  return urn.startsWith("urn:li:organization:");
+}
+
 export async function getLinkedinConnectUrl(): Promise<string> {
   const session = await requireSession();
   const clientId = process.env.LINKEDIN_CLIENT_ID;
@@ -1251,6 +1283,9 @@ export async function saveLinkedinOrganization(formData: FormData): Promise<void
   const urn = String(formData.get("urn") ?? "");
   const name = String(formData.get("name") ?? "");
   if (!urn) throw new Error("Select an organization.");
+  // Company-only backstop: the ACL list only returns org URNs, but never trust
+  // the submitted form value — reject anything that is not an organization page.
+  if (!isOrganizationUrn(urn)) throw new Error("Only company pages can be selected.");
   await db
     .update(linkedinConnections)
     .set({ organizationUrn: urn, organizationName: name })

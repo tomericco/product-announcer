@@ -7,7 +7,11 @@
 
 Let users publish a release to a **LinkedIn company page (organization)** using LinkedIn's official API. The post body is AI-generated, human-editable, LinkedIn-native short-form copy stored per-release, with a link back to the tenant's changelog appended at delivery time. Delivery reuses the existing destinations/dispatch machinery.
 
-**Company accounts only.** We post exclusively as an organization the authenticated user administers — never as a personal member.
+**Company accounts only.** We post exclusively as an organization the authenticated user administers — never as a personal member. LinkedIn has no "log in as a page" concept: OAuth always authenticates a *person*, who then posts *on behalf of* an organization. Company-only is therefore enforced by three concrete guarantees, all verified in the plan's tests:
+
+1. **Scope excludes personal posting.** We request `w_organization_social` (+ `r_organization_social`, `rw_organization_admin`) and deliberately **not** `w_member_social`. The issued token literally cannot create a member post.
+2. **Author is always an organization URN.** Every `/rest/posts` call sets `author: urn:li:organization:{id}`. The destination asserts the stored author URN begins with `urn:li:organization:` before posting; anything else is a permanent config fault.
+3. **Only administered pages are selectable.** The setup wizard lists only orgs returned by `organizationAcls` with role `ADMINISTRATOR` and state `APPROVED`, and the save action re-validates the submitted URN's `urn:li:organization:` prefix.
 
 ### External prerequisite (non-code)
 
@@ -52,8 +56,8 @@ LinkedIn slots in as **a new destination** plus **a new per-tenant connection ta
 ### Organization selection
 
 - A server action calls LinkedIn's `organizationAcls` endpoint (role = `ADMINISTRATOR`, state = `APPROVED`) to list pages the authenticated user administers, resolving each org's display name.
-- User picks one → store `organizationUrn` + `organizationName`.
-- Only administered organizations are offered — this is what enforces "company accounts only."
+- User picks one → the save action validates the submitted URN starts with `urn:li:organization:` (rejects anything else) → store `organizationUrn` + `organizationName`.
+- Only administered organizations are offered, and the prefix check backstops it — together these enforce "company accounts only" (guarantee 3 above).
 
 ### Base URL
 
@@ -100,9 +104,10 @@ Returns the connection only if all of: `status = active`, `organizationUrn` set,
 2. **Post-once idempotency:** if `externalId` (the stored post URN) is already set → return `ok` without re-posting. LinkedIn re-posts would duplicate/spam, so re-publishing a release is a no-op for LinkedIn (unlike Webflow, which updates the item in place).
 3. Decrypt the access token outside the network try-block (a decrypt failure is `permanent` + `configFault`, never misclassified as retryable — matches Webflow/webhook).
 4. Refresh the token if near/at expiry.
-5. `commentary = linkedinBody + "\n\n" + baseUrl + slug`.
-6. `POST https://api.linkedin.com/rest/posts` with headers `Authorization: Bearer …`, `LinkedIn-Version: <YYYYMM>`, `X-Restli-Protocol-Version: 2.0.0`; body `{ author: organizationUrn, commentary, visibility: "PUBLIC", distribution: { feedDistribution: "MAIN_FEED" }, lifecycleState: "PUBLISHED" }`.
-7. On success, store the returned post URN as `externalId`.
+5. Assert `organizationUrn` starts with `urn:li:organization:` (company-only guarantee 2) → else `permanent` + `configFault`.
+6. `commentary = linkedinBody + "\n\n" + baseUrl + slug`.
+7. `POST https://api.linkedin.com/rest/posts` with headers `Authorization: Bearer …`, `LinkedIn-Version: <YYYYMM>`, `X-Restli-Protocol-Version: 2.0.0`; body `{ author: organizationUrn, commentary, visibility: "PUBLIC", distribution: { feedDistribution: "MAIN_FEED" }, lifecycleState: "PUBLISHED" }`.
+8. On success, store the returned post URN as `externalId` (read from the `x-restli-id` response header).
 
 ### Error classification
 
@@ -146,4 +151,27 @@ Following the existing destination + `tests/app/atomic-updates-actions.test.ts` 
 
 ## 8. Out of scope (v1)
 
-Personal-profile posting; multiple organizations per tenant; images / media / article-link attachments; scheduling to LinkedIn independently of release publish; editing an already-published LinkedIn post; engagement/analytics read-back.
+Personal-profile posting; multiple organizations per tenant; **image/video/media attachments** (deferred — see §9); article-link attachments; scheduling to LinkedIn independently of release publish; editing an already-published LinkedIn post; engagement/analytics read-back.
+
+## 9. Future phase — media attachments (researched, NOT built in v1)
+
+Deferred by decision. Captured here so the API research isn't lost. When picked up, this becomes its own spec. Two hard prerequisites the current app lacks: (a) a place to store the binary (e.g. Vercel Blob) and a way for the user to attach it in the drafts panel; (b) an asset URN must be minted per publish, which turns the single-POST `deliver` into a multi-step, partly-async flow.
+
+All calls use the same versioned headers as posting (`LinkedIn-Version: YYYYMM`, `X-Restli-Protocol-Version: 2.0.0`) and the org as asset `owner`; the member needs ADMIN/DSC rights on the page.
+
+**Single image** (`/rest/images`):
+1. `POST /rest/images?action=initializeUpload` body `{ "initializeUploadRequest": { "owner": "urn:li:organization:{id}" } }` → response `value.uploadUrl` + `value.image` (`urn:li:image:…`).
+2. Upload the raw bytes to `uploadUrl` (binary, `Content-Type: application/octet-stream`).
+3. Poll `GET /rest/images/{urn}` until `status: AVAILABLE` (usually fast).
+4. `POST /rest/posts` with `content: { media: { altText, id: "urn:li:image:…" } }`.
+   Formats: JPG/PNG/GIF (≤250 frames), < 36,152,320 px.
+
+**Video** (`/rest/videos`) — significantly more involved:
+1. `POST /rest/videos?action=initializeUpload` body `{ "initializeUploadRequest": { "owner", "fileSizeBytes", "uploadCaptions": false, "uploadThumbnail": false } }` → response `value.video` (`urn:li:video:…`), `value.uploadInstructions[]` (each with `uploadUrl` + `firstByte`/`lastByte`, 4 MB ranges), `value.uploadToken`.
+2. Split the file into 4 MB parts; `PUT` each part to its `uploadUrl` (`application/octet-stream`); capture the **ETag** response header per part.
+3. `POST /rest/videos?action=finalizeUpload` body `{ "finalizeUploadRequest": { "video", "uploadToken", "uploadedPartIds": [ETags…] } }`.
+4. Poll `GET /rest/videos/{urn}` until `status: AVAILABLE` — this is **async and can take a while**, so it will not fit inside a single synchronous `deliver` attempt; a resumable/poll-across-attempts approach is needed.
+5. `POST /rest/posts` with `content: { media: { id: "urn:li:video:…" } }`.
+   MP4 only, 75 KB–500 MB, 3 s–30 min.
+
+Permissions for both: `w_organization_social` (already requested) suffices for org-owned uploads by a page admin.
