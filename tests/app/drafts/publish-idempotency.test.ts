@@ -15,6 +15,7 @@ import { approveDraft, publishDraft } from "../../../src/app/(dashboard)/drafts/
 const TENANT_NAME = "Publish Idempotency Test Tenant";
 const OTHER_TENANT_NAME = "Publish Idempotency Test Tenant (Other)";
 const USER_EMAIL = "publish-idempotency-test@example.com";
+const OTHER_USER_EMAIL = "publish-idempotency-test-other@example.com";
 
 function encryptedSecret() {
   const p = encryptSecret("s3cr3t");
@@ -46,6 +47,19 @@ async function seed(tenantName = TENANT_NAME) {
     })
     .returning();
   return { tenant, repo, update, user };
+}
+
+// A real member of a SEPARATE tenant — used by the tenant-isolation tests so
+// requireSession() resolves to a genuine, membership-checked otherTenant
+// (not just a session literal claiming otherTenant.id). This makes the
+// isolation assertion exercise the action's own `WHERE tenantId` guard
+// (loadOwnedDraft throwing "Update not found for this tenant") rather than
+// an unrelated failure earlier in the call chain.
+async function seedOtherTenantMember() {
+  const [otherTenant] = await db.insert(tenants).values({ name: OTHER_TENANT_NAME }).returning();
+  const [otherUser] = await db.insert(users).values({ email: OTHER_USER_EMAIL }).returning();
+  await db.insert(tenantMembers).values({ tenantId: otherTenant.id, userId: otherUser.id, role: "owner" });
+  return { otherTenant, otherUser };
 }
 
 async function rowFor(releaseId: string) {
@@ -84,6 +98,7 @@ describe("draft publish idempotency (approveDraft / publishDraft)", () => {
     await db.delete(tenants).where(eq(tenants.name, TENANT_NAME));
     await db.delete(tenants).where(eq(tenants.name, OTHER_TENANT_NAME));
     await db.delete(users).where(eq(users.email, USER_EMAIL));
+    await db.delete(users).where(eq(users.email, OTHER_USER_EMAIL));
   });
 
   describe("approveDraft", () => {
@@ -146,10 +161,15 @@ describe("draft publish idempotency (approveDraft / publishDraft)", () => {
 
     it("tenant isolation: another tenant cannot approve this update", async () => {
       const { update } = await seed();
-      const [otherTenant] = await db.insert(tenants).values({ name: OTHER_TENANT_NAME }).returning();
-      vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: otherTenant.id, id: "u2" } } as never);
+      const { otherUser } = await seedOtherTenantMember();
+      vi.mocked(getServerSession).mockResolvedValue({ user: { id: otherUser.id } } as never);
 
-      await expect(approveDraft(approveFormData(update.id, ""))).rejects.toThrow();
+      // Must reject via the action's own `WHERE tenantId` guard
+      // (loadOwnedDraft), not some unrelated failure — otherwise this test
+      // would still pass even if that guard were deleted.
+      await expect(approveDraft(approveFormData(update.id, ""))).rejects.toThrow(
+        "Update not found for this tenant"
+      );
 
       const row = await rowFor(update.id);
       expect(row.status).toBe("draft");
@@ -249,10 +269,15 @@ describe("draft publish idempotency (approveDraft / publishDraft)", () => {
 
     it("tenant isolation: another tenant cannot publish this update", async () => {
       const { update } = await seed();
-      const [otherTenant] = await db.insert(tenants).values({ name: OTHER_TENANT_NAME }).returning();
-      vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: otherTenant.id, id: "u2" } } as never);
+      const { otherUser } = await seedOtherTenantMember();
+      vi.mocked(getServerSession).mockResolvedValue({ user: { id: otherUser.id } } as never);
 
-      await expect(publishDraft(publishFormData(update.id, ""))).rejects.toThrow();
+      // Must reject via the action's own `WHERE tenantId` guard
+      // (loadOwnedDraft), not some unrelated failure — otherwise this test
+      // would still pass even if that guard were deleted.
+      await expect(publishDraft(publishFormData(update.id, ""))).rejects.toThrow(
+        "Update not found for this tenant"
+      );
 
       const row = await rowFor(update.id);
       expect(row.status).toBe("draft");
