@@ -2,7 +2,7 @@ import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { releases } from "@/db/schema";
 import type * as schema from "@/db/schema";
 
-export type DestinationId = "webhook" | "webflow";
+export type DestinationId = "webhook" | "webflow" | "linkedin";
 
 // The shape every destination needs from a DB handle: enough for
 // select/insert/update/delete. Deliberately NOT `typeof db` (which also
