@@ -1,31 +1,76 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
+import { format } from "date-fns";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { generateInviteLink, revokeInviteLink } from "./actions";
 import type { WorkspaceMember } from "@/lib/workspace/members";
+
+// The raw invite token is never stored server-side (invites are hash-only), so
+// the server can't re-serve a generated link after a refresh. We keep the last
+// generated URL in localStorage, per workspace, and read it through
+// useSyncExternalStore so the value survives refreshes without an
+// SSR/hydration mismatch. A custom event notifies same-tab subscribers, since
+// the native "storage" event only fires in *other* tabs.
+const INVITE_LINK_EVENT = "workspace-invite-link:change";
+
+function writeStoredInviteLink(storageKey: string, url: string | null) {
+  if (url === null) window.localStorage.removeItem(storageKey);
+  else window.localStorage.setItem(storageKey, url);
+  window.dispatchEvent(new Event(INVITE_LINK_EVENT));
+}
+
+function useStoredInviteLink(storageKey: string): string | null {
+  return useSyncExternalStore(
+    (onChange) => {
+      window.addEventListener("storage", onChange);
+      window.addEventListener(INVITE_LINK_EVENT, onChange);
+      return () => {
+        window.removeEventListener("storage", onChange);
+        window.removeEventListener(INVITE_LINK_EVENT, onChange);
+      };
+    },
+    () => window.localStorage.getItem(storageKey),
+    () => null, // server snapshot: nothing is persisted during SSR
+  );
+}
 
 export function MembersSection({
   members,
   isOwner,
   hasActiveInvite,
+  workspaceId,
 }: {
   members: WorkspaceMember[];
   isOwner: boolean;
   hasActiveInvite: boolean;
+  workspaceId: string;
 }) {
-  const [inviteUrl, setInviteUrl] = useState<string | null>(null);
+  const storageKey = `workspace-invite-link:${workspaceId}`;
+  const storedUrl = useStoredInviteLink(storageKey);
+  // `active` starts from the server's view and flips on generate/revoke, so a
+  // freshly generated link shows immediately even though the `hasActiveInvite`
+  // prop stays stale until the next server render.
   const [active, setActive] = useState(hasActiveInvite);
   const [busy, setBusy] = useState(false);
+  const inviteUrl = active ? storedUrl : null;
+
+  // If the server reports no active invite on load (revoked / expired / none),
+  // drop any stale persisted link so a dead URL can't resurface. This updates
+  // the external store, not React state.
+  useEffect(() => {
+    if (!hasActiveInvite) writeStoredInviteLink(storageKey, null);
+  }, [hasActiveInvite, storageKey]);
 
   async function onGenerate() {
     setBusy(true);
     try {
       const { url } = await generateInviteLink();
-      setInviteUrl(url);
+      writeStoredInviteLink(storageKey, url);
       setActive(true);
       await navigator.clipboard.writeText(url).catch(() => {});
       toast.success("Invite link generated and copied");
@@ -46,7 +91,7 @@ export function MembersSection({
     setBusy(true);
     try {
       await revokeInviteLink();
-      setInviteUrl(null);
+      writeStoredInviteLink(storageKey, null);
       setActive(false);
       toast.success("Invite link revoked");
     } catch {
@@ -62,14 +107,31 @@ export function MembersSection({
         <CardTitle>Members</CardTitle>
       </CardHeader>
       <CardContent className="space-y-6">
-        <ul className="divide-y">
-          {members.map((m) => (
-            <li key={m.userId} className="flex items-center justify-between py-2">
-              <span className="text-sm">{m.name ?? m.email}</span>
-              <span className="text-xs text-muted-foreground capitalize">{m.role}</span>
-            </li>
-          ))}
-        </ul>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Name</TableHead>
+              <TableHead>Email</TableHead>
+              <TableHead>Role</TableHead>
+              <TableHead>Joined</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {members.map((m) => {
+              const joinedAt = new Date(m.createdAt);
+              return (
+                <TableRow key={m.userId}>
+                  <TableCell>{m.name ?? "—"}</TableCell>
+                  <TableCell className="text-muted-foreground">{m.email}</TableCell>
+                  <TableCell className="capitalize">{m.role}</TableCell>
+                  <TableCell className="text-muted-foreground" title={joinedAt.toLocaleString()}>
+                    {format(joinedAt, "MMM d, yyyy")}
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
 
         {isOwner && (
           <div className="space-y-3 border-t pt-4">
