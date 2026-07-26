@@ -5,6 +5,7 @@ import {
   refreshAccessToken,
   listAdminOrganizations,
   createPost,
+  escapeLittleText,
   LinkedinApiError,
 } from "../../../src/lib/integrations/linkedin/client";
 
@@ -70,5 +71,32 @@ describe("linkedin client", () => {
     vi.mocked(fetch).mockResolvedValue(jsonResponse({ message: "nope" }, 401));
     await expect(createPost({ accessToken: "at", authorUrn: "urn:li:organization:1", commentary: "hi" }))
       .rejects.toMatchObject({ status: 401 });
+  });
+
+  describe("escapeLittleText", () => {
+    it("escapes parentheses", () => {
+      expect(escapeLittleText("We shipped (finally)")).toBe("We shipped \\(finally\\)");
+    });
+
+    it("escapes each reserved character with a backslash prefix", () => {
+      expect(escapeLittleText("#tag @name *x* _y_ ~z~")).toBe("\\#tag \\@name \\*x\\* \\_y\\_ \\~z\\~");
+    });
+
+    it("returns a plain string with no reserved characters unchanged", () => {
+      expect(escapeLittleText("just plain text, no special chars")).toBe("just plain text, no special chars");
+    });
+
+    it("escapes a lone backslash once, not twice", () => {
+      expect(escapeLittleText("a\\b")).toBe("a\\\\b");
+    });
+  });
+
+  it("sends escaped commentary in the outgoing createPost request body", async () => {
+    const mockFetch = vi.mocked(fetch);
+    mockFetch.mockResolvedValue(new Response(null, { status: 201, headers: { "x-restli-id": "urn:li:share:999" } }));
+    await createPost({ accessToken: "at", authorUrn: "urn:li:organization:1", commentary: "Ship it (v2) #launch" });
+    const [, init] = mockFetch.mock.calls[0]!;
+    const body = JSON.parse((init as RequestInit).body as string) as { commentary: string };
+    expect(body.commentary).toBe("Ship it \\(v2\\) \\#launch");
   });
 });

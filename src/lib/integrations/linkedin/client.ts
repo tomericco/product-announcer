@@ -153,6 +153,14 @@ export async function listAdminOrganizations(accessToken: string): Promise<Linke
   return orgs;
 }
 
+// LinkedIn Posts API "commentary" is little-text format: these characters must
+// be backslash-escaped to render literally, else the post 422s or misrenders.
+// Backslash MUST be escaped first so we don't re-escape escapes we just added.
+const LITTLE_TEXT_RESERVED = /[\\|{}@\[\]()<>#*_~]/g;
+export function escapeLittleText(text: string): string {
+  return text.replace(LITTLE_TEXT_RESERVED, (ch) => `\\${ch}`);
+}
+
 export async function createPost(args: {
   accessToken: string;
   authorUrn: string;
@@ -162,7 +170,7 @@ export async function createPost(args: {
     method: "POST",
     body: JSON.stringify({
       author: args.authorUrn,
-      commentary: args.commentary,
+      commentary: escapeLittleText(args.commentary),
       visibility: "PUBLIC",
       distribution: { feedDistribution: "MAIN_FEED", targetEntities: [], thirdPartyDistributionChannels: [] },
       lifecycleState: "PUBLISHED",
