@@ -22,6 +22,22 @@ export async function GET(request: NextRequest) {
   };
 
   const errorUrl = new URL("/integrations?linkedin_connect=error", request.url);
+
+  // LinkedIn returns an OAuth error (e.g. unauthorized_scope_error,
+  // user_cancelled_login, redirect_uri mismatch) as `error`/`error_description`
+  // query params instead of a `code`. Surface it — both in the server log and
+  // to the UI via a `reason` param — rather than swallowing it into a generic
+  // failure, which is what made this hard to diagnose.
+  const oauthError = request.nextUrl.searchParams.get("error");
+  if (oauthError) {
+    const description = request.nextUrl.searchParams.get("error_description") ?? "(no description)";
+    console.error(`[linkedin oauth] authorization error: ${oauthError} — ${description}`);
+    const url = new URL("/integrations", request.url);
+    url.searchParams.set("linkedin_connect", "error");
+    url.searchParams.set("reason", description);
+    return clearStateCookie(NextResponse.redirect(url));
+  }
+
   if (
     !code ||
     parsed.tenantId !== session.user.tenantId ||
