@@ -7,6 +7,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { MoreHorizontal } from "lucide-react";
 import { generateInviteLink, removeMember, revokeInviteLink } from "./actions";
 import type { WorkspaceMember } from "@/lib/workspace/members";
 
@@ -69,6 +72,7 @@ export function MembersSection({
 }) {
   const router = useRouter();
   const [removingId, setRemovingId] = useState<string | null>(null);
+  const [memberToRemove, setMemberToRemove] = useState<WorkspaceMember | null>(null);
   const storageKey = `workspace-invite-link:${workspaceId}`;
   const storedUrl = useStoredInviteLink(storageKey);
   // `active` starts from the server's view and flips on generate/revoke, so a
@@ -120,13 +124,15 @@ export function MembersSection({
     }
   }
 
-  async function onRemove(member: WorkspaceMember) {
+  async function confirmRemove() {
+    if (!memberToRemove) return;
+    const member = memberToRemove;
     const label = member.name ?? member.email;
-    if (!window.confirm(`Remove ${label} from this workspace? They'll lose access immediately.`)) return;
     setRemovingId(member.userId);
     try {
       await removeMember(member.userId);
       toast.success(`Removed ${label}`);
+      setMemberToRemove(null);
       router.refresh();
     } catch {
       toast.error("Could not remove this member");
@@ -148,36 +154,51 @@ export function MembersSection({
               <TableHead>Email</TableHead>
               <TableHead>Role</TableHead>
               <TableHead>Joined</TableHead>
-              {isOwner && <TableHead className="text-right">Actions</TableHead>}
+              <TableHead className="w-10 text-right">
+                <span className="sr-only">Actions</span>
+              </TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {members.map((m) => {
               const joinedAt = new Date(m.createdAt);
+              const isSelf = m.userId === currentUserId;
               return (
                 <TableRow key={m.userId}>
-                  <TableCell>{m.name ?? "—"}</TableCell>
+                  <TableCell>
+                    {m.name ?? "—"}
+                    {isSelf && <span className="ml-2 text-xs text-muted-foreground">(You)</span>}
+                  </TableCell>
                   <TableCell className="text-muted-foreground">{m.email}</TableCell>
                   <TableCell className="capitalize">{m.role}</TableCell>
                   <TableCell className="text-muted-foreground" title={`${JOINED_DATETIME.format(joinedAt)} UTC`}>
                     {JOINED_DATE.format(joinedAt)}
                   </TableCell>
-                  {isOwner && (
-                    <TableCell className="text-right">
-                      {m.userId === currentUserId ? (
-                        <span className="text-xs text-muted-foreground">You</span>
-                      ) : (
-                        <Button
-                          variant="ghost"
-                          onClick={() => onRemove(m)}
-                          disabled={removingId === m.userId}
-                          className="h-8 px-2 text-destructive hover:text-destructive"
+                  <TableCell className="text-right">
+                    <DropdownMenu>
+                      <DropdownMenuTrigger
+                        render={
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            className="ml-auto"
+                            aria-label={`Options for ${m.name ?? m.email}`}
+                          />
+                        }
+                      >
+                        <MoreHorizontal />
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem
+                          variant="destructive"
+                          disabled={!isOwner || isSelf}
+                          onClick={() => setMemberToRemove(m)}
                         >
-                          {removingId === m.userId ? "Removing…" : "Remove"}
-                        </Button>
-                      )}
-                    </TableCell>
-                  )}
+                          Remove from workspace
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </TableCell>
                 </TableRow>
               );
             })}
@@ -211,6 +232,29 @@ export function MembersSection({
             </div>
           </div>
         )}
+
+        <Dialog
+          open={memberToRemove !== null}
+          onOpenChange={(open) => {
+            if (!open) setMemberToRemove(null);
+          }}
+        >
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Remove teammate</DialogTitle>
+              <DialogDescription>
+                Remove <strong>{memberToRemove?.name ?? memberToRemove?.email}</strong> from this workspace? They&apos;ll lose
+                access immediately. You can re-invite them later with an invite link.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <DialogClose render={<Button variant="outline" />}>Cancel</DialogClose>
+              <Button variant="destructive" onClick={confirmRemove} disabled={removingId !== null}>
+                {removingId !== null ? "Removing…" : "Remove"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </CardContent>
     </Card>
   );
