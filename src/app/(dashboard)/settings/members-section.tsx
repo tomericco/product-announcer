@@ -193,6 +193,7 @@ export function MembersSection({
                           variant="destructive"
                           disabled={!isOwner || isSelf}
                           onClick={() => setMemberToRemove(m)}
+                          className="cursor-pointer"
                         >
                           Remove
                         </DropdownMenuItem>
