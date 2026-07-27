@@ -82,6 +82,24 @@ describe("listChangeEvents", () => {
     expect(rows[0].atomicUpdateTitle).toBe("Atomic");
   });
 
+  it("uses taskTitle for a Notion task's title", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    currentTenantId = tenant.id;
+
+    await db.insert(changeEvents).values({
+      tenantId: tenant.id,
+      repoId: null,
+      type: "task",
+      provider: "notion",
+      externalId: "page-title-1",
+      taskTitle: "Fix SSO login",
+      userFacing: true,
+    });
+
+    const rows = await listChangeEvents({});
+    expect(rows.map((r) => r.title)).toEqual(["Fix SSO login"]);
+  });
+
   it("hides an unassigned filterReason-set event by default, shows it with showHidden", async () => {
     const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
     currentTenantId = tenant.id;

@@ -92,6 +92,7 @@ export async function listChangeEvents(filters: ChangeEventFilters): Promise<Cha
       provider: changeEvents.provider,
       prTitle: changeEvents.prTitle,
       commitMessage: changeEvents.commitMessage,
+      taskTitle: changeEvents.taskTitle,
       externalUrl: changeEvents.externalUrl,
       createdAt: changeEvents.createdAt,
       atomicUpdateId: changeEvents.atomicUpdateId,
@@ -107,7 +108,7 @@ export async function listChangeEvents(filters: ChangeEventFilters): Promise<Cha
 
   return rows.map((row) => {
     const firstLine = row.commitMessage?.split("\n")[0]?.trim();
-    const title = row.prTitle ?? firstLine ?? "Untitled";
+    const title = row.prTitle ?? firstLine ?? row.taskTitle ?? "Untitled";
     return {
       id: row.id,
       type: row.type,

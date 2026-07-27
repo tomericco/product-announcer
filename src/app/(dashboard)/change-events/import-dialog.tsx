@@ -7,8 +7,12 @@ import {
   importCommits,
   listImportablePullRequests,
   importPullRequests,
+  listImportableTasks,
+  importTasks,
   type ImportableCommit,
   type ImportablePullRequest,
+  type ImportableTask,
+  type TaskSelection,
 } from "./import-actions";
 import type { ImportRepo } from "./actions";
 import type { CommitSelection } from "@/lib/change-events/import-commits";
@@ -79,11 +83,13 @@ export function ImportDialog({
   repos,
   trigger,
   title = "Import",
-  description = "From commits or PRs for now — Notion tasks are next.",
+  description = "From commits, PRs, or Notion tasks.",
   commitSubmit,
   pullRequestSubmit,
   submitLabel,
   resolveErrorMessage,
+  enableTasks = false,
+  notionConnected = false,
 }: {
   repos: ImportRepo[];
   // A ReactElement (not ReactNode) — DialogTrigger's `render` requires a single
@@ -95,12 +101,15 @@ export function ImportDialog({
   pullRequestSubmit?: (selections: PullRequestSelection[]) => Promise<void>;
   submitLabel?: (opts: { type: PickerType; count: number; submitting: boolean }) => string;
   resolveErrorMessage?: (error: unknown) => string;
+  enableTasks?: boolean;
+  notionConnected?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<string>(ALL);
   const [pickerType, setPickerType] = useState<PickerType>("commit");
   const [commits, setCommits] = useState<ImportableCommit[]>([]);
   const [pullRequests, setPullRequests] = useState<ImportablePullRequest[]>([]);
+  const [tasks, setTasks] = useState<ImportableTask[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -108,16 +117,23 @@ export function ImportDialog({
   const [before, setBefore] = useState("");
   const [selectedCommits, setSelectedCommits] = useState<Map<string, CommitSelection>>(new Map());
   const [selectedPRs, setSelectedPRs] = useState<Map<string, PullRequestSelection>>(new Map());
+  const [selectedTasks, setSelectedTasks] = useState<Map<string, TaskSelection>>(new Map());
   const [submitting, setSubmitting] = useState(false);
 
   const repoIds = activeTab === ALL ? repos.map((r) => r.id) : [activeTab];
 
   const load = useCallback(async () => {
-    if (repoIds.length === 0) return;
+    if (pickerType !== "task" && repoIds.length === 0) return;
     setLoading(true);
     setError(null);
     try {
-      if (pickerType === "pull_request") {
+      if (pickerType === "task") {
+        const { tasks } = await listImportableTasks({
+          since: after ? `${after}T00:00:00Z` : undefined,
+          until: before ? `${before}T23:59:59Z` : undefined,
+        });
+        setTasks(tasks);
+      } else if (pickerType === "pull_request") {
         const { pullRequests } = await listImportablePullRequests({
           repoIds,
           since: after ? `${after}T00:00:00Z` : undefined,
@@ -133,7 +149,10 @@ export function ImportDialog({
         setCommits(commits);
       }
     } catch {
-      if (pickerType === "pull_request") {
+      if (pickerType === "task") {
+        setTasks([]);
+        setError("Couldn't load tasks. Try again.");
+      } else if (pickerType === "pull_request") {
         setPullRequests([]);
         setError("Couldn't load pull requests. Try again.");
       } else {
@@ -158,6 +177,7 @@ export function ImportDialog({
   function reset() {
     setSelectedCommits(new Map());
     setSelectedPRs(new Map());
+    setSelectedTasks(new Map());
     setSearch("");
     setAfter("");
     setBefore("");
@@ -178,24 +198,32 @@ export function ImportDialog({
     (async (sel: PullRequestSelection[]) => {
       await importPullRequests({ selections: sel });
     });
+  const doTaskSubmit = async (sel: TaskSelection[]) => {
+    await importTasks({ selections: sel });
+  };
   const labelFor =
     submitLabel ??
     (({ type, count, submitting: isSubmitting }: { type: PickerType; count: number; submitting: boolean }) =>
       isSubmitting
         ? "Importing…"
-        : type === "pull_request"
-          ? `Import ${count} PR${count === 1 ? "" : "s"}`
-          : `Import ${count} commit${count === 1 ? "" : "s"}`);
+        : type === "task"
+          ? `Import ${count} task${count === 1 ? "" : "s"}`
+          : type === "pull_request"
+            ? `Import ${count} PR${count === 1 ? "" : "s"}`
+            : `Import ${count} commit${count === 1 ? "" : "s"}`);
   const errorFor =
     resolveErrorMessage ??
     (() => "Import succeeded but something went wrong finishing up. It will retry automatically.");
 
   async function onImport() {
-    const selectedCount = pickerType === "pull_request" ? selectedPRs.size : selectedCommits.size;
+    const selectedCount =
+      pickerType === "task" ? selectedTasks.size : pickerType === "pull_request" ? selectedPRs.size : selectedCommits.size;
     if (selectedCount === 0) return;
     setSubmitting(true);
     try {
-      if (pickerType === "pull_request") {
+      if (pickerType === "task") {
+        await doTaskSubmit(Array.from(selectedTasks.values()));
+      } else if (pickerType === "pull_request") {
         await doPullRequestSubmit(Array.from(selectedPRs.values()));
       } else {
         await doCommitSubmit(Array.from(selectedCommits.values()));
@@ -253,8 +281,26 @@ export function ImportDialog({
     badge: pr.imported ? "Imported" : undefined,
   }));
 
-  const rows: PickerRow[] = pickerType === "pull_request" ? prRows : commitRows;
-  const selectedCount = pickerType === "pull_request" ? selectedPRs.size : selectedCommits.size;
+  const taskRows: PickerRow[] = tasks.map((t) => ({
+    key: t.pageId,
+    title: t.title || "(untitled task)",
+    meta: (
+      <>
+        {t.status && <>{t.status} · </>}
+        {t.completedAt &&
+          new Date(t.completedAt).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}
+      </>
+    ),
+    externalUrl: t.url || null,
+    locked: t.imported,
+    badge: t.imported ? "Imported" : undefined,
+  }));
+
+  const rows: PickerRow[] =
+    pickerType === "task" ? taskRows : pickerType === "pull_request" ? prRows : commitRows;
+  const selectedCount =
+    pickerType === "task" ? selectedTasks.size : pickerType === "pull_request" ? selectedPRs.size : selectedCommits.size;
+  const enabledTypes: PickerType[] = enableTasks ? ["commit", "pull_request", "task"] : ["commit", "pull_request"];
 
   return (
     <Dialog
@@ -267,7 +313,7 @@ export function ImportDialog({
       <DialogTrigger
         render={
           trigger ?? (
-            <Button variant="outline" disabled={repos.length === 0}>
+            <Button variant="outline" disabled={repos.length === 0 && !enableTasks}>
               <Download />
               Import
             </Button>
@@ -286,15 +332,45 @@ export function ImportDialog({
             setPickerType(t);
             setSelectedCommits(new Map());
             setSelectedPRs(new Map());
+            setSelectedTasks(new Map());
           }}
-          enabledTypes={["commit", "pull_request"]}
+          enabledTypes={enabledTypes}
           rows={rows}
           loading={loading}
           error={error}
-          emptyLabel={pickerType === "pull_request" ? "No pull requests found." : "No commits found."}
-          selected={new Set(pickerType === "pull_request" ? selectedPRs.keys() : selectedCommits.keys())}
+          emptyLabel={
+            pickerType === "task"
+              ? notionConnected
+                ? "No completed tasks found."
+                : "Connect Notion to import tasks."
+              : pickerType === "pull_request"
+                ? "No pull requests found."
+                : "No commits found."
+          }
+          selected={
+            new Set(
+              pickerType === "task"
+                ? selectedTasks.keys()
+                : pickerType === "pull_request"
+                  ? selectedPRs.keys()
+                  : selectedCommits.keys()
+            )
+          }
           onSelectedChange={(nextKeys) => {
-            if (pickerType === "pull_request") {
+            if (pickerType === "task") {
+              setSelectedTasks((prev) => {
+                const byKey = new Map<string, TaskSelection>();
+                for (const t of tasks) {
+                  byKey.set(t.pageId, { pageId: t.pageId, title: t.title, url: t.url, completedAt: t.completedAt });
+                }
+                const next = new Map<string, TaskSelection>();
+                for (const key of nextKeys) {
+                  const entry = prev.get(key) ?? byKey.get(key);
+                  if (entry) next.set(key, entry);
+                }
+                return next;
+              });
+            } else if (pickerType === "pull_request") {
               setSelectedPRs((prev) => {
                 const byKey = new Map<string, PullRequestSelection>();
                 for (const pr of pullRequests) {
@@ -337,18 +413,26 @@ export function ImportDialog({
           }}
           search={search}
           onSearchChange={setSearch}
-          searchPlaceholder={pickerType === "pull_request" ? "Search PR titles…" : "Search commit messages…"}
+          searchPlaceholder={
+            pickerType === "task"
+              ? "Search task titles…"
+              : pickerType === "pull_request"
+                ? "Search PR titles…"
+                : "Search commit messages…"
+          }
           filtersSlot={
-            <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as string)}>
-              <TabsList className="h-auto max-w-full flex-wrap">
-                <TabsTrigger value={ALL}>All</TabsTrigger>
-                {repos.map((r) => (
-                  <TabsTrigger key={r.id} value={r.id}>
-                    {r.fullName.split("/").pop()}
-                  </TabsTrigger>
-                ))}
-              </TabsList>
-            </Tabs>
+            pickerType === "task" ? null : (
+              <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as string)}>
+                <TabsList className="h-auto max-w-full flex-wrap">
+                  <TabsTrigger value={ALL}>All</TabsTrigger>
+                  {repos.map((r) => (
+                    <TabsTrigger key={r.id} value={r.id}>
+                      {r.fullName.split("/").pop()}
+                    </TabsTrigger>
+                  ))}
+                </TabsList>
+              </Tabs>
+            )
           }
           inlineFilters={
             <>

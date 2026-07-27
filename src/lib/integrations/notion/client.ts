@@ -21,14 +21,19 @@ export class NotionApiError extends Error {
   }
 }
 
-async function request<T>(token: string, path: string, init: RequestInit = {}): Promise<T> {
+async function request<T>(
+  token: string,
+  path: string,
+  init: RequestInit = {},
+  notionVersion: string = NOTION_VERSION
+): Promise<T> {
   let response: Response;
   try {
     response = await fetch(`${BASE_URL}${path}`, {
       ...init,
       headers: {
         accept: "application/json",
-        "Notion-Version": NOTION_VERSION,
+        "Notion-Version": notionVersion,
         ...(init.body ? { "content-type": "application/json" } : {}),
         ...(init.headers ?? {}),
         Authorization: `Bearer ${token}`,
@@ -138,4 +143,67 @@ export async function getPageBodyText(token: string, pageId: string): Promise<st
     cursor = data.next_cursor;
   }
   return parts.join("\n").trim();
+}
+
+const DATA_SOURCE_VERSION = "2025-09-03";
+
+export type NotionTaskSummary = {
+  pageId: string;
+  title: string;
+  url: string;
+  status: string | null;
+  lastEditedTime: string | null;
+};
+
+// A Notion database currently maps to one data source in this app's workspaces.
+// The 2025-09-03 API exposes them; the older DB-query endpoint returns the wrong
+// one, so listing must go through the data source.
+export async function resolveDataSourceId(token: string, databaseId: string): Promise<string> {
+  const data = await request<{ data_sources?: { id: string; name?: string }[] }>(
+    token,
+    `/v1/databases/${databaseId}`,
+    {},
+    DATA_SOURCE_VERSION
+  );
+  const first = data.data_sources?.[0];
+  if (!first) throw new NotionApiError(404, `Notion database ${databaseId} has no data sources`);
+  return first.id;
+}
+
+type RawTaskResult = {
+  id: string;
+  url?: string;
+  last_edited_time?: string;
+  properties?: Record<string, RawProperty>;
+};
+
+export async function listDoneTasks(
+  token: string,
+  dataSourceId: string,
+  statusPropertyName: string,
+  doneValues: string[]
+): Promise<NotionTaskSummary[]> {
+  if (doneValues.length === 0) return [];
+  const body = {
+    // Notion's status filter takes a single `equals`; OR them for multiple done values.
+    filter: { or: doneValues.map((value) => ({ property: statusPropertyName, status: { equals: value } })) },
+    sorts: [{ timestamp: "last_edited_time", direction: "descending" }],
+    // Single page (spec: no deep pagination in v1).
+    page_size: 100,
+  };
+  const data = await request<{ results: RawTaskResult[] }>(
+    token,
+    `/v1/data_sources/${dataSourceId}/query`,
+    { method: "POST", body: JSON.stringify(body) },
+    DATA_SOURCE_VERSION
+  );
+  return data.results.map((r) => {
+    let title = "";
+    let status: string | null = null;
+    for (const [name, prop] of Object.entries(r.properties ?? {})) {
+      if (prop.type === "title") title = plainText(prop.title);
+      if (name === statusPropertyName) status = prop.status?.name ?? prop.select?.name ?? null;
+    }
+    return { pageId: r.id, title, url: r.url ?? "", status, lastEditedTime: r.last_edited_time ?? null };
+  });
 }

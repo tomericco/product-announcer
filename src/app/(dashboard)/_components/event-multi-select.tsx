@@ -13,7 +13,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
-export type PickerType = "commit" | "pull_request";
+export type PickerType = "commit" | "pull_request" | "task";
 
 export type PickerRow = {
   key: string; // unique selection key
@@ -24,7 +24,7 @@ export type PickerRow = {
   badge?: React.ReactNode; // right-side badge
 };
 
-const TYPE_LABEL: Record<PickerType, string> = { commit: "Commits", pull_request: "PRs" };
+const TYPE_LABEL: Record<PickerType, string> = { commit: "Commits", pull_request: "PRs", task: "Tasks" };
 
 export function EventMultiSelect({
   activeType,
@@ -151,9 +151,6 @@ export function EventMultiSelect({
                 {TYPE_LABEL[t]}
               </SelectItem>
             ))}
-            <SelectItem value="task" disabled>
-              Tasks — soon
-            </SelectItem>
           </SelectContent>
         </Select>
         {inlineFilters}

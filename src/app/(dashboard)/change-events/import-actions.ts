@@ -8,11 +8,14 @@
 import { and, eq, inArray, ne } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { db } from "@/db";
-import { changeEvents, repos } from "@/db/schema";
+import { changeEvents, repos, notionConnections } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { getCommitDiff, listRepoCommits, listRepoPullRequests } from "@/lib/integrations/github/github";
+import { withFreshToken } from "@/lib/integrations/notion/connection";
+import { resolveDataSourceId, listDoneTasks, getPageBodyText } from "@/lib/integrations/notion/client";
 import { importSelectedCommits, type CommitSelection } from "@/lib/change-events/import-commits";
 import { importSelectedPullRequests, type PullRequestSelection } from "@/lib/change-events/import-pull-requests";
+import { importSelectedTasks } from "@/lib/change-events/import-notion-tasks";
 import {
   createAtomicUpdateFromImportedCommits,
   createAtomicUpdateFromImportedPullRequests,
@@ -263,4 +266,106 @@ export async function addPullRequestsToAtomicUpdate(input: {
   revalidatePath("/atomic-updates");
   revalidatePath("/change-events");
   return result;
+}
+
+export type ImportableTask = {
+  pageId: string;
+  title: string;
+  url: string;
+  completedAt: string | null; // last_edited_time proxy
+  status: string | null;
+  imported: boolean;
+};
+
+export type TaskSelection = {
+  pageId: string;
+  title: string;
+  url: string;
+  completedAt: string | null;
+};
+
+async function activeNotionConnection(tenantId: string) {
+  const [conn] = await db
+    .select()
+    .from(notionConnections)
+    .where(and(eq(notionConnections.tenantId, tenantId), eq(notionConnections.status, "active")))
+    .limit(1);
+  return conn ?? null;
+}
+
+export async function isNotionConnected(): Promise<boolean> {
+  const session = await requireSession();
+  return (await activeNotionConnection(session.user.tenantId)) !== null;
+}
+
+export async function listImportableTasks(input: {
+  since?: string;
+  until?: string;
+}): Promise<{ tasks: ImportableTask[] }> {
+  const session = await requireSession();
+  const conn = await activeNotionConnection(session.user.tenantId);
+  if (!conn || !conn.databaseId || !conn.statusPropertyName || conn.doneValues.length === 0) {
+    return { tasks: [] };
+  }
+
+  // A Notion API failure here throws; the dialog's load() catches it and shows
+  // "Couldn't load tasks." No active connection is NOT an error — it returns [].
+  const summaries = await withFreshToken(db, conn, async (token) => {
+    const dataSourceId = await resolveDataSourceId(token, conn.databaseId!);
+    return listDoneTasks(token, dataSourceId, conn.statusPropertyName!, conn.doneValues);
+  });
+
+  const since = input.since ? Date.parse(input.since) : null;
+  const until = input.until ? Date.parse(input.until) : null;
+  const filtered = summaries.filter((t) => {
+    if (!t.lastEditedTime) return true; // keep undated
+    const ts = Date.parse(t.lastEditedTime);
+    if (since !== null && ts < since) return false;
+    if (until !== null && ts > until) return false;
+    return true;
+  });
+
+  const pageIds = filtered.map((t) => t.pageId);
+  const existing = pageIds.length
+    ? await db
+        .select({ externalId: changeEvents.externalId })
+        .from(changeEvents)
+        .where(
+          and(
+            eq(changeEvents.tenantId, session.user.tenantId),
+            eq(changeEvents.provider, "notion"),
+            inArray(changeEvents.externalId, pageIds),
+            ne(changeEvents.status, "excluded")
+          )
+        )
+    : [];
+  const importedIds = new Set(existing.map((e) => e.externalId));
+
+  const tasks = filtered.map((t) => ({
+    pageId: t.pageId,
+    title: t.title,
+    url: t.url,
+    completedAt: t.lastEditedTime,
+    status: t.status,
+    imported: importedIds.has(t.pageId),
+  }));
+  return { tasks };
+}
+
+export async function importTasks(input: {
+  selections: TaskSelection[];
+}): Promise<{ importedCount: number }> {
+  const session = await requireSession();
+  const conn = await activeNotionConnection(session.user.tenantId);
+  if (!conn) return { importedCount: 0 };
+
+  const getBody = (pageId: string) => withFreshToken(db, conn, (token) => getPageBodyText(token, pageId));
+  const { importedCount } = await importSelectedTasks(
+    { tenantId: session.user.tenantId, selections: input.selections },
+    getBody
+  );
+
+  revalidatePath("/change-events");
+  revalidatePath("/atomic-updates");
+  return { importedCount };
 }
