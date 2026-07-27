@@ -7,6 +7,7 @@ import { requireSession } from "@/lib/workspace/session";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { reviewStatusLabel } from "@/lib/ai/review-status";
+import { formatShortDate } from "@/lib/utils";
 import { DraftRowMenu } from "./draft-row-menu";
 import {
   EmptyState,
@@ -93,7 +94,7 @@ export default async function DraftsPage() {
               className="shrink-0 text-sm text-muted-foreground"
               title={d.createdAt.toLocaleString()}
             >
-              {d.createdAt.toLocaleDateString()}
+              {formatShortDate(d.createdAt)}
             </span>
             <div className="relative shrink-0">
               <DraftRowMenu

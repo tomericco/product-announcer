@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { History } from "lucide-react";
 import { getReleaseDetail, type ReleaseDetail } from "./actions";
+import { formatShortDate } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import {
@@ -81,7 +82,7 @@ export function HistoryList({ rows }: { rows: HistoryRow[] }) {
               {r.delivered.length > 0 ? r.delivered.slice().sort().join(", ") : "—"}
             </span>
             <span className="shrink-0 text-sm text-muted-foreground">
-              {r.publishedAt ? new Date(r.publishedAt).toLocaleDateString() : ""}
+              {r.publishedAt ? formatShortDate(new Date(r.publishedAt)) : ""}
             </span>
           </button>
         ))}

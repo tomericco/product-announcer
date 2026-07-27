@@ -15,6 +15,7 @@ import { DraftEditorProvider, SourceToggleButton } from "./draft-editor-context"
 import { SaveChangesButton, RejectButton } from "./draft-submit-buttons";
 import { PublishDialog } from "./publish-dialog";
 import { CatchUpBanner } from "./catch-up-banner";
+import { WebflowCodeWarning } from "./webflow-code-warning";
 import { listPublishTargets } from "@/lib/publishing/dispatch";
 import { linkedinDestination } from "@/lib/publishing/destinations/linkedin";
 import { slugify } from "@/lib/publishing/slug";
@@ -84,12 +85,7 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
           </div>
         )}
 
-        {showCodeWarning && (
-          <p className="rounded-md border border-amber-500/50 bg-amber-500/10 p-2 text-sm">
-            This draft contains a code block. Webflow&apos;s rich text field doesn&apos;t support code
-            blocks, so it will be published as plain formatted text.
-          </p>
-        )}
+        {showCodeWarning && <WebflowCodeWarning releaseId={update.id} />}
 
         {delta.count > 0 && <CatchUpBanner count={delta.count} releaseId={update.id} />}
 

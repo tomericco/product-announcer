@@ -10,8 +10,8 @@ import { RepoBranchSelect } from "./repo-branch-select";
 import { ToastForm } from "../settings/toast-form";
 import { WebhookConfigForm } from "./webhook-config-form";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ComingSoonCard } from "./coming-soon-card";
 import { WebflowForm } from "./webflow-form";
 import { NotionForm } from "./notion-form";
 import { LinkedinForm } from "./linkedin-form";
@@ -210,13 +210,11 @@ export default async function IntegrationsPage({
         </Card>
       </section>
 
-      <section className="space-y-2">
+      <section className="space-y-4">
         <h2 className="font-medium">Coming soon</h2>
-        <div className="flex flex-wrap gap-2">
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {COMING_SOON.map((name) => (
-            <Badge key={name} variant="outline" className="opacity-60">
-              {name}
-            </Badge>
+            <ComingSoonCard key={name} name={name} />
           ))}
         </div>
       </section>
