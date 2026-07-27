@@ -18,6 +18,7 @@ import {
   markdownShortcutPlugin,
   toolbarPlugin,
   viewMode$,
+  activeEditor$,
   usePublisher,
   useCellValue,
   BoldItalicUnderlineToggles,
@@ -26,8 +27,18 @@ import {
   CreateLink,
   InsertImage,
   InsertCodeBlock,
+  type MDXEditorMethods,
 } from "@mdxeditor/editor";
+import { Sparkles } from "lucide-react";
+import {
+  $getSelection,
+  $isRangeSelection,
+  $setSelection,
+  type LexicalEditor,
+  type RangeSelection,
+} from "lexical";
 import { useDraftEditorBridge } from "./draft-editor-context";
+import { useAgentEdit, type EditorOps } from "./agent-edit-context";
 
 // Small set of common languages for the CodeMirror code-block editor. The
 // underlying descriptor matches any fenced code block without "meta" text
@@ -189,7 +200,7 @@ function ViewModeBridge() {
   return null;
 }
 
-function EditorSurfaces() {
+function EditorSurfaces({ editorRef }: { editorRef: React.RefObject<MDXEditorMethods | null> }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const { mode, pos, selectionSurfaceRef, insertSurfaceRef } = useSelectionSurface(hostRef);
 
@@ -202,6 +213,7 @@ function EditorSurfaces() {
   return (
     <>
       <ViewModeBridge />
+      <AgentEditBridge editorRef={editorRef} />
 
       {/* Anchor: not visible itself; gives the hook an offsetParent to measure against. */}
       <div ref={hostRef} className="mdx-surface-anchor" />
@@ -217,6 +229,7 @@ function EditorSurfaces() {
         <BlockTypeSelect />
         <ListsToggle />
         <CreateLink />
+        <AskAiSelectionButton />
       </div>
 
       <div
@@ -233,6 +246,74 @@ function EditorSurfaces() {
   );
 }
 
+/**
+ * Registers imperative editor ops (used by the Ask AI modal) into the agent-edit
+ * context. Lives inside the MDXEditor realm so it can reach the Lexical editor
+ * for deterministic selection capture/restore — the modal steals focus, so we
+ * can't rely on the live DOM selection surviving.
+ */
+function AgentEditBridge({ editorRef }: { editorRef: React.RefObject<MDXEditorMethods | null> }) {
+  const activeEditor = useCellValue(activeEditor$);
+  const { registerOps } = useAgentEdit();
+  const activeEditorRef = useRef<LexicalEditor | null>(null);
+  const savedSelection = useRef<RangeSelection | null>(null);
+
+  useEffect(() => {
+    activeEditorRef.current = activeEditor;
+  }, [activeEditor]);
+
+  useEffect(() => {
+    const ops: EditorOps = {
+      captureSelection: () => {
+        const editor = activeEditorRef.current;
+        if (editor) {
+          editor.getEditorState().read(() => {
+            const sel = $getSelection();
+            savedSelection.current = $isRangeSelection(sel) ? sel.clone() : null;
+          });
+        }
+        return editorRef.current?.getSelectionMarkdown() ?? "";
+      },
+      replaceSelection: (markdown: string) => {
+        const editor = activeEditorRef.current;
+        const saved = savedSelection.current;
+        if (!editor || !saved) return;
+        // Restore the captured range, then insertMarkdown replaces it:
+        // MDXEditor's insertMarkdown$ reads $getSelection() and $insertNodes()
+        // over a non-collapsed range, which deletes the selected content first.
+        editor.update(() => {
+          $setSelection(saved.clone());
+        });
+        editorRef.current?.insertMarkdown(markdown);
+      },
+      setBody: (markdown: string) => editorRef.current?.setMarkdown(markdown),
+      getMarkdown: () => editorRef.current?.getMarkdown() ?? "",
+    };
+    registerOps(ops);
+    return () => registerOps(null);
+  }, [registerOps, editorRef]);
+
+  return null;
+}
+
+/** "Ask AI" button in the selection popover — opens the modal scoped to the
+ * highlighted text. The surface's onMouseDown={preserveSelection} keeps the
+ * selection alive through the click, so captureSelection sees it. */
+function AskAiSelectionButton() {
+  const { openSelectionEdit } = useAgentEdit();
+  return (
+    <button
+      type="button"
+      title="Ask AI to edit the selection"
+      aria-label="Ask AI to edit the selection"
+      onClick={() => openSelectionEdit()}
+      className="ml-1 flex items-center gap-1 rounded border-l border-border/60 pl-2 pr-1 text-muted-foreground transition-colors hover:text-foreground"
+    >
+      <Sparkles className="size-3.5" />
+    </button>
+  );
+}
+
 export default function MdxEditor({
   markdown,
   onChange,
@@ -243,6 +324,7 @@ export default function MdxEditor({
   onChange: (md: string, initialMarkdownNormalize: boolean) => void;
 }) {
   const [parseError, setParseError] = useState<string | null>(null);
+  const editorRef = useRef<MDXEditorMethods>(null);
 
   return (
     <div className="w-full space-y-2">
@@ -253,6 +335,7 @@ export default function MdxEditor({
         </p>
       )}
       <MDXEditor
+        ref={editorRef}
         markdown={markdown}
         onChange={onChange}
         onError={({ error, source }) => {
@@ -281,7 +364,7 @@ export default function MdxEditor({
           markdownShortcutPlugin(),
           toolbarPlugin({
             toolbarClassName: "mdx-toolbar-host",
-            toolbarContents: () => <EditorSurfaces />,
+            toolbarContents: () => <EditorSurfaces editorRef={editorRef} />,
           }),
         ]}
       />
