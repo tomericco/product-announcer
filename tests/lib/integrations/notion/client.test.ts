@@ -4,6 +4,8 @@ import {
   getDatabaseProperties,
   getPage,
   getPageBodyText,
+  resolveDataSourceId,
+  listDoneTasks,
   NotionApiError,
 } from "../../../../src/lib/integrations/notion/client";
 
@@ -109,5 +111,63 @@ describe("notion client", () => {
     expect(await getPageBodyText("tok", "page-1")).toBe("one\ntwo");
     expect(vi.mocked(fetch).mock.calls.length).toBe(2);
     expect(String(vi.mocked(fetch).mock.calls[1][0])).toContain("start_cursor=cur-2");
+  });
+
+  it("resolves the data source id from a database (2025-09-03)", async () => {
+    vi.mocked(fetch).mockResolvedValue(jsonResponse({ data_sources: [{ id: "ds-1", name: "Tasks" }] }));
+    const id = await resolveDataSourceId("tok", "db-1");
+    expect(id).toBe("ds-1");
+    const [url, init] = vi.mocked(fetch).mock.calls[0];
+    expect(url).toBe("https://api.notion.com/v1/databases/db-1");
+    expect((init?.headers as Record<string, string>)["Notion-Version"]).toBe("2025-09-03");
+  });
+
+  it("throws NotionApiError when a database has no data sources", async () => {
+    vi.mocked(fetch).mockResolvedValue(jsonResponse({ data_sources: [] }));
+    await expect(resolveDataSourceId("tok", "db-1")).rejects.toBeInstanceOf(NotionApiError);
+  });
+
+  it("lists Done tasks via the data-source query, filtered by doneValues", async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      jsonResponse({
+        results: [
+          {
+            id: "page-1",
+            url: "https://notion.so/page-1",
+            last_edited_time: "2026-07-25T18:03:00.000Z",
+            properties: {
+              Name: { type: "title", title: [{ plain_text: "Fix SSO 502" }] },
+              Status: { type: "status", status: { name: "Done" } },
+            },
+          },
+        ],
+      })
+    );
+    const tasks = await listDoneTasks("tok", "ds-1", "Status", ["Done", "Shipped"]);
+    expect(tasks).toEqual([
+      {
+        pageId: "page-1",
+        title: "Fix SSO 502",
+        url: "https://notion.so/page-1",
+        status: "Done",
+        lastEditedTime: "2026-07-25T18:03:00.000Z",
+      },
+    ]);
+    const [url, init] = vi.mocked(fetch).mock.calls[0];
+    expect(url).toBe("https://api.notion.com/v1/data_sources/ds-1/query");
+    expect((init?.headers as Record<string, string>)["Notion-Version"]).toBe("2025-09-03");
+    const body = JSON.parse(init?.body as string);
+    expect(body.filter).toEqual({
+      or: [
+        { property: "Status", status: { equals: "Done" } },
+        { property: "Status", status: { equals: "Shipped" } },
+      ],
+    });
+    expect(body.sorts).toEqual([{ timestamp: "last_edited_time", direction: "descending" }]);
+  });
+
+  it("returns [] for empty doneValues without calling fetch", async () => {
+    expect(await listDoneTasks("tok", "ds-1", "Status", [])).toEqual([]);
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
   });
 });
