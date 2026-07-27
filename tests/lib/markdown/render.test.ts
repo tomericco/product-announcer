@@ -31,4 +31,29 @@ describe("renderMarkdown", () => {
     expect(html).toContain('href="https://example.com"');
     expect(html).toContain('rel="noopener noreferrer"');
   });
+
+  it("neutralizes a javascript: image src but keeps the alt text", () => {
+    const html = renderMarkdown("![alt](javascript:alert(1))");
+    expect(html).not.toContain("javascript:");
+    expect(html).toContain("alt");
+    expect(html).toContain('src=""');
+  });
+
+  it("keeps a normal image src", () => {
+    const html = renderMarkdown("![a](https://ex.com/i.png)");
+    expect(html).toContain('src="https://ex.com/i.png"');
+  });
+
+  it("neutralizes a protocol-relative link href", () => {
+    const html = renderMarkdown("[x](//evil.com)");
+    expect(html).toContain('href=""');
+  });
+
+  it("keeps a normal relative link and an anchor link", () => {
+    const relative = renderMarkdown("[a](/path)");
+    expect(relative).toContain('href="/path"');
+
+    const anchor = renderMarkdown("[a](#section)");
+    expect(anchor).toContain('href="#section"');
+  });
 });
