@@ -31,7 +31,7 @@ function ErrorBanner({ message }: { message: string }) {
   );
 }
 
-export async function LinkedinForm() {
+export async function LinkedinForm({ connectError }: { connectError?: string | null }) {
   const session = await requireSession();
   const [connection] = await db
     .select()
@@ -46,6 +46,7 @@ export async function LinkedinForm() {
         {connection?.status === "needs_reauth" && <Badge variant="destructive">Needs reconnect</Badge>}
       </CardHeader>
       <CardContent className="space-y-4">
+        {connectError && <ErrorBanner message={connectError} />}
         {await renderStep(connection)}
         {connection && connection.status !== "needs_reauth" && (
           <div className="pt-2">

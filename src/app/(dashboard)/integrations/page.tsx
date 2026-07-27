@@ -126,11 +126,6 @@ export default async function IntegrationsPage({
     <div className="space-y-10">
       <section className="space-y-4">
         <h1 className="text-xl font-semibold">Integrations</h1>
-        {linkedinError && (
-          <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            LinkedIn: {linkedinError}
-          </div>
-        )}
         <Card>
           <CardHeader>
             <CardTitle>Generic Webhook</CardTitle>
@@ -149,7 +144,7 @@ export default async function IntegrationsPage({
         </Suspense>
 
         <Suspense fallback={<LinkedinFormSkeleton />}>
-          <LinkedinForm />
+          <LinkedinForm connectError={linkedinError} />
         </Suspense>
 
         <Card>
