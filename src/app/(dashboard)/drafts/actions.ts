@@ -108,6 +108,7 @@ export async function approveDraft(formData: FormData) {
         title: formData.get("title") as string,
         body: resolveBody(formData.get("body") as string, existing.body),
         editedBy: session.user.id,
+        publishedBy: session.user.id,
         status: "published",
         publishedAt: new Date(),
       })
@@ -180,7 +181,7 @@ export async function publishDraft(formData: FormData) {
   const [changed] = await db.transaction(async (tx) => {
     const rows = await tx
       .update(releases)
-      .set({ status: "published", publishedAt: new Date() })
+      .set({ status: "published", publishedAt: new Date(), publishedBy: session.user.id })
       .where(
         and(
           eq(releases.id, releaseId),

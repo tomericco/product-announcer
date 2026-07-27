@@ -270,6 +270,7 @@ export const releases = pgTable("releases", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   publishedAt: timestamp("published_at", { withTimezone: true }),
   editedBy: uuid("edited_by").references(() => users.id),
+  publishedBy: uuid("published_by").references(() => users.id),
   reviewStatus: reviewStatusEnum("review_status"),
   reviewIssues: jsonb("review_issues").$type<string[]>().notNull().default([]),
   reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
