@@ -1,0 +1,2 @@
+ALTER TABLE "releases" ADD COLUMN "published_by" uuid;--> statement-breakpoint
+ALTER TABLE "releases" ADD CONSTRAINT "releases_published_by_users_id_fk" FOREIGN KEY ("published_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;

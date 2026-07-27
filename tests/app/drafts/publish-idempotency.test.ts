@@ -112,6 +112,7 @@ describe("draft publish idempotency (approveDraft / publishDraft)", () => {
       const row = await rowFor(update.id);
       expect(row.status).toBe("published");
       expect(row.publishedAt).not.toBeNull();
+      expect(row.publishedBy).toBe(user.id);
 
       const deliveries = await deliveriesFor(update.id);
       expect(deliveries).toHaveLength(1);
@@ -227,6 +228,7 @@ describe("draft publish idempotency (approveDraft / publishDraft)", () => {
       const row = await rowFor(update.id);
       expect(row.status).toBe("published");
       expect(row.publishedAt).not.toBeNull();
+      expect(row.publishedBy).toBe(user.id);
 
       const deliveries = await deliveriesFor(update.id);
       expect(deliveries).toHaveLength(1);
