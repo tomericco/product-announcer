@@ -21,13 +21,13 @@ import { requestAgentEdit, saveDraftBody } from "./actions";
 /**
  * Shared "Ask AI" modal for both entry points. Reads the live editor body,
  * asks the agent, applies the result (surgical splice for selection mode, full
- * replace for whole mode), persists it, and clears the body's dirty flag — all
- * behind a compose-style spinner. Rendered once at page level; open state and
- * mode come from the agent-edit context.
+ * replace for whole mode), persists the committed body, and re-syncs dirty
+ * tracking — all behind a compose-style spinner. Rendered once at page level;
+ * open state and mode come from the agent-edit context.
  */
 export function AgentEditDialog({ releaseId }: { releaseId: string }) {
   const { state, close, ops } = useAgentEdit();
-  const { setSectionDirty } = useUnsavedChanges();
+  const { notifySaved } = useUnsavedChanges();
   const [instruction, setInstruction] = useState("");
   const [isPending, startTransition] = useTransition();
 
@@ -59,14 +59,14 @@ export function AgentEditDialog({ releaseId }: { releaseId: string }) {
           excerpt: mode === "selection" ? excerpt : undefined,
         });
 
-        if (mode === "selection") editorOps.replaceSelection(text);
-        else editorOps.setBody(text);
-
-        // Read the authoritative body straight from the editor (no reliance on
-        // the hidden input having re-rendered) and persist it.
-        const body = editorOps.getMarkdown();
-        await saveDraftBody({ releaseId, body });
-        setSectionDirty("body", false);
+        // applyEdit resolves with the editor's authoritative body AFTER
+        // Lexical commits the change — reading getMarkdown() synchronously
+        // would persist the pre-edit body (the commit is deferred to a
+        // microtask). Persist that true new body, then re-sync dirty tracking
+        // so the body section is clean and re-baselined to what was saved.
+        const newBody = await editorOps.applyEdit(mode, text);
+        await saveDraftBody({ releaseId, body: newBody });
+        notifySaved();
 
         toast.success("Update revised");
         reset();

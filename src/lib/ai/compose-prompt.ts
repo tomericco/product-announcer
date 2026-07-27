@@ -146,7 +146,7 @@ export function composeMergePrompt(args: {
 /**
  * Prompt for a SURGICAL edit of one highlighted excerpt: the full body is
  * context only, and the model must return just the revised excerpt so the
- * client can splice it back in place (see `replaceSelection`). Contrast
+ * client can splice it back in place (see `applyEdit`, selection mode). Contrast
  * `composeWholeEditPrompt`, which returns the whole body.
  */
 export function composeScopedEditPrompt(args: {

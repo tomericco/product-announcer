@@ -21,10 +21,14 @@ export type EditorOps = {
   /** Snapshots the current selection for later restore and returns the
    * highlighted excerpt as Markdown ("" if nothing is selected). */
   captureSelection: () => string;
-  /** Replaces the snapshotted selection with `markdown` (surgical edit). */
-  replaceSelection: (markdown: string) => void;
-  /** Replaces the entire editor body with `markdown` (whole-update edit). */
-  setBody: (markdown: string) => void;
+  /**
+   * Applies the edit — a surgical splice for `"selection"`, a full-body
+   * replace for `"whole"` — and resolves with the editor's authoritative full
+   * Markdown AFTER Lexical commits. `getMarkdown()` is stale synchronously
+   * because Lexical defers its commit (which refreshes the markdown cell) to a
+   * microtask, so callers must await this rather than read back immediately.
+   */
+  applyEdit: (mode: AgentEditMode, markdown: string) => Promise<string>;
   /** The current full editor body as Markdown. */
   getMarkdown: () => string;
 };

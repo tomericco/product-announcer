@@ -40,6 +40,13 @@ type UnsavedChanges = {
    */
   cleanToken: number;
   /**
+   * Called after a programmatic save (e.g. the Ask AI modal) that commits edits
+   * without submitting a form. Clears all dirty sections and bumps `cleanToken`
+   * so fields re-baseline against what was just saved — the same effect the
+   * form-submit listener has, but reachable from imperative code paths.
+   */
+  notifySaved: () => void;
+  /**
    * Called by a GuardedLink when the user tries to navigate away with unsaved
    * edits. Opens the shared confirm modal below; on confirm the provider does
    * the client-side navigation itself.
@@ -51,6 +58,7 @@ const UnsavedChangesContext = createContext<UnsavedChanges>({
   isDirty: false,
   setSectionDirty: () => {},
   cleanToken: 0,
+  notifySaved: () => {},
   requestLeave: () => {},
 });
 
@@ -66,6 +74,11 @@ export function UnsavedChangesProvider({ children }: { children: ReactNode }) {
     // Skip the update when nothing changed, so typing doesn't re-render the
     // whole dashboard shell on every keystroke.
     setSections((prev) => (prev[key] === dirty ? prev : { ...prev, [key]: dirty }));
+  }, []);
+
+  const notifySaved = useCallback(() => {
+    setSections({});
+    setCleanToken((token) => token + 1);
   }, []);
 
   const requestLeave = useCallback((href: string) => setPendingHref(href), []);
@@ -106,8 +119,8 @@ export function UnsavedChangesProvider({ children }: { children: ReactNode }) {
   }
 
   const value = useMemo(
-    () => ({ isDirty, setSectionDirty, cleanToken, requestLeave }),
-    [isDirty, setSectionDirty, cleanToken, requestLeave]
+    () => ({ isDirty, setSectionDirty, cleanToken, notifySaved, requestLeave }),
+    [isDirty, setSectionDirty, cleanToken, notifySaved, requestLeave]
   );
 
   return (

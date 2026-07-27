@@ -34,6 +34,8 @@ import {
   $getSelection,
   $isRangeSelection,
   $setSelection,
+  $getRoot,
+  $createParagraphNode,
   type LexicalEditor,
   type RangeSelection,
 } from "lexical";
@@ -274,19 +276,55 @@ function AgentEditBridge({ editorRef }: { editorRef: React.RefObject<MDXEditorMe
         }
         return editorRef.current?.getSelectionMarkdown() ?? "";
       },
-      replaceSelection: (markdown: string) => {
-        const editor = activeEditorRef.current;
-        const saved = savedSelection.current;
-        if (!editor || !saved) return;
-        // Restore the captured range, then insertMarkdown replaces it:
-        // MDXEditor's insertMarkdown$ reads $getSelection() and $insertNodes()
-        // over a non-collapsed range, which deletes the selected content first.
-        editor.update(() => {
-          $setSelection(saved.clone());
-        });
-        editorRef.current?.insertMarkdown(markdown);
-      },
-      setBody: (markdown: string) => editorRef.current?.setMarkdown(markdown),
+      applyEdit: (mode, markdown) =>
+        new Promise<string>((resolve) => {
+          const editor = activeEditorRef.current;
+          const saved = savedSelection.current;
+          // Nothing safe to apply (no active editor, or selection mode with no
+          // captured range): resolve with the current, unchanged body.
+          if (!editor || (mode === "selection" && !saved)) {
+            resolve(editorRef.current?.getMarkdown() ?? "");
+            return;
+          }
+
+          // getMarkdown() reads MDXEditor's markdown cell, which is only
+          // refreshed inside the editor's own commit-time update listener
+          // (registered at editor init, so BEFORE this one). Lexical defers
+          // that commit to a microtask, so reading synchronously right after
+          // an edit returns the PRE-edit body. Register a one-shot listener to
+          // read AFTER the commit instead. Both the selection/clear update and
+          // insertMarkdown below are plain updates in the same tick, so Lexical
+          // coalesces them into a single deferred commit — this fires exactly
+          // once, after the core listener has refreshed the markdown cell.
+          const unregister = editor.registerUpdateListener(() => {
+            unregister();
+            resolve(editorRef.current?.getMarkdown() ?? "");
+          });
+
+          if (mode === "selection" && saved) {
+            // Restore the captured range, then insertMarkdown replaces it:
+            // MDXEditor's insertMarkdown$ reads $getSelection() and
+            // $insertNodes() over the non-collapsed range, deleting the
+            // selected content first.
+            editor.update(() => {
+              $setSelection(saved.clone());
+            });
+          } else {
+            // Whole-update: empty the document and drop the caret into a fresh
+            // paragraph so insertMarkdown rebuilds the entire body. Routing
+            // through insertMarkdown (not the change-muting setMarkdown) is
+            // what fires DraftBodyEditor's onChange, keeping its state and
+            // hidden input in sync so a later manual save can't clobber this.
+            editor.update(() => {
+              const root = $getRoot();
+              root.clear();
+              const paragraph = $createParagraphNode();
+              root.append(paragraph);
+              paragraph.selectEnd();
+            });
+          }
+          editorRef.current?.insertMarkdown(markdown);
+        }),
       getMarkdown: () => editorRef.current?.getMarkdown() ?? "",
     };
     registerOps(ops);
