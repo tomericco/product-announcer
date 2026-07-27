@@ -4,12 +4,7 @@ import { useState } from "react";
 import { History } from "lucide-react";
 import { getReleaseDetail, type ReleaseDetail } from "./actions";
 import { Badge } from "@/components/ui/badge";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import {
   EmptyState,
   EmptyStateIcon,
@@ -24,15 +19,20 @@ export type HistoryRow = {
   delivered: string[]; // labels of successful destinations
 };
 
-function statusVariant(status: "pending" | "success" | "failed") {
-  return status === "success" ? "secondary" : status === "failed" ? "destructive" : "outline";
-}
-
 export function HistoryList({ rows }: { rows: HistoryRow[] }) {
   const [openId, setOpenId] = useState<string | null>(null);
   const [detail, setDetail] = useState<ReleaseDetail | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
+
+  // Only destinations the release actually published to successfully — a
+  // failed/pending attempt is not a place it was delivered.
+  const deliveredLabels = detail
+    ? detail.destinations
+        .filter((d) => d.status === "success")
+        .map((d) => d.label)
+        .sort()
+    : [];
 
   async function open(id: string) {
     setOpenId(id);
@@ -89,9 +89,10 @@ export function HistoryList({ rows }: { rows: HistoryRow[] }) {
 
       <Dialog open={openId !== null} onOpenChange={(next) => !next && setOpenId(null)}>
         <DialogContent className="flex max-h-[85dvh] flex-col gap-4 p-6 sm:max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>{detail ? detail.title : "Release detail"}</DialogTitle>
-          </DialogHeader>
+          {/* Kept mounted (visually hidden) so the dialog always has an
+              accessible name; the visible title lives with the body below,
+              matching the draft view. */}
+          <DialogTitle className="sr-only">{detail ? detail.title : "Release detail"}</DialogTitle>
 
           {loading ? (
             <p className="text-sm text-muted-foreground">Loading…</p>
@@ -104,26 +105,22 @@ export function HistoryList({ rows }: { rows: HistoryRow[] }) {
                 <dd>{detail.publishedAt ? new Date(detail.publishedAt).toLocaleString() : "—"}</dd>
                 <dt className="text-muted-foreground">Published by</dt>
                 <dd>{detail.publisherName ?? "Unknown"}</dd>
-                <dt className="text-muted-foreground">Destinations</dt>
-                <dd className="space-y-1">
-                  {detail.destinations.length === 0 ? (
+                <dt className="text-muted-foreground">Delivered to</dt>
+                <dd className="flex flex-wrap gap-1.5">
+                  {deliveredLabels.length === 0 ? (
                     <span className="text-muted-foreground">—</span>
                   ) : (
-                    detail.destinations.map((d) => (
-                      <span key={d.destination} className="mr-2 inline-flex flex-col">
-                        <Badge variant={statusVariant(d.status)}>
-                          {d.label}: {d.status}
-                        </Badge>
-                        {d.status === "failed" && d.error && (
-                          <span className="mt-0.5 text-xs text-destructive">{d.error}</span>
-                        )}
-                      </span>
+                    deliveredLabels.map((label) => (
+                      <Badge key={label} variant="secondary">
+                        {label}
+                      </Badge>
                     ))
                   )}
                 </dd>
               </dl>
 
               <div className="min-h-0 flex-1 overflow-y-auto border-t border-border pt-4">
+                <h2 className="mb-4 text-4xl font-bold leading-tight tracking-tight">{detail.title}</h2>
                 <div className="mdx-content" dangerouslySetInnerHTML={{ __html: detail.bodyHtml }} />
                 {detail.linkedinBody && detail.linkedinBody.trim() && (
                   <div className="mt-6 border-t border-border pt-4">
