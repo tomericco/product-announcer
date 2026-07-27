@@ -123,7 +123,7 @@ export function ImportDialog({
   const repoIds = activeTab === ALL ? repos.map((r) => r.id) : [activeTab];
 
   const load = useCallback(async () => {
-    if (repoIds.length === 0) return;
+    if (pickerType !== "task" && repoIds.length === 0) return;
     setLoading(true);
     setError(null);
     try {
@@ -313,7 +313,7 @@ export function ImportDialog({
       <DialogTrigger
         render={
           trigger ?? (
-            <Button variant="outline" disabled={repos.length === 0}>
+            <Button variant="outline" disabled={repos.length === 0 && !enableTasks}>
               <Download />
               Import
             </Button>
