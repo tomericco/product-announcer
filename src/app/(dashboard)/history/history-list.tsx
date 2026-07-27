@@ -120,7 +120,7 @@ export function HistoryList({ rows }: { rows: HistoryRow[] }) {
               </dl>
 
               <div className="min-h-0 flex-1 overflow-y-auto border-t border-border pt-4">
-                <h2 className="mb-4 text-4xl font-bold leading-tight tracking-tight">{detail.title}</h2>
+                <h2 className="mb-4 text-2xl font-bold leading-tight tracking-tight">{detail.title}</h2>
                 <div className="mdx-content" dangerouslySetInnerHTML={{ __html: detail.bodyHtml }} />
                 {detail.linkedinBody && detail.linkedinBody.trim() && (
                   <div className="mt-6 border-t border-border pt-4">
