@@ -142,3 +142,54 @@ export function composeMergePrompt(args: {
 
   return { system, prompt };
 }
+
+/**
+ * Prompt for a SURGICAL edit of one highlighted excerpt: the full body is
+ * context only, and the model must return just the revised excerpt so the
+ * client can splice it back in place (see `replaceSelection`). Contrast
+ * `composeWholeEditPrompt`, which returns the whole body.
+ */
+export function composeScopedEditPrompt(args: {
+  fullBody: string;
+  excerpt: string;
+  instruction: string;
+  brandProfile: BrandProfileRow;
+  personas: ResolvedPersona[];
+  examples: ExampleRow[];
+}): { system: string; prompt: string } {
+  const base = buildSystemPrompt(args.brandProfile, args.personas, args.examples);
+  const system = `${base}\n\nYou are revising ONE excerpt of an existing product update, not writing a fresh one. Return only the revised excerpt as Markdown — no surrounding text, no explanation, no code fences. Match the voice and formatting of the rest of the update, and change only what the instruction asks; keep the facts and meaning otherwise intact.`;
+
+  const fullBody =
+    args.fullBody.length > DEFAULT_MAX_PROMPT_CHARS
+      ? `${args.fullBody.slice(0, DEFAULT_MAX_PROMPT_CHARS)}\n…(truncated)`
+      : args.fullBody;
+
+  const prompt = `Full update, for context only — do not return it:\n${fullBody}\n\nExcerpt to revise:\n${args.excerpt}\n\nInstruction: ${args.instruction}\n\nReturn only the revised excerpt.`;
+  return { system, prompt };
+}
+
+/**
+ * Prompt for a WHOLE-update edit: apply an instruction across the body and
+ * return the full revised body, preserving existing wording where the
+ * instruction doesn't call for change (same "revise, don't rewrite" stance as
+ * `composeMergePrompt`).
+ */
+export function composeWholeEditPrompt(args: {
+  currentBody: string;
+  instruction: string;
+  brandProfile: BrandProfileRow;
+  personas: ResolvedPersona[];
+  examples: ExampleRow[];
+}): { system: string; prompt: string } {
+  const base = buildSystemPrompt(args.brandProfile, args.personas, args.examples);
+  const system = `${base}\n\nYou are revising an existing product update per an instruction — not writing a fresh one. Preserve the current wording and structure wherever the instruction doesn't call for a change; edit and extend rather than rewrite from scratch. Return the full revised body as Markdown — no explanation, no code fences.`;
+
+  const currentBody =
+    args.currentBody.length > DEFAULT_MAX_PROMPT_CHARS
+      ? `${args.currentBody.slice(0, DEFAULT_MAX_PROMPT_CHARS)}\n…(truncated)`
+      : args.currentBody;
+
+  const prompt = `Apply this instruction to the product update below and return the full revised body. Format as Markdown (short paragraphs, and bullet lists where helpful).\n\nInstruction: ${args.instruction}\n\nCurrent body:\n${currentBody}`;
+  return { system, prompt };
+}
