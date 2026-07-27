@@ -78,7 +78,10 @@ export default async function AtomicUpdatesPage({
     <div className="space-y-4">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-xl font-semibold">Atomic updates</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-xl font-semibold">Atomic updates</h1>
+            <Badge variant="secondary">{rows.length}</Badge>
+          </div>
           <p className="text-sm text-muted-foreground">
             Each one is a single user-facing change, gathered from the commits, pull requests, and
             tasks behind it.

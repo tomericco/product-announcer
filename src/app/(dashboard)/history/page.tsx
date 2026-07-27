@@ -2,6 +2,7 @@ import { and, desc, eq, inArray } from "drizzle-orm";
 import { db } from "@/db";
 import { releases, deliveryAttempts } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
+import { Badge } from "@/components/ui/badge";
 import { destinationLabel } from "@/lib/publishing/dispatch";
 import { HistoryList, type HistoryRow } from "./history-list";
 
@@ -44,7 +45,10 @@ export default async function HistoryPage() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-xl font-semibold">Release history</h1>
+      <div className="flex items-center gap-2">
+        <h1 className="text-xl font-semibold">Release history</h1>
+        <Badge variant="secondary">{rows.length}</Badge>
+      </div>
       <p className="text-sm text-muted-foreground">Announcements that have actually been sent to your users.</p>
       <HistoryList rows={rows} />
     </div>

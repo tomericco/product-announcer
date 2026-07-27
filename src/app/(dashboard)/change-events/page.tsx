@@ -1,4 +1,5 @@
 import { GitCommitHorizontal } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 import {
   EmptyState,
   EmptyStateIcon,
@@ -82,7 +83,10 @@ export default async function ChangeEventsPage({
     <div className="space-y-4">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-xl font-semibold">Change events</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-xl font-semibold">Change events</h1>
+            <Badge variant="secondary">{rows.length}</Badge>
+          </div>
           <p className="text-sm text-muted-foreground">
             Every commit, pull request, and task the resolver has seen. Move one to a different
             atomic update, detach it, or split it into a new one.
