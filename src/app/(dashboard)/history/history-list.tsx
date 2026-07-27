@@ -89,16 +89,16 @@ export function HistoryList({ rows }: { rows: HistoryRow[] }) {
 
       <Dialog open={openId !== null} onOpenChange={(next) => !next && setOpenId(null)}>
         <DialogContent className="flex max-h-[85dvh] flex-col gap-4 p-6 sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>{detail ? detail.title : "Release detail"}</DialogTitle>
+          </DialogHeader>
+
           {loading ? (
             <p className="text-sm text-muted-foreground">Loading…</p>
           ) : error || !detail ? (
             <p className="text-sm text-destructive">Couldn&apos;t load this release.</p>
           ) : (
             <>
-              <DialogHeader>
-                <DialogTitle>{detail.title}</DialogTitle>
-              </DialogHeader>
-
               <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
                 <dt className="text-muted-foreground">Released</dt>
                 <dd>{detail.publishedAt ? new Date(detail.publishedAt).toLocaleString() : "—"}</dd>
