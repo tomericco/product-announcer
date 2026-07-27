@@ -14,7 +14,7 @@ import { NotionDisconnectButton } from "./notion-disconnect-button";
 function describeError(error: unknown): string {
   if (error instanceof NotionApiError) {
     if (error.status === 401 || error.status === 403) {
-      return `Notion rejected the stored token (${error.status}). Reconnect your Notion workspace below.`;
+      return `Notion rejected the stored token (${error.status}). Reconnect your Notion account below.`;
     }
     return error.message;
   }
@@ -30,7 +30,7 @@ function ErrorBanner({ message }: { message: string }) {
   );
 }
 
-export async function NotionForm() {
+export async function NotionForm({ connectError }: { connectError?: string | null }) {
   const session = await requireSession();
   const [connection] = await db
     .select()
@@ -41,7 +41,7 @@ export async function NotionForm() {
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between gap-2">
-        <CardTitle>Notion tasks</CardTitle>
+        <CardTitle>Notion</CardTitle>
         {connection && connection.status !== "active" && (
           <Badge variant={connection.status === "needs_reauth" ? "destructive" : "outline"}>
             {connection.status === "needs_reauth" ? "Needs reconnect" : "Setup incomplete"}
@@ -49,6 +49,7 @@ export async function NotionForm() {
         )}
       </CardHeader>
       <CardContent className="space-y-4">
+        {connectError && <ErrorBanner message={connectError} />}
         {await renderStep(connection)}
         {connection && (
           <div className="pt-2">
@@ -72,7 +73,7 @@ async function renderStep(connection: NotionConnection | undefined) {
           Connect Notion to turn completed tasks into product updates.
         </p>
         <Button variant="outline" render={<a href="/api/notion/connect" />}>
-          Connect Notion
+          Connect
         </Button>
       </div>
     );

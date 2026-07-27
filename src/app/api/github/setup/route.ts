@@ -23,13 +23,20 @@ export async function GET(request: NextRequest) {
     return response;
   };
 
+  // Resolve where to send the user back to from the OAuth state's returnTo, so
+  // a connect started on /integrations surfaces its result there (mirrors the
+  // Notion/LinkedIn callbacks). Falls back to onboarding when returnTo is
+  // absent — e.g. malformed state where we can't trust it.
+  const destination =
+    parsed.returnTo === "integrations" ? "/integrations" : parsed.returnTo === "settings" ? "/settings" : "/onboarding";
+
   if (
     !installationId ||
     parsed.tenantId !== session.user.tenantId ||
     !parsed.nonce ||
     parsed.nonce !== cookieNonce
   ) {
-    return clearStateCookie(NextResponse.redirect(new URL("/?github_connect=error", request.url)));
+    return clearStateCookie(NextResponse.redirect(new URL(`${destination}?github_connect=error`, request.url)));
   }
 
   await db
@@ -37,7 +44,5 @@ export async function GET(request: NextRequest) {
     .set({ githubInstallationId: installationId })
     .where(eq(tenants.id, session.user.tenantId));
 
-  const destination =
-    parsed.returnTo === "integrations" ? "/integrations" : parsed.returnTo === "settings" ? "/settings" : "/onboarding";
   return clearStateCookie(NextResponse.redirect(new URL(`${destination}?github_connect=success`, request.url)));
 }

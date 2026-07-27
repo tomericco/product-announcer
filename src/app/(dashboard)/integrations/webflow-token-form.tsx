@@ -38,7 +38,7 @@ export function WebflowTokenForm() {
         <Input id="token" type="password" name="token" autoComplete="off" required />
       </div>
       <Button type="submit" variant="outline" disabled={submitting}>
-        {submitting ? "Connecting…" : "Connect Webflow"}
+        {submitting ? "Connecting…" : "Connect"}
       </Button>
     </form>
   );

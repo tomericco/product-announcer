@@ -28,6 +28,9 @@ export function WebhookConfigForm({ config }: { config: { url: string; active: b
 
   return (
     <form action={handleSave} className="space-y-4">
+      <p className="text-sm text-muted-foreground">
+        Send every published release to your own endpoint.
+      </p>
       <div className="space-y-2">
         <Label htmlFor="url">URL</Label>
         <Input id="url" type="url" name="url" defaultValue={config?.url ?? ""} required />
