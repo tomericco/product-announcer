@@ -123,7 +123,7 @@ export default async function OnboardingPage({
             <p className="text-sm">Connected.</p>
           ) : installUrl ? (
             <Button variant="outline" render={<a href="/api/github/connect?returnTo=onboarding" />}>
-              Connect GitHub
+              Connect
             </Button>
           ) : (
             <p className="text-sm text-muted-foreground">GitHub integration isn&apos;t configured yet.</p>

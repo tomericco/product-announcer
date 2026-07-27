@@ -26,7 +26,7 @@ function WebflowFormSkeleton() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Webflow CMS</CardTitle>
+        <CardTitle>Webflow</CardTitle>
       </CardHeader>
       <CardContent>
         <p className="text-sm text-muted-foreground">Loading Webflow…</p>
@@ -41,7 +41,7 @@ function NotionFormSkeleton() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Notion tasks</CardTitle>
+        <CardTitle>Notion</CardTitle>
       </CardHeader>
       <CardContent>
         <p className="text-sm text-muted-foreground">Loading Notion…</p>
@@ -56,7 +56,7 @@ function LinkedinFormSkeleton() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>LinkedIn company page</CardTitle>
+        <CardTitle>LinkedIn</CardTitle>
       </CardHeader>
       <CardContent>
         <p className="text-sm text-muted-foreground">Loading LinkedIn…</p>
@@ -72,14 +72,18 @@ export default async function IntegrationsPage({
 }) {
   const session = await requireSession();
   const sp = await searchParams;
-  // Surface a LinkedIn OAuth failure reason passed back by the callback route
-  // (e.g. unauthorized_scope_error) instead of failing silently.
+  // Surface an OAuth failure reason passed back by a callback route instead of
+  // failing silently. LinkedIn's callback can pass a specific `reason` (e.g.
+  // unauthorized_scope_error); Notion and GitHub only signal error/success, so
+  // they fall back to a generic message in the same shape.
   const linkedinError =
     sp.linkedin_connect === "error"
       ? typeof sp.reason === "string" && sp.reason
         ? sp.reason
         : "Could not connect LinkedIn. Please try again."
       : null;
+  const notionError = sp.notion_connect === "error" ? "Could not connect Notion. Please try again." : null;
+  const githubError = sp.github_connect === "error" ? "Could not connect GitHub. Please try again." : null;
   const [config] = await db.select().from(webhookConfigs).where(eq(webhookConfigs.tenantId, session.user.tenantId));
 
   const [tenant] = await db.select().from(tenants).where(eq(tenants.id, session.user.tenantId)).limit(1);
@@ -128,7 +132,7 @@ export default async function IntegrationsPage({
         <h1 className="text-xl font-semibold">Integrations</h1>
         <Card>
           <CardHeader>
-            <CardTitle>Generic Webhook</CardTitle>
+            <CardTitle>Webhook</CardTitle>
           </CardHeader>
           <CardContent>
             <WebhookConfigForm config={config ? { url: config.url, active: config.active } : null} />
@@ -140,7 +144,7 @@ export default async function IntegrationsPage({
         </Suspense>
 
         <Suspense fallback={<NotionFormSkeleton />}>
-          <NotionForm />
+          <NotionForm connectError={notionError} />
         </Suspense>
 
         <Suspense fallback={<LinkedinFormSkeleton />}>
@@ -149,14 +153,24 @@ export default async function IntegrationsPage({
 
         <Card>
           <CardHeader>
-            <CardTitle>GitHub repos</CardTitle>
+            <CardTitle>GitHub</CardTitle>
           </CardHeader>
-          <CardContent>
+          <CardContent className="space-y-4">
+            {githubError && (
+              <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                {githubError}
+              </div>
+            )}
             {!tenant?.githubInstallationId ? (
               installUrl ? (
-                <Button variant="outline" render={<a href="/api/github/connect?returnTo=integrations" />}>
-                  Connect GitHub
-                </Button>
+                <div className="space-y-3">
+                  <p className="text-sm text-muted-foreground">
+                    Connect GitHub to turn shipped code changes into product updates.
+                  </p>
+                  <Button variant="outline" render={<a href="/api/github/connect?returnTo=integrations" />}>
+                    Connect
+                  </Button>
+                </div>
               ) : (
                 <p className="text-sm text-muted-foreground">GitHub integration isn&apos;t configured yet.</p>
               )

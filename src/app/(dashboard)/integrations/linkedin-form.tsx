@@ -42,7 +42,7 @@ export async function LinkedinForm({ connectError }: { connectError?: string | n
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between gap-2">
-        <CardTitle>LinkedIn company page</CardTitle>
+        <CardTitle>LinkedIn</CardTitle>
         {connection?.status === "needs_reauth" && <Badge variant="destructive">Needs reconnect</Badge>}
       </CardHeader>
       <CardContent className="space-y-4">
@@ -66,13 +66,13 @@ async function renderStep(connection: Connection | undefined) {
     return (
       <div className="space-y-3">
         {connection?.status === "needs_reauth" && (
-          <ErrorBanner message="LinkedIn disconnected this app. Reconnect to keep publishing." />
+          <ErrorBanner message="Your LinkedIn connection needs to be reconnected." />
         )}
         <p className="text-sm text-muted-foreground">
           Connect LinkedIn to publish product updates to your company page.
         </p>
         <Button variant="outline" render={<a href="/api/linkedin/connect" />}>
-          Connect LinkedIn
+          Connect
         </Button>
       </div>
     );

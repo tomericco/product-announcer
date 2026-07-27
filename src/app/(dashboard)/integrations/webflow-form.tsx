@@ -30,9 +30,7 @@ function describeError(error: unknown): string {
     // and 403 (app uninstalled / insufficient scope) are reconnect-worthy —
     // Webflow issues no refresh token, so neither can self-heal by retrying.
     if (error.status === 401 || error.status === 403) {
-      return `Webflow rejected the stored token (${error.status} ${
-        error.status === 401 ? "Unauthorized" : "Forbidden"
-      }). Reconnect your Webflow account below.`;
+      return `Webflow rejected the stored token (${error.status}). Reconnect your Webflow account below.`;
     }
     const details = error.validationDetails.length > 0 ? ` ${error.validationDetails.join(" ")}` : "";
     return `${error.message}${details}`;
@@ -78,10 +76,10 @@ export async function WebflowForm() {
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between gap-2">
-        <CardTitle>Webflow CMS</CardTitle>
+        <CardTitle>Webflow</CardTitle>
         {connection && connection.status !== "active" && (
           <Badge variant={connection.status === "needs_reauth" ? "destructive" : "outline"}>
-            {connection.status === "needs_reauth" ? "Needs reconnect" : "Misconfigured"}
+            {connection.status === "needs_reauth" ? "Needs reconnect" : "Setup incomplete"}
           </Badge>
         )}
       </CardHeader>
@@ -102,7 +100,14 @@ type Connection = typeof webflowConnections.$inferSelect;
 async function renderStep(connection: Connection | undefined) {
   // Step 1: no connection yet, or the stored token needs to be replaced.
   if (!connection) {
-    return <WebflowTokenForm />;
+    return (
+      <div className="space-y-3">
+        <p className="text-sm text-muted-foreground">
+          Connect Webflow to publish product updates to your CMS collection.
+        </p>
+        <WebflowTokenForm />
+      </div>
+    );
   }
 
   if (connection.status === "needs_reauth") {
