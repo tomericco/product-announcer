@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { db } from "../../src/db";
 import { tenants, notionConnections, changeEvents } from "../../src/db/schema";
 import { encryptSecret } from "../../src/lib/credentials/encryption";
@@ -24,8 +24,8 @@ vi.mock("../../src/lib/integrations/notion/client", async (importOriginal) => {
     getPageBodyText: vi.fn(async () => "Body detail."),
   };
 });
-vi.mock("../../src/lib/change-events/ingest-notion-task", () => ({
-  ingestNotionTask: vi.fn(async () => {}),
+vi.mock("../../src/lib/change-events/import-notion-tasks", () => ({
+  importSelectedTasks: vi.fn(async () => ({ importedCount: 0, eventIds: [] })),
 }));
 
 import {
@@ -33,7 +33,7 @@ import {
   importTasks,
   isNotionConnected,
 } from "../../src/app/(dashboard)/change-events/import-actions";
-import { ingestNotionTask } from "../../src/lib/change-events/ingest-notion-task";
+import { importSelectedTasks } from "../../src/lib/change-events/import-notion-tasks";
 
 async function seedConnection(overrides: Partial<typeof notionConnections.$inferInsert> = {}) {
   const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning({ id: tenants.id });
@@ -58,7 +58,7 @@ async function seedConnection(overrides: Partial<typeof notionConnections.$infer
 
 describe("import Notion tasks actions", () => {
   afterEach(async () => {
-    vi.mocked(ingestNotionTask).mockClear();
+    vi.mocked(importSelectedTasks).mockClear();
     await db.delete(tenants).where(eq(tenants.name, TENANT));
   });
 
@@ -86,29 +86,27 @@ describe("import Notion tasks actions", () => {
     expect(tasks.map((t) => t.pageId)).toEqual(["page-1"]); // page-2 (07-20) filtered out
   });
 
-  it("imports selected tasks via ingestNotionTask and counts them", async () => {
+  it("delegates to importSelectedTasks with the tenant, selections, and a getBody fn, and returns its count", async () => {
     const tid = await seedConnection();
-    const { importedCount } = await importTasks({
-      selections: [{ pageId: "page-2", title: "Dark mode", url: "https://notion.so/page-2", completedAt: "2026-07-20T10:00:00.000Z" }],
-    });
+    vi.mocked(importSelectedTasks).mockResolvedValueOnce({ importedCount: 1, eventIds: ["evt-1"] });
+
+    const selections = [{ pageId: "page-2", title: "Dark mode", url: "https://notion.so/page-2", completedAt: "2026-07-20T10:00:00.000Z" }];
+    const { importedCount } = await importTasks({ selections });
+
     expect(importedCount).toBe(1);
-    expect(ingestNotionTask).toHaveBeenCalledTimes(1);
-    const arg = vi.mocked(ingestNotionTask).mock.calls[0][0];
-    expect(arg).toMatchObject({ tenantId: tid, pageId: "page-2", title: "Dark mode", description: "Body detail.", url: "https://notion.so/page-2" });
-    expect(arg.completedAt).toBeInstanceOf(Date);
+    expect(importSelectedTasks).toHaveBeenCalledTimes(1);
+    const [arg, getBody] = vi.mocked(importSelectedTasks).mock.calls[0];
+    expect(arg).toEqual({ tenantId: tid, selections });
+    expect(typeof getBody).toBe("function");
   });
 
-  it("skips a task whose ingest throws and still counts the rest", async () => {
-    await seedConnection();
-    vi.mocked(ingestNotionTask).mockRejectedValueOnce(new Error("boom"));
+  it("returns importedCount: 0 without calling importSelectedTasks when there is no active connection", async () => {
+    await seedConnection({ status: "misconfigured" });
     const { importedCount } = await importTasks({
-      selections: [
-        { pageId: "page-1", title: "A", url: "u1", completedAt: null },
-        { pageId: "page-2", title: "B", url: "u2", completedAt: null },
-      ],
+      selections: [{ pageId: "page-1", title: "A", url: "u1", completedAt: null }],
     });
-    expect(importedCount).toBe(1);
-    expect(ingestNotionTask).toHaveBeenCalledTimes(2);
+    expect(importedCount).toBe(0);
+    expect(importSelectedTasks).not.toHaveBeenCalled();
   });
 
   it("isNotionConnected reflects an active connection", async () => {

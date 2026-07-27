@@ -13,9 +13,9 @@ import { requireSession } from "@/lib/workspace/session";
 import { getCommitDiff, listRepoCommits, listRepoPullRequests } from "@/lib/integrations/github/github";
 import { withFreshToken } from "@/lib/integrations/notion/connection";
 import { resolveDataSourceId, listDoneTasks, getPageBodyText } from "@/lib/integrations/notion/client";
-import { ingestNotionTask } from "@/lib/change-events/ingest-notion-task";
 import { importSelectedCommits, type CommitSelection } from "@/lib/change-events/import-commits";
 import { importSelectedPullRequests, type PullRequestSelection } from "@/lib/change-events/import-pull-requests";
+import { importSelectedTasks } from "@/lib/change-events/import-notion-tasks";
 import {
   createAtomicUpdateFromImportedCommits,
   createAtomicUpdateFromImportedPullRequests,
@@ -359,25 +359,11 @@ export async function importTasks(input: {
   const conn = await activeNotionConnection(session.user.tenantId);
   if (!conn) return { importedCount: 0 };
 
-  let importedCount = 0;
-  for (const sel of input.selections) {
-    try {
-      const body = await withFreshToken(db, conn, (token) => getPageBodyText(token, sel.pageId));
-      await ingestNotionTask({
-        tenantId: session.user.tenantId,
-        pageId: sel.pageId,
-        title: sel.title,
-        description: body || null,
-        url: sel.url,
-        completedAt: sel.completedAt ? new Date(sel.completedAt) : new Date(),
-      });
-      importedCount += 1;
-    } catch (error) {
-      // One bad page must not abort the batch (mirrors the webhook's per-item
-      // fail-safe). ingestNotionTask is idempotent, so a duplicate is a no-op.
-      console.error(`Failed to import Notion task ${sel.pageId}:`, error);
-    }
-  }
+  const getBody = (pageId: string) => withFreshToken(db, conn, (token) => getPageBodyText(token, pageId));
+  const { importedCount } = await importSelectedTasks(
+    { tenantId: session.user.tenantId, selections: input.selections },
+    getBody
+  );
 
   revalidatePath("/change-events");
   revalidatePath("/atomic-updates");
