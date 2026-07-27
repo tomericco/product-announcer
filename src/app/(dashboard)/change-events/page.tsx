@@ -8,6 +8,7 @@ import {
 import { requireSession } from "@/lib/workspace/session";
 import { openAtomicUpdatesForReassign } from "@/lib/change-events/reassign";
 import { listChangeEvents, listImportRepos, type ChangeEventFilters } from "./actions";
+import { isNotionConnected } from "./import-actions";
 import { ChangeEventsFilters } from "./change-events-filters";
 import { ChangeEventsList } from "./change-events-list";
 import { ImportDialog } from "./import-dialog";
@@ -68,10 +69,11 @@ export default async function ChangeEventsPage({
   };
 
   const session = await requireSession();
-  const [rows, openAtomicUpdates, importRepos] = await Promise.all([
+  const [rows, openAtomicUpdates, importRepos, notionConnected] = await Promise.all([
     listChangeEvents(filters),
     openAtomicUpdatesForReassign(session.user.tenantId),
     listImportRepos(),
+    isNotionConnected(),
   ]);
 
   const targets = openAtomicUpdates.map((au) => ({ id: au.id, title: au.title }));
@@ -86,7 +88,7 @@ export default async function ChangeEventsPage({
             atomic update, detach it, or split it into a new one.
           </p>
         </div>
-        <ImportDialog repos={importRepos} />
+        <ImportDialog repos={importRepos} enableTasks notionConnected={notionConnected} />
       </div>
 
       <ChangeEventsFilters
