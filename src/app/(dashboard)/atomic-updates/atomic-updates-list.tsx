@@ -64,11 +64,13 @@ export function AtomicUpdatesList({
   rows,
   hiddenRows,
   repos,
+  notionConnected = false,
   showHidden,
 }: {
   rows: AtomicUpdateRow[];
   hiddenRows: AtomicUpdateRow[];
   repos: ImportRepo[];
+  notionConnected?: boolean;
   // Whether the hidden section is expanded — driven by the URL/filter bar on
   // the page, not local state, so it survives navigation like the filters.
   showHidden: boolean;
@@ -183,6 +185,7 @@ export function AtomicUpdatesList({
                 <AtomicUpdateCard
                   row={row}
                   repos={repos}
+                  notionConnected={notionConnected}
                   selectable
                   selected={selected.has(row.id)}
                   anySelected={selected.size > 0}

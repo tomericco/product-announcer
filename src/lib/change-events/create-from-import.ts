@@ -155,6 +155,44 @@ export async function addImportedCommitsToAtomicUpdate(
   );
 }
 
+/**
+ * Notion-task sibling of `addImportedCommitsToAtomicUpdate`.
+ *
+ * `getBody` is threaded through for the same reason as the create-from variant:
+ * fetching page text needs a live Notion token only the caller can supply.
+ */
+export async function addImportedTasksToAtomicUpdate(
+  input: { tenantId: string; userId: string; atomicUpdateId: string; selections: TaskImportSelection[] },
+  getBody: (pageId: string) => Promise<string>,
+  deps: {
+    enrich?: EnrichChangeItem;
+    database?: Database;
+    addEvents?: typeof addEventsToExistingAtomicUpdate;
+  } = {}
+): Promise<AddEventsResult> {
+  const database = deps.database ?? defaultDb;
+  const enrich = deps.enrich ?? enrichChangeItem;
+  const addEvents = deps.addEvents ?? addEventsToExistingAtomicUpdate;
+
+  const { eventIds } = await importSelectedTasks(
+    { tenantId: input.tenantId, selections: input.selections },
+    getBody,
+    { enrich, database, resolvePending: NO_RESOLVE }
+  );
+  if (eventIds.length === 0) return { ok: false, reason: "No change events were imported." };
+
+  return addEvents(
+    {
+      tenantId: input.tenantId,
+      userId: input.userId,
+      atomicUpdateId: input.atomicUpdateId,
+      eventIds,
+      confirmEmptyDeletion: true,
+    },
+    { database }
+  );
+}
+
 /** Pull-request sibling of `addImportedCommitsToAtomicUpdate`. */
 export async function addImportedPullRequestsToAtomicUpdate(
   input: { tenantId: string; userId: string; atomicUpdateId: string; selections: PullRequestSelection[] },

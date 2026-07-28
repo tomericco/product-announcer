@@ -15,6 +15,7 @@ import {
   createAtomicUpdateFromImportedTasks,
   addImportedCommitsToAtomicUpdate,
   addImportedPullRequestsToAtomicUpdate,
+  addImportedTasksToAtomicUpdate,
 } from "../../../src/lib/change-events/create-from-import";
 import { createAtomicUpdateFromEvents } from "../../../src/lib/change-events/create-from-events";
 import { addEventsToExistingAtomicUpdate } from "../../../src/lib/change-events/add-events-to-atomic-update";
@@ -286,5 +287,38 @@ describe("addImportedCommitsToAtomicUpdate / …PullRequests…", () => {
     expect(result.ok).toBe(true);
     const events = await db.select().from(changeEvents).where(eq(changeEvents.atomicUpdateId, au.id));
     expect(events.map((e) => e.prNumber)).toEqual([5]);
+  });
+
+  // Tasks aren't repo-scoped, so this seeds only a tenant and an update.
+  it("imports the selected Notion tasks and attaches them to the existing atomic update", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: NAME }).returning();
+    const [au] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "Existing", summary: "S", status: "open" })
+      .returning();
+    const enrich: EnrichChangeItem = async () => ({
+      userFacing: true,
+      impactSummary: "x",
+      suggestedCategory: "new",
+      confidence: 0.9,
+    });
+
+    const result = await addImportedTasksToAtomicUpdate(
+      {
+        tenantId: tenant.id,
+        userId: "u1",
+        atomicUpdateId: au.id,
+        selections: [
+          { pageId: "page-x", title: "X", url: "uX", completedAt: "2026-07-01T00:00:00Z" },
+          { pageId: "page-y", title: "Y", url: "uY", completedAt: null },
+        ],
+      },
+      async () => "task body",
+      { enrich, addEvents: addWithMockedRefresh }
+    );
+
+    expect(result.ok).toBe(true);
+    const events = await db.select().from(changeEvents).where(eq(changeEvents.atomicUpdateId, au.id));
+    expect(events.map((e) => e.externalId).sort()).toEqual(["page-x", "page-y"]);
   });
 });

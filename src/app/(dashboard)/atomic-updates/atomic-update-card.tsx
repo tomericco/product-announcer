@@ -78,6 +78,7 @@ function EventRow({ event }: { event: AtomicUpdateEvent }) {
 export function AtomicUpdateCard({
   row,
   repos,
+  notionConnected = false,
   selectable = false,
   selected = false,
   anySelected = false,
@@ -88,6 +89,7 @@ export function AtomicUpdateCard({
   // the import selector (GitHub commits/PRs) and imports the selection straight
   // into this update.
   repos: ImportRepo[];
+  notionConnected?: boolean;
   // Controlled by the page: only rendered/enabled when the page is in
   // selection mode for drafting a release.
   selectable?: boolean;
@@ -254,7 +256,7 @@ export function AtomicUpdateCard({
               </div>
             ))}
             <div>
-              <AddEventPicker atomicUpdateId={row.id} repos={repos} />
+              <AddEventPicker atomicUpdateId={row.id} repos={repos} notionConnected={notionConnected} />
             </div>
           </div>
 

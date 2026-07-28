@@ -20,6 +20,7 @@ import {
   createAtomicUpdateFromImportedCommits,
   createAtomicUpdateFromImportedPullRequests,
   createAtomicUpdateFromImportedTasks,
+  addImportedTasksToAtomicUpdate,
   addImportedCommitsToAtomicUpdate,
   addImportedPullRequestsToAtomicUpdate,
 } from "@/lib/change-events/create-from-import";
@@ -284,6 +285,29 @@ export async function addPullRequestsToAtomicUpdate(input: {
     atomicUpdateId: input.atomicUpdateId,
     selections: input.selections,
   });
+  revalidatePath("/atomic-updates");
+  revalidatePath("/change-events");
+  return result;
+}
+
+export async function addTasksToAtomicUpdate(input: {
+  atomicUpdateId: string;
+  selections: TaskSelection[];
+}): Promise<AddEventsResult> {
+  const session = await requireSession();
+  const conn = await activeNotionConnection(session.user.tenantId);
+  if (!conn) return { ok: false, reason: "Notion isn't connected." };
+
+  const getBody = (pageId: string) => withFreshToken(db, conn, (token) => getPageBodyText(token, pageId));
+  const result = await addImportedTasksToAtomicUpdate(
+    {
+      tenantId: session.user.tenantId,
+      userId: session.user.id,
+      atomicUpdateId: input.atomicUpdateId,
+      selections: input.selections,
+    },
+    getBody
+  );
   revalidatePath("/atomic-updates");
   revalidatePath("/change-events");
   return result;

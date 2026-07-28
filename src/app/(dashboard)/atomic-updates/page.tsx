@@ -96,6 +96,7 @@ export default async function AtomicUpdatesPage({
         rows={rows}
         hiddenRows={hiddenRows}
         repos={importRepos}
+        notionConnected={notionConnected}
         showHidden={showHidden}
       />
     </div>
