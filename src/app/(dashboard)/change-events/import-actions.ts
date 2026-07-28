@@ -19,6 +19,7 @@ import { importSelectedTasks } from "@/lib/change-events/import-notion-tasks";
 import {
   createAtomicUpdateFromImportedCommits,
   createAtomicUpdateFromImportedPullRequests,
+  createAtomicUpdateFromImportedTasks,
   addImportedCommitsToAtomicUpdate,
   addImportedPullRequestsToAtomicUpdate,
 } from "@/lib/change-events/create-from-import";
@@ -228,6 +229,26 @@ export async function createAtomicUpdateFromPullRequests(input: {
     userId: session.user.id,
     selections: input.selections,
   });
+  revalidatePath("/atomic-updates");
+  revalidatePath("/change-events");
+  return result;
+}
+
+export async function createAtomicUpdateFromTasks(input: {
+  selections: TaskSelection[];
+}): Promise<CreateFromEventsResult> {
+  const session = await requireSession();
+  const conn = await activeNotionConnection(session.user.tenantId);
+  // A Notion-only workspace reaches this with no connection only if it was
+  // disconnected between render and submit. Fail with the same shape the other
+  // create actions use rather than throwing at the dialog.
+  if (!conn) return { ok: false, reason: "Notion isn't connected." };
+
+  const getBody = (pageId: string) => withFreshToken(db, conn, (token) => getPageBodyText(token, pageId));
+  const result = await createAtomicUpdateFromImportedTasks(
+    { tenantId: session.user.tenantId, userId: session.user.id, selections: input.selections },
+    getBody
+  );
   revalidatePath("/atomic-updates");
   revalidatePath("/change-events");
   return result;

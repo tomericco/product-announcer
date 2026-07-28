@@ -12,6 +12,7 @@ import { tenants, repos, changeEvents, atomicUpdates } from "../../../src/db/sch
 import {
   createAtomicUpdateFromImportedCommits,
   createAtomicUpdateFromImportedPullRequests,
+  createAtomicUpdateFromImportedTasks,
   addImportedCommitsToAtomicUpdate,
   addImportedPullRequestsToAtomicUpdate,
 } from "../../../src/lib/change-events/create-from-import";
@@ -141,6 +142,69 @@ describe("createAtomicUpdateFromImportedCommits", () => {
     const auIds = new Set(events.map((e) => e.atomicUpdateId));
     expect(auIds.size).toBe(1);
     expect([...auIds][0]).not.toBeNull();
+  });
+
+  // Notion tasks aren't repo-scoped, so this needs a tenant but no repo.
+  it("imports the selected Notion tasks and groups them into ONE new atomic update", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: NAME }).returning();
+    const enrich: EnrichChangeItem = async () => ({
+      userFacing: true,
+      impactSummary: "does a thing",
+      suggestedCategory: "new",
+      confidence: 0.9,
+    });
+
+    const result = await createAtomicUpdateFromImportedTasks(
+      {
+        tenantId: tenant.id,
+        userId: "u1",
+        selections: [
+          { pageId: "page-a", title: "A", url: "uA", completedAt: "2026-07-01T00:00:00Z" },
+          { pageId: "page-b", title: "B", url: "uB", completedAt: "2026-07-02T00:00:00Z" },
+        ],
+      },
+      async () => "task body",
+      { enrich, createFromEvents: groupWithMockedRefresh }
+    );
+
+    expect(result.ok).toBe(true);
+    const events = await db
+      .select()
+      .from(changeEvents)
+      .where(and(eq(changeEvents.tenantId, tenant.id), eq(changeEvents.type, "task")));
+    expect(events).toHaveLength(2);
+    const auIds = new Set(events.map((e) => e.atomicUpdateId));
+    expect(auIds.size).toBe(1);
+    expect([...auIds][0]).not.toBeNull();
+  });
+
+  // The whole point of the flow: without NO_RESOLVE the auto-resolver would
+  // scatter freshly imported tasks across generated updates instead of leaving
+  // them for createAtomicUpdateFromEvents to fold into one.
+  it("does not run the auto-resolver on imported tasks", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: NAME }).returning();
+    const { resolvePendingEvents } = await import("../../../src/lib/change-events/pipeline");
+    vi.mocked(resolvePendingEvents).mockClear();
+
+    await createAtomicUpdateFromImportedTasks(
+      {
+        tenantId: tenant.id,
+        userId: "u1",
+        selections: [{ pageId: "page-c", title: "C", url: "uC", completedAt: null }],
+      },
+      async () => "body",
+      {
+        enrich: async () => ({
+          userFacing: true,
+          impactSummary: "x",
+          suggestedCategory: "new",
+          confidence: 0.9,
+        }),
+        createFromEvents: groupWithMockedRefresh,
+      }
+    );
+
+    expect(vi.mocked(resolvePendingEvents)).not.toHaveBeenCalled();
   });
 });
 

@@ -3,6 +3,7 @@ import { enrichChangeItem, type EnrichChangeItem } from "@/lib/ai/enrich-change-
 import { getCommitDiff as defaultGetCommitDiff } from "@/lib/integrations/github/github";
 import { importSelectedCommits, type CommitSelection, type GetCommitDiff } from "./import-commits";
 import { importSelectedPullRequests, type PullRequestSelection } from "./import-pull-requests";
+import { importSelectedTasks, type TaskImportSelection } from "./import-notion-tasks";
 import { createAtomicUpdateFromEvents, type CreateFromEventsResult } from "./create-from-events";
 import { addEventsToExistingAtomicUpdate, type AddEventsResult } from "./add-events-to-atomic-update";
 
@@ -67,6 +68,39 @@ export async function createAtomicUpdateFromImportedPullRequests(
 
   const { eventIds } = await importSelectedPullRequests(
     { tenantId: input.tenantId, selections: input.selections },
+    { enrich, database, resolvePending: NO_RESOLVE }
+  );
+  if (eventIds.length === 0) return { ok: false, reason: "No change events were imported." };
+
+  return createFromEvents(
+    { tenantId: input.tenantId, userId: input.userId, eventIds, confirmEmptyDeletion: true },
+    { database }
+  );
+}
+
+/**
+ * Notion-task sibling of `createAtomicUpdateFromImportedCommits`.
+ *
+ * `getBody` is threaded through rather than defaulted because fetching a page's
+ * text needs a live, possibly-refreshed Notion token, which only the caller
+ * holding the connection can supply.
+ */
+export async function createAtomicUpdateFromImportedTasks(
+  input: { tenantId: string; userId: string; selections: TaskImportSelection[] },
+  getBody: (pageId: string) => Promise<string>,
+  deps: {
+    enrich?: EnrichChangeItem;
+    database?: Database;
+    createFromEvents?: typeof createAtomicUpdateFromEvents;
+  } = {}
+): Promise<CreateFromEventsResult> {
+  const database = deps.database ?? defaultDb;
+  const enrich = deps.enrich ?? enrichChangeItem;
+  const createFromEvents = deps.createFromEvents ?? createAtomicUpdateFromEvents;
+
+  const { eventIds } = await importSelectedTasks(
+    { tenantId: input.tenantId, selections: input.selections },
+    getBody,
     { enrich, database, resolvePending: NO_RESOLVE }
   );
   if (eventIds.length === 0) return { ok: false, reason: "No change events were imported." };

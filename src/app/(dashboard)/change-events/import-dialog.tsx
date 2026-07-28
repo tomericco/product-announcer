@@ -87,6 +87,7 @@ export function ImportDialog({
   description = "From commits, PRs, or Notion tasks.",
   commitSubmit,
   pullRequestSubmit,
+  taskSubmit,
   submitLabel,
   resolveErrorMessage,
   enableTasks = false,
@@ -100,6 +101,7 @@ export function ImportDialog({
   description?: React.ReactNode;
   commitSubmit?: (selections: CommitSelection[]) => Promise<void>;
   pullRequestSubmit?: (selections: PullRequestSelection[]) => Promise<void>;
+  taskSubmit?: (selections: TaskSelection[]) => Promise<void>;
   submitLabel?: (opts: { type: PickerType; count: number; submitting: boolean }) => string;
   resolveErrorMessage?: (error: unknown) => string;
   enableTasks?: boolean;
@@ -199,9 +201,14 @@ export function ImportDialog({
     (async (sel: PullRequestSelection[]) => {
       await importPullRequests({ selections: sel });
     });
-  const doTaskSubmit = async (sel: TaskSelection[]) => {
-    await importTasks({ selections: sel });
-  };
+  // Was hardcoded to importTasks, which silently ignored the caller's intent:
+  // any caller enabling the tasks tab got them dumped into the change-events
+  // pool even when its commit/PR tabs created an atomic update.
+  const doTaskSubmit =
+    taskSubmit ??
+    (async (sel: TaskSelection[]) => {
+      await importTasks({ selections: sel });
+    });
   const labelFor =
     submitLabel ??
     (({ type, count, submitting: isSubmitting }: { type: PickerType; count: number; submitting: boolean }) =>

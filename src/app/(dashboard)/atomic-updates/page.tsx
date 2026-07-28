@@ -8,6 +8,7 @@ import {
 } from "@/components/ui/empty-state";
 import { listAtomicUpdates, listHiddenAtomicUpdates, type AtomicUpdateListFilters } from "./actions";
 import { listImportRepos } from "../change-events/actions";
+import { isNotionConnected } from "../change-events/import-actions";
 import { AtomicUpdatesList } from "./atomic-updates-list";
 import { AtomicUpdatesFilters } from "./atomic-updates-filters";
 import { NewAtomicUpdateDialog } from "./new-atomic-update-dialog";
@@ -47,10 +48,11 @@ export default async function AtomicUpdatesPage({
   // a brand-new one (or as evidence added to an existing one), and the hidden
   // (non-user-facing) updates for the "Show hidden" section. All tenant-scoped
   // server-side reads, so no client component here ever needs to import `db`.
-  const [rows, hiddenRows, importRepos] = await Promise.all([
+  const [rows, hiddenRows, importRepos, notionConnected] = await Promise.all([
     listAtomicUpdates({ category, size }),
     listHiddenAtomicUpdates(),
     listImportRepos(),
+    isNotionConnected(),
   ]);
 
   // The onboarding empty state is only for a genuinely empty workspace — never
@@ -69,7 +71,7 @@ export default async function AtomicUpdatesPage({
             user-facing change, gathered from the commits, pull requests, and tasks behind it.
           </EmptyStateDescription>
         </EmptyState>
-        <NewAtomicUpdateDialog repos={importRepos} />
+        <NewAtomicUpdateDialog repos={importRepos} notionConnected={notionConnected} />
       </div>
     );
   }
@@ -87,7 +89,7 @@ export default async function AtomicUpdatesPage({
             tasks behind it.
           </p>
         </div>
-        <NewAtomicUpdateDialog repos={importRepos} />
+        <NewAtomicUpdateDialog repos={importRepos} notionConnected={notionConnected} />
       </div>
       <AtomicUpdatesFilters category={category ?? "all"} size={size ?? "all"} showHidden={showHidden} />
       <AtomicUpdatesList
