@@ -79,7 +79,7 @@ export default async function AtomicUpdatesPage({
       <div className="flex items-start justify-between gap-4">
         <div>
           <div className="flex items-center gap-2">
-            <h1 className="text-xl font-semibold">Atomic updates</h1>
+            <h1 className="font-heading text-3xl leading-[1.15] tracking-[0.015em]">Atomic updates</h1>
             <Badge variant="secondary">{rows.length}</Badge>
           </div>
           <p className="text-sm text-muted-foreground">

@@ -66,7 +66,7 @@ export default async function OnboardingPage({
   return (
     <main className="mx-auto max-w-lg space-y-6 p-8">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold">Set up Product Announcer</h1>
+        <h1 className="font-heading text-3xl leading-[1.15] tracking-[0.015em]">Set up versional</h1>
         <form action={skipOnboarding}>
           <Button type="submit" variant="ghost" className="text-muted-foreground">
             Skip for now

@@ -38,7 +38,9 @@ function CardTitle({ className, ...props }: React.ComponentProps<"div">) {
     <div
       data-slot="card-title"
       className={cn(
-        "font-heading text-base leading-snug font-medium group-data-[size=sm]/card:text-sm",
+        // font-sans, not font-heading: --font-heading is the display serif and
+        // is reserved for page-level titles. See docs/brand-style-guide.md.
+        "font-sans text-base leading-snug font-medium group-data-[size=sm]/card:text-sm",
         className
       )}
       {...props}

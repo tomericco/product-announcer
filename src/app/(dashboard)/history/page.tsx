@@ -46,7 +46,7 @@ export default async function HistoryPage() {
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-2">
-        <h1 className="text-xl font-semibold">Release history</h1>
+        <h1 className="font-heading text-3xl leading-[1.15] tracking-[0.015em]">Release history</h1>
         <Badge variant="secondary">{rows.length}</Badge>
       </div>
       <p className="text-sm text-muted-foreground">Announcements that have actually been sent to your users.</p>

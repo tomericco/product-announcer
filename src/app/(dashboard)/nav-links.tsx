@@ -4,6 +4,7 @@ import { GuardedLink } from "./unsaved-changes";
 import { usePathname } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 const NAV = [
   { href: "/change-events", label: "Change events" },
@@ -25,8 +26,15 @@ export function NavLinks({ draftCount }: { draftCount: number }) {
         return (
           <Button
             key={item.href}
-            variant={active ? "secondary" : "ghost"}
-            className="justify-start font-normal"
+            variant="ghost"
+            className={cn(
+              "justify-start font-normal",
+              // Current location is one of the three things the accent marks.
+              // hover: is repeated so the ghost variant's hover:bg-muted does
+              // not knock the active tint out from under the pointer.
+              active &&
+                "bg-brand-subtle text-brand-subtle-foreground font-medium hover:bg-brand-subtle hover:text-brand-subtle-foreground"
+            )}
             aria-current={active ? "page" : undefined}
             render={<GuardedLink href={item.href} />}
           >

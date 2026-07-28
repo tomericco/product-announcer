@@ -73,7 +73,7 @@ export default async function DraftsPage() {
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-2">
-        <h1 className="text-xl font-semibold">Drafts</h1>
+        <h1 className="font-heading text-3xl leading-[1.15] tracking-[0.015em]">Drafts</h1>
         <Badge variant="secondary">{drafts.length}</Badge>
       </div>
       {/* Negative margin lets the hover highlight breathe past the text column

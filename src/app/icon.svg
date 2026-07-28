@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 22 22" fill="none">
+  <!-- Outlined Caveat "v" instead of a text node: favicons render without
+       webfonts, so text would fall back to a system face. Path, stroke width,
+       tile size, radius and fill all mirror
+       src/components/brand/mark-path.ts and are asserted equal by
+       tests/components/brand/mark-path.test.ts, so edit both together.
+       The glyph sits low and right on purpose; see that file.
+       Keep this comment free of doubled hyphens: they are illegal inside an
+       XML comment and make the whole file fail to parse, which silently
+       renders no favicon at all. -->
+  <rect width="22" height="22" rx="5" fill="#1B1A12"/>
+  <path d="M11.56 11.8C11.85 13.34 12.38 14.97 13.1 16.41C14.01 14.63 14.87 12.91 15.59 11.42C15.74 11.13 15.93 10.94 16.17 10.89"
+        stroke="#D2E830" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { NavLinks } from "./nav-links";
 import { UserMenu } from "./user-menu";
+import { Logo } from "@/components/brand/logo";
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
   const session = await requireSession();
@@ -33,7 +34,11 @@ export default async function DashboardLayout({ children }: { children: React.Re
   return (
     <UnsavedChangesProvider>
       <div className="flex min-h-screen">
-      <aside className="sticky top-0 flex h-screen w-60 shrink-0 flex-col gap-1 self-start overflow-y-auto border-r p-3">
+      <aside className="bg-sidebar sticky top-0 flex h-screen w-60 shrink-0 flex-col gap-1 self-start overflow-y-auto border-r p-3">
+        <div className="px-2 pt-1.5 pb-3">
+          <Logo />
+        </div>
+
         <DropdownMenu>
           <DropdownMenuTrigger render={<Button variant="ghost" className="w-full justify-between font-semibold" />}>
             {tenant?.name ?? "Workspace"}

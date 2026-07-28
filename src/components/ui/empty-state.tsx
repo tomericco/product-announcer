@@ -32,7 +32,8 @@ function EmptyStateTitle({ className, ...props }: React.ComponentProps<"h2">) {
   return (
     <h2
       data-slot="empty-state-title"
-      className={cn("font-heading text-base leading-snug font-medium", className)}
+      // font-sans, not font-heading -- see the note in card.tsx.
+      className={cn("font-sans text-base leading-snug font-medium", className)}
       {...props}
     />
   )

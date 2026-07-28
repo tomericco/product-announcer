@@ -27,9 +27,9 @@ export function ComingSoonCard({ name }: { name: string }) {
           size="sm"
           aria-pressed={upvoted}
           onClick={() => setUpvoted((v) => !v)}
-          className={cn(upvoted && "border-primary text-primary")}
+          className={cn(upvoted && "border-brand-ink text-brand-ink")}
         >
-          <ChevronUp className={cn(upvoted && "text-primary")} />
+          <ChevronUp className={cn(upvoted && "text-brand-ink")} />
           {upvoted ? "Upvoted" : "Upvote"}
         </Button>
       </CardContent>

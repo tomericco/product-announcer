@@ -129,7 +129,7 @@ export default async function IntegrationsPage({
   return (
     <div className="space-y-10">
       <section className="space-y-4">
-        <h1 className="text-xl font-semibold">Integrations</h1>
+        <h1 className="font-heading text-3xl leading-[1.15] tracking-[0.015em]">Integrations</h1>
         <Card>
           <CardHeader>
             <CardTitle>Webhook</CardTitle>
