@@ -1779,3 +1779,75 @@ Conventions verified against the real files while planning, rather than assumed:
 - `tests/lib/workspace/accept-invite.test.ts` has `setup()` / `makeUser()` helpers and an `emails` array driving cleanup — the new case reuses them.
 - The OAuth state format already carries a `returnTo` segment, so Task 6 changes two call sites rather than the state format.
 - Button-as-link uses `render={<a … />}`, not `asChild`.
+
+---
+
+## Follow-ups deferred at merge
+
+Recorded from the final whole-branch review's triage. None blocks merge; all were
+ruled deferrable with reasoning. Ordered roughly by value.
+
+1. **`importBrandStyle` lost its completion guard** — `src/app/onboarding/actions.ts`.
+   The old version opened with `if (await isOnboardingComplete(...)) redirect(...)`.
+   That check was dropped because `guardOnboardingStep(2)` covers the *page*. But the
+   action can still be replayed directly, and it runs a live page scrape plus an LLM
+   brand derivation **before** any redirect. Idempotent, but cost-bearing. Worth
+   re-gating.
+
+2. **`saveWorkspaceName` always redirects to `/onboarding/brand`** — a user on step 3
+   who goes Back to step 1 to edit their name is marched forward through brand and
+   connect again. No data loss (`advanceOnboardingStep` is monotonic), just extra
+   clicks. Fix is `redirect(ONBOARDING_STEP_PATHS[clampStep(storedStep)])`, but it
+   changes first-run forward-flow semantics and deserves its own test.
+
+3. **Migration 0036 does not backfill in-flight tenants.** `DEFAULT 1` is right for
+   completed and new tenants. A tenant mid-old-flow at deploy time (name set, GitHub
+   installed, repos watched, schedule unsaved) restarts at step 1 and re-walks all
+   four screens. Nothing is lost. If prod has such tenants, an
+   `UPDATE tenants SET onboarding_step = 3 WHERE github_installation_id IS NOT NULL
+   AND onboarding_completed_at IS NULL` would have covered it.
+
+4. **`.catch(() => [])` still misdiagnoses non-reauth Notion failures** —
+   `connect/page.tsx`. The `needs_reauth` case is now handled, but a network error,
+   5xx, or rate limit still degrades to `NotionDatabaseForm`'s "No databases are
+   shared with this integration yet". Same wrong-diagnosis class, narrowed rather
+   than closed.
+
+5. **`saveNotionDatabase` revalidates only `/integrations`** —
+   `(dashboard)/integrations/notion-actions.ts`. Now that onboarding is a second call
+   site, add `revalidatePath("/onboarding/connect")` so the refresh is deterministic
+   rather than relying on the post-action re-render of the current route.
+
+6. **`/` → `/onboarding` costs an extra hop.** `src/app/page.tsx` calls
+   `isOnboardingComplete`, redirects to `/onboarding`, which calls
+   `getOnboardingState` (a superset of the same query) and redirects again. One call
+   and one redirect would do.
+
+7. **Empty-input handling differs between steps 1 and 2.** `saveWorkspaceName`
+   redirects with `?error=empty` and renders a `text-destructive` message;
+   `importBrandStyle` redirects bare with no message. Both inputs are `required`, so
+   this only shows on a non-JS or crafted POST.
+
+8. **Document why step 2's failure copy is muted, not destructive.** An empty
+   workspace name is a hard validation error; an unscrapable page is an expected soft
+   outcome with two offered exits. The current styling is correct — add a one-line
+   comment at `brand/page.tsx` so the next reader does not "fix" it into an alarming
+   red banner on a routine outcome.
+
+9. **One-line test upgrade** — `tests/lib/workspace/email-domain.test.ts`. The
+   `mail.acme.com` assertion is non-discriminating (`acme.com` was never in the list,
+   so it passes under buggy suffix-matching too). A subdomain of a *listed* provider,
+   `expect(isPersonalEmail("someone@mail.gmail.com")).toBe(false)`, actually tests the
+   property. The adjacent `gmail.com.evil.dev` / `notgmail.com` assertions already
+   discriminate correctly.
+
+10. **`PERSONAL_EMAIL_DOMAINS` needs an owner.** The list deliberately favors false
+    negatives over false positives, but it omits whole consumer categories — US ISPs
+    (`comcast.net`, `verizon.net`, `att.net`, `sbcglobal.net`, `cox.net`), Mail.ru
+    siblings (`bk.ru`, `list.ru`, `inbox.ru`), and most regional Yahoo TLDs. Someone
+    should add entries as misses appear, or the list ossifies.
+
+**Not done and still owed: the manual walkthrough** (Task 11, steps 3-5). The dev
+preview sits behind Google/GitHub OAuth, so the wizard click-through, the gmail block,
+and the invite bypass were never exercised against a running app. Everything in this
+branch was verified statically plus by the automated suite.
