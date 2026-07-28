@@ -2,14 +2,18 @@ import { eq } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
 import { tenants, tenantMembers, users } from "@/db/schema";
 import { deriveDefaultTenantName } from "./tenant";
+import { isPersonalEmail } from "./email-domain";
 
 export type OAuthProvider = "github" | "google";
 
-export type SessionTenantInfo = {
-  userId: string;
-  tenantId: string;
-  role: "owner" | "member";
-};
+/**
+ * A signed-in user either belongs to a workspace or does not. `tenantId: null`
+ * means the account exists but has no workspace — today that is a personal-email
+ * signup, which `requireSession()` routes to /work-email-required.
+ */
+export type SessionTenantInfo =
+  | { userId: string; tenantId: string; role: "owner" | "member" }
+  | { userId: string; tenantId: null; role: null };
 
 export type OAuthUserInput = {
   email: string;
@@ -71,6 +75,14 @@ export async function getOrCreateUserFromOAuth(
 
   if (existingMembership) {
     return { userId, tenantId: existingMembership.tenantId, role: existingMembership.role };
+  }
+
+  // Work-email gate. Deliberately placed AFTER the membership lookup: anyone who
+  // already belongs to a workspace — a grandfathered account, or someone invited
+  // into a corporate workspace — resolves above and never reaches here. So this
+  // only ever blocks the creation of a NEW workspace by a personal address.
+  if (isPersonalEmail(input.email)) {
+    return { userId, tenantId: null, role: null };
   }
 
   const [tenant] = await database

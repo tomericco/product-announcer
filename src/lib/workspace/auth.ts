@@ -39,8 +39,14 @@ export const authOptions: NextAuthOptions = {
     },
     async session({ session, token }: { session: Session; token: JWT }) {
       session.user.id = token.userId;
-      session.user.tenantId = token.tenantId;
-      session.user.role = token.role;
+      // "" / "member" are placeholders for a workspace-less token. requireSession()
+      // overwrites both from real membership rows on every request and is the only
+      // sanctioned way to obtain a session, so nothing should ever read these.
+      // They fail closed if something does: "" is not a valid uuid, so a
+      // tenant-scoped query built from it errors in Postgres rather than
+      // silently matching another workspace's rows.
+      session.user.tenantId = token.tenantId ?? "";
+      session.user.role = token.role ?? "member";
       return session;
     },
   },

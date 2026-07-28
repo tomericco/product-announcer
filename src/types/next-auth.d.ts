@@ -13,7 +13,10 @@ declare module "next-auth" {
 declare module "next-auth/jwt" {
   interface JWT {
     userId: string;
-    tenantId: string;
-    role: "owner" | "member";
+    // Null when the account has no workspace (personal-email signup). Session
+    // stays non-null: requireSession() is its only sanctioned producer and it
+    // redirects rather than returning a workspace-less session.
+    tenantId: string | null;
+    role: "owner" | "member" | null;
   }
 }
