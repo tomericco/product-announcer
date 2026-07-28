@@ -337,16 +337,16 @@
 [class*="linkDialogPopoverContent"] [class*="actionButton"] {
   color: var(--muted-foreground);
   border-radius: var(--radius-sm);
-  padding: 0.125rem;
+  padding: 0.1875rem;
 }
 [class*="linkDialogPopoverContent"] [class*="actionButton"]:hover {
   color: var(--accent-foreground);
   background-color: var(--accent);
 }
-/* Shrink the tool icons (they ship at ~20px intrinsic size). */
+/* Shrink the tool icons a touch (they ship at ~20px intrinsic size). */
 [class*="linkDialogPopoverContent"] [class*="actionButton"] svg {
-  width: 0.875rem;
-  height: 0.875rem;
+  width: 1rem;
+  height: 1rem;
 }
 
 /* Edit-form URL field (border lives on the wrapper; input is a bare element). */
