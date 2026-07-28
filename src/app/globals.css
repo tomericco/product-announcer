@@ -216,9 +216,18 @@
   border-top: 1px solid var(--border);
   margin: 1.5rem 0;
 }
-.mdx-content a {
-  color: var(--primary);
+/* The brand palette is intentionally greyscale (every token is oklch(x 0 0)),
+   so a link tinted with --primary reads as ordinary body text. Give links a
+   real, recognizable link colour instead. Doubled class beats @mdxeditor's
+   own single-class content rules regardless of chunk load order — same
+   reasoning as .mdx-content.mdx-content / .mdx-toolbar-host.mdx-toolbar-host
+   above. */
+.mdx-content.mdx-content a {
+  color: oklch(0.53 0.22 260);
   text-decoration: underline;
+}
+.dark .mdx-content.mdx-content a {
+  color: oklch(0.75 0.16 260);
 }
 
 /* Specificity note: @mdxeditor's own `._toolbarRoot_*` rule (shipped in
