@@ -1,10 +1,10 @@
 import { guardOnboardingStep } from "../guard";
 import { StepHeader } from "../steps";
 import { saveOnboardingSchedule, skipScheduleStep } from "../actions";
+import { CadenceSelect } from "./cadence-select";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 export default async function ScheduleStepPage() {
   await guardOnboardingStep(4);
@@ -19,19 +19,7 @@ export default async function ScheduleStepPage() {
       <form action={saveOnboardingSchedule} className="space-y-6">
         <div className="space-y-2">
           <Label>Cadence</Label>
-          <Select name="cadence" defaultValue="none">
-            <SelectTrigger>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="daily">Daily</SelectItem>
-              <SelectItem value="weekly">Weekly</SelectItem>
-              <SelectItem value="biweekly">Every 2 weeks</SelectItem>
-              <SelectItem value="monthly">Monthly</SelectItem>
-              {/* Label matches the canonical list in settings/schedule-form.tsx. */}
-              <SelectItem value="none">No fixed cadence</SelectItem>
-            </SelectContent>
-          </Select>
+          <CadenceSelect defaultValue="none" />
         </div>
         <div className="space-y-2">
           <Label htmlFor="threshold">Or after at least this many changes</Label>
