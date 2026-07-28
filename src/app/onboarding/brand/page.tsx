@@ -8,10 +8,10 @@ import { Label } from "@/components/ui/label";
 export default async function BrandStepPage({
   searchParams,
 }: {
-  searchParams: Promise<{ brandImport?: string }>;
+  searchParams: Promise<{ brandImport?: string; error?: string }>;
 }) {
   await guardOnboardingStep(2);
-  const { brandImport } = await searchParams;
+  const { brandImport, error } = await searchParams;
 
   return (
     <div className="space-y-8">
@@ -34,6 +34,13 @@ export default async function BrandStepPage({
             autoFocus
             required
           />
+          {error === "empty" && <p className="text-destructive text-sm">Paste a URL, or skip this step</p>}
+          {/* Muted, not destructive — and deliberately so. An empty URL above is a
+              hard validation error the user must correct, so it gets `destructive`
+              like the workspace-name step. An unscrapable page is an EXPECTED soft
+              outcome with two offered exits (try another URL, or skip), and dressing
+              a routine result in an alarming red banner trains people to ignore red.
+              Don't "fix" this into destructive to match the line above. */}
           {brandImport === "failed" && (
             <p className="text-muted-foreground text-sm">
               We couldn&apos;t read that page. Try another URL, or skip and set your brand style in Settings.

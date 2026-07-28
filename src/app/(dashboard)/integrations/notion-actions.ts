@@ -60,6 +60,10 @@ export async function saveNotionDatabase(formData: FormData): Promise<ActionResu
       .where(eq(notionConnections.id, connection.id));
 
     revalidatePath("/integrations");
+    // Onboarding step 3 is a second call site for this action. Without an explicit
+    // revalidate, whether that page reflects the save depends on the framework's
+    // post-action re-render of the current route rather than on anything stated here.
+    revalidatePath("/onboarding/connect");
     return { ok: true };
   } catch (error) {
     return failure(error, "Could not save the selected database");

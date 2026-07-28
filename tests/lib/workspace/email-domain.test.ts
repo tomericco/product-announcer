@@ -31,6 +31,10 @@ describe("isPersonalEmail", () => {
   // not its parent, and a lookalike suffix is not the real provider.
   it("matches the domain exactly, never as a substring or suffix", () => {
     expect(isPersonalEmail("someone@mail.acme.com")).toBe(false);
+    // The discriminating one: a subdomain of a LISTED provider. `mail.acme.com`
+    // above passes even under a buggy suffix match, since acme.com was never in
+    // the set — this case only passes under a true exact match.
+    expect(isPersonalEmail("someone@mail.gmail.com")).toBe(false);
     expect(isPersonalEmail("someone@gmail.com.evil.dev")).toBe(false);
     expect(isPersonalEmail("someone@notgmail.com")).toBe(false);
   });

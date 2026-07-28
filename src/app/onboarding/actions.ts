@@ -8,7 +8,7 @@ import { requireSession } from "@/lib/workspace/session";
 import { advanceNextScheduledAt, type Cadence } from "@/lib/scheduling/scheduler-decision";
 import { addSelectedRepos } from "@/lib/workspace/repo-sync";
 import { parseRepoSelections } from "@/lib/workspace/repo-selection-form";
-import { advanceOnboardingStep, markOnboardingComplete } from "@/lib/workspace/onboarding";
+import { advanceOnboardingStep, isOnboardingComplete, markOnboardingComplete } from "@/lib/workspace/onboarding";
 import { listRepoBranches } from "@/lib/integrations/github/github";
 import { importBrandStyleForTenant } from "@/lib/workspace/brand-import";
 
@@ -80,8 +80,17 @@ export async function skipScheduleStep() {
 
 export async function importBrandStyle(formData: FormData) {
   const session = await requireSession();
+  // Re-gated after the wizard rewrite dropped it. guardOnboardingStep(2) protects
+  // the PAGE, but a server action is a public endpoint that can be replayed
+  // directly — and importBrandStyleForTenant fetches a live page and runs an LLM
+  // derivation, so an ungated replay burns real money on a tenant who is already
+  // done. The write itself is idempotent; the cost is not.
+  if (await isOnboardingComplete(session.user.tenantId)) redirect("/atomic-updates");
+
   const url = (formData.get("updatesPageUrl") as string)?.trim();
-  if (!url) redirect("/onboarding/brand");
+  // An empty URL is a hard validation error, so it gets the same visible
+  // treatment as an empty workspace name rather than a silent bounce.
+  if (!url) redirect("/onboarding/brand?error=empty");
 
   const result = await importBrandStyleForTenant(session.user.tenantId, url);
   // A failed scrape keeps the user on step 2 so they can try another URL or skip;

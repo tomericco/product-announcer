@@ -70,8 +70,19 @@ export default async function ConnectStepPage({
   // re-authorization — in the latter case we show an explanatory line
   // instead of the picker, so listing databases would just be discarded.
   const needsReauth = notion?.status === "needs_reauth";
-  const notionDatabases =
-    notion && !notion.databaseId && !needsReauth ? await fetchNotionDatabases().catch(() => []) : [];
+  // A failed fetch must NOT collapse into an empty list: NotionDatabaseForm's
+  // empty state reads "no databases are shared with this integration yet", which
+  // tells someone hitting a network blip or a 5xx to go fix a sharing setting
+  // that was never the problem. Track the failure separately and say so.
+  let notionDatabases: Awaited<ReturnType<typeof fetchNotionDatabases>> = [];
+  let notionUnavailable = false;
+  if (notion && !notion.databaseId && !needsReauth) {
+    try {
+      notionDatabases = await fetchNotionDatabases();
+    } catch {
+      notionUnavailable = true;
+    }
+  }
 
   return (
     <div className="space-y-8">
@@ -148,6 +159,11 @@ export default async function ConnectStepPage({
           ) : needsReauth ? (
             <p className="text-muted-foreground text-sm">
               Your Notion connection needs to be reconnected. Head to Integrations to reconnect it.
+            </p>
+          ) : notionUnavailable ? (
+            <p className="text-muted-foreground text-sm">
+              We couldn&apos;t reach Notion just now. Reload to try again, or skip and pick your
+              database in Integrations.
             </p>
           ) : (
             <NotionDatabaseForm databases={notionDatabases} currentDatabaseId={notion.databaseId} />
