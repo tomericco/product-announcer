@@ -10,6 +10,7 @@ import { getOrCreateBrandProfile } from "@/lib/workspace/brand-profile";
 import { resolvePersonaRefs, systemPersonaKeys } from "@/lib/workspace/personas";
 import { selectExamples } from "@/lib/ai/select-examples";
 import { editReleaseBody } from "@/lib/ai/edit";
+import { validateDraftLinks } from "@/lib/ai/validate-links";
 
 // Same tenant-checked load as `loadOwnedDraft` in `drafts/actions.ts` — kept
 // as a separate copy rather than a shared import so this file's action set
@@ -93,7 +94,11 @@ export async function requestAgentEdit(input: {
     examples,
   });
 
-  return { text };
+  // This is LLM-authored output (spliced in client-side, then saved via the
+  // human-save path `saveDraftBody`, which does NOT validate), so validate any
+  // fabricated links here at the LLM boundary before returning to the client.
+  const { body: validated } = await validateDraftLinks(text);
+  return { text: validated };
 }
 
 /**

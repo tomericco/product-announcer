@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { MoreHorizontal, Send, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -21,6 +22,9 @@ import {
   DialogClose,
 } from "@/components/ui/dialog";
 import { publishDraft, deleteDraft } from "./actions";
+import { saveDraftBody } from "./[releaseId]/actions";
+import { InvalidLinksDialog } from "./invalid-links-dialog";
+import type { LinkProblem } from "@/lib/ai/validate-links";
 
 type Props = {
   releaseId: string;
@@ -39,19 +43,28 @@ type Props = {
 type Confirming = "publish" | "delete" | null;
 
 export function DraftRowMenu({ releaseId, title, atomicUpdateCount, publishedAt }: Props) {
+  const router = useRouter();
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirming, setConfirming] = useState<Confirming>(null);
   const [submitting, setSubmitting] = useState(false);
+  // Non-null while the error modal is open: the stored body + its problems.
+  const [fixTarget, setFixTarget] = useState<{ body: string; problems: LinkProblem[] } | null>(null);
 
-  async function run(action: (formData: FormData) => Promise<void>, success: string) {
+  async function run(
+    action: (formData: FormData) => Promise<{ problems: LinkProblem[]; body: string } | void>,
+    success: string
+  ) {
     setSubmitting(true);
     const formData = new FormData();
     formData.set("releaseId", releaseId);
     formData.set("publishedAt", publishedAt ?? "");
     try {
-      await action(formData);
+      const result = await action(formData);
       setConfirming(null);
-      toast.success(success);
+      // publishDraft returns invalid links (and the body) instead of publishing —
+      // open the fix modal rather than reporting success.
+      if (result?.problems.length) setFixTarget({ body: result.body, problems: result.problems });
+      else toast.success(success);
     } catch (error) {
       // Server actions reject with an opaque digest in production; surface what
       // we can rather than leaving the dialog silently stuck.
@@ -59,6 +72,15 @@ export function DraftRowMenu({ releaseId, title, atomicUpdateCount, publishedAt 
     } finally {
       setSubmitting(false);
     }
+  }
+
+  // Save inline link fixes to the stored body, then refresh so the list reflects
+  // the edit. No editor to sync here — the list has no live editor.
+  async function saveFixes(patchedBody: string) {
+    await saveDraftBody({ releaseId, body: patchedBody });
+    setFixTarget(null);
+    toast.success("Links updated — you can publish now.");
+    router.refresh();
   }
 
   const atomicUpdatesLabel = `${atomicUpdateCount} ${atomicUpdateCount === 1 ? "update" : "updates"}`;
@@ -138,6 +160,12 @@ export function DraftRowMenu({ releaseId, title, atomicUpdateCount, publishedAt 
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <InvalidLinksDialog
+        target={fixTarget}
+        onSave={saveFixes}
+        onOpenChange={(next) => !next && setFixTarget(null)}
+      />
     </>
   );
 }

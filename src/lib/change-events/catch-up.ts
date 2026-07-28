@@ -3,6 +3,7 @@ import { db as defaultDb } from "@/db";
 import { atomicUpdates, releases, systemPersonas, systemUpdateExamples } from "@/db/schema";
 import type { AtomicUpdateForPrompt } from "@/lib/ai/compose-prompt";
 import { generateReleaseDraft, mergeReleaseDraft } from "@/lib/ai/generation";
+import { validateDraftLinks } from "@/lib/ai/validate-links";
 import { getOrCreateBrandProfile } from "@/lib/workspace/brand-profile";
 import { resolvePersonaRefs, systemPersonaKeys } from "@/lib/workspace/personas";
 import { selectExamples } from "@/lib/ai/select-examples";
@@ -113,6 +114,10 @@ export async function catchUpRelease(releaseId: string, deps: CatchUpDeps = {}):
     examples,
   });
 
+  // Replace any unresolvable link with an [add link] placeholder before the
+  // regenerated body is persisted (see `validateDraftLinks`).
+  const { body: validatedBody } = await validateDraftLinks(draft.body);
+
   const newIds = delta.newAtomicUpdates.map((a) => a.id);
 
   return defaultDb.transaction(async (tx) => {
@@ -120,7 +125,7 @@ export async function catchUpRelease(releaseId: string, deps: CatchUpDeps = {}):
 
     const [updated] = await tx
       .update(releases)
-      .set({ body: draft.body, composedAt: new Date() })
+      .set({ body: validatedBody, composedAt: new Date() })
       .where(and(eq(releases.id, release.id), eq(releases.tenantId, release.tenantId)))
       .returning();
 
@@ -174,9 +179,11 @@ export async function startOverRelease(releaseId: string, deps: StartOverDeps = 
 
   const draft = await generateDraft(fullItems, brandProfile, personas, examples);
 
+  const { body: validatedBody } = await validateDraftLinks(draft.body);
+
   const [updated] = await defaultDb
     .update(releases)
-    .set({ title: draft.title, body: draft.body, composedAt: new Date(), bodyEditedAt: null })
+    .set({ title: draft.title, body: validatedBody, composedAt: new Date(), bodyEditedAt: null })
     .where(and(eq(releases.id, release.id), eq(releases.tenantId, release.tenantId)))
     .returning();
 

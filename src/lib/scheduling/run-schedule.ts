@@ -9,6 +9,7 @@ import { resolvePersonaRefs, systemPersonaKeys } from "@/lib/workspace/personas"
 import { selectExamples } from "@/lib/ai/select-examples";
 import { shouldTriggerRun, advanceNextScheduledAt, type Cadence } from "./scheduler-decision";
 import { reviewAndReconcile } from "@/lib/ai/review-draft";
+import { validateDraftLinks } from "@/lib/ai/validate-links";
 import type { OnDraftProgress } from "./draft-progress";
 
 /** Distinct non-null categories among the atomic updates being composed, used to
@@ -61,12 +62,16 @@ export async function runBatchForWorkspace(
   const review = await reviewAndReconcile(draft, brandProfile, onProgress);
   onProgress?.({ type: "step", key: "reviewing", status: "done" });
 
+  // Validate links on the FINAL body — after review, which may itself rewrite
+  // links — so no unresolvable URL is persisted (see `validateDraftLinks`).
+  const { body: validatedBody } = await validateDraftLinks(review.finalDraft.body);
+
   onProgress?.({ type: "step", key: "saving", status: "start" });
   const release = await claimReleaseFromAtomicUpdates(
     {
       tenantId,
       atomicUpdateIds: items.map((i) => i.id),
-      draft: review.finalDraft,
+      draft: { ...review.finalDraft, body: validatedBody },
       review: { status: review.status, issues: review.issues },
     },
     database

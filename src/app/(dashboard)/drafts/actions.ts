@@ -9,6 +9,7 @@ import { requireSession } from "@/lib/workspace/session";
 import { dispatchAllDestinations } from "@/lib/publishing/dispatch";
 import { revertReleaseAtomicUpdates, markReleaseAtomicUpdatesReleased } from "@/lib/change-events/release-claim";
 import type { DestinationId } from "@/lib/publishing/destinations/types";
+import { findInvalidLinks, type LinkProblem } from "@/lib/ai/validate-links";
 
 async function loadOwnedDraft(tenantId: string, releaseId: string) {
   const [update] = await db
@@ -56,6 +57,7 @@ function parseSelectedDestinations(formData: FormData): DestinationId[] {
   return selected;
 }
 
+
 export async function saveDraft(formData: FormData) {
   const session = await requireSession();
   const releaseId = formData.get("releaseId") as string;
@@ -80,10 +82,31 @@ export async function saveDraft(formData: FormData) {
   revalidatePath(`/drafts/${releaseId}`);
 }
 
-export async function approveDraft(formData: FormData) {
+/**
+ * Runs the invalid-link check for a draft WITHOUT publishing, so the publish UI
+ * can surface problems before the user even chooses destinations. Respects
+ * unsaved editor edits via the submitted body, exactly like `approveDraft`.
+ */
+export async function checkDraftLinks(formData: FormData): Promise<{ problems: LinkProblem[] }> {
   const session = await requireSession();
   const releaseId = formData.get("releaseId") as string;
   const existing = await loadOwnedDraft(session.user.tenantId, releaseId);
+  const body = resolveBody(formData.get("body") as string, existing.body);
+  return { problems: await findInvalidLinks(body) };
+}
+
+export async function approveDraft(formData: FormData): Promise<{ problems: LinkProblem[] } | void> {
+  const session = await requireSession();
+  const releaseId = formData.get("releaseId") as string;
+  const existing = await loadOwnedDraft(session.user.tenantId, releaseId);
+
+  // Authoritative backstop: the detail UI already checks links before opening
+  // the destination modal, but re-check here so a crafted request (or a body
+  // changed after that check) can never publish invalid links.
+  const bodyToPublish = resolveBody(formData.get("body") as string, existing.body);
+  const problems = await findInvalidLinks(bodyToPublish);
+  if (problems.length > 0) return { problems };
+
   // Validate the chosen destinations before publishing, so an empty/invalid
   // set aborts without marking the release published or closing its atomic updates.
   const destinations = parseSelectedDestinations(formData);
@@ -106,7 +129,7 @@ export async function approveDraft(formData: FormData) {
       .update(releases)
       .set({
         title: formData.get("title") as string,
-        body: resolveBody(formData.get("body") as string, existing.body),
+        body: bodyToPublish,
         editedBy: session.user.id,
         publishedBy: session.user.id,
         status: "published",
@@ -166,10 +189,16 @@ export async function rejectDraft(formData: FormData) {
  * and so nothing unsaved to preserve. `approveDraft` is the detail-page
  * equivalent and additionally persists the submitted title/body first.
  */
-export async function publishDraft(formData: FormData) {
+export async function publishDraft(
+  formData: FormData
+): Promise<{ problems: LinkProblem[]; body: string } | void> {
   const session = await requireSession();
   const releaseId = formData.get("releaseId") as string;
-  await loadOwnedDraft(session.user.tenantId, releaseId);
+  const existing = await loadOwnedDraft(session.user.tenantId, releaseId);
+  // Publishes as-stored (no editor here), so gate the stored body: an invalid
+  // link returns the offenders — plus the body — so the list modal can fix them.
+  const problems = await findInvalidLinks(existing.body);
+  if (problems.length > 0) return { problems, body: existing.body };
   // Same guard as approveDraft: the drafts list only ever renders drafts, so
   // in practice this is always null, but the mechanism stays identical rather
   // than special-casing the list's caller.

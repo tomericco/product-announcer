@@ -2,7 +2,12 @@
 
 import { useRef, useState, useTransition } from "react";
 import { ExternalLink } from "lucide-react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { InvalidLinksDialog } from "../invalid-links-dialog";
+import type { LinkProblem } from "@/lib/ai/validate-links";
+import { useAgentEdit } from "./agent-edit-context";
+import { saveDraftBody } from "./actions";
 import {
   Dialog,
   DialogClose,
@@ -11,10 +16,9 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/dialog";
 import type { DestinationId, PublishTarget } from "@/lib/publishing/destinations/types";
-import { approveDraft } from "../actions";
+import { approveDraft, checkDraftLinks } from "../actions";
 
 /**
  * "Approve & publish" on the draft detail page. Opens a modal listing every
@@ -23,22 +27,29 @@ import { approveDraft } from "../actions";
  * (new tab, so the in-progress draft isn't navigated away from). Publish
  * stays disabled until at least one destination is checked.
  *
+ * Clicking Publish first runs the invalid-link check (`checkDraftLinks`) against
+ * the live body; if the body has bad links it opens the error modal and the
+ * destination chooser never appears. Only a clean body opens the chooser.
+ *
  * Follows the FormData-in-JS idiom from
  * atomic-updates/new-atomic-update-dialog: the dialog content is portaled
  * outside the <form>, so rather than relying on native serialization it reads
- * the live form via a ref to the in-form trigger button
+ * the live form via a ref to the in-form Publish button
  * (`triggerRef.current.form`) — capturing the current title/body/hidden fields
  * exactly as a submit would — then appends the chosen destinations and invokes
  * approveDraft in a transition. approveDraft's redirect("/drafts") navigates
  * the router on success (a server action invoked in a transition navigates;
  * see the Next server-actions guide).
  */
-export function PublishDialog({ targets }: { targets: PublishTarget[] }) {
+export function PublishDialog({ releaseId, targets }: { releaseId: string; targets: PublishTarget[] }) {
+  const { ops } = useAgentEdit();
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState<Set<DestinationId>>(
     () => new Set(targets.filter((t) => t.configured).map((t) => t.id))
   );
   const [pending, startTransition] = useTransition();
+  // Non-null while the error modal is open: the body being fixed + its problems.
+  const [fixTarget, setFixTarget] = useState<{ body: string; problems: LinkProblem[] } | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
 
   const configured = targets.filter((t) => t.configured);
@@ -53,28 +64,54 @@ export function PublishDialog({ targets }: { targets: PublishTarget[] }) {
     });
   }
 
+  // Publish (the button that opens the chooser): check links first, and open the
+  // destination chooser only if the body is clean — otherwise show the errors.
+  function openChooser() {
+    const form = triggerRef.current?.form;
+    if (!form) return;
+    const formData = new FormData(form);
+    const body = String(formData.get("body") ?? "");
+    startTransition(async () => {
+      const { problems } = await checkDraftLinks(formData);
+      if (problems.length) setFixTarget({ body, problems });
+      else setOpen(true);
+    });
+  }
+
   function publish() {
     const form = triggerRef.current?.form;
     if (!form) return;
     const formData = new FormData(form);
+    const body = String(formData.get("body") ?? "");
     for (const id of selected) formData.append("destinations", id);
-    // No try/catch: approveDraft calls redirect(), which throws NEXT_REDIRECT
-    // as control flow and must not be swallowed. Its empty-set guard can't be
-    // reached from here — Publish is disabled until ≥1 destination is checked.
+    // No try/catch: on success approveDraft calls redirect(), which throws
+    // NEXT_REDIRECT as control flow and must not be swallowed. It re-checks
+    // links as a backstop and, if the body has bad links, RETURNS them (no
+    // redirect) — surface those in the error modal and close this dialog.
     startTransition(async () => {
-      await approveDraft(formData);
+      const result = await approveDraft(formData);
+      if (result?.problems.length) {
+        setOpen(false);
+        setFixTarget({ body, problems: result.problems });
+      }
     });
   }
 
+  // Save inline link fixes: apply the patched body to the live editor (so the
+  // visible content and the hidden body field update together), then persist it.
+  async function saveFixes(patchedBody: string) {
+    const authoritative = ops.current ? await ops.current.applyEdit("whole", patchedBody) : patchedBody;
+    await saveDraftBody({ releaseId, body: authoritative });
+    setFixTarget(null);
+    toast.success("Links updated — you can publish now.");
+  }
+
   return (
+    <>
+    <Button ref={triggerRef} type="button" onClick={openChooser} disabled={pending}>
+      {pending ? "Checking…" : "Publish"}
+    </Button>
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger
-        render={
-          <Button ref={triggerRef} type="button">
-            Publish
-          </Button>
-        }
-      />
       <DialogContent className="flex max-h-[85dvh] flex-col gap-5 p-6 sm:max-w-md">
         <DialogHeader>
           <DialogTitle>Publish release</DialogTitle>
@@ -130,5 +167,11 @@ export function PublishDialog({ targets }: { targets: PublishTarget[] }) {
         </DialogFooter>
       </DialogContent>
     </Dialog>
+    <InvalidLinksDialog
+      target={fixTarget}
+      onSave={saveFixes}
+      onOpenChange={(next) => !next && setFixTarget(null)}
+    />
+    </>
   );
 }

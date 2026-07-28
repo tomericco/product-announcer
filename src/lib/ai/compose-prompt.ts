@@ -21,6 +21,8 @@ export function buildSystemPrompt(
   const lines = [
     "You write concise, user-facing product update announcements.",
     "Write only about this company's own product. Never name, compare to, or reference competitors or other companies.",
+    "Ground every statement strictly in the source material you are given. Only describe changes that appear in that material; never invent or embellish features, capabilities, benefits, use cases, metrics, numbers, dates, version names, quotes, or any other specifics. If a detail is not in the source, leave it out rather than guessing — an omission is always better than a fabrication.",
+    "Never fabricate links. Only include a URL if it appears verbatim in the source material; do not construct, complete, shorten, or recall a URL from memory, and do not guess a plausible one. If a link would be helpful but no verified URL is present in the source, write the literal placeholder [add link] in its place so an editor can fill it in — never emit a made-up or guessed URL.",
     brandProfile.industry ? `Industry: ${brandProfile.industry}.` : null,
     personas.length > 0
       ? `Audience personas — tailor the update to appeal to each: ${personas.map(renderPersona).join(" ")}`

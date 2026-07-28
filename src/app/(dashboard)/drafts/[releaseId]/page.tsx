@@ -9,6 +9,7 @@ import { reviewStatusLabel } from "@/lib/ai/review-status";
 import { containsCodeBlock } from "@/lib/publishing/markdown-to-html";
 import { computeReleaseDelta } from "@/lib/change-events/release-deltas";
 import { saveDraft } from "../actions";
+import { ToastForm } from "../../settings/toast-form";
 import { DraftBodyEditor } from "./draft-body-editor";
 import { DraftTitleField } from "./draft-title-field";
 import { DraftEditorProvider, SourceToggleButton } from "./draft-editor-context";
@@ -93,7 +94,12 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
 
           {delta.count > 0 && <CatchUpBanner count={delta.count} releaseId={update.id} />}
 
-          <form action={saveDraft} className="space-y-4">
+          {/* ToastForm, not a plain <form>: saveDraft stays a Server Action but
+              the confirmation toast fires client-side once it resolves. Only the
+              form's default action is wrapped — Reject overrides it with
+              formAction, and Publish reads the form via a ref instead of
+              submitting, so neither reports "Changes saved". */}
+          <ToastForm action={saveDraft} successMessage="Changes saved" className="space-y-4">
             <input type="hidden" name="releaseId" value={update.id} />
             {/* The value published_at had when this page was rendered. Approve
                 submits it back so the action can detect a double-submit of this
@@ -116,10 +122,10 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
               <SaveChangesButton />
               <AskAiButton />
               <div className="ml-auto">
-                <PublishDialog targets={publishTargets} />
+                <PublishDialog releaseId={update.id} targets={publishTargets} />
               </div>
             </div>
-          </form>
+          </ToastForm>
 
           {/* Own <form>s, so rendered as a sibling of the saveDraft form
               rather than nested inside it (nested <form>s are invalid HTML). */}

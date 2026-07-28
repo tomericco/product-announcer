@@ -6,6 +6,7 @@ import { resolvePersonaRefs, systemPersonaKeys } from "@/lib/workspace/personas"
 import { selectExamples } from "@/lib/ai/select-examples";
 import { editReleaseBody } from "@/lib/ai/edit";
 import { reviewAndReconcile } from "@/lib/ai/review-draft";
+import { validateDraftLinks } from "@/lib/ai/validate-links";
 import type { OnDraftProgress } from "@/lib/scheduling/draft-progress";
 
 type Database = typeof defaultDb;
@@ -73,10 +74,13 @@ export async function runWholeEditForRelease(
   const outcome = await review({ title: release.title, body: editedBody }, brandProfile, emit);
   emit({ type: "step", key: "reviewing", status: "done" });
 
+  // Validate links on the LLM's final body — after review, which may itself
+  // rewrite links — so no unresolvable URL is persisted (see `validateDraftLinks`).
+  const { body: finalBody } = await validateDraftLinks(outcome.finalDraft.body);
+
   emit({ type: "step", key: "saving", status: "start" });
   // Blank-guard mirrors `saveDraft`/`saveDraftBody`: never clobber a real body
   // with an empty one the review pipeline might hand back on a failure path.
-  const finalBody = outcome.finalDraft.body;
   const body = finalBody.trim().length === 0 && release.body.trim().length > 0 ? release.body : finalBody;
   await database
     .update(releases)
