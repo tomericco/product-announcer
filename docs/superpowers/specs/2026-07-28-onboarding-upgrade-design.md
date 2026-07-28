@@ -89,14 +89,28 @@ branch. This ordering is the whole mechanism — a test asserts it directly.
 
 ### Session types (changed)
 
-`src/types/next-auth.d.ts`: `tenantId` becomes `string | null` and `role` becomes
-`"owner" | "member" | null` on both `Session["user"]` and `JWT`.
+`src/types/next-auth.d.ts`: `tenantId` becomes `string | null` and `role`
+becomes `"owner" | "member" | null` **on `JWT` only**. `Session["user"]` keeps
+`tenantId: string` and `role: "owner" | "member"`.
 
-This is safe because `requireSession()` re-resolves the active tenant from the
-cookie and DB on every request and overwrites both fields; the JWT copy is
-advisory. Any compile errors this surfaces are in code paths that read
-`session.user.tenantId` without going through `requireSession()` — those are
-genuine bugs and should be fixed, not cast away.
+Widening `Session` instead would hit all 131 `session.user.tenantId` reads in
+`src/`. Confining it to `JWT` touches exactly one: the `session` callback in
+`auth.ts`.
+
+Confining it is also the *correct* choice, not merely the cheap one. The
+non-null `Session` type states the post-condition of `requireSession()`, which
+redirects when there is no membership and always stamps a real tenant — and
+`requireSession()` is the only sanctioned producer of a session. The three
+`getServerSession` callers were audited: `/api/drafts/edit` and
+`/api/atomic-updates/draft` never read `session.user.tenantId` (both call
+`resolveActiveTenant` and return 401 when it is null), and `/invite/[token]`
+reads only `user.id`. No caller can observe the difference.
+
+The `session` callback assigns `token.tenantId ?? ""`. The empty string means
+"unresolved — you did not go through `requireSession()`", and it fails closed:
+`""` is not a valid uuid, so any tenant-scoped query built from it errors loudly
+in Postgres rather than returning another tenant's rows. Document this on the
+callback.
 
 ### `requireSession()` (changed)
 
@@ -287,10 +301,10 @@ Extended:
 
 ## Risks
 
-- **Nullable `tenantId` fan-out.** Widening the session type will surface every
-  place that assumes a tenant. Expected to be small since `requireSession()` is
-  described in-code as the single choke point, but the true blast radius is only
-  known once `tsc` runs. Fix the call sites; do not cast.
+- ~~**Nullable `tenantId` fan-out.**~~ Resolved during planning: confining the
+  widening to `JWT` cuts the blast radius from 131 call sites to 1, and an audit
+  of the three `getServerSession` callers confirmed none can observe the
+  difference. See "Session types" above.
 - **Notion `returnTo` touches a live OAuth path.** The `/integrations` flow must
   keep working unchanged; the allowlist default of `integrations` is what
   guarantees that.
