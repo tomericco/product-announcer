@@ -91,34 +91,15 @@ describe("requireSession", () => {
     expect(digest as string).not.toContain("/api/auth/signin");
   });
 
-  it("redirects to /work-email-required when the user has no membership", async () => {
-    const [user] = await db.insert(users).values({ email: emails[0] }).returning();
-    const session = { user: { id: user.id }, expires: "" } as unknown as Session;
-    vi.mocked(getServerSession).mockResolvedValue(session as never);
-
-    let caught: unknown;
-    try {
-      await requireSession();
-    } catch (err) {
-      caught = err;
-    }
-
-    // redirect() throws a special NEXT_REDIRECT error rather than returning —
-    // assert on that digest instead of trying to follow the redirect.
-    expect(caught).toBeTruthy();
-    const digest = (caught as { digest?: unknown }).digest;
-    expect(typeof digest).toBe("string");
-    expect(digest as string).toMatch(/^NEXT_REDIRECT/);
-    // Must NOT be a route that itself calls requireSession (e.g. signin),
-    // or an authenticated-but-membership-less user would bounce forever.
-    expect(digest as string).toContain("/work-email-required");
-    expect(digest as string).not.toContain("/api/auth/signout");
-  });
-
   // A signed-in user with no membership is now a real, expected state: a
   // personal-email signup gets a user row but no workspace. Sending them to
   // signout would just loop them through the same blocked sign-in; the page
-  // explains why and offers the remedy.
+  // explains why and offers the remedy. This also covers the "valid JWT but
+  // the workspace is gone" case (deleted workspace, wiped DB) — resolveActiveTenant
+  // only ever looks at userId/cookieTenantId, never at session.user.tenantId/role,
+  // so a stale token and a personal-email signup hit this exact same branch.
+  // Must NOT be a route that itself calls requireSession (e.g. signin), or an
+  // authenticated-but-membership-less user would bounce forever.
   it("sends a signed-in user with no workspace to /work-email-required", async () => {
     const [user] = await db.insert(users).values({ email: emails[0] }).returning();
     const session = {
