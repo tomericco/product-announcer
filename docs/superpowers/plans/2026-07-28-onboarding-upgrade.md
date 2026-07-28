@@ -35,6 +35,7 @@
 | `src/lib/workspace/session.ts` (modify) | `requireUser()`; no-membership redirect target |
 | `src/app/invite/[token]/accept-actions.ts` (modify) | Use `requireUser()` |
 | `src/app/work-email-required/page.tsx` (new) | The blocked page |
+| `src/app/work-email-required/sign-out-button.tsx` (new) | Client component: real sign-out via `signOut()` |
 
 **Part 2 — wizard**
 
@@ -564,6 +565,7 @@ git commit -m "feat: route workspace-less users to the work-email page"
 
 **Files:**
 - Create: `src/app/work-email-required/page.tsx`
+- Create: `src/app/work-email-required/sign-out-button.tsx`
 
 **Interfaces:**
 - Consumes: `requireSession()`'s redirect target from Task 3; `resolveActiveTenant` and `ACTIVE_TENANT_COOKIE` from `@/lib/workspace/active-tenant`.
@@ -632,12 +634,7 @@ export default async function WorkEmailRequiredPage() {
             </p>
             {/* Sign out first: without clearing the session the provider silently
                 re-picks the same personal account and the user loops back here. */}
-            <Button
-              className="w-full"
-              render={<a href="/api/auth/signout?callbackUrl=/signin" />}
-            >
-              Sign in with your work account
-            </Button>
+            <WorkEmailSignOutButton />
           </CardContent>
         </Card>
       </div>
@@ -646,7 +643,26 @@ export default async function WorkEmailRequiredPage() {
 }
 ```
 
-Note the `render={<a … />}` prop — that is this codebase's Button-as-link idiom (see the GitHub connect button in the current `src/app/onboarding/page.tsx`), not `asChild`.
+**The sign-out button must be a client component.** Create `src/app/work-email-required/sign-out-button.tsx`:
+
+```tsx
+"use client";
+
+import { signOut } from "next-auth/react";
+import { Button } from "@/components/ui/button";
+
+export function WorkEmailSignOutButton() {
+  return (
+    <Button className="w-full" onClick={() => signOut({ callbackUrl: "/signin" })}>
+      Sign in with your work account
+    </Button>
+  );
+}
+```
+
+A plain `<a href="/api/auth/signout?callbackUrl=/signin">` does NOT work, and this was corrected only after the first implementation attempt shipped it. In NextAuth v4 a **GET** to `/api/auth/signout` renders an unstyled confirmation interstitial (`node_modules/next-auth/core/index.js:122`); only the **POST** from that page, carrying a CSRF token, reaches `routes/signout.ts` and actually clears the session (`core/index.js:226`). `signOut()` from `next-auth/react` fetches the CSRF token, POSTs, and then performs a real full-page navigation — one click, and it genuinely signs out. `src/app/(dashboard)/user-menu.tsx:39` is the existing precedent in this codebase.
+
+Elsewhere in this plan, Button-as-link uses `render={<a … />}` (see the GitHub connect button in Task 9), not `asChild` — but that idiom is wrong for auth routes specifically.
 
 - [ ] **Step 3: Typecheck and lint**
 
@@ -1697,7 +1713,7 @@ With `ALLOWED_PERSONAL_EMAILS` unset, sign in using a gmail.com account. Expect 
 select * from tenants order by created_at desc limit 3;
 ```
 
-Then click "Sign in with your work account" and confirm it signs out and returns to `/signin` rather than looping.
+Then click "Sign in with your work account" and confirm it signs out and returns to `/signin` in **one click**, with no NextAuth confirmation interstitial in between, and does not loop back.
 
 - [ ] **Step 5: Verify the invite bypass**
 

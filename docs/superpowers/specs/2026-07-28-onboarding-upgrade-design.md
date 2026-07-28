@@ -156,9 +156,18 @@ access control.
   stale bookmark stranding a valid user.
 - Layout mirrors `/signin`: centered `Logo`, heading, one paragraph, one card.
 - Copy names the signed-in address so the user understands what was rejected.
-- Single button → `/api/auth/signout?callbackUrl=/signin`. Signing out first is
-  required: without it the provider silently re-picks the same personal account
-  and the user loops back here.
+- Single button that signs the user out and returns them to `/signin`. Signing
+  out first is required: without it the provider silently re-picks the same
+  personal account and the user loops back here.
+- **Corrected during implementation.** This originally specified
+  `<a href="/api/auth/signout?callbackUrl=/signin">`. That does not work: in
+  NextAuth v4 a **GET** to `/api/auth/signout` only renders an unstyled
+  confirmation interstitial (`core/index.js:122`), and only the **POST** from
+  it, with a CSRF token, actually clears the session (`core/index.js:226`). The
+  button is instead a small `"use client"` component calling
+  `signOut({ callbackUrl: "/signin" })`, which fetches the CSRF token, POSTs,
+  and then performs a real full-page navigation. `(dashboard)/user-menu.tsx:39`
+  is the existing precedent.
 
 ---
 
