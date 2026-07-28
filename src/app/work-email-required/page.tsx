@@ -5,8 +5,8 @@ import { authOptions } from "@/lib/workspace/auth";
 import { hasValidSession } from "@/lib/workspace/session";
 import { ACTIVE_TENANT_COOKIE, resolveActiveTenant } from "@/lib/workspace/active-tenant";
 import { Card, CardContent } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 import { Logo } from "@/components/brand/logo";
+import { SignOutButton } from "./signout-button";
 
 /**
  * Shown to a signed-in user who belongs to no workspace — chiefly a personal-email
@@ -48,18 +48,7 @@ export default async function WorkEmailRequiredPage() {
               Sign in again with your company account and we&apos;ll get your workspace ready. If a
               teammate invited you, open their invite link instead — that works with any address.
             </p>
-            {/* Sign out first: without clearing the session the provider silently
-                re-picks the same personal account and the user loops back here.
-                /api/auth/signout is a NextAuth route (the [...nextauth] catch-all), not a
-                Next.js page, so the lint rule below false-positives on it — a plain <a> is
-                correct here since it must force a real browser navigation. */}
-            <Button
-              className="w-full"
-              // eslint-disable-next-line @next/next/no-html-link-for-pages
-              render={<a href="/api/auth/signout?callbackUrl=/signin" />}
-            >
-              Sign in with your work account
-            </Button>
+            <SignOutButton />
           </CardContent>
         </Card>
       </div>
