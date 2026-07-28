@@ -216,6 +216,10 @@
   border-top: 1px solid var(--border);
   margin: 1.5rem 0;
 }
+.mdx-content a {
+  color: var(--primary);
+  text-decoration: underline;
+}
 
 /* Specificity note: @mdxeditor's own `._toolbarRoot_*` rule (shipped in
    @mdxeditor/editor/dist/style.css) sets `overflow-x: auto; position: sticky`

@@ -44,7 +44,7 @@ export function SourceToggleButton() {
       className="text-sm text-muted-foreground transition-colors hover:text-foreground"
       aria-pressed={isSource}
     >
-      {isSource ? "Rich text" : "Source"}
+      {isSource ? "Show rich text" : "Show source"}
     </button>
   );
 }

@@ -342,8 +342,8 @@ function AskAiSelectionButton() {
   return (
     <button
       type="button"
-      title="Ask AI to edit the selection"
-      aria-label="Ask AI to edit the selection"
+      title="Ask for changes to the selection"
+      aria-label="Ask for changes to the selection"
       onClick={() => openSelectionEdit()}
       className="ml-1 flex items-center gap-1 rounded border-l border-border/60 pl-2 pr-1 text-muted-foreground transition-colors hover:text-foreground"
     >

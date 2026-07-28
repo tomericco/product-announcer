@@ -65,7 +65,7 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
     <div className="mx-auto w-full max-w-3xl space-y-6">
       <DraftEditorProvider>
         <AgentEditProvider>
-          <div className="flex items-center justify-between">
+          <div className="sticky top-0 z-20 -mx-4 flex items-center justify-between bg-background px-4 py-3">
             <GuardedLink
               href="/drafts"
               className="inline-flex items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground"

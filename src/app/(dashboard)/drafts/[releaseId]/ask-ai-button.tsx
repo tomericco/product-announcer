@@ -11,7 +11,7 @@ export function AskAiButton() {
   const { openWholeEdit } = useAgentEdit();
   return (
     <Button type="button" variant="outline" onClick={() => openWholeEdit()}>
-      <Sparkles className="size-4" /> Ask AI
+      <Sparkles className="size-4" /> Ask for changes
     </Button>
   );
 }
