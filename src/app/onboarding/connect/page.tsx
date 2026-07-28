@@ -42,8 +42,14 @@ export default async function ConnectStepPage() {
   }
 
   // Notion is only useful once a database is picked, so surface the picker as
-  // soon as the connection exists — mirroring the repo sub-step.
-  const notionDatabases = notion ? await fetchNotionDatabases().catch(() => []) : [];
+  // soon as the connection exists — mirroring the repo sub-step. Skip the
+  // fetch (and its potential token-refresh attempt) once a database is
+  // already chosen, or when the connection is already known to need
+  // re-authorization — in the latter case we show an explanatory line
+  // instead of the picker, so listing databases would just be discarded.
+  const needsReauth = notion?.status === "needs_reauth";
+  const notionDatabases =
+    notion && !notion.databaseId && !needsReauth ? await fetchNotionDatabases().catch(() => []) : [];
 
   return (
     <div className="space-y-8">
@@ -102,6 +108,10 @@ export default async function ConnectStepPage() {
             </Button>
           ) : notion.databaseId ? (
             <p className="text-sm">Using {notion.databaseName ?? "your selected database"}.</p>
+          ) : needsReauth ? (
+            <p className="text-muted-foreground text-sm">
+              Your Notion connection needs to be reconnected. Head to Integrations to reconnect it.
+            </p>
           ) : (
             <NotionDatabaseForm databases={notionDatabases} currentDatabaseId={notion.databaseId} />
           )}
