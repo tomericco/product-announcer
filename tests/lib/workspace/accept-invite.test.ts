@@ -11,7 +11,7 @@ async function makeUser(email: string) {
 }
 
 describe("acceptInviteForUser", () => {
-  const emails = ["accept-a@example.com", "accept-b@example.com"];
+  const emails = ["accept-a@example.com", "accept-b@example.com", "accept-personal@gmail.com"];
   let tenantId: string | undefined;
   afterEach(async () => {
     if (tenantId) {
@@ -61,5 +61,18 @@ describe("acceptInviteForUser", () => {
   it("returns the validation error for an unknown token", async () => {
     const u = await makeUser("accept-a@example.com");
     expect(await acceptInviteForUser(u.id, "nope")).toEqual({ status: "invalid" });
+  });
+
+  // The invitee path for a personal-email account: it has a user row but no
+  // workspace — exactly the state the work-email gate leaves it in.
+  it("joins a user who belongs to no workspace at all", async () => {
+    const { t, token } = await setup();
+    const u = await makeUser("accept-personal@gmail.com");
+    const before = await db.select().from(tenantMembers).where(eq(tenantMembers.userId, u.id));
+    expect(before).toHaveLength(0);
+
+    const res = await acceptInviteForUser(u.id, token);
+
+    expect(res).toEqual({ status: "joined", tenantId: t.id });
   });
 });

@@ -91,7 +91,7 @@ describe("requireSession", () => {
     expect(digest as string).not.toContain("/api/auth/signin");
   });
 
-  it("redirects to signout when the user has no membership", async () => {
+  it("redirects to /work-email-required when the user has no membership", async () => {
     const [user] = await db.insert(users).values({ email: emails[0] }).returning();
     const session = { user: { id: user.id }, expires: "" } as unknown as Session;
     vi.mocked(getServerSession).mockResolvedValue(session as never);
@@ -111,6 +111,33 @@ describe("requireSession", () => {
     expect(digest as string).toMatch(/^NEXT_REDIRECT/);
     // Must NOT be a route that itself calls requireSession (e.g. signin),
     // or an authenticated-but-membership-less user would bounce forever.
-    expect(digest as string).toContain("/api/auth/signout");
+    expect(digest as string).toContain("/work-email-required");
+    expect(digest as string).not.toContain("/api/auth/signout");
+  });
+
+  // A signed-in user with no membership is now a real, expected state: a
+  // personal-email signup gets a user row but no workspace. Sending them to
+  // signout would just loop them through the same blocked sign-in; the page
+  // explains why and offers the remedy.
+  it("sends a signed-in user with no workspace to /work-email-required", async () => {
+    const [user] = await db.insert(users).values({ email: emails[0] }).returning();
+    const session = {
+      user: { id: user.id, tenantId: "stale-id", role: "member" },
+      expires: "",
+    } as unknown as Session;
+    vi.mocked(getServerSession).mockResolvedValue(session as never);
+
+    let caught: unknown;
+    try {
+      await requireSession();
+    } catch (err) {
+      caught = err;
+    }
+
+    const digest = (caught as { digest?: unknown }).digest;
+    expect(typeof digest).toBe("string");
+    expect(digest as string).toMatch(/^NEXT_REDIRECT/);
+    expect(digest as string).toContain("/work-email-required");
+    expect(digest as string).not.toContain("/api/auth/signout");
   });
 });

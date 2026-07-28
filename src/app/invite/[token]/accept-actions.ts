@@ -1,13 +1,16 @@
 "use server";
 
 import { redirect } from "next/navigation";
-import { requireSession } from "@/lib/workspace/session";
+import { requireUser } from "@/lib/workspace/session";
 import { setActiveTenant } from "@/lib/workspace/active-tenant";
 import { acceptInviteForUser } from "@/lib/workspace/accept-invite";
 
 export async function acceptInvite(token: string): Promise<void> {
-  const session = await requireSession();
-  const result = await acceptInviteForUser(session.user.id, token);
+  // requireUser, not requireSession: an invitee with a personal email has no
+  // workspace yet, and requireSession() would redirect them away from the very
+  // action that grants them one.
+  const user = await requireUser();
+  const result = await acceptInviteForUser(user.id, token);
   // Written as a negated joined/already_member check (rather than the more
   // natural `status === "invalid" || ... === "expired" || ... === "revoked"`)
   // because TS's control-flow analysis doesn't narrow discriminated unions
@@ -20,6 +23,6 @@ export async function acceptInvite(token: string): Promise<void> {
     redirect(`/invite/${token}`);
   }
   // joined or already_member → make the workspace active and land in the app.
-  await setActiveTenant(result.tenantId, session.user.id);
+  await setActiveTenant(result.tenantId, user.id);
   redirect("/");
 }

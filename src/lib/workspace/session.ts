@@ -28,11 +28,27 @@ export async function requireSession(): Promise<Session> {
   const cookieTenantId = store.get(ACTIVE_TENANT_COOKIE)?.value;
   const active = await resolveActiveTenant(session.user.id, cookieTenantId);
   if (!active) {
-    // Valid JWT but no membership (deleted workspace, wiped DB). /api/auth/signout
-    // is unguarded and clears the cookie; the next sign-in re-bootstraps.
-    redirect("/api/auth/signout");
+    // No membership. Either a personal-email signup (blocked from creating a
+    // workspace) or a valid JWT whose workspace is gone (deleted workspace,
+    // wiped DB). The page covers both and offers sign-out, which is the remedy
+    // either way.
+    redirect("/work-email-required");
   }
   session.user.tenantId = active.tenantId;
   session.user.role = active.role;
   return session;
+}
+
+/**
+ * Identity only — no workspace resolution. Use this on the few paths that must
+ * work for a user who belongs to no workspace yet, chiefly accepting an invite:
+ * requireSession() would bounce them to /work-email-required before they could
+ * ever join the workspace that would unblock them.
+ */
+export async function requireUser(): Promise<{ id: string }> {
+  const session = await getServerSession(authOptions);
+  if (!hasValidSession(session)) {
+    redirect("/signin");
+  }
+  return { id: session.user.id };
 }
