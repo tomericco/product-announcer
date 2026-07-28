@@ -8,7 +8,7 @@ import { requireSession } from "@/lib/workspace/session";
 import { advanceNextScheduledAt, type Cadence } from "@/lib/scheduling/scheduler-decision";
 import { addSelectedRepos } from "@/lib/workspace/repo-sync";
 import { parseRepoSelections } from "@/lib/workspace/repo-selection-form";
-import { isOnboardingComplete, markOnboardingComplete } from "@/lib/workspace/onboarding";
+import { advanceOnboardingStep, isOnboardingComplete, markOnboardingComplete } from "@/lib/workspace/onboarding";
 import { listRepoBranches } from "@/lib/integrations/github/github";
 import { importBrandStyleForTenant } from "@/lib/workspace/brand-import";
 
@@ -71,8 +71,11 @@ export async function importBrandStyle(formData: FormData) {
 export async function saveWorkspaceName(formData: FormData) {
   const session = await requireSession();
   const name = (formData.get("name") as string)?.trim();
-  if (!name) return;
+  // Previously this returned silently on an empty name, leaving the user staring
+  // at an unchanged form with no feedback.
+  if (!name) redirect("/onboarding/workspace?error=empty");
 
   await db.update(tenants).set({ name }).where(eq(tenants.id, session.user.tenantId));
-  redirect("/onboarding");
+  await advanceOnboardingStep(session.user.tenantId, 2);
+  redirect("/onboarding/brand");
 }
