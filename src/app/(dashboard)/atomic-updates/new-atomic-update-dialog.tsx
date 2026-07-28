@@ -28,7 +28,7 @@ export function NewAtomicUpdateDialog({ repos }: { repos: ImportRepo[] }) {
   // bare trigger is what the hint can wrap.
   if (repos.length === 0) {
     return (
-      <DisabledHint hint="Connect GitHub and watch a repo to create atomic updates.">
+      <DisabledHint hint="Connect GitHub and watch a repo to create atomic updates">
         <Button variant="outline" disabled>
           <SquarePlus />
           New atomic update

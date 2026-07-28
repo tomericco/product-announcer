@@ -315,7 +315,7 @@ export function ImportDialog({
   const noImportSources = repos.length === 0 && !(enableTasks && notionConnected);
   if (!trigger && noImportSources) {
     return (
-      <DisabledHint hint="Connect GitHub or Notion to import changes.">
+      <DisabledHint hint="Connect GitHub or Notion to import changes">
         <Button variant="outline" disabled>
           <Download />
           Import
