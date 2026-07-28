@@ -1517,11 +1517,13 @@ export default async function ConnectStepPage() {
             /* An expired or revoked token must NOT fall through to the database
                picker: its empty state reads "no databases are shared with this
                integration yet", which misdiagnoses the problem and offers no way
-               out. Onboarding stays light and points at Settings rather than
+               out. Onboarding stays light and points at Integrations rather than
                carrying the dashboard's full reconnect flow — the step is
-               skippable, and connection repair belongs there. */
+               skippable, and connection repair belongs there. Integrations, not
+               Settings: NotionForm lives on /integrations, and that is what the
+               app's own nav calls it. */
             <p className="text-muted-foreground text-sm">
-              Your Notion connection needs to be reauthorized. You can reconnect it in Settings.
+              Your Notion connection needs to be reauthorized. Head to Integrations to reconnect it.
             </p>
           ) : notion.databaseId ? (
             <p className="text-sm">Using {notion.databaseName ?? "your selected database"}.</p>
