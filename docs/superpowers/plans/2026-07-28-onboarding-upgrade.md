@@ -35,7 +35,7 @@
 | `src/lib/workspace/session.ts` (modify) | `requireUser()`; no-membership redirect target |
 | `src/app/invite/[token]/accept-actions.ts` (modify) | Use `requireUser()` |
 | `src/app/work-email-required/page.tsx` (new) | The blocked page |
-| `src/app/work-email-required/sign-out-button.tsx` (new) | Client component: real sign-out via `signOut()` |
+| `src/app/work-email-required/signout-button.tsx` (new) | Client component: real sign-out via `signOut()` |
 
 **Part 2 — wizard**
 
@@ -565,7 +565,7 @@ git commit -m "feat: route workspace-less users to the work-email page"
 
 **Files:**
 - Create: `src/app/work-email-required/page.tsx`
-- Create: `src/app/work-email-required/sign-out-button.tsx`
+- Create: `src/app/work-email-required/signout-button.tsx`
 
 **Interfaces:**
 - Consumes: `requireSession()`'s redirect target from Task 3; `resolveActiveTenant` and `ACTIVE_TENANT_COOKIE` from `@/lib/workspace/active-tenant`.
@@ -634,7 +634,7 @@ export default async function WorkEmailRequiredPage() {
             </p>
             {/* Sign out first: without clearing the session the provider silently
                 re-picks the same personal account and the user loops back here. */}
-            <WorkEmailSignOutButton />
+            <SignOutButton />
           </CardContent>
         </Card>
       </div>
@@ -643,7 +643,7 @@ export default async function WorkEmailRequiredPage() {
 }
 ```
 
-**The sign-out button must be a client component.** Create `src/app/work-email-required/sign-out-button.tsx`:
+**The sign-out button must be a client component.** Create `src/app/work-email-required/signout-button.tsx`:
 
 ```tsx
 "use client";
@@ -651,7 +651,7 @@ export default async function WorkEmailRequiredPage() {
 import { signOut } from "next-auth/react";
 import { Button } from "@/components/ui/button";
 
-export function WorkEmailSignOutButton() {
+export function SignOutButton() {
   return (
     <Button className="w-full" onClick={() => signOut({ callbackUrl: "/signin" })}>
       Sign in with your work account
