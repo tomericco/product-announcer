@@ -62,12 +62,6 @@ export async function saveOnboardingSchedule(formData: FormData) {
   redirect("/atomic-updates");
 }
 
-export async function skipOnboarding() {
-  const session = await requireSession();
-  await markOnboardingComplete(session.user.tenantId);
-  redirect("/atomic-updates");
-}
-
 export async function importBrandStyle(formData: FormData) {
   const session = await requireSession();
   const url = (formData.get("updatesPageUrl") as string)?.trim();
