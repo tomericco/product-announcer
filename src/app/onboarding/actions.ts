@@ -49,15 +49,31 @@ export async function saveOnboardingSchedule(formData: FormData) {
   const thresholdRaw = formData.get("threshold");
   const threshold = thresholdRaw ? Number(thresholdRaw) : null;
   const nextScheduledAt = cadence === "none" ? null : advanceNextScheduledAt(new Date(), cadence);
+  // "No fixed cadence" leaves nextScheduledAt null, so the threshold is the only
+  // thing left that can trigger a draft — enable it, or picking that option would
+  // silently mean "never draft anything". With a real cadence the cadence drives
+  // it and the threshold stays off, as before.
+  const thresholdEnabled = cadence === "none";
 
   await db
     .insert(scheduleConfigs)
-    .values({ tenantId: session.user.tenantId, cadence, threshold, thresholdEnabled: false, nextScheduledAt })
+    .values({ tenantId: session.user.tenantId, cadence, threshold, thresholdEnabled, nextScheduledAt })
     .onConflictDoUpdate({
       target: scheduleConfigs.tenantId,
-      set: { cadence, threshold, nextScheduledAt },
+      set: { cadence, threshold, thresholdEnabled, nextScheduledAt },
     });
 
+  await markOnboardingComplete(session.user.tenantId);
+  redirect("/atomic-updates");
+}
+
+/**
+ * Finish onboarding without configuring a schedule at all. Deliberately writes no
+ * scheduleConfigs row: runSchedulerTick iterates the rows that exist, so a tenant
+ * without one is simply never picked up until they set a schedule in Settings.
+ */
+export async function skipScheduleStep() {
+  const session = await requireSession();
   await markOnboardingComplete(session.user.tenantId);
   redirect("/atomic-updates");
 }

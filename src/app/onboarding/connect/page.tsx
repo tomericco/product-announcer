@@ -164,7 +164,7 @@ export default async function ConnectStepPage({
           variant={connected ? "default" : "ghost"}
           className={connected ? "w-full" : "text-muted-foreground w-full"}
         >
-          {connected ? "Continue" : "Skip this step"}
+          {connected ? "Continue" : "Skip for now"}
         </Button>
       </form>
     </div>
