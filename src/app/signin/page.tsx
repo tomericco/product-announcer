@@ -1,6 +1,7 @@
 import { Card, CardContent } from "@/components/ui/card";
 import { SignInButtons } from "./signin-buttons";
 import { Logo } from "@/components/brand/logo";
+import { safeCallbackUrl } from "@/lib/workspace/callback-url";
 
 export default async function SignInPage({ searchParams }: { searchParams: Promise<{ callbackUrl?: string }> }) {
   const { callbackUrl } = await searchParams;
@@ -22,7 +23,7 @@ export default async function SignInPage({ searchParams }: { searchParams: Promi
         </div>
         <Card>
           <CardContent>
-            <SignInButtons callbackUrl={callbackUrl ?? "/"} googleEnabled={googleEnabled} />
+            <SignInButtons callbackUrl={safeCallbackUrl(callbackUrl)} googleEnabled={googleEnabled} />
           </CardContent>
         </Card>
       </div>

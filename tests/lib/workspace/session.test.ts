@@ -68,6 +68,29 @@ describe("requireSession", () => {
     expect(resolved.user.role).toBe("owner");
   });
 
+  // Regression: requireSession used to send signed-out visitors to
+  // /api/auth/signin. NextAuth bounces that to /signin?callbackUrl=<that same
+  // /api/auth/signin URL> and remembers it as the post-login destination, so a
+  // *successful* sign-in landed the user back on the sign-in page. The
+  // unauthenticated redirect must point at the real page, never at an
+  // /api/auth/* route.
+  it("redirects an unauthenticated visitor to /signin, not to an /api/auth route", async () => {
+    vi.mocked(getServerSession).mockResolvedValue(null as never);
+
+    let caught: unknown;
+    try {
+      await requireSession();
+    } catch (err) {
+      caught = err;
+    }
+
+    const digest = (caught as { digest?: unknown }).digest;
+    expect(typeof digest).toBe("string");
+    expect(digest as string).toMatch(/^NEXT_REDIRECT/);
+    expect(digest as string).toContain("/signin");
+    expect(digest as string).not.toContain("/api/auth/signin");
+  });
+
   it("redirects to signout when the user has no membership", async () => {
     const [user] = await db.insert(users).values({ email: emails[0] }).returning();
     const session = { user: { id: user.id }, expires: "" } as unknown as Session;
