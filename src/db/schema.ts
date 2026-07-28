@@ -18,6 +18,10 @@ export const tenants = pgTable("tenants", {
   name: text("name").notNull(),
   githubInstallationId: text("github_installation_id"),
   onboardingCompletedAt: timestamp("onboarding_completed_at", { withTimezone: true }),
+  // Furthest wizard step reached (1–4). An explicit column because steps 2 and 3
+  // are skippable — their DB artifacts cannot distinguish "skipped" from "not
+  // reached" — and `name` is auto-derived at signup, so it is never empty.
+  onboardingStep: integer("onboarding_step").notNull().default(1),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

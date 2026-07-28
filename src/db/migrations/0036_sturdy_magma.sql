@@ -1,0 +1,1 @@
+ALTER TABLE "tenants" ADD COLUMN "onboarding_step" integer DEFAULT 1 NOT NULL;
