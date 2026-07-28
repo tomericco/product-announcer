@@ -1382,7 +1382,7 @@ git commit -m "feat: add the brand-style onboarding step"
 
 **Interfaces:**
 - Consumes: `guardOnboardingStep`, `StepHeader` from Task 7; `/api/notion/connect?returnTo=onboarding` from Task 6; `RepoRow` from `@/app/(dashboard)/integrations/repo-row`; `NotionDatabaseForm` from `@/app/(dashboard)/integrations/notion-database-form`; `fetchNotionDatabases` from `@/app/(dashboard)/integrations/notion-actions`.
-- Produces: nothing consumed by later tasks.
+- Produces: `finishConnectStep()` server action.
 
 This is the largest screen. Both sub-components already exist and are reused as-is — do not rebuild them. The current onboarding page already imports `RepoRow` across the route-group boundary, so that pattern is established.
 
@@ -1396,7 +1396,7 @@ import { db } from "@/db";
 import { repos, tenants, notionConnections } from "@/db/schema";
 import { guardOnboardingStep } from "../guard";
 import { StepHeader } from "../steps";
-import { addOnboardingRepos, continueFromConnect, skipConnectStep } from "../actions";
+import { addOnboardingRepos, finishConnectStep } from "../actions";
 import { listAccessibleRepos, listRepoBranches } from "@/lib/integrations/github/github";
 import { RepoRow } from "@/app/(dashboard)/integrations/repo-row";
 import { NotionDatabaseForm } from "@/app/(dashboard)/integrations/notion-database-form";
@@ -1502,20 +1502,17 @@ export default async function ConnectStepPage() {
       </Card>
 
       {/* One control, never two: with nothing connected, "Continue" and "Skip"
-          would do exactly the same thing. */}
-      {connected ? (
-        <form action={continueFromConnect}>
-          <Button type="submit" className="w-full">
-            Continue
-          </Button>
-        </form>
-      ) : (
-        <form action={skipConnectStep}>
-          <Button type="submit" variant="ghost" className="text-muted-foreground w-full">
-            Skip this step
-          </Button>
-        </form>
-      )}
+          would do exactly the same thing — so the same action backs both, and
+          only the label and emphasis change. */}
+      <form action={finishConnectStep}>
+        <Button
+          type="submit"
+          variant={connected ? "default" : "ghost"}
+          className={connected ? "w-full" : "text-muted-foreground w-full"}
+        >
+          {connected ? "Continue" : "Skip this step"}
+        </Button>
+      </form>
     </div>
   );
 }
@@ -1523,19 +1520,18 @@ export default async function ConnectStepPage() {
 
 - [ ] **Step 2: Update the actions**
 
-In `src/app/onboarding/actions.ts`, change the redirect at the end of `addOnboardingRepos` and append two actions:
+In `src/app/onboarding/actions.ts`, change the redirect at the end of `addOnboardingRepos` and append one action:
 
 ```ts
   redirect("/onboarding/connect");
 }
 
-export async function continueFromConnect() {
-  const session = await requireSession();
-  await advanceOnboardingStep(session.user.tenantId, 4);
-  redirect("/onboarding/schedule");
-}
-
-export async function skipConnectStep() {
+/**
+ * Leaves step 3, whether the user connected something or skipped. Both cases do
+ * the same thing — the step's only stored outcome is the connection itself, and
+ * that is written by the OAuth callbacks, not here.
+ */
+export async function finishConnectStep() {
   const session = await requireSession();
   await advanceOnboardingStep(session.user.tenantId, 4);
   redirect("/onboarding/schedule");
