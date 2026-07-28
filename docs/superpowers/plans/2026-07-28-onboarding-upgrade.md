@@ -1451,8 +1451,12 @@ export default async function ConnectStepPage() {
   }
 
   // Notion is only useful once a database is picked, so surface the picker as
-  // soon as the connection exists — mirroring the repo sub-step.
-  const notionDatabases = notion ? await fetchNotionDatabases().catch(() => []) : [];
+  // soon as the connection exists — mirroring the repo sub-step. Fetch ONLY when
+  // the picker will actually render: with a database already chosen the result is
+  // discarded, and the call costs a Notion round-trip and a token-refresh attempt.
+  const notionNeedsReauth = notion?.status === "needs_reauth";
+  const notionDatabases =
+    notion && !notion.databaseId && !notionNeedsReauth ? await fetchNotionDatabases().catch(() => []) : [];
 
   return (
     <div className="space-y-8">
@@ -1509,6 +1513,16 @@ export default async function ConnectStepPage() {
             <Button variant="outline" render={<a href="/api/notion/connect?returnTo=onboarding" />}>
               Connect Notion
             </Button>
+          ) : notionNeedsReauth ? (
+            /* An expired or revoked token must NOT fall through to the database
+               picker: its empty state reads "no databases are shared with this
+               integration yet", which misdiagnoses the problem and offers no way
+               out. Onboarding stays light and points at Settings rather than
+               carrying the dashboard's full reconnect flow — the step is
+               skippable, and connection repair belongs there. */
+            <p className="text-muted-foreground text-sm">
+              Your Notion connection needs to be reauthorized. You can reconnect it in Settings.
+            </p>
           ) : notion.databaseId ? (
             <p className="text-sm">Using {notion.databaseName ?? "your selected database"}.</p>
           ) : (
