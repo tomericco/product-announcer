@@ -8,7 +8,7 @@ import { requireSession } from "@/lib/workspace/session";
 import { advanceNextScheduledAt, type Cadence } from "@/lib/scheduling/scheduler-decision";
 import { addSelectedRepos } from "@/lib/workspace/repo-sync";
 import { parseRepoSelections } from "@/lib/workspace/repo-selection-form";
-import { advanceOnboardingStep, isOnboardingComplete, markOnboardingComplete } from "@/lib/workspace/onboarding";
+import { advanceOnboardingStep, markOnboardingComplete } from "@/lib/workspace/onboarding";
 import { listRepoBranches } from "@/lib/integrations/github/github";
 import { importBrandStyleForTenant } from "@/lib/workspace/brand-import";
 
@@ -59,13 +59,22 @@ export async function skipOnboarding() {
 
 export async function importBrandStyle(formData: FormData) {
   const session = await requireSession();
-  if (await isOnboardingComplete(session.user.tenantId)) redirect("/atomic-updates");
-
   const url = (formData.get("updatesPageUrl") as string)?.trim();
-  if (!url) redirect("/onboarding");
+  if (!url) redirect("/onboarding/brand");
 
   const result = await importBrandStyleForTenant(session.user.tenantId, url);
-  redirect(result.ok ? "/onboarding?brandImport=success" : "/onboarding?brandImport=failed");
+  // A failed scrape keeps the user on step 2 so they can try another URL or skip;
+  // only a success advances.
+  if (!result.ok) redirect("/onboarding/brand?brandImport=failed");
+
+  await advanceOnboardingStep(session.user.tenantId, 3);
+  redirect("/onboarding/connect");
+}
+
+export async function skipBrandStep() {
+  const session = await requireSession();
+  await advanceOnboardingStep(session.user.tenantId, 3);
+  redirect("/onboarding/connect");
 }
 
 export async function saveWorkspaceName(formData: FormData) {
