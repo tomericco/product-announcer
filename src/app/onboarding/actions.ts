@@ -29,7 +29,18 @@ export async function addOnboardingRepos(formData: FormData) {
     await addSelectedRepos(session.user.tenantId, tenant.githubInstallationId, validated);
   }
 
-  redirect("/onboarding");
+  redirect("/onboarding/connect");
+}
+
+/**
+ * Leaves step 3, whether the user connected something or skipped. Both cases do
+ * the same thing — the step's only stored outcome is the connection itself, and
+ * that is written by the OAuth callbacks, not here.
+ */
+export async function finishConnectStep() {
+  const session = await requireSession();
+  await advanceOnboardingStep(session.user.tenantId, 4);
+  redirect("/onboarding/schedule");
 }
 
 export async function saveOnboardingSchedule(formData: FormData) {
