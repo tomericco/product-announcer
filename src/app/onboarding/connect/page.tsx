@@ -11,9 +11,16 @@ import { fetchNotionDatabases } from "@/app/(dashboard)/integrations/notion-acti
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
-export default async function ConnectStepPage() {
+export default async function ConnectStepPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ notion_connect?: string; github_connect?: string }>;
+}) {
   const session = await guardOnboardingStep(3);
   const tenantId = session.user.tenantId;
+  const { notion_connect, github_connect } = await searchParams;
+  const notionError = notion_connect === "error" ? "Could not connect Notion. Please try again." : null;
+  const githubError = github_connect === "error" ? "Could not connect GitHub. Please try again." : null;
 
   const [tenant] = await db.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1);
   const [notion] = await db.select().from(notionConnections).where(eq(notionConnections.tenantId, tenantId)).limit(1);
@@ -22,9 +29,24 @@ export default async function ConnectStepPage() {
   const githubConnected = Boolean(tenant?.githubInstallationId);
   const connected = githubConnected || Boolean(notion);
 
-  const accessibleRepos = tenant?.githubInstallationId
-    ? await listAccessibleRepos(tenant.githubInstallationId)
-    : [];
+  // Guard this outer fetch, not just the per-repo one below: if the GitHub
+  // installation was removed on GitHub's side (or the API 5xxes),
+  // getInstallationOctokit() throws. tenants.githubInstallationId stays set,
+  // so this branch would otherwise crash every reachable route (this page is
+  // both the onboarding entry redirect target and the dashboard's fallback),
+  // locking the account out of the product until someone edits the DB by
+  // hand. Degrade to an empty list instead — the "no accessible repos" state
+  // below already tells the user something's wrong rather than implying they
+  // truly have zero repos, since it renders "No accessible repos found."
+  let accessibleRepos: Awaited<ReturnType<typeof listAccessibleRepos>> = [];
+  let githubReposUnavailable = false;
+  if (tenant?.githubInstallationId) {
+    try {
+      accessibleRepos = await listAccessibleRepos(tenant.githubInstallationId);
+    } catch {
+      githubReposUnavailable = true;
+    }
+  }
   const watchedFullNames = new Set(tenantRepos.map((r) => r.githubRepoFullName));
   const branchesByFullName = new Map<string, string[]>();
   if (tenant?.githubInstallationId) {
@@ -64,6 +86,11 @@ export default async function ConnectStepPage() {
           <CardTitle>GitHub</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
+          {githubError && (
+            <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              {githubError}
+            </div>
+          )}
           {!githubConnected ? (
             <Button variant="outline" render={<a href="/api/github/connect?returnTo=onboarding" />}>
               Connect GitHub
@@ -71,6 +98,11 @@ export default async function ConnectStepPage() {
           ) : tenantRepos.length > 0 ? (
             <p className="text-sm">
               Watching {tenantRepos.length} {tenantRepos.length === 1 ? "repo" : "repos"}.
+            </p>
+          ) : githubReposUnavailable ? (
+            <p className="text-muted-foreground text-sm">
+              We couldn&apos;t load your repos from GitHub just now. Head to Integrations to try again, or skip this
+              step for now.
             </p>
           ) : (
             <form action={addOnboardingRepos} className="space-y-3">
@@ -102,6 +134,11 @@ export default async function ConnectStepPage() {
           <CardTitle>Notion</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
+          {notionError && (
+            <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              {notionError}
+            </div>
+          )}
           {!notion ? (
             <Button variant="outline" render={<a href="/api/notion/connect?returnTo=onboarding" />}>
               Connect Notion
