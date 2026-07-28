@@ -3,6 +3,7 @@
 import { SquarePlus } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { DisabledHint } from "../_components/disabled-hint";
 import { ImportDialog } from "../change-events/import-dialog";
 import type { ImportRepo } from "../change-events/actions";
 import {
@@ -21,11 +22,26 @@ import type { PullRequestSelection } from "@/lib/change-events/import-pull-reque
  * (`createAtomicUpdateFrom{Commits,PullRequests}`).
  */
 export function NewAtomicUpdateDialog({ repos }: { repos: ImportRepo[] }) {
+  // Only commits and PRs can seed an atomic update here, so a watched repo is
+  // the hard requirement. Render the disabled button on its own rather than as
+  // the dialog's trigger — the dialog has nothing to show without repos, and a
+  // bare trigger is what the hint can wrap.
+  if (repos.length === 0) {
+    return (
+      <DisabledHint hint="Connect GitHub and watch a repo to create atomic updates.">
+        <Button variant="outline" disabled>
+          <SquarePlus />
+          New atomic update
+        </Button>
+      </DisabledHint>
+    );
+  }
+
   return (
     <ImportDialog
       repos={repos}
       trigger={
-        <Button variant="outline" disabled={repos.length === 0}>
+        <Button variant="outline">
           <SquarePlus />
           New atomic update
         </Button>

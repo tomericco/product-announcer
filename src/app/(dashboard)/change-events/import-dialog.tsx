@@ -30,6 +30,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { EventMultiSelect, type PickerRow, type PickerType } from "../_components/event-multi-select";
+import { DisabledHint } from "../_components/disabled-hint";
 
 const ALL = "all";
 
@@ -302,6 +303,27 @@ export function ImportDialog({
     pickerType === "task" ? selectedTasks.size : pickerType === "pull_request" ? selectedPRs.size : selectedCommits.size;
   const enabledTypes: PickerType[] = enableTasks ? ["commit", "pull_request", "task"] : ["commit", "pull_request"];
 
+  // Nothing to import from: no watched repos, and either tasks are off or Notion
+  // isn't connected. Previously this read `repos.length === 0 && !enableTasks`,
+  // which left the button permanently enabled on the change-events page — that
+  // page passes `enableTasks` unconditionally, so merely *offering* the tasks tab
+  // was mistaken for *having* a Notion connection.
+  //
+  // Placed after every hook so the hook order stays unconditional. A caller that
+  // supplies its own `trigger` owns its disabled state, so this only governs the
+  // default one.
+  const noImportSources = repos.length === 0 && !(enableTasks && notionConnected);
+  if (!trigger && noImportSources) {
+    return (
+      <DisabledHint hint="Connect GitHub or Notion to import changes.">
+        <Button variant="outline" disabled>
+          <Download />
+          Import
+        </Button>
+      </DisabledHint>
+    );
+  }
+
   return (
     <Dialog
       open={open}
@@ -313,7 +335,7 @@ export function ImportDialog({
       <DialogTrigger
         render={
           trigger ?? (
-            <Button variant="outline" disabled={repos.length === 0 && !enableTasks}>
+            <Button variant="outline">
               <Download />
               Import
             </Button>
