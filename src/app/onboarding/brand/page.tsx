@@ -43,9 +43,11 @@ export default async function BrandStepPage({
         <SubmitButton className="w-full" pendingLabel="Reading your page…">
           Import and continue
         </SubmitButton>
-        <SecondaryFormAction action={skipBrandStep} className="text-muted-foreground w-full">
-          Skip for now
-        </SecondaryFormAction>
+        <div className="flex justify-center">
+          <SecondaryFormAction action={skipBrandStep} className="text-muted-foreground">
+            Skip for now
+          </SecondaryFormAction>
+        </div>
       </form>
     </div>
   );

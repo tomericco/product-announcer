@@ -158,11 +158,11 @@ export default async function ConnectStepPage({
       {/* One control, never two: with nothing connected, "Continue" and "Skip"
           would do exactly the same thing — so the same action backs both, and
           only the label and emphasis change. */}
-      <form action={finishConnectStep}>
+      <form action={finishConnectStep} className={connected ? undefined : "flex justify-center"}>
         <Button
           type="submit"
           variant={connected ? "default" : "ghost"}
-          className={connected ? "w-full" : "text-muted-foreground w-full"}
+          className={connected ? "w-full" : "text-muted-foreground"}
         >
           {connected ? "Continue" : "Skip for now"}
         </Button>

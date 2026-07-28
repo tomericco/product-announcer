@@ -23,14 +23,14 @@ export default async function ScheduleStepPage() {
         </div>
         <div className="space-y-2">
           <Label htmlFor="threshold">Or after at least this many changes</Label>
-          <Input id="threshold" type="number" name="threshold" min={1} defaultValue={5} />
+          <Input id="threshold" type="number" name="threshold" min={1} defaultValue={5} className="w-24" />
         </div>
         <Button type="submit" className="w-full">
           Finish setup
         </Button>
       </form>
-      <form action={skipScheduleStep}>
-        <Button type="submit" variant="ghost" className="text-muted-foreground w-full">
+      <form action={skipScheduleStep} className="flex justify-center">
+        <Button type="submit" variant="ghost" className="text-muted-foreground">
           Skip for now
         </Button>
       </form>
