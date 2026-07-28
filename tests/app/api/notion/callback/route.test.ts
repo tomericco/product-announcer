@@ -72,4 +72,32 @@ describe("notion callback route", () => {
     const rows = await db.select().from(notionConnections).where(eq(notionConnections.tenantId, currentTenantId));
     expect(rows).toHaveLength(0);
   });
+
+  it("returns the user to the onboarding connect step when state says so", async () => {
+    const nonce = "abc123def456";
+    const res = await GET(
+      request({ code: "the-code", state: `${currentTenantId}|onboarding|${nonce}` }, nonce) as never
+    );
+    expect(res.headers.get("location")).toContain("/onboarding/connect");
+    expect(res.headers.get("location")).toContain("notion_connect=success");
+  });
+
+  it("returns errors to onboarding too when that is where the flow started", async () => {
+    const res = await GET(
+      request({ code: "c", state: `someone-else|onboarding|nonce` }, "nonce") as never
+    );
+    expect(res.headers.get("location")).toContain("/onboarding/connect");
+    expect(res.headers.get("location")).toContain("notion_connect=error");
+  });
+
+  // Anything unrecognised must fall back to integrations — an attacker-controlled
+  // state segment must not become an open redirect.
+  it("falls back to integrations for an unknown returnTo", async () => {
+    const nonce = "abc123def456";
+    const res = await GET(
+      request({ code: "the-code", state: `${currentTenantId}|https://evil.dev|${nonce}` }, nonce) as never
+    );
+    expect(res.headers.get("location")).toContain("/integrations");
+    expect(res.headers.get("location")).not.toContain("evil.dev");
+  });
 });

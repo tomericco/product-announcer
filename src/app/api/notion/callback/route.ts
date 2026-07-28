@@ -20,6 +20,11 @@ export async function GET(request: NextRequest) {
   // plain `Request` the test suite passes (same rationale as `new URL` above).
   const cookieNonce = new NextRequest(request).cookies.get("notion_oauth_state")?.value;
 
+  // Resolve where to send the user once the flow ends. Allowlisted rather than
+  // used verbatim: `state` round-trips through Notion, so treating it as a path
+  // would be an open redirect.
+  const returnPath = parsed.returnTo === "onboarding" ? "/onboarding/connect" : "/integrations";
+
   // Always clear the state cookie on the way out — it is single-use.
   const clearStateCookie = (response: NextResponse) => {
     response.cookies.set("notion_oauth_state", "", { ...OAUTH_STATE_COOKIE_OPTS, maxAge: 0 });
@@ -32,7 +37,7 @@ export async function GET(request: NextRequest) {
     !parsed.nonce ||
     parsed.nonce !== cookieNonce
   ) {
-    return clearStateCookie(NextResponse.redirect(new URL("/integrations?notion_connect=error", request.url)));
+    return clearStateCookie(NextResponse.redirect(new URL(`${returnPath}?notion_connect=error`, request.url)));
   }
 
   try {
@@ -66,9 +71,9 @@ export async function GET(request: NextRequest) {
       await db.insert(notionConnections).values({ tenantId: session.user.tenantId, ...values });
     }
 
-    return clearStateCookie(NextResponse.redirect(new URL("/integrations?notion_connect=success", request.url)));
+    return clearStateCookie(NextResponse.redirect(new URL(`${returnPath}?notion_connect=success`, request.url)));
   } catch (error) {
     console.error("Notion OAuth callback failed:", error);
-    return clearStateCookie(NextResponse.redirect(new URL("/integrations?notion_connect=error", request.url)));
+    return clearStateCookie(NextResponse.redirect(new URL(`${returnPath}?notion_connect=error`, request.url)));
   }
 }
