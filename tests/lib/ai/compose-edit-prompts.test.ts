@@ -7,13 +7,8 @@ type BrandProfileRow = typeof brandProfiles.$inferSelect;
 // Minimal brand profile — buildSystemPrompt only reads these fields.
 const brandProfile = {
   tenantId: "tenant-1",
+  guidelines: null,
   industry: null,
-  tone: null,
-  readingLevel: null,
-  doList: [],
-  dontList: [],
-  examplePhrases: [],
-  updatesStyleSummary: null,
   userPersonas: [],
 } as unknown as BrandProfileRow;
 

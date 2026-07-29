@@ -5,6 +5,7 @@ import type { UpdateDraft } from "./generation";
 import { resolveModel, modelId } from "./model";
 import { recordLlmUsage } from "./llm-usage";
 import type { OnDraftProgress } from "@/lib/scheduling/draft-progress";
+import { truncateGuidelines } from "./compose-prompt";
 
 type BrandProfileRow = typeof brandProfiles.$inferSelect;
 
@@ -60,16 +61,15 @@ const REVISION_SYSTEM = [
   "Return only the revised title and body.",
 ].join(" ");
 
+// Wrapped in the same <brand-guidelines> delimiters buildSystemPrompt uses,
+// for the same reason: the document is the team's prose, not instructions to
+// the model, and it may itself contain a line like "Draft to review:" that
+// would otherwise be misread as part of this prompt's own structure.
 function brandRubric(brandProfile: BrandProfileRow): string {
-  const rules = [
-    brandProfile.tone ? `Tone: ${brandProfile.tone}.` : null,
-    brandProfile.readingLevel ? `Reading level: ${brandProfile.readingLevel}.` : null,
-    brandProfile.doList.length > 0 ? `Do: ${brandProfile.doList.join("; ")}.` : null,
-    brandProfile.dontList.length > 0 ? `Avoid: ${brandProfile.dontList.join("; ")}.` : null,
-    brandProfile.examplePhrases.length > 0 ? `Preferred phrasing: ${brandProfile.examplePhrases.join("; ")}.` : null,
-  ].filter((line): line is string => Boolean(line));
-
-  return rules.length > 0 ? rules.join(" ") : "No specific brand requirements are configured.";
+  const guidelines = truncateGuidelines(brandProfile.guidelines);
+  return guidelines
+    ? `<brand-guidelines>\n${guidelines}\n</brand-guidelines>`
+    : "No specific brand requirements are configured.";
 }
 
 export function buildReviewPrompt(draft: UpdateDraft, brandProfile: BrandProfileRow): string {

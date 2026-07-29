@@ -3,13 +3,27 @@ import { buildSystemPrompt } from "../../../src/lib/ai/compose-prompt";
 import { serializeAtomicUpdates, composeReleasePrompt, composeMergePrompt } from "../../../src/lib/ai/compose-prompt";
 
 describe("buildSystemPrompt", () => {
-  const baseBrand = { tone: null, readingLevel: null, doList: [], dontList: [], examplePhrases: [], industry: null, userPersonas: [] };
+  const baseBrand = { guidelines: null, industry: null, userPersonas: [] };
 
-  it("includes an examplePhrases line when present and omits it when empty", () => {
-    const withPhrases = buildSystemPrompt({ ...baseBrand, examplePhrases: ["ship it", "delightful"] } as never, [], []);
-    expect(withPhrases).toContain("Prefer this vocabulary and phrasing where natural: ship it; delightful.");
-    const without = buildSystemPrompt(baseBrand as never, [], []);
-    expect(without).not.toContain("Prefer this vocabulary");
+  it("wraps the guidelines document in a delimited block when set", () => {
+    const doc = "## Voice and tone\n\nPlain and direct.";
+    const system = buildSystemPrompt({ ...baseBrand, guidelines: doc } as never, [], []);
+    expect(system).toContain("Follow these brand writing guidelines, written by the team:");
+    expect(system).toContain("<brand-guidelines>");
+    expect(system).toContain(doc);
+    expect(system).toContain("</brand-guidelines>");
+  });
+
+  it("omits the block entirely when guidelines are null or blank", () => {
+    expect(buildSystemPrompt(baseBrand as never, [], [])).not.toContain("<brand-guidelines>");
+    const blank = buildSystemPrompt({ ...baseBrand, guidelines: "   \n  " } as never, [], []);
+    expect(blank).not.toContain("<brand-guidelines>");
+  });
+
+  it("truncates a document longer than the cap and marks it", () => {
+    const system = buildSystemPrompt({ ...baseBrand, guidelines: "x".repeat(6500) } as never, [], []);
+    expect(system).toContain("…(truncated)");
+    expect(system).not.toContain("x".repeat(6100));
   });
 
   it("renders persona identity in parentheses when a description is present", () => {
@@ -20,11 +34,13 @@ describe("buildSystemPrompt", () => {
     expect(withoutDesc).not.toContain("Ops (");
   });
 
-  it("includes the house-style line when updatesStyleSummary is set, omits it otherwise", () => {
-    const withSummary = buildSystemPrompt({ ...baseBrand, updatesStyleSummary: "Short bullets, one per change." } as never, [], []);
-    expect(withSummary).toContain("Match the house style of their existing updates: Short bullets, one per change.");
-    const without = buildSystemPrompt({ ...baseBrand, updatesStyleSummary: null } as never, [], []);
-    expect(without).not.toContain("Match the house style");
+  it("keeps the examples block after the guidelines block", () => {
+    const system = buildSystemPrompt(
+      { ...baseBrand, guidelines: "## Do\n\n- Be brief." } as never,
+      [],
+      [{ category: "new", title: "Dark mode", body: "We shipped dark mode." } as never]
+    );
+    expect(system.indexOf("</brand-guidelines>")).toBeLessThan(system.indexOf("Dark mode"));
   });
 });
 
@@ -52,11 +68,13 @@ describe("serializeAtomicUpdates", () => {
   });
 });
 
+const BASE_BRAND = { guidelines: null, industry: null, userPersonas: [] } as never;
+
 describe("composeReleasePrompt", () => {
   it("builds a system+prompt pair from atomic updates without a repo map", () => {
     const { system, prompt } = composeReleasePrompt({
       items: AUS,
-      brandProfile: { tone: null, readingLevel: null, doList: [], dontList: [], examplePhrases: [], industry: null, updatesStyleSummary: null, userPersonas: [] } as never,
+      brandProfile: BASE_BRAND,
       personas: [],
       examples: [],
     });
@@ -64,17 +82,6 @@ describe("composeReleasePrompt", () => {
     expect(prompt).toContain("CSV export");
   });
 });
-
-const BASE_BRAND = {
-  tone: null,
-  readingLevel: null,
-  doList: [],
-  dontList: [],
-  examplePhrases: [],
-  industry: null,
-  updatesStyleSummary: null,
-  userPersonas: [],
-} as never;
 
 describe("composeMergePrompt", () => {
   it("includes the current body and the new items in the prompt", () => {

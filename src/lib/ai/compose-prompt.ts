@@ -4,6 +4,7 @@ type BrandProfileRow = typeof brandProfiles.$inferSelect;
 type ExampleRow = typeof systemUpdateExamples.$inferSelect;
 
 const DEFAULT_MAX_PROMPT_CHARS = 24000;
+const MAX_GUIDELINES_CHARS = 6000;
 
 function renderExample(example: ExampleRow): string {
   return `Example (${example.category}):\nTitle: ${example.title}\nBody:\n${example.body}`;
@@ -11,6 +12,20 @@ function renderExample(example: ExampleRow): string {
 
 function renderPersona(persona: ResolvedPersona): string {
   return persona.description ? `${persona.name} (${persona.description}): ${persona.brief}` : `${persona.name}: ${persona.brief}`;
+}
+
+/**
+ * The team's brand guidelines document, prepared for prompt injection: trimmed,
+ * and capped so a very long document can't crowd out the material being
+ * summarized. Returns null when nothing is configured, so callers omit the
+ * block entirely rather than injecting an empty one.
+ */
+export function truncateGuidelines(guidelines: string | null): string | null {
+  const trimmed = guidelines?.trim();
+  if (!trimmed) return null;
+  return trimmed.length > MAX_GUIDELINES_CHARS
+    ? `${trimmed.slice(0, MAX_GUIDELINES_CHARS)}\n…(truncated)`
+    : trimmed;
 }
 
 export function buildSystemPrompt(
@@ -27,27 +42,31 @@ export function buildSystemPrompt(
     personas.length > 0
       ? `Audience personas — tailor the update to appeal to each: ${personas.map(renderPersona).join(" ")}`
       : null,
-    brandProfile.tone ? `Tone: ${brandProfile.tone}.` : null,
-    brandProfile.readingLevel ? `Reading level: ${brandProfile.readingLevel}.` : null,
-    brandProfile.doList.length > 0 ? `Do: ${brandProfile.doList.join("; ")}.` : null,
-    brandProfile.dontList.length > 0 ? `Avoid: ${brandProfile.dontList.join("; ")}.` : null,
-    brandProfile.examplePhrases.length > 0
-      ? `Prefer this vocabulary and phrasing where natural: ${brandProfile.examplePhrases.join("; ")}.`
-      : null,
-    brandProfile.updatesStyleSummary
-      ? `Match the house style of their existing updates: ${brandProfile.updatesStyleSummary}.`
-      : null,
   ].filter((line): line is string => Boolean(line));
 
-  const base = lines.join(" ");
-  if (examples.length === 0) return base;
+  // The fixed instructions read as one paragraph, but the guidelines document is
+  // Markdown — joining it with " " like the lines above would flatten its
+  // structure, so it becomes its own block. Delimiters keep the team's prose
+  // from reading as further instructions to the model.
+  const blocks = [lines.join(" ")];
 
-  const block = [
-    "Here are example updates for a similar audience — mirror their structure, depth, and voice; do not reuse their wording or specifics:",
-    ...examples.map(renderExample),
-  ].join("\n\n");
+  const guidelines = truncateGuidelines(brandProfile.guidelines);
+  if (guidelines) {
+    blocks.push(
+      `Follow these brand writing guidelines, written by the team:\n<brand-guidelines>\n${guidelines}\n</brand-guidelines>`
+    );
+  }
 
-  return `${base}\n\n${block}`;
+  if (examples.length > 0) {
+    blocks.push(
+      [
+        "Here are example updates for a similar audience — mirror their structure, depth, and voice; do not reuse their wording or specifics:",
+        ...examples.map(renderExample),
+      ].join("\n\n")
+    );
+  }
+
+  return blocks.join("\n\n");
 }
 
 export type AtomicUpdateForPrompt = {

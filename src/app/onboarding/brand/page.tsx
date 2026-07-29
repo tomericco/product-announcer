@@ -18,7 +18,7 @@ export default async function BrandStepPage({
       <StepHeader
         step={2}
         title="Import your brand style"
-        description="Paste your existing changelog or “what’s new” page and we’ll learn how you write. Refine it anytime in Settings."
+        description="Paste your existing changelog or “what’s new” page and we’ll learn how you write. Refine it anytime under Brand guidelines."
       />
       {/* Both buttons share ONE form so useFormStatus can disable the skip while
           an import is in flight — a sibling form would report only its own state
@@ -43,7 +43,8 @@ export default async function BrandStepPage({
               Don't "fix" this into destructive to match the line above. */}
           {brandImport === "failed" && (
             <p className="text-muted-foreground text-sm">
-              We couldn&apos;t read that page. Try another URL, or skip and set your brand style in Settings.
+              We couldn&apos;t read that page. Try another URL, or skip and write your guidelines under Brand
+              guidelines.
             </p>
           )}
         </div>

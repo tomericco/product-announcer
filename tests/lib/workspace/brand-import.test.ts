@@ -17,19 +17,34 @@ describe("importBrandStyleForTenant", () => {
     const result = await importBrandStyleForTenant(tenant.id, "https://acme.com/changelog", {
       scrape: async () => ({ text: "changelog text" }),
       analyze: async () => ({
-        tone: "friendly", readingLevel: "simple", doList: ["be concise"], dontList: ["hype"],
-        examplePhrases: ["ship"], industry: "SaaS", updatesStyleSummary: "Short bullets.",
+        guidelines: "## Voice and tone\n\nFriendly and plain.\n\n## Don't\n\n- No hype.",
+        industry: "SaaS",
       }),
     });
 
     expect(result.ok).toBe(true);
     const [profile] = await db.select().from(brandProfiles).where(eq(brandProfiles.tenantId, tenant.id));
-    expect(profile.tone).toBe("friendly");
-    expect(profile.doList).toEqual(["be concise"]);
-    expect(profile.examplePhrases).toEqual(["ship"]);
+    expect(profile.guidelines).toBe("## Voice and tone\n\nFriendly and plain.\n\n## Don't\n\n- No hype.");
     expect(profile.industry).toBe("SaaS");
-    expect(profile.updatesStyleSummary).toBe("Short bullets.");
     expect(profile.updatesPageUrl).toBe("https://acme.com/changelog");
+  });
+
+  it("keeps existing guidelines and only updates industry when the derivation partially fails", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: NAME }).returning();
+    await db.insert(brandProfiles).values({
+      tenantId: tenant.id,
+      guidelines: "## Voice and tone\n\nHand-written, do not overwrite.",
+    });
+
+    const result = await importBrandStyleForTenant(tenant.id, "https://acme.com/changelog", {
+      scrape: async () => ({ text: "changelog text" }),
+      analyze: async () => ({ guidelines: null, industry: "SaaS" }),
+    });
+
+    expect(result.ok).toBe(true);
+    const [profile] = await db.select().from(brandProfiles).where(eq(brandProfiles.tenantId, tenant.id));
+    expect(profile.guidelines).toBe("## Voice and tone\n\nHand-written, do not overwrite.");
+    expect(profile.industry).toBe("SaaS");
   });
 
   it("writes nothing and reports analysis-empty when the derived profile is entirely empty", async () => {
@@ -37,9 +52,20 @@ describe("importBrandStyleForTenant", () => {
 
     const result = await importBrandStyleForTenant(tenant.id, "https://acme.com/changelog", {
       scrape: async () => ({ text: "changelog text" }),
-      analyze: async () => ({
-        tone: null, readingLevel: null, doList: [], dontList: [], examplePhrases: [], industry: null, updatesStyleSummary: null,
-      }),
+      analyze: async () => ({ guidelines: null, industry: null }),
+    });
+
+    expect(result).toEqual({ ok: false, reason: "analysis-empty" });
+    const [profile] = await db.select().from(brandProfiles).where(eq(brandProfiles.tenantId, tenant.id));
+    expect(profile).toBeUndefined();
+  });
+
+  it("treats a blank-string derivation the same as null: doesn't overwrite, and counts toward analysis-empty", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: NAME }).returning();
+
+    const result = await importBrandStyleForTenant(tenant.id, "https://acme.com/changelog", {
+      scrape: async () => ({ text: "changelog text" }),
+      analyze: async () => ({ guidelines: "   ", industry: "" }),
     });
 
     expect(result).toEqual({ ok: false, reason: "analysis-empty" });

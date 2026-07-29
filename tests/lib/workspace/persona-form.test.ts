@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parsePersonas } from "../../../src/lib/workspace/persona-form";
+import { parsePersonas, sanitizePersonas } from "../../../src/lib/workspace/persona-form";
 
 function fd(personas: string | undefined): FormData {
   const f = new FormData();
@@ -44,5 +44,33 @@ describe("parsePersonas", () => {
   it("returns [] for non-JSON or a non-array", () => {
     expect(parsePersonas(fd("not json"))).toEqual([]);
     expect(parsePersonas(fd(JSON.stringify({ type: "custom", name: "x" })))).toEqual([]);
+  });
+});
+
+// The auto-saving personas card posts an array straight to a Server Action
+// instead of through a form, so this is the validation boundary for that path.
+describe("sanitizePersonas", () => {
+  it("applies the same trimming and dropping as the form path", () => {
+    expect(
+      sanitizePersonas([
+        { type: "system", key: " developer " },
+        { type: "custom", name: "  Eng managers ", brief: " track shipped work " },
+        { type: "custom", name: "   ", brief: "dropped: no name" },
+        { type: "system", key: "" },
+        { type: "other", key: "ignored" },
+        "not an object",
+        null,
+      ])
+    ).toEqual([
+      { type: "system", key: "developer" },
+      { type: "custom", name: "Eng managers", brief: "track shipped work" },
+    ]);
+  });
+
+  it("returns [] for anything that isn't an array", () => {
+    expect(sanitizePersonas(undefined)).toEqual([]);
+    expect(sanitizePersonas(null)).toEqual([]);
+    expect(sanitizePersonas("[]")).toEqual([]);
+    expect(sanitizePersonas({ type: "custom", name: "x" })).toEqual([]);
   });
 });

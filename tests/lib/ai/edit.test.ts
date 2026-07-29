@@ -13,7 +13,7 @@ vi.mock("../../../src/lib/ai/llm-usage", () => ({ recordLlmUsage: vi.fn(async ()
 
 import { editReleaseBody, stripWrapping } from "../../../src/lib/ai/edit";
 
-const brandProfile = { tenantId: "t1", industry: null, tone: null, readingLevel: null, doList: [], dontList: [], examplePhrases: [], updatesStyleSummary: null, userPersonas: [] } as unknown as BrandProfileRow;
+const brandProfile = { tenantId: "t1", guidelines: null, industry: null, userPersonas: [] } as unknown as BrandProfileRow;
 
 describe("stripWrapping", () => {
   it("removes a wrapping code fence", () => {

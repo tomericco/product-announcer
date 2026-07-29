@@ -29,14 +29,15 @@ export async function importBrandStyleForTenant(
   if ("error" in scraped) return { ok: false, reason: scraped.error };
 
   const derived = await analyze(scraped.text, tenantId);
-  const isEmptyDerivation =
-    derived.tone === null &&
-    derived.readingLevel === null &&
-    derived.industry === null &&
-    derived.updatesStyleSummary === null &&
-    derived.doList.length === 0 &&
-    derived.dontList.length === 0 &&
-    derived.examplePhrases.length === 0;
+  // Normalize blank-string derivations to null here, at the one place both
+  // downstream problems originate: the empty-derivation guard below only
+  // checked `=== null` (so a blank string slipped past it and got persisted),
+  // and the editor's `defaultValue ?? GUIDELINES_TEMPLATE` treats "" as
+  // configured (opening blank instead of templated). Trimming and folding
+  // blank into null here fixes both at the source.
+  const guidelines = derived.guidelines?.trim() || null;
+  const industry = derived.industry?.trim() || null;
+  const isEmptyDerivation = guidelines === null && industry === null;
   if (isEmptyDerivation) return { ok: false, reason: "analysis-empty" };
 
   const profile = await getOrCreateBrandProfile(tenantId, database);
@@ -44,13 +45,12 @@ export async function importBrandStyleForTenant(
   await database
     .update(brandProfiles)
     .set({
-      tone: derived.tone,
-      readingLevel: derived.readingLevel,
-      doList: derived.doList,
-      dontList: derived.dontList,
-      examplePhrases: derived.examplePhrases,
-      industry: derived.industry,
-      updatesStyleSummary: derived.updatesStyleSummary,
+      // A null derived field means "the model couldn't infer this from a
+      // sparse page" -- not "the user wants it cleared". Never let that
+      // overwrite a value the team already wrote by hand; only write fields
+      // the analysis actually produced.
+      ...(guidelines !== null && { guidelines }),
+      ...(industry !== null && { industry }),
       updatesPageUrl: url,
       updatedAt: new Date(),
     })

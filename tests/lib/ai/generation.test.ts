@@ -20,13 +20,8 @@ describe("generateReleaseDraft", () => {
 
     const brandProfile = {
       tenantId: "tenant_1",
-      tone: "friendly",
-      readingLevel: "simple",
-      doList: ["be concise"],
-      dontList: ["no jargon"],
-      examplePhrases: [],
+      guidelines: "## Voice and tone\n\nFriendly and plain.\n\n## Do\n\n- Be concise.",
       industry: "B2B SaaS",
-      updatesStyleSummary: null,
       userPersonas: [],
     } as never;
 

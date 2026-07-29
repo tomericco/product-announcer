@@ -14,7 +14,6 @@ describe("getOrCreateBrandProfile", () => {
 
     const first = await getOrCreateBrandProfile(tenant.id);
     expect(first.tenantId).toBe(tenant.id);
-    expect(first.doList).toEqual([]);
 
     const second = await getOrCreateBrandProfile(tenant.id);
     expect(second.id).toBe(first.id);

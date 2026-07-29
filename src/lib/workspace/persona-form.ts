@@ -4,12 +4,20 @@ export function parsePersonas(formData: FormData): PersonaRef[] {
   const raw = formData.get("personas");
   if (typeof raw !== "string") return [];
 
-  let parsed: unknown;
   try {
-    parsed = JSON.parse(raw);
+    return sanitizePersonas(JSON.parse(raw));
   } catch {
     return [];
   }
+}
+
+/**
+ * Validates an already-decoded persona list. Split out from `parsePersonas` so
+ * the auto-saving personas card, which posts an array straight to a Server
+ * Action rather than through a form, runs the same validation — client input is
+ * no more trustworthy for arriving as an argument than as a form field.
+ */
+export function sanitizePersonas(parsed: unknown): PersonaRef[] {
   if (!Array.isArray(parsed)) return [];
 
   const result: PersonaRef[] = [];

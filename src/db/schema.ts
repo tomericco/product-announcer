@@ -223,14 +223,12 @@ export const brandProfiles = pgTable("brand_profiles", {
     .notNull()
     .unique()
     .references(() => tenants.id, { onDelete: "cascade" }),
-  tone: text("tone"),
-  readingLevel: text("reading_level"),
-  doList: text("do_list").array().notNull().default([]),
-  dontList: text("dont_list").array().notNull().default([]),
-  examplePhrases: text("example_phrases").array().notNull().default([]),
+  // The team's product-update communication guidelines, as Markdown. Null until
+  // they save for the first time — the editor shows a starter template instead,
+  // and the prompt builders omit the guidelines block entirely while it is null.
+  guidelines: text("guidelines"),
   industry: text("industry"),
   updatesPageUrl: text("updates_page_url"),
-  updatesStyleSummary: text("updates_style_summary"),
   userPersonas: jsonb("user_personas").$type<PersonaRef[]>().notNull().default([]),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

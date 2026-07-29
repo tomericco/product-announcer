@@ -260,6 +260,20 @@
       "when": 1785254156150,
       "tag": "0036_sturdy_magma",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1785333080275,
+      "tag": "0037_curvy_iceman",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1785336430171,
+      "tag": "0038_dry_thaddeus_ross",
+      "breakpoints": true
     }
   ]
 }

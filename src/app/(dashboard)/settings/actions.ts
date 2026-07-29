@@ -4,27 +4,14 @@ import { and, eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { headers } from "next/headers";
 import { db } from "@/db";
-import { brandProfiles, repos, scheduleConfigs, tenants } from "@/db/schema";
+import { repos, scheduleConfigs, tenants } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { requireRole } from "@/lib/workspace/active-tenant";
-import { getOrCreateBrandProfile } from "@/lib/workspace/brand-profile";
-import { importBrandStyleForTenant } from "@/lib/workspace/brand-import";
 import { computeNextScheduledAt, type Cadence } from "@/lib/scheduling/scheduler-decision";
 import { addSelectedRepos } from "@/lib/workspace/repo-sync";
 import { listRepoBranches } from "@/lib/integrations/github/github";
-import { parsePersonas } from "@/lib/workspace/persona-form";
 import { createInvite, revokeActiveInvite } from "@/lib/workspace/invites";
 import { removeWorkspaceMember } from "@/lib/workspace/members";
-
-function splitList(value: FormDataEntryValue | null): string[] {
-  if (!value || typeof value !== "string") return [];
-  // Accept both newline- and comma-separated entries so the do/don't textareas
-  // work whether the user puts one item per line or keeps them comma-separated.
-  return value
-    .split(/[\n,]/)
-    .map((v) => v.trim())
-    .filter(Boolean);
-}
 
 export async function saveWorkspaceName(formData: FormData) {
   const session = await requireSession();
@@ -86,42 +73,6 @@ export async function updateRepoBranch(formData: FormData) {
 
   revalidatePath("/integrations");
   revalidatePath("/atomic-updates");
-}
-
-export async function saveBrandProfile(formData: FormData) {
-  const session = await requireSession();
-  const profile = await getOrCreateBrandProfile(session.user.tenantId);
-
-  await db
-    .update(brandProfiles)
-    .set({
-      tone: (formData.get("tone") as string) || null,
-      industry: (formData.get("industry") as string) || null,
-      userPersonas: parsePersonas(formData),
-      doList: splitList(formData.get("doList")),
-      dontList: splitList(formData.get("dontList")),
-      updatesStyleSummary: (formData.get("updatesStyleSummary") as string) || null,
-      updatedAt: new Date(),
-    })
-    .where(eq(brandProfiles.id, profile.id));
-
-  revalidatePath("/settings");
-}
-
-/**
- * Re-derives the brand style from a public updates page (the same extraction used
- * in onboarding) and overwrites the brand profile. Called from the Settings brand
- * card, which confirms first since this replaces manual edits. Returns the outcome
- * so the client can show inline feedback.
- */
-export async function importBrandStyleFromUrl(url: string): Promise<{ ok: boolean; reason?: string }> {
-  const session = await requireSession();
-  const trimmed = url.trim();
-  if (!trimmed) return { ok: false, reason: "empty" };
-
-  const result = await importBrandStyleForTenant(session.user.tenantId, trimmed);
-  if (result.ok) revalidatePath("/settings");
-  return result;
 }
 
 function parseIntOrNull(value: FormDataEntryValue | null): number | null {

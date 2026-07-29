@@ -30,7 +30,7 @@ describe("analyzeBrandStyle", () => {
   });
 
   it("returns the parsed derived profile", async () => {
-    const derived = { tone: "friendly", readingLevel: "simple", doList: ["be concise"], dontList: ["hype"], examplePhrases: ["ship"], industry: "SaaS", updatesStyleSummary: "Short bullets." };
+    const derived = { guidelines: "## Voice and tone\n\nFriendly and plain.", industry: "SaaS" };
     vi.mocked(generateObject).mockResolvedValue({ object: derived } as never);
     expect(await analyzeBrandStyle("text", tenantId)).toEqual(derived);
 
@@ -49,8 +49,6 @@ describe("analyzeBrandStyle", () => {
 
   it("returns an all-empty derivation on model error", async () => {
     vi.mocked(generateObject).mockRejectedValue(new Error("model down"));
-    expect(await analyzeBrandStyle("text", tenantId)).toEqual({
-      tone: null, readingLevel: null, doList: [], dontList: [], examplePhrases: [], industry: null, updatesStyleSummary: null,
-    });
+    expect(await analyzeBrandStyle("text", tenantId)).toEqual({ guidelines: null, industry: null });
   });
 });
