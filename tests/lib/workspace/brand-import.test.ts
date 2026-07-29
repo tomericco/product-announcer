@@ -17,18 +17,15 @@ describe("importBrandStyleForTenant", () => {
     const result = await importBrandStyleForTenant(tenant.id, "https://acme.com/changelog", {
       scrape: async () => ({ text: "changelog text" }),
       analyze: async () => ({
-        tone: "friendly", readingLevel: "simple", doList: ["be concise"], dontList: ["hype"],
-        examplePhrases: ["ship"], industry: "SaaS", updatesStyleSummary: "Short bullets.",
+        guidelines: "## Voice and tone\n\nFriendly and plain.\n\n## Don't\n\n- No hype.",
+        industry: "SaaS",
       }),
     });
 
     expect(result.ok).toBe(true);
     const [profile] = await db.select().from(brandProfiles).where(eq(brandProfiles.tenantId, tenant.id));
-    expect(profile.tone).toBe("friendly");
-    expect(profile.doList).toEqual(["be concise"]);
-    expect(profile.examplePhrases).toEqual(["ship"]);
+    expect(profile.guidelines).toBe("## Voice and tone\n\nFriendly and plain.\n\n## Don't\n\n- No hype.");
     expect(profile.industry).toBe("SaaS");
-    expect(profile.updatesStyleSummary).toBe("Short bullets.");
     expect(profile.updatesPageUrl).toBe("https://acme.com/changelog");
   });
 
@@ -37,9 +34,7 @@ describe("importBrandStyleForTenant", () => {
 
     const result = await importBrandStyleForTenant(tenant.id, "https://acme.com/changelog", {
       scrape: async () => ({ text: "changelog text" }),
-      analyze: async () => ({
-        tone: null, readingLevel: null, doList: [], dontList: [], examplePhrases: [], industry: null, updatesStyleSummary: null,
-      }),
+      analyze: async () => ({ guidelines: null, industry: null }),
     });
 
     expect(result).toEqual({ ok: false, reason: "analysis-empty" });
