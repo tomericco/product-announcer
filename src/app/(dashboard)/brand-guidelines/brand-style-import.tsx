@@ -17,11 +17,16 @@ import {
 } from "@/components/ui/dialog";
 
 /**
- * Re-derives the brand-style fields from a public updates/changelog page — the
- * same extraction offered during onboarding, exposed in Settings. It OVERWRITES
- * the current brand fields, so it confirms first (Settings usually holds
- * hand-tuned values). The server revalidates /settings on success; router.refresh
- * pulls the freshly-derived fields into the form below.
+ * Re-derives the brand guidelines and industry from a public updates/changelog
+ * page — the same extraction offered during onboarding, exposed on the Brand
+ * guidelines page. It OVERWRITES the current guidelines and industry, so it
+ * confirms first (they're usually hand-tuned). The server revalidates
+ * /brand-guidelines on success; router.refresh() re-renders the page's server
+ * component with the newly derived values. Those values only reach the form
+ * below because the page keys GuidelinesEditor and IndustrySelect on the
+ * server value (see brand-guidelines/page.tsx) — without that key, React
+ * would keep the existing client instances and the refresh would silently do
+ * nothing to what's on screen.
  */
 export function BrandStyleImport({ defaultUrl }: { defaultUrl: string }) {
   const [url, setUrl] = useState(defaultUrl);
@@ -47,7 +52,7 @@ export function BrandStyleImport({ defaultUrl }: { defaultUrl: string }) {
     try {
       const res = await importBrandStyleFromUrl(trimmed);
       if (res.ok) {
-        setResult({ ok: true, message: "Brand style updated from your updates page." });
+        setResult({ ok: true, message: "Brand guidelines updated from your updates page." });
         router.refresh();
       } else {
         setResult({ ok: false, message: "We couldn't read that page — check the URL and try again." });
@@ -58,8 +63,10 @@ export function BrandStyleImport({ defaultUrl }: { defaultUrl: string }) {
   }
 
   return (
-    <div className="space-y-2 rounded-lg border border-border p-4">
-      <p className="text-sm font-medium">Derive from your updates page</p>
+    // No border/padding here: the page renders this inside a Card, which
+    // already supplies both (and its CardTitle supplies the heading this
+    // component used to draw itself) -- adding them here would double-border.
+    <div className="space-y-2">
       <p className="text-xs text-muted-foreground">
         Paste your changelog or &ldquo;what&apos;s new&rdquo; URL and we&apos;ll write your guidelines from it.
         This overwrites your current guidelines.
@@ -84,7 +91,7 @@ export function BrandStyleImport({ defaultUrl }: { defaultUrl: string }) {
       <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Replace your brand style?</DialogTitle>
+            <DialogTitle>Replace your brand guidelines?</DialogTitle>
             <DialogDescription>
               This replaces your brand guidelines and industry with what we derive from the page.
             </DialogDescription>
