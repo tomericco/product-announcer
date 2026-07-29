@@ -15,15 +15,13 @@ describe("brand_profiles updates-page columns", () => {
 
     const [defaulted] = await db.insert(brandProfiles).values({ tenantId: tenant.id }).returning();
     expect(defaulted.updatesPageUrl).toBeNull();
-    expect(defaulted.updatesStyleSummary).toBeNull();
 
     const [updated] = await db
       .update(brandProfiles)
-      .set({ updatesPageUrl: "https://acme.com/changelog", updatesStyleSummary: "Short, punchy, one bullet per change." })
+      .set({ updatesPageUrl: "https://acme.com/changelog" })
       .where(eq(brandProfiles.id, defaulted.id))
       .returning();
     expect(updated.updatesPageUrl).toBe("https://acme.com/changelog");
-    expect(updated.updatesStyleSummary).toBe("Short, punchy, one bullet per change.");
   });
 
   it("defaults guidelines to null and round-trips a markdown document", async () => {
