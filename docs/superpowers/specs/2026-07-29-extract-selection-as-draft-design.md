@@ -235,8 +235,9 @@ Following the existing layout:
 - `tests/lib/` — `composeExtractPrompt` includes the excerpt, the guidelines
   block, and the instruction when given one; omits the instruction block when
   not; truncates an over-long excerpt.
-- `tests/app/drafts/extract-actions.test.ts` — against the test database, with
-  generation and review injected via `deps`:
+- `tests/lib/ai/extract-release.test.ts` — against the test database, with
+  generation and review injected via `deps` (alongside the existing
+  `edit-release.test.ts`, which tests the sibling orchestrator the same way):
   - both writes commit together: the new release exists with the generated
     title/body and the source body equals `remainingBody`;
   - a generation failure leaves the source body unchanged and creates no
