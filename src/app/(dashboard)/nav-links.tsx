@@ -12,6 +12,7 @@ const NAV = [
   { href: "/drafts", label: "Drafts" },
   { href: "/history", label: "Release history" },
   { href: "/integrations", label: "Integrations" },
+  { href: "/brand-guidelines", label: "Brand guidelines" },
 ];
 
 export function NavLinks({ draftCount }: { draftCount: number }) {

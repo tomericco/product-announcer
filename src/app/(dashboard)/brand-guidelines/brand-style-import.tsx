@@ -61,8 +61,8 @@ export function BrandStyleImport({ defaultUrl }: { defaultUrl: string }) {
     <div className="space-y-2 rounded-lg border border-border p-4">
       <p className="text-sm font-medium">Derive from your updates page</p>
       <p className="text-xs text-muted-foreground">
-        Paste your changelog or &ldquo;what&apos;s new&rdquo; URL and we&apos;ll re-derive the fields below. This
-        overwrites your current brand style.
+        Paste your changelog or &ldquo;what&apos;s new&rdquo; URL and we&apos;ll write your guidelines from it.
+        This overwrites your current guidelines.
       </p>
       <div className="flex gap-2">
         <Input
@@ -86,8 +86,7 @@ export function BrandStyleImport({ defaultUrl }: { defaultUrl: string }) {
           <DialogHeader>
             <DialogTitle>Replace your brand style?</DialogTitle>
             <DialogDescription>
-              This replaces your tone, industry, do/don&apos;t, and style summary with values derived
-              from the page.
+              This replaces your brand guidelines and industry with what we derive from the page.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
