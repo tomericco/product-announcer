@@ -21,6 +21,7 @@ import {
   DialogFooter,
   DialogClose,
 } from "@/components/ui/dialog";
+import { groupByMonth } from "@/lib/group-by-month";
 import { ChangeEventRow } from "./change-event-row";
 import type { ReassignTargetOption } from "./reassign-control";
 import type { ChangeEventRow as ChangeEventRowData } from "./actions";
@@ -104,6 +105,11 @@ export function ChangeEventsList({
     });
   }
 
+  // Rows are grouped under the month they were ingested in, newest month first.
+  // `rows` already arrives newest-first from `listChangeEvents`, so this only
+  // adds the headings — it never reorders rows within a month.
+  const monthGroups = groupByMonth(rows, (row) => row.createdAt);
+
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-3">
@@ -163,20 +169,25 @@ export function ChangeEventsList({
         )}
       </div>
 
-      <ul className="flex flex-col gap-3">
-        {rows.map((row) => (
-          <li key={row.id}>
-            <ChangeEventRow
-              row={row}
-              openAtomicUpdates={targets}
-              selectable
-              selected={selected.has(row.id)}
-              anySelected={selected.size > 0}
-              onSelectChange={onSelectChange}
-            />
-          </li>
-        ))}
-      </ul>
+      {monthGroups.map((group) => (
+        <section key={group.key} className="space-y-2">
+          <h2 className="text-sm font-medium text-muted-foreground">{group.label}</h2>
+          <ul className="flex flex-col gap-3">
+            {group.items.map((row) => (
+              <li key={row.id}>
+                <ChangeEventRow
+                  row={row}
+                  openAtomicUpdates={targets}
+                  selectable
+                  selected={selected.has(row.id)}
+                  anySelected={selected.size > 0}
+                  onSelectChange={onSelectChange}
+                />
+              </li>
+            ))}
+          </ul>
+        </section>
+      ))}
 
       <Dialog open={confirmDelete} onOpenChange={(next) => !next && !pending && setConfirmDelete(false)}>
         <DialogContent className="sm:max-w-md">
