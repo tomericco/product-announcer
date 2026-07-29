@@ -32,7 +32,7 @@
 | `src/app/(dashboard)/drafts/[releaseId]/mdx-editor.tsx` (modify) | Implement `removeSelection` in the bridge; add the toolbar button. |
 | `src/components/draft-progress-checklist.tsx` (create) | The step-checklist render, shared by all three pipeline dialogs. |
 | `src/lib/scheduling/read-draft-progress.ts` (create) | The NDJSON progress-stream reader, shared by the two simple consumers. |
-| `src/app/(dashboard)/drafts/[releaseId]/agent-edit-dialog.tsx` (modify) | Refactored onto both shared modules. |
+| `src/app/(dashboard)/drafts/[releaseId]/agent-edit-dialog.tsx` (modify) | Refactored onto both shared modules (Task 6); its `open` gate narrowed to its own modes (Task 7). |
 | `src/app/(dashboard)/atomic-updates/draft-release-dialog.tsx` (modify) | Refactored onto the shared checklist (keeps its own abort-aware reader). |
 | `src/app/(dashboard)/drafts/[releaseId]/extract-dialog.tsx` (create) | Confirm step, checklist loader, restore-on-failure, success toast. |
 | `src/app/(dashboard)/drafts/[releaseId]/page.tsx` (modify) | Render `<ExtractDialog>` beside `<AgentEditDialog>`. |
@@ -1390,11 +1390,36 @@ git commit -m "refactor: share the pipeline progress checklist and stream reader
 **Files:**
 - Create: `src/app/(dashboard)/drafts/[releaseId]/extract-dialog.tsx`
 - Modify: `src/app/(dashboard)/drafts/[releaseId]/mdx-editor.tsx` (add the button, pass it in `selectionExtras`)
+- Modify: `src/app/(dashboard)/drafts/[releaseId]/agent-edit-dialog.tsx` (narrow its `open` gate — see Step 0)
 - Modify: `src/app/(dashboard)/drafts/[releaseId]/page.tsx` (render the dialog)
 
 **Interfaces:**
 - Consumes: `openExtract()`, `removeSelection()`, `applyEdit()`, `getMarkdown()` from Task 5; `ProgressChecklist`, `initialStepStatuses`, `StepStatus`, `readDraftProgress` from Task 6; `POST /api/drafts/extract` from Task 4; existing `EDIT_STEPS`, `DraftProgressEvent`, `DraftStepKey` from `@/lib/scheduling/draft-progress`; existing `useUnsavedChanges().notifySaved` from `../../unsaved-changes`.
 - Produces: `export function ExtractDialog({ releaseId }: { releaseId: string })`.
+
+- [ ] **Step 0: Narrow `AgentEditDialog`'s open gate FIRST**
+
+Found by the Task 5 review, and load-bearing: `agent-edit-dialog.tsx` currently
+opens on `const open = state !== null;`. The provider's state is now shared with
+the extract mode, so the moment the toolbar button calls `openExtract()`, the
+Ask AI modal would open on top of the extract modal — and its `submit()` would
+fall through to the `else` branch and run `runWholeEdit`, rewriting the entire
+body. Do this before wiring the button, not after.
+
+In `src/app/(dashboard)/drafts/[releaseId]/agent-edit-dialog.tsx`, replace:
+
+```tsx
+  const open = state !== null;
+```
+
+with:
+
+```tsx
+  // Only this modal's own modes. The provider's state is shared with the
+  // extract flow, which has its own dialog — without this gate both would open
+  // at once and Ask AI's submit would run a whole-body rewrite on an extract.
+  const open = state?.mode === "selection" || state?.mode === "whole";
+```
 
 - [ ] **Step 1: Create the dialog**
 
