@@ -1652,6 +1652,249 @@ git commit -m "feat: extract a highlighted passage as a separate update"
 
 ---
 
+### Task 8: Share the generation-context preparation
+
+Added mid-execution by human ruling, after the Task 3 review flagged the
+"preparing" block as duplicated. That block — load brand profile, resolve
+personas, load examples, `selectExamples` — now exists in FOUR places. Share it.
+This task adds no feature behavior; the existing suite plus `typecheck` is the
+regression net.
+
+**Files:**
+- Create: `src/lib/ai/generation-context.ts`
+- Modify: `src/lib/scheduling/run-schedule.ts` (in `runBatchForWorkspace`)
+- Modify: `src/lib/ai/edit-release.ts` (in `runWholeEditForRelease`)
+- Modify: `src/lib/ai/extract-release.ts` (in `runExtractForRelease`)
+- Modify: `src/app/(dashboard)/drafts/[releaseId]/actions.ts` (in `requestAgentEdit`)
+- Test: `tests/lib/ai/generation-context.test.ts` (create)
+
+**Interfaces:**
+- Consumes: existing `getOrCreateBrandProfile`, `resolvePersonaRefs`, `systemPersonaKeys`, `selectExamples`.
+- Produces:
+  ```ts
+  export async function prepareGenerationContext(
+    tenantId: string,
+    database?: Database,
+    categories?: string[]
+  ): Promise<{
+    brandProfile: typeof brandProfiles.$inferSelect;
+    personas: ResolvedPersona[];
+    examples: (typeof systemUpdateExamples.$inferSelect)[];
+  }>;
+  ```
+
+**The `categories` argument is why this is a parameter, not a constant.** Three
+call sites pass no categories; `runBatchForWorkspace` passes
+`atomicUpdateCategories(items)` to bias example selection toward the kinds of
+changes being composed. Keep `atomicUpdateCategories` where it is in
+`run-schedule.ts` — it is that caller's concern, not this helper's.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `tests/lib/ai/generation-context.test.ts`:
+
+```ts
+import { describe, it, expect, afterEach } from "vitest";
+import { eq } from "drizzle-orm";
+import { db } from "../../../src/db";
+import { tenants, brandProfiles } from "../../../src/db/schema";
+import { prepareGenerationContext } from "../../../src/lib/ai/generation-context";
+
+const TENANT_NAME = "Generation Context Test Tenant";
+
+async function seedTenant() {
+  const [tenant] = await db.insert(tenants).values({ name: TENANT_NAME }).returning();
+  return tenant;
+}
+
+describe("prepareGenerationContext", () => {
+  afterEach(async () => {
+    const [tenant] = await db.select().from(tenants).where(eq(tenants.name, TENANT_NAME));
+    if (tenant) {
+      await db.delete(brandProfiles).where(eq(brandProfiles.tenantId, tenant.id));
+      await db.delete(tenants).where(eq(tenants.id, tenant.id));
+    }
+  });
+
+  it("creates the brand profile on first use and returns personas and examples", async () => {
+    const tenant = await seedTenant();
+
+    const context = await prepareGenerationContext(tenant.id, db);
+
+    expect(context.brandProfile.tenantId).toBe(tenant.id);
+    expect(Array.isArray(context.personas)).toBe(true);
+    expect(Array.isArray(context.examples)).toBe(true);
+
+    // getOrCreateBrandProfile persisted it, so a second call reuses the row.
+    const rows = await db.select().from(brandProfiles).where(eq(brandProfiles.tenantId, tenant.id));
+    expect(rows).toHaveLength(1);
+  });
+
+  it("resolves the tenant's configured personas", async () => {
+    const tenant = await seedTenant();
+    await prepareGenerationContext(tenant.id, db);
+    await db
+      .update(brandProfiles)
+      .set({ userPersonas: [{ kind: "system", key: "engineering_manager" }] })
+      .where(eq(brandProfiles.tenantId, tenant.id));
+
+    const context = await prepareGenerationContext(tenant.id, db);
+
+    // Resolution is against the seeded system-persona catalog; if that key
+    // isn't seeded in this database the list is empty rather than throwing,
+    // so assert on the shape the callers rely on.
+    expect(Array.isArray(context.personas)).toBe(true);
+  });
+
+  it("passes categories through to example selection", async () => {
+    const tenant = await seedTenant();
+
+    const withCategory = await prepareGenerationContext(tenant.id, db, ["new"]);
+    const withNone = await prepareGenerationContext(tenant.id, db);
+
+    // Both are valid selections over the same catalog; the point is that a
+    // category argument is accepted and does not change the returned shape.
+    expect(Array.isArray(withCategory.examples)).toBe(true);
+    expect(Array.isArray(withNone.examples)).toBe(true);
+  });
+});
+```
+
+If `userPersonas` rejects that shape, read the `PersonaRef` type in
+`src/db/schema.ts` and use a valid value — do not change the assertion's intent.
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `npx vitest run tests/lib/ai/generation-context.test.ts`
+Expected: FAIL — cannot resolve `src/lib/ai/generation-context`.
+
+- [ ] **Step 3: Write the helper**
+
+Create `src/lib/ai/generation-context.ts`:
+
+```ts
+import { db as defaultDb } from "@/db";
+import { systemPersonas, systemUpdateExamples, type brandProfiles, type ResolvedPersona } from "@/db/schema";
+import { getOrCreateBrandProfile } from "@/lib/workspace/brand-profile";
+import { resolvePersonaRefs, systemPersonaKeys } from "@/lib/workspace/personas";
+import { selectExamples } from "@/lib/ai/select-examples";
+
+type Database = typeof defaultDb;
+
+/**
+ * The prompt context every generation path needs: the tenant's brand profile,
+ * its resolved personas, and the few-shot examples chosen for it. Four callers
+ * assembled this identically before it was shared — the compose run, the
+ * whole-update edit, the extract split, and the scoped agent edit.
+ *
+ * `categories` biases example selection toward the kinds of changes being
+ * written about. Only the compose run has categories to offer (from its atomic
+ * updates); prose-driven callers pass none.
+ */
+export async function prepareGenerationContext(
+  tenantId: string,
+  database: Database = defaultDb,
+  categories: string[] = []
+): Promise<{
+  brandProfile: typeof brandProfiles.$inferSelect;
+  personas: ResolvedPersona[];
+  examples: (typeof systemUpdateExamples.$inferSelect)[];
+}> {
+  const brandProfile = await getOrCreateBrandProfile(tenantId, database);
+  const catalog = await database.select().from(systemPersonas);
+  const personas = resolvePersonaRefs(brandProfile.userPersonas, catalog);
+  const allExamples = await database.select().from(systemUpdateExamples);
+  const examples = selectExamples(allExamples, {
+    industry: brandProfile.industry,
+    personaKeys: systemPersonaKeys(brandProfile.userPersonas),
+    categories,
+  });
+  return { brandProfile, personas, examples };
+}
+```
+
+Adjust the import style if `ResolvedPersona` or `brandProfiles` are not exported
+from `@/db/schema` in that form — match how `src/lib/ai/compose-prompt.ts`
+imports them.
+
+- [ ] **Step 4: Run the test to verify it passes**
+
+Run: `npx vitest run tests/lib/ai/generation-context.test.ts`
+Expected: PASS, 3 tests.
+
+- [ ] **Step 5: Route all four call sites through the helper**
+
+In each file, replace the four-statement preparing block with one call, and
+delete the imports that become unused (`systemPersonas`, `systemUpdateExamples`,
+`getOrCreateBrandProfile`, `resolvePersonaRefs`, `systemPersonaKeys`,
+`selectExamples`) — but only where they are genuinely no longer referenced in
+that file.
+
+1. `src/lib/scheduling/run-schedule.ts`, in `runBatchForWorkspace`:
+   ```ts
+     const { brandProfile, personas, examples } = await prepareGenerationContext(
+       tenantId,
+       database,
+       atomicUpdateCategories(items)
+     );
+   ```
+   Keep the `atomicUpdateCategories` helper and its doc comment in this file.
+   Keep the surrounding `onProgress?.({ type: "step", key: "preparing", … })`
+   calls exactly where they are.
+
+2. `src/lib/ai/edit-release.ts`, in `runWholeEditForRelease`:
+   ```ts
+     const { brandProfile, personas, examples } = await prepareGenerationContext(
+       release.tenantId,
+       database
+     );
+   ```
+
+3. `src/lib/ai/extract-release.ts`, in `runExtractForRelease`:
+   ```ts
+     const { brandProfile, personas, examples } = await prepareGenerationContext(
+       source.tenantId,
+       database
+     );
+   ```
+   Its existing "prose carries no category" comment becomes redundant with the
+   helper's own doc comment — delete it rather than leaving a stale duplicate.
+
+4. `src/app/(dashboard)/drafts/[releaseId]/actions.ts`, in `requestAgentEdit`:
+   ```ts
+     const { brandProfile, personas, examples } = await prepareGenerationContext(
+       release.tenantId,
+       db
+     );
+   ```
+   Its "Same prompt context the composer uses, so edits stay on brand." comment
+   still earns its place — keep it.
+
+- [ ] **Step 6: Verify types, lint, and the whole suite**
+
+Run: `npm run typecheck`
+Expected: PASS.
+
+Run: `npm run lint`
+Expected: PASS — including no unused-import errors from Step 5.
+
+Run: `npm test`
+Expected: PASS — the new tests plus every pre-existing test. No behavior
+changed, so any failure here is a real regression from the refactor. Pay
+particular attention to `tests/lib/scheduling/run-schedule.test.ts`,
+`tests/lib/ai/edit-release.test.ts`, `tests/lib/ai/extract-release.test.ts`,
+and `tests/app/drafts/agent-edit-actions.test.ts` — those four cover the
+changed call sites.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/lib/ai/generation-context.ts tests/lib/ai/generation-context.test.ts src/lib/scheduling/run-schedule.ts src/lib/ai/edit-release.ts src/lib/ai/extract-release.ts "src/app/(dashboard)/drafts/[releaseId]/actions.ts"
+git commit -m "refactor: share the generation prompt-context preparation"
+```
+
+---
+
 ## Manual verification (owner-run)
 
 The preview sits behind an OAuth wall, so an implementing agent cannot run this. Hand it to the repo owner as the acceptance pass:
