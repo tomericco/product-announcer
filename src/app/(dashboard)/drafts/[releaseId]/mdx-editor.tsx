@@ -8,7 +8,8 @@ import {
   useCellValue,
   type MDXEditorMethods,
 } from "@mdxeditor/editor";
-import { Sparkles } from "lucide-react";
+import { Sparkles, Split } from "lucide-react";
+import { toast } from "sonner";
 import {
   $getSelection,
   $isRangeSelection,
@@ -170,6 +171,27 @@ function AskAiSelectionButton() {
   );
 }
 
+/** "Extract as a separate update" button in the selection popover — splits the
+ * highlighted text into a draft of its own. The surface's
+ * onMouseDown={preserveSelection} keeps the selection alive through the click,
+ * so captureSelection (inside openExtract) still sees it. */
+function ExtractSelectionButton() {
+  const { openExtract } = useAgentEdit();
+  return (
+    <button
+      type="button"
+      title="Extract as a separate update"
+      aria-label="Extract as a separate update"
+      onClick={() => {
+        if (!openExtract()) toast.error("Highlight some text to extract first.");
+      }}
+      className="flex items-center gap-1 rounded pr-1 text-muted-foreground transition-colors hover:text-foreground"
+    >
+      <Split className="size-3.5" />
+    </button>
+  );
+}
+
 export default function MdxEditor({
   markdown,
   onChange,
@@ -193,7 +215,12 @@ export default function MdxEditor({
           <AgentEditBridge editorRef={editorRef} />
         </>
       }
-      selectionExtras={<AskAiSelectionButton />}
+      selectionExtras={
+        <>
+          <AskAiSelectionButton />
+          <ExtractSelectionButton />
+        </>
+      }
     />
   );
 }

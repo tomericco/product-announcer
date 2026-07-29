@@ -46,7 +46,10 @@ export function AgentEditDialog({ releaseId }: { releaseId: string }) {
   );
   const [detail, setDetail] = useState("");
 
-  const open = state !== null;
+  // Only this modal's own modes. The provider's state is shared with the
+  // extract flow, which has its own dialog — without this gate both would open
+  // at once and Ask AI's submit would run a whole-body rewrite on an extract.
+  const open = state?.mode === "selection" || state?.mode === "whole";
 
   function reset() {
     setInstruction("");
