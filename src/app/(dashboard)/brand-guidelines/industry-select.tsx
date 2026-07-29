@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 import { Check, ChevronsUpDown } from "lucide-react";
+import { toast } from "sonner";
+import { saveIndustry } from "./actions";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
@@ -138,10 +140,21 @@ export function IndustrySelect({ defaultValue }: { defaultValue: string }) {
   const exactMatch = INDUSTRIES.some((i) => i.toLowerCase() === q.toLowerCase());
   const showCustom = q.length > 0 && !exactMatch;
 
-  const select = (v: string) => {
+  // Picking an industry is the save -- this card has no button of its own.
+  const select = async (v: string) => {
     setValue(v);
     setOpen(false);
     setQuery("");
+    try {
+      await saveIndustry(v);
+      // No success toast: this card has no Save button, and confirming every
+      // pick would be noise. The chosen value showing in the trigger is the
+      // confirmation. Failures still speak up below.
+    } catch {
+      // The optimistic value stays on screen, so say plainly that it didn't
+      // stick -- a silent failure here looks identical to a successful save.
+      toast.error("Couldn't save the industry — try again");
+    }
   };
 
   const onOpenChange = (next: boolean) => {
@@ -163,7 +176,8 @@ export function IndustrySelect({ defaultValue }: { defaultValue: string }) {
 
   return (
     <>
-      <input type="hidden" name="industry" value={value} />
+      {/* No hidden input: this card is no longer inside a form. `select` writes
+          through the saveIndustry Server Action. */}
       <Popover open={open} onOpenChange={onOpenChange}>
         <PopoverTrigger
           render={

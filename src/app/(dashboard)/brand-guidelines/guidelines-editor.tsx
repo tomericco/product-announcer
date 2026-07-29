@@ -34,7 +34,7 @@ export function GuidelinesEditor({ defaultValue }: { defaultValue: string | null
   useEffect(() => () => setSectionDirty("guidelines", false), [setSectionDirty]);
 
   // While a fresh workspace is still showing the untouched seeded template,
-  // submit "" rather than the template text. `saveBrandProfile` turns an
+  // submit "" rather than the template text. `saveGuidelines` turns an
   // empty submission into `guidelines: null`, which is deliberate: it's what
   // keeps the column null until the user actually writes something, so
   // buildSystemPrompt/brandRubric can keep telling "never configured" apart
