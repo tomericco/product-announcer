@@ -66,6 +66,9 @@ describe("generateExtractedDraft", () => {
     expect(callArgs.prompt).toContain("We also rebuilt CSV export so reports download in seconds.");
     expect(callArgs.prompt).toContain("lead with the speed");
     expect(callArgs.system).toContain("Industry: B2B SaaS.");
-    expect(callArgs.system.toLowerCase()).toContain("self-contained");
+    expect(typeof callArgs.system).toBe("string");
+    if (typeof callArgs.system === "string") {
+      expect(callArgs.system.toLowerCase()).toContain("self-contained");
+    }
   });
 });
