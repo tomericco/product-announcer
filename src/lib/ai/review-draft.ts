@@ -61,8 +61,15 @@ const REVISION_SYSTEM = [
   "Return only the revised title and body.",
 ].join(" ");
 
+// Wrapped in the same <brand-guidelines> delimiters buildSystemPrompt uses,
+// for the same reason: the document is the team's prose, not instructions to
+// the model, and it may itself contain a line like "Draft to review:" that
+// would otherwise be misread as part of this prompt's own structure.
 function brandRubric(brandProfile: BrandProfileRow): string {
-  return truncateGuidelines(brandProfile.guidelines) ?? "No specific brand requirements are configured.";
+  const guidelines = truncateGuidelines(brandProfile.guidelines);
+  return guidelines
+    ? `<brand-guidelines>\n${guidelines}\n</brand-guidelines>`
+    : "No specific brand requirements are configured.";
 }
 
 export function buildReviewPrompt(draft: UpdateDraft, brandProfile: BrandProfileRow): string {

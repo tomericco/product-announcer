@@ -158,6 +158,7 @@ export default function MdxEditor({
       markdown={markdown}
       onChange={onChange}
       editorRef={editorRef}
+      parseErrorHint="Switch to Source mode (the Source button in the action row) to view and edit the raw Markdown safely."
       realmChildren={
         <>
           <ViewModeBridge />

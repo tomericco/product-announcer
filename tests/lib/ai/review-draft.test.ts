@@ -13,9 +13,9 @@ const critique = (compliant: boolean, issues: string[] = []) => ok({ compliant, 
 const revision = (title: string, body: string) => ok({ title, body });
 
 describe("buildReviewPrompt", () => {
-  it("includes the guidelines document verbatim and the draft", () => {
+  it("includes the guidelines document, delimited, and the draft", () => {
     const prompt = buildReviewPrompt(draft, brand as never);
-    expect(prompt).toContain("Tone: calm. Do: be factual. Avoid: hype.");
+    expect(prompt).toContain("<brand-guidelines>\nTone: calm. Do: be factual. Avoid: hype.\n</brand-guidelines>");
     expect(prompt).toContain("Big news!!!");
     expect(prompt).toContain("Buy now.");
   });
@@ -27,9 +27,9 @@ describe("buildReviewPrompt", () => {
 });
 
 describe("buildRevisionPrompt", () => {
-  it("includes the brand rules, the draft, and the specific issues to fix", () => {
+  it("includes the brand rules delimited, the draft, and the specific issues to fix", () => {
     const prompt = buildRevisionPrompt(draft, ["too hypey", "no exclamation marks"], brand as never);
-    expect(prompt).toContain("Tone: calm. Do: be factual. Avoid: hype.");
+    expect(prompt).toContain("<brand-guidelines>\nTone: calm. Do: be factual. Avoid: hype.\n</brand-guidelines>");
     expect(prompt).toContain("Big news!!!");
     expect(prompt).toContain("- too hypey");
     expect(prompt).toContain("- no exclamation marks");

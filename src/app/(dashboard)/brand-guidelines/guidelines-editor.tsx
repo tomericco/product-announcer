@@ -16,6 +16,12 @@ export function GuidelinesEditor({ defaultValue }: { defaultValue: string | null
   const { setSectionDirty, cleanToken } = useUnsavedChanges();
   const baseline = useRef(initial);
   const latest = useRef(initial);
+  // Sticky once true: distinguishes "the user actually edited this field" from
+  // "this is still the seeded template nobody touched". Only ever flips
+  // false -> true (see onChange below) -- a user who edits the template and
+  // then reverts back to it has still engaged with the field, and saving the
+  // template in that case is fine.
+  const [touched, setTouched] = useState(false);
 
   // Re-baseline once edits are committed, so a later revert is measured against
   // what was saved rather than what was originally loaded.
@@ -27,12 +33,22 @@ export function GuidelinesEditor({ defaultValue }: { defaultValue: string | null
   // leave a stale warning armed on another page.
   useEffect(() => () => setSectionDirty("guidelines", false), [setSectionDirty]);
 
+  // While a fresh workspace is still showing the untouched seeded template,
+  // submit "" rather than the template text. `saveBrandProfile` turns an
+  // empty submission into `guidelines: null`, which is deliberate: it's what
+  // keeps the column null until the user actually writes something, so
+  // buildSystemPrompt/brandRubric can keep telling "never configured" apart
+  // from "configured". Do not "simplify" this back to submitting `guidelines`
+  // directly -- that would permanently persist the placeholder prose the
+  // first time the user saves anything else on the page (e.g. just Industry).
+  const submittedValue = defaultValue === null && !touched ? "" : guidelines;
+
   return (
     <div className="w-full">
-      <input type="hidden" name="guidelines" value={guidelines} />
+      <input type="hidden" name="guidelines" value={submittedValue} />
       <MdxEditor
         markdown={guidelines}
-        contentEditableClassName="mdx-content min-h-[50vh]"
+        contentEditableClassName="min-h-[50vh]"
         placeholder={<span className="text-muted-foreground/40">Brand guidelines</span>}
         onChange={(md, initialMarkdownNormalize) => {
           setGuidelines(md);
@@ -48,7 +64,9 @@ export function GuidelinesEditor({ defaultValue }: { defaultValue: string | null
             return;
           }
 
-          setSectionDirty("guidelines", md !== baseline.current);
+          const dirty = md !== baseline.current;
+          setSectionDirty("guidelines", dirty);
+          if (dirty) setTouched(true);
         }}
       />
     </div>

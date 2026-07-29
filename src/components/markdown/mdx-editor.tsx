@@ -2,6 +2,7 @@
 
 import "@mdxeditor/editor/style.css";
 import { useEffect, useRef, useState } from "react";
+import { cn } from "@/lib/utils";
 import {
   MDXEditor,
   headingsPlugin,
@@ -230,8 +231,9 @@ export default function MdxEditor({
   editorRef,
   realmChildren,
   selectionExtras,
-  contentEditableClassName = "mdx-content min-h-[65vh]",
+  contentEditableClassName = "min-h-[65vh]",
   placeholder = <span className="text-muted-foreground/40">Update body</span>,
+  parseErrorHint = "Copy your text elsewhere before reloading the page, so a fix doesn't cost you the content.",
 }: {
   markdown: string;
   // The second arg is true when the editor is normalizing the initial markdown
@@ -243,8 +245,16 @@ export default function MdxEditor({
   editorRef?: React.RefObject<MDXEditorMethods | null>;
   realmChildren?: React.ReactNode;
   selectionExtras?: React.ReactNode;
+  // Caller-supplied ADDITIONS to the content-editable element's class list.
+  // The ".mdx-content" token itself is always applied internally (see below)
+  // -- findContentEl() and the app's CSS both hardcode that selector, so a
+  // caller can't opt out of it, only add to it.
   contentEditableClassName?: string;
   placeholder?: React.ReactNode;
+  // Trailing sentence of the parse-error banner, telling the user how to
+  // recover. Defaults to generic, honest advice; pass something more specific
+  // when the page has a recovery control (e.g. drafts' Source toggle).
+  parseErrorHint?: string;
 }) {
   const [parseError, setParseError] = useState<string | null>(null);
   const internalRef = useRef<MDXEditorMethods>(null);
@@ -254,8 +264,7 @@ export default function MdxEditor({
     <div className="w-full space-y-2">
       {parseError && (
         <p className="rounded-md border border-destructive/50 bg-destructive/10 p-2 text-sm text-destructive">
-          This content&apos;s Markdown couldn&apos;t be fully rendered ({parseError}). Switch to Source mode
-          to view and edit the raw Markdown safely.
+          This content&apos;s Markdown couldn&apos;t be fully rendered ({parseError}). {parseErrorHint}
         </p>
       )}
       <MDXEditor
@@ -269,7 +278,7 @@ export default function MdxEditor({
           setParseError(error);
         }}
         className="w-full"
-        contentEditableClassName={contentEditableClassName}
+        contentEditableClassName={cn("mdx-content", contentEditableClassName)}
         // Styled node rather than a bare string so it matches the title's
         // placeholder regardless of the editor's own default styling.
         placeholder={placeholder}

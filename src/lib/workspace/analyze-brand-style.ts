@@ -16,7 +16,7 @@ const EMPTY: DerivedBrandProfile = { guidelines: null, industry: null };
 const ANALYSIS_SYSTEM = [
   "You analyze a company's product updates / changelog page to infer how they communicate product updates,",
   "then write their communication guidelines as a Markdown document a person on their team could edit.",
-  `Use exactly these level-2 headings, in this order: ${GUIDELINES_HEADINGS.map((h) => `## ${h}`).join(", ")}.`,
+  `Prefer these level-2 headings, in this order: ${GUIDELINES_HEADINGS.map((h) => `## ${h}`).join(", ")}.`,
   "Under each, write concrete, actionable guidance in their own terms — short paragraphs under the prose",
   "headings, bullet lists under Do and Don't. Cover voice and register, typical length and structure, how an",
   "update opens and closes, and signature vocabulary they actually use.",

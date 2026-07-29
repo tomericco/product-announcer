@@ -44,7 +44,7 @@ export default async function BrandGuidelinesPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Brand voice</CardTitle>
+          <CardTitle>Brand guidelines</CardTitle>
         </CardHeader>
         <CardContent>
           <ToastForm action={saveBrandProfile} successMessage="Brand guidelines saved" className="space-y-6">
@@ -66,17 +66,20 @@ export default async function BrandGuidelinesPage() {
               </div>
             </div>
 
-            {/* Keyed on the server value for the same reason as IndustrySelect above:
-                a successful import overwrites `guidelines` and refreshes the page, but
-                GuidelinesEditor seeds its own useState once and otherwise never looks
-                at `defaultValue` again -- without a key here, the editor would keep
-                showing the pre-import text, and the next Save would write that stale
-                text back over the freshly-imported guidelines. Trade-off accepted: this
-                key also changes after an ordinary Save (the server value changes too),
-                remounting the editor and losing cursor position and undo history. Worse
-                would be silently discarding an import, and this mirrors the pattern the
-                replaced Settings card used (`key={brandProfile.tone ?? ""}` etc). */}
-            <GuidelinesEditor key={brandProfile.guidelines ?? ""} defaultValue={brandProfile.guidelines} />
+            <div className="space-y-2">
+              <Label>Guidelines</Label>
+              {/* Keyed on the server value for the same reason as IndustrySelect above:
+                  a successful import overwrites `guidelines` and refreshes the page, but
+                  GuidelinesEditor seeds its own useState once and otherwise never looks
+                  at `defaultValue` again -- without a key here, the editor would keep
+                  showing the pre-import text, and the next Save would write that stale
+                  text back over the freshly-imported guidelines. Trade-off accepted: this
+                  key also changes after an ordinary Save (the server value changes too),
+                  remounting the editor and losing cursor position and undo history. Worse
+                  would be silently discarding an import, and this mirrors the pattern the
+                  replaced Settings card used (`key={brandProfile.tone ?? ""}` etc). */}
+              <GuidelinesEditor key={brandProfile.guidelines ?? ""} defaultValue={brandProfile.guidelines} />
+            </div>
 
             <Button type="submit" variant="outline">
               Save
