@@ -115,6 +115,34 @@ function AgentEditBridge({ editorRef }: { editorRef: React.RefObject<MDXEditorMe
           }
           editorRef.current?.insertMarkdown(markdown);
         }),
+      removeSelection: () =>
+        new Promise<string>((resolve) => {
+          const editor = activeEditorRef.current;
+          const saved = savedSelection.current;
+          // Nothing captured to remove: resolve with the unchanged body so the
+          // caller's guard (blank remaining body) can't be fooled into thinking
+          // a deletion happened.
+          if (!editor || !saved) {
+            resolve(editorRef.current?.getMarkdown() ?? "");
+            return;
+          }
+
+          // Same one-shot listener as applyEdit: Lexical defers the commit that
+          // refreshes MDXEditor's markdown cell to a microtask, so reading
+          // synchronously after the update returns the PRE-deletion body.
+          const unregister = editor.registerUpdateListener(() => {
+            unregister();
+            resolve(editorRef.current?.getMarkdown() ?? "");
+          });
+
+          editor.update(() => {
+            $setSelection(saved.clone());
+            // Read the selection back rather than calling removeText() on the
+            // clone: removeText operates on the editor's ACTIVE selection.
+            const selection = $getSelection();
+            if ($isRangeSelection(selection)) selection.removeText();
+          });
+        }),
       getMarkdown: () => editorRef.current?.getMarkdown() ?? "",
     };
     registerOps(ops);
