@@ -66,6 +66,7 @@ import { resolveConnectionString } from "@/db/connection";
 describe("resolveConnectionString", () => {
   it("prefers DATABASE_URL when both are set", () => {
     const result = resolveConnectionString({
+      NODE_ENV: "test",
       DATABASE_URL: "postgresql://local/dev",
       POSTGRES_URL: "postgresql://supabase/prod",
     });
@@ -74,6 +75,7 @@ describe("resolveConnectionString", () => {
 
   it("falls back to POSTGRES_URL when DATABASE_URL is absent", () => {
     const result = resolveConnectionString({
+      NODE_ENV: "test",
       POSTGRES_URL: "postgresql://supabase/prod",
     });
     expect(result).toBe("postgresql://supabase/prod");
@@ -81,6 +83,7 @@ describe("resolveConnectionString", () => {
 
   it("falls back to POSTGRES_URL when DATABASE_URL is an empty string", () => {
     const result = resolveConnectionString({
+      NODE_ENV: "test",
       DATABASE_URL: "",
       POSTGRES_URL: "postgresql://supabase/prod",
     });
@@ -88,10 +91,19 @@ describe("resolveConnectionString", () => {
   });
 
   it("returns undefined when neither is set", () => {
-    expect(resolveConnectionString({})).toBeUndefined();
+    expect(resolveConnectionString({ NODE_ENV: "test" })).toBeUndefined();
   });
 });
 ```
+
+Every literal carries `NODE_ENV: "test"` because Next.js's ambient
+`global.d.ts` declares `NODE_ENV` as a required property of
+`NodeJS.ProcessEnv`; a literal without it fails `npm run typecheck`. Supply the
+property rather than casting with `as unknown as NodeJS.ProcessEnv` — the cast
+compiles but disables excess-property checking, so a typo like `DATABSE_URL`
+would slip through to a confusing runtime assertion failure instead of being
+caught by `tsc`. Every other property is optional under the type's index
+signature, so no other field is needed.
 
 The empty-string case is not hypothetical: Vercel stores a variable that was added with no value as `""`, and `??` would return that empty string instead of falling through. The implementation must use `||`.
 
