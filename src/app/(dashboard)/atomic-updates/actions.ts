@@ -26,6 +26,8 @@ export type AtomicUpdateRow = {
   events: AtomicUpdateEvent[];
   summaryEditedAt: Date | null;
   updatedAt: Date;
+  // Drives the month grouping in the list; stable, unlike updatedAt.
+  createdAt: Date;
 };
 
 export type AtomicUpdateListFilters = {
@@ -47,6 +49,7 @@ export async function listAtomicUpdates(
       size: atomicUpdates.size,
       summaryEditedAt: atomicUpdates.summaryEditedAt,
       updatedAt: atomicUpdates.updatedAt,
+      createdAt: atomicUpdates.createdAt,
     })
     .from(atomicUpdates)
     .where(
@@ -257,10 +260,15 @@ export async function listHiddenAtomicUpdates(): Promise<AtomicUpdateRow[]> {
       size: atomicUpdates.size,
       summaryEditedAt: atomicUpdates.summaryEditedAt,
       updatedAt: atomicUpdates.updatedAt,
+      createdAt: atomicUpdates.createdAt,
     })
     .from(atomicUpdates)
     .where(and(eq(atomicUpdates.tenantId, session.user.tenantId), eq(atomicUpdates.status, "hidden")))
-    .orderBy(desc(atomicUpdates.updatedAt));
+    // Ordered by createdAt, matching `listAtomicUpdates` — the hidden section
+    // groups by created-in month, and sorting rows by updatedAt (which hiding
+    // and un-hiding both bump) would order them by an unrelated key inside
+    // those headings. id breaks ties for a deterministic order.
+    .orderBy(desc(atomicUpdates.createdAt), asc(atomicUpdates.id));
 
   if (atomics.length === 0) return [];
 

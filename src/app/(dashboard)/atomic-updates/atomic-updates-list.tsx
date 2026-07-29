@@ -12,6 +12,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { groupByMonth } from "@/lib/group-by-month";
 import { AtomicUpdateCard } from "./atomic-update-card";
 import { DraftReleaseDialog } from "./draft-release-dialog";
 import { unhideAtomicUpdate, bulkMarkAtomicUpdatesHidden, bulkDeleteAtomicUpdates } from "./actions";
@@ -140,6 +141,12 @@ export function AtomicUpdatesList({
 
   const busy = hiding || deleting;
 
+  // Cards are grouped under the month they were created in, newest month first.
+  // `rows` already arrives newest-first from `listAtomicUpdates`, so this only
+  // adds the headings — it never reorders the cards within a month.
+  const monthGroups = groupByMonth(rows, (row) => row.createdAt);
+  const hiddenMonthGroups = groupByMonth(hiddenRows, (row) => row.createdAt);
+
   return (
     <div className="space-y-4">
       {rows.length === 0 ? (
@@ -179,36 +186,48 @@ export function AtomicUpdatesList({
               <DraftReleaseDialog atomicUpdateIds={[...selected]} />
             </div>
           </div>
-          <ul className="flex flex-col gap-3">
-            {rows.map((row) => (
-              <li key={row.id}>
-                <AtomicUpdateCard
-                  row={row}
-                  repos={repos}
-                  notionConnected={notionConnected}
-                  selectable
-                  selected={selected.has(row.id)}
-                  anySelected={selected.size > 0}
-                  onSelectChange={onSelectChange}
-                />
-              </li>
-            ))}
-          </ul>
+          {monthGroups.map((group) => (
+            <section key={group.key} className="space-y-2">
+              <h2 className="text-sm font-medium text-muted-foreground">{group.label}</h2>
+              <ul className="flex flex-col gap-3">
+                {group.items.map((row) => (
+                  <li key={row.id}>
+                    <AtomicUpdateCard
+                      row={row}
+                      repos={repos}
+                      notionConnected={notionConnected}
+                      selectable
+                      selected={selected.has(row.id)}
+                      anySelected={selected.size > 0}
+                      onSelectChange={onSelectChange}
+                    />
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ))}
         </>
       )}
       {showHidden && (
-        <div className="space-y-2 border-t pt-4">
-          <h2 className="text-sm font-medium text-muted-foreground">Hidden atomic updates</h2>
+        <div className="space-y-3 border-t pt-4">
+          {/* Not muted, unlike the month headings nested under it — this is the
+              section title, so it has to outrank them visually. */}
+          <h2 className="text-sm font-semibold">Hidden atomic updates</h2>
           {hiddenRows.length === 0 ? (
             <p className="text-sm text-muted-foreground">No hidden atomic updates.</p>
           ) : (
-            <ul className="flex flex-col gap-3">
-              {hiddenRows.map((row) => (
-                <li key={row.id}>
-                  <HiddenAtomicUpdateCard row={row} />
-                </li>
-              ))}
-            </ul>
+            hiddenMonthGroups.map((group) => (
+              <section key={group.key} className="space-y-2">
+                <h3 className="text-sm font-medium text-muted-foreground">{group.label}</h3>
+                <ul className="flex flex-col gap-3">
+                  {group.items.map((row) => (
+                    <li key={row.id}>
+                      <HiddenAtomicUpdateCard row={row} />
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            ))
           )}
         </div>
       )}
