@@ -30,6 +30,10 @@
 | `src/app/api/drafts/extract/route.ts` (create) | Auth, tenant resolution, ownership check, NDJSON progress stream. |
 | `src/app/(dashboard)/drafts/[releaseId]/agent-edit-context.tsx` (modify) | `removeSelection` op, `"extract"` dialog mode, `openExtract()`. |
 | `src/app/(dashboard)/drafts/[releaseId]/mdx-editor.tsx` (modify) | Implement `removeSelection` in the bridge; add the toolbar button. |
+| `src/components/draft-progress-checklist.tsx` (create) | The step-checklist render, shared by all three pipeline dialogs. |
+| `src/lib/scheduling/read-draft-progress.ts` (create) | The NDJSON progress-stream reader, shared by the two simple consumers. |
+| `src/app/(dashboard)/drafts/[releaseId]/agent-edit-dialog.tsx` (modify) | Refactored onto both shared modules. |
+| `src/app/(dashboard)/atomic-updates/draft-release-dialog.tsx` (modify) | Refactored onto the shared checklist (keeps its own abort-aware reader). |
 | `src/app/(dashboard)/drafts/[releaseId]/extract-dialog.tsx` (create) | Confirm step, checklist loader, restore-on-failure, success toast. |
 | `src/app/(dashboard)/drafts/[releaseId]/page.tsx` (modify) | Render `<ExtractDialog>` beside `<AgentEditDialog>`. |
 
@@ -1104,7 +1108,284 @@ git commit -m "feat: add a removeSelection editor op and an extract dialog mode"
 
 ---
 
-### Task 6: The extract dialog and toolbar button
+### Task 6: Extract the shared checklist and progress reader
+
+Two blocks the extract dialog needs already exist in duplicate. Share them
+BEFORE adding a third copy. This task adds no feature behavior — the existing
+suite plus `typecheck` is the regression net.
+
+**Files:**
+- Create: `src/components/draft-progress-checklist.tsx`
+- Create: `src/lib/scheduling/read-draft-progress.ts`
+- Modify: `src/app/(dashboard)/drafts/[releaseId]/agent-edit-dialog.tsx`
+- Modify: `src/app/(dashboard)/atomic-updates/draft-release-dialog.tsx`
+- Test: `tests/lib/scheduling/read-draft-progress.test.ts` (create)
+
+**Interfaces:**
+- Consumes: existing `DraftStepKey` and `DraftProgressEvent` from `@/lib/scheduling/draft-progress`.
+- Produces:
+  ```ts
+  // src/components/draft-progress-checklist.tsx
+  export type StepStatus = "pending" | "active" | "done";
+  export function initialStepStatuses(
+    steps: { key: DraftStepKey }[]
+  ): Record<DraftStepKey, StepStatus>;
+  export function ProgressChecklist(props: {
+    steps: { key: DraftStepKey; label: string }[];
+    statuses: Record<DraftStepKey, StepStatus>;
+    detail?: string;
+    className?: string;
+  }): React.JSX.Element;
+
+  // src/lib/scheduling/read-draft-progress.ts
+  export async function readDraftProgress(
+    body: ReadableStream<Uint8Array>,
+    handle: (event: DraftProgressEvent) => void
+  ): Promise<void>;
+  ```
+
+**Scope boundary — read this before touching the compose dialog.** The compose
+dialog's `draft-release-dialog.tsx` reader is NOT the same loop: it checks an
+abort signal between chunks and awaits an async paced-apply per event. Do not
+try to fold it into `readDraftProgress`. Refactor only its `<ol>` onto
+`ProgressChecklist`; leave its reader exactly as it is.
+
+- [ ] **Step 1: Write the failing test for the reader**
+
+Create `tests/lib/scheduling/read-draft-progress.test.ts`:
+
+```ts
+import { describe, it, expect } from "vitest";
+import { readDraftProgress } from "../../../src/lib/scheduling/read-draft-progress";
+import type { DraftProgressEvent } from "../../../src/lib/scheduling/draft-progress";
+
+/** Builds a stream that emits the given raw chunks in order, so a test can
+ * split NDJSON lines across chunk boundaries on purpose. */
+function streamOf(chunks: string[]): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+      controller.close();
+    },
+  });
+}
+
+describe("readDraftProgress", () => {
+  it("delivers one event per NDJSON line, in order", async () => {
+    const seen: DraftProgressEvent[] = [];
+    await readDraftProgress(
+      streamOf([
+        '{"type":"step","key":"preparing","status":"start"}\n',
+        '{"type":"step","key":"preparing","status":"done"}\n',
+        '{"type":"done","updateId":"r1"}\n',
+      ]),
+      (e) => seen.push(e)
+    );
+    expect(seen).toEqual([
+      { type: "step", key: "preparing", status: "start" },
+      { type: "step", key: "preparing", status: "done" },
+      { type: "done", updateId: "r1" },
+    ]);
+  });
+
+  it("reassembles a line split across chunk boundaries", async () => {
+    const seen: DraftProgressEvent[] = [];
+    await readDraftProgress(
+      streamOf(['{"type":"detail","tex', 't":"Reviewing (round 1)"}\n']),
+      (e) => seen.push(e)
+    );
+    expect(seen).toEqual([{ type: "detail", text: "Reviewing (round 1)" }]);
+  });
+
+  it("delivers a trailing line that has no newline terminator", async () => {
+    const seen: DraftProgressEvent[] = [];
+    await readDraftProgress(streamOf(['{"type":"error","message":"boom"}']), (e) => seen.push(e));
+    expect(seen).toEqual([{ type: "error", message: "boom" }]);
+  });
+
+  it("ignores blank lines", async () => {
+    const seen: DraftProgressEvent[] = [];
+    await readDraftProgress(
+      streamOf(['\n{"type":"done","updateId":"r1"}\n\n']),
+      (e) => seen.push(e)
+    );
+    expect(seen).toEqual([{ type: "done", updateId: "r1" }]);
+  });
+});
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `npx vitest run tests/lib/scheduling/read-draft-progress.test.ts`
+Expected: FAIL — cannot resolve `src/lib/scheduling/read-draft-progress`.
+
+- [ ] **Step 3: Write the reader**
+
+Create `src/lib/scheduling/read-draft-progress.ts`:
+
+```ts
+import type { DraftProgressEvent } from "./draft-progress";
+
+/**
+ * Reads an NDJSON progress stream from one of the pipeline routes, calling
+ * `handle` once per event. Chunk boundaries fall anywhere, so a partial line is
+ * buffered until its newline arrives, and a final line without a terminator is
+ * still delivered.
+ *
+ * The compose dialog (`draft-release-dialog.tsx`) deliberately does NOT use
+ * this: its loop checks an abort signal between chunks and awaits an async
+ * paced-apply per event. Keep that one separate rather than growing options
+ * here for a single caller.
+ */
+export async function readDraftProgress(
+  body: ReadableStream<Uint8Array>,
+  handle: (event: DraftProgressEvent) => void
+): Promise<void> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    for (const line of lines) if (line.trim()) handle(JSON.parse(line) as DraftProgressEvent);
+  }
+  if (buffer.trim()) handle(JSON.parse(buffer) as DraftProgressEvent);
+}
+```
+
+- [ ] **Step 4: Run the test to verify it passes**
+
+Run: `npx vitest run tests/lib/scheduling/read-draft-progress.test.ts`
+Expected: PASS, 4 tests.
+
+- [ ] **Step 5: Write the shared checklist component**
+
+Create `src/components/draft-progress-checklist.tsx`:
+
+```tsx
+"use client";
+
+import { Loader2, Check, Circle } from "lucide-react";
+import { cn } from "@/lib/utils";
+import type { DraftStepKey } from "@/lib/scheduling/draft-progress";
+
+export type StepStatus = "pending" | "active" | "done";
+
+/** Every step pending — the state a checklist starts and resets to. */
+export function initialStepStatuses(
+  steps: { key: DraftStepKey }[]
+): Record<DraftStepKey, StepStatus> {
+  const statuses = {} as Record<DraftStepKey, StepStatus>;
+  for (const step of steps) statuses[step.key] = "pending";
+  return statuses;
+}
+
+/**
+ * The stepped loader shared by every dialog that runs a pipeline route: the
+ * compose flow (DRAFT_STEPS), the whole-update agent edit and the extract flow
+ * (both EDIT_STEPS). Which step list it renders is the caller's choice; the
+ * icons, colors and the active step's `detail` suffix are the same everywhere.
+ */
+export function ProgressChecklist({
+  steps,
+  statuses,
+  detail,
+  className,
+}: {
+  steps: { key: DraftStepKey; label: string }[];
+  statuses: Record<DraftStepKey, StepStatus>;
+  detail?: string;
+  className?: string;
+}) {
+  return (
+    <ol className={cn("space-y-2", className)}>
+      {steps.map((step) => {
+        const st = statuses[step.key];
+        return (
+          <li key={step.key} className="flex items-center gap-2 text-sm">
+            {st === "done" ? (
+              <Check className="size-4 text-emerald-600" />
+            ) : st === "active" ? (
+              <Loader2 className="size-4 animate-spin text-foreground" />
+            ) : (
+              <Circle className="size-4 text-muted-foreground/40" />
+            )}
+            <span className={st === "pending" ? "text-muted-foreground" : "text-foreground"}>
+              {step.label}
+            </span>
+            {st === "active" && detail && (
+              <span className="text-xs text-muted-foreground">· {detail}</span>
+            )}
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+```
+
+- [ ] **Step 6: Refactor `agent-edit-dialog.tsx` onto both**
+
+In `src/app/(dashboard)/drafts/[releaseId]/agent-edit-dialog.tsx`:
+
+1. Delete the local `type StepStatus` and `initialEditStatuses()` declarations.
+2. Add:
+   ```tsx
+   import {
+     ProgressChecklist,
+     initialStepStatuses,
+     type StepStatus,
+   } from "@/components/draft-progress-checklist";
+   import { readDraftProgress } from "@/lib/scheduling/read-draft-progress";
+   ```
+3. Replace every `initialEditStatuses()` call with `initialStepStatuses(EDIT_STEPS)` (three sites: the `useState` initializer, `reset()`, and the top of `runWholeEdit`). Note the `useState` initializer must become a thunk: `useState<Record<DraftStepKey, StepStatus>>(() => initialStepStatuses(EDIT_STEPS))`.
+4. Replace the reader loop in `runWholeEdit` — from `const reader = res.body.getReader();` through the trailing `if (buffer.trim()) handle(...)` line — with:
+   ```tsx
+       await readDraftProgress(res.body, handle);
+   ```
+5. Replace the `<ol className="space-y-2 py-2">…</ol>` block with:
+   ```tsx
+           <ProgressChecklist steps={EDIT_STEPS} statuses={statuses} detail={detail} className="py-2" />
+   ```
+6. Drop `Check` and `Circle` from the lucide import if they are now unused (`Sparkles` and `Loader2` are still used).
+
+- [ ] **Step 7: Refactor the compose dialog's checklist only**
+
+In `src/app/(dashboard)/atomic-updates/draft-release-dialog.tsx`:
+
+1. Delete the local `initialStatuses()` function at the bottom of the file and the local `StepStatus` type, importing both from the shared module instead (`initialStepStatuses`, `StepStatus`). Replace `initialStatuses()` calls with `initialStepStatuses(DRAFT_STEPS)`, making any `useState` initializer a thunk.
+2. Replace the `<ol className="space-y-2">…</ol>` inside the `phase === "progress"` block with:
+   ```tsx
+             <ProgressChecklist steps={DRAFT_STEPS} statuses={statuses} detail={detail} />
+   ```
+3. Drop `Check` and `Circle` from its lucide import if now unused (`Loader2` and `AlertCircle` are still used).
+4. **Leave the reader loop and the abort/paced-apply logic untouched.**
+
+- [ ] **Step 8: Verify types, lint, and the whole suite**
+
+Run: `npm run typecheck`
+Expected: PASS.
+
+Run: `npm run lint`
+Expected: PASS.
+
+Run: `npm test`
+Expected: PASS — the new reader tests plus every pre-existing test. No behavior changed, so any failure here is a real regression from the refactor.
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add src/components/draft-progress-checklist.tsx src/lib/scheduling/read-draft-progress.ts tests/lib/scheduling/read-draft-progress.test.ts "src/app/(dashboard)/drafts/[releaseId]/agent-edit-dialog.tsx" "src/app/(dashboard)/atomic-updates/draft-release-dialog.tsx"
+git commit -m "refactor: share the pipeline progress checklist and stream reader"
+```
+
+---
+
+### Task 7: The extract dialog and toolbar button
 
 **Files:**
 - Create: `src/app/(dashboard)/drafts/[releaseId]/extract-dialog.tsx`
@@ -1112,7 +1393,7 @@ git commit -m "feat: add a removeSelection editor op and an extract dialog mode"
 - Modify: `src/app/(dashboard)/drafts/[releaseId]/page.tsx` (render the dialog)
 
 **Interfaces:**
-- Consumes: `openExtract()`, `removeSelection()`, `applyEdit()`, `getMarkdown()` from Task 5; `POST /api/drafts/extract` from Task 4; existing `EDIT_STEPS`, `DraftProgressEvent`, `DraftStepKey` from `@/lib/scheduling/draft-progress`; existing `useUnsavedChanges().notifySaved` from `../../unsaved-changes`.
+- Consumes: `openExtract()`, `removeSelection()`, `applyEdit()`, `getMarkdown()` from Task 5; `ProgressChecklist`, `initialStepStatuses`, `StepStatus`, `readDraftProgress` from Task 6; `POST /api/drafts/extract` from Task 4; existing `EDIT_STEPS`, `DraftProgressEvent`, `DraftStepKey` from `@/lib/scheduling/draft-progress`; existing `useUnsavedChanges().notifySaved` from `../../unsaved-changes`.
 - Produces: `export function ExtractDialog({ releaseId }: { releaseId: string })`.
 
 - [ ] **Step 1: Create the dialog**
@@ -1124,7 +1405,7 @@ Create `src/app/(dashboard)/drafts/[releaseId]/extract-dialog.tsx`:
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Split, Loader2, Check, Circle } from "lucide-react";
+import { Split } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -1138,16 +1419,14 @@ import {
   DialogClose,
 } from "@/components/ui/dialog";
 import { EDIT_STEPS, type DraftProgressEvent, type DraftStepKey } from "@/lib/scheduling/draft-progress";
+import {
+  ProgressChecklist,
+  initialStepStatuses,
+  type StepStatus,
+} from "@/components/draft-progress-checklist";
+import { readDraftProgress } from "@/lib/scheduling/read-draft-progress";
 import { useUnsavedChanges } from "../../unsaved-changes";
 import { useAgentEdit } from "./agent-edit-context";
-
-type StepStatus = "pending" | "active" | "done";
-
-function initialStatuses(): Record<DraftStepKey, StepStatus> {
-  const statuses = {} as Record<DraftStepKey, StepStatus>;
-  for (const step of EDIT_STEPS) statuses[step.key] = "pending";
-  return statuses;
-}
 
 /**
  * Confirms and runs a split: the highlighted passage leaves this draft and
@@ -1165,14 +1444,16 @@ export function ExtractDialog({ releaseId }: { releaseId: string }) {
   const router = useRouter();
   const [instruction, setInstruction] = useState("");
   const [busy, setBusy] = useState(false);
-  const [statuses, setStatuses] = useState<Record<DraftStepKey, StepStatus>>(initialStatuses);
+  const [statuses, setStatuses] = useState<Record<DraftStepKey, StepStatus>>(() =>
+    initialStepStatuses(EDIT_STEPS)
+  );
   const [detail, setDetail] = useState("");
 
   const open = state?.mode === "extract";
 
   function reset() {
     setInstruction("");
-    setStatuses(initialStatuses());
+    setStatuses(initialStepStatuses(EDIT_STEPS));
     setDetail("");
     close();
   }
@@ -1201,18 +1482,7 @@ export function ExtractDialog({ releaseId }: { releaseId: string }) {
       }
     };
 
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
-      for (const line of lines) if (line.trim()) handle(JSON.parse(line) as DraftProgressEvent);
-    }
-    if (buffer.trim()) handle(JSON.parse(buffer) as DraftProgressEvent);
+    await readDraftProgress(res.body, handle);
 
     if (errored) throw new Error(errored);
     if (newReleaseId == null) throw new Error("The extraction finished without creating a draft.");
@@ -1274,28 +1544,7 @@ export function ExtractDialog({ releaseId }: { releaseId: string }) {
         </DialogHeader>
 
         {busy ? (
-          <ol className="space-y-2 py-2">
-            {EDIT_STEPS.map((step) => {
-              const st = statuses[step.key];
-              return (
-                <li key={step.key} className="flex items-center gap-2 text-sm">
-                  {st === "done" ? (
-                    <Check className="size-4 text-emerald-600" />
-                  ) : st === "active" ? (
-                    <Loader2 className="size-4 animate-spin text-foreground" />
-                  ) : (
-                    <Circle className="size-4 text-muted-foreground/40" />
-                  )}
-                  <span className={st === "pending" ? "text-muted-foreground" : "text-foreground"}>
-                    {step.label}
-                  </span>
-                  {st === "active" && detail && (
-                    <span className="text-xs text-muted-foreground">· {detail}</span>
-                  )}
-                </li>
-              );
-            })}
-          </ol>
+          <ProgressChecklist steps={EDIT_STEPS} statuses={statuses} detail={detail} className="py-2" />
         ) : (
           <div className="space-y-3">
             <blockquote className="max-h-32 overflow-auto rounded-md border bg-muted/50 p-2 text-sm whitespace-pre-wrap text-muted-foreground">
