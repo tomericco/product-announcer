@@ -6,29 +6,30 @@ import { generateObject } from "ai";
 import { buildReviewPrompt, buildRevisionPrompt, reviewAndReconcile } from "../../../src/lib/ai/review-draft";
 
 const draft = { title: "Big news!!!", body: "Buy now." };
-const brand = { tone: "calm", readingLevel: "simple", doList: ["be factual"], dontList: ["hype"], examplePhrases: ["ship"], industry: null, userPersonas: [] };
+const brand = { guidelines: "Tone: calm. Do: be factual. Avoid: hype.", industry: null, userPersonas: [] };
 
 function ok(object: unknown) { return { object } as never; }
 const critique = (compliant: boolean, issues: string[] = []) => ok({ compliant, issues });
 const revision = (title: string, body: string) => ok({ title, body });
 
 describe("buildReviewPrompt", () => {
-  it("includes the brand rules and the draft", () => {
+  it("includes the guidelines document verbatim and the draft", () => {
     const prompt = buildReviewPrompt(draft, brand as never);
-    expect(prompt).toContain("Tone: calm.");
-    expect(prompt).toContain("Reading level: simple.");
-    expect(prompt).toContain("Do: be factual.");
-    expect(prompt).toContain("Avoid: hype.");
-    expect(prompt).toContain("Preferred phrasing: ship.");
+    expect(prompt).toContain("Tone: calm. Do: be factual. Avoid: hype.");
     expect(prompt).toContain("Big news!!!");
     expect(prompt).toContain("Buy now.");
+  });
+
+  it("falls back to a stated absence when no guidelines are configured", () => {
+    const prompt = buildReviewPrompt(draft, { guidelines: null, industry: null, userPersonas: [] } as never);
+    expect(prompt).toContain("No specific brand requirements are configured.");
   });
 });
 
 describe("buildRevisionPrompt", () => {
   it("includes the brand rules, the draft, and the specific issues to fix", () => {
     const prompt = buildRevisionPrompt(draft, ["too hypey", "no exclamation marks"], brand as never);
-    expect(prompt).toContain("Tone: calm.");
+    expect(prompt).toContain("Tone: calm. Do: be factual. Avoid: hype.");
     expect(prompt).toContain("Big news!!!");
     expect(prompt).toContain("- too hypey");
     expect(prompt).toContain("- no exclamation marks");
