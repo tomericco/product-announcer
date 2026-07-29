@@ -2,8 +2,13 @@
 
 import { useState, useRef } from "react";
 import Link from "next/link";
-import { Loader2, Check, Circle, AlertCircle } from "lucide-react";
+import { Check, AlertCircle } from "lucide-react";
 import { DRAFT_STEPS, type DraftProgressEvent, type DraftStepKey } from "@/lib/scheduling/draft-progress";
+import {
+  ProgressChecklist,
+  initialStepStatuses,
+  type StepStatus,
+} from "@/components/draft-progress-checklist";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -14,7 +19,6 @@ import {
 } from "@/components/ui/dialog";
 
 type Phase = "preview" | "progress" | "error" | "success";
-type StepStatus = "pending" | "active" | "done";
 
 // Minimum time a step stays visible before the next transition, so a fast
 // backend doesn't flicker the steps past. It's a floor, not a fixed delay —
@@ -39,7 +43,9 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 export function DraftReleaseDialog({ atomicUpdateIds }: { atomicUpdateIds: string[] }) {
   const [open, setOpen] = useState(false);
   const [phase, setPhase] = useState<Phase>("preview");
-  const [statuses, setStatuses] = useState<Record<DraftStepKey, StepStatus>>(initialStatuses());
+  const [statuses, setStatuses] = useState<Record<DraftStepKey, StepStatus>>(() =>
+    initialStepStatuses(DRAFT_STEPS)
+  );
   const [detail, setDetail] = useState("");
   const [error, setError] = useState("");
   const [releaseId, setReleaseId] = useState<string | null>(null);
@@ -53,7 +59,7 @@ export function DraftReleaseDialog({ atomicUpdateIds }: { atomicUpdateIds: strin
     abortRef.current?.abort();
     abortRef.current = null;
     setPhase("preview");
-    setStatuses(initialStatuses());
+    setStatuses(initialStepStatuses(DRAFT_STEPS));
     setDetail("");
     setError("");
     setReleaseId(null);
@@ -182,28 +188,7 @@ export function DraftReleaseDialog({ atomicUpdateIds }: { atomicUpdateIds: strin
 
         {phase === "progress" && (
           <div className="space-y-5">
-            <ol className="space-y-2">
-              {DRAFT_STEPS.map((step) => {
-                const st = statuses[step.key];
-                return (
-                  <li key={step.key} className="flex items-center gap-2 text-sm">
-                    {st === "done" ? (
-                      <Check className="size-4 text-emerald-600" />
-                    ) : st === "active" ? (
-                      <Loader2 className="size-4 animate-spin text-foreground" />
-                    ) : (
-                      <Circle className="size-4 text-muted-foreground/40" />
-                    )}
-                    <span className={st === "pending" ? "text-muted-foreground" : "text-foreground"}>
-                      {step.label}
-                    </span>
-                    {st === "active" && detail && (
-                      <span className="text-xs text-muted-foreground">· {detail}</span>
-                    )}
-                  </li>
-                );
-              })}
-            </ol>
+            <ProgressChecklist steps={DRAFT_STEPS} statuses={statuses} detail={detail} />
             <div className="flex justify-end">
               <Button variant="outline" onClick={abort}>
                 Abort
@@ -238,12 +223,5 @@ export function DraftReleaseDialog({ atomicUpdateIds }: { atomicUpdateIds: strin
         )}
       </DialogContent>
     </Dialog>
-  );
-}
-
-function initialStatuses(): Record<DraftStepKey, StepStatus> {
-  return DRAFT_STEPS.reduce(
-    (acc, s) => ({ ...acc, [s.key]: "pending" }),
-    {} as Record<DraftStepKey, StepStatus>
   );
 }
