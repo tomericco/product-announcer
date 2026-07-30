@@ -3,12 +3,10 @@
 import { and, eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { db } from "@/db";
-import { releases, systemPersonas, systemUpdateExamples } from "@/db/schema";
+import { releases } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { catchUpRelease, startOverRelease } from "@/lib/change-events/catch-up";
-import { getOrCreateBrandProfile } from "@/lib/workspace/brand-profile";
-import { resolvePersonaRefs, systemPersonaKeys } from "@/lib/workspace/personas";
-import { selectExamples } from "@/lib/ai/select-examples";
+import { prepareGenerationContext } from "@/lib/ai/generation-context";
 import { editReleaseBody } from "@/lib/ai/edit";
 import { validateDraftLinks } from "@/lib/ai/validate-links";
 
@@ -74,15 +72,7 @@ export async function requestAgentEdit(input: {
   const release = await loadOwnedDraft(session.user.tenantId, input.releaseId);
 
   // Same prompt context the composer uses, so edits stay on brand.
-  const brandProfile = await getOrCreateBrandProfile(release.tenantId, db);
-  const catalog = await db.select().from(systemPersonas);
-  const personas = resolvePersonaRefs(brandProfile.userPersonas, catalog);
-  const allExamples = await db.select().from(systemUpdateExamples);
-  const examples = selectExamples(allExamples, {
-    industry: brandProfile.industry,
-    personaKeys: systemPersonaKeys(brandProfile.userPersonas),
-    categories: [],
-  });
+  const { brandProfile, personas, examples } = await prepareGenerationContext(release.tenantId, db);
 
   const text = await editReleaseBody({
     mode: input.mode,

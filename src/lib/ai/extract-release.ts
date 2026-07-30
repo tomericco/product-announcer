@@ -1,9 +1,7 @@
 import { eq } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
-import { releases, systemPersonas, systemUpdateExamples } from "@/db/schema";
-import { getOrCreateBrandProfile } from "@/lib/workspace/brand-profile";
-import { resolvePersonaRefs, systemPersonaKeys } from "@/lib/workspace/personas";
-import { selectExamples } from "@/lib/ai/select-examples";
+import { releases } from "@/db/schema";
+import { prepareGenerationContext } from "@/lib/ai/generation-context";
 import { generateExtractedDraft } from "@/lib/ai/generation";
 import { reviewAndReconcile } from "@/lib/ai/review-draft";
 import { validateDraftLinks } from "@/lib/ai/validate-links";
@@ -73,17 +71,10 @@ export async function runExtractForRelease(
   }
 
   emit({ type: "step", key: "preparing", status: "start" });
-  const brandProfile = await getOrCreateBrandProfile(source.tenantId, database);
-  const catalog = await database.select().from(systemPersonas);
-  const personas = resolvePersonaRefs(brandProfile.userPersonas, catalog);
-  const allExamples = await database.select().from(systemUpdateExamples);
-  // Prose carries no category, so example selection leans on industry/personas
-  // only — same call shape as the whole-update edit path.
-  const examples = selectExamples(allExamples, {
-    industry: brandProfile.industry,
-    personaKeys: systemPersonaKeys(brandProfile.userPersonas),
-    categories: [],
-  });
+  const { brandProfile, personas, examples } = await prepareGenerationContext(
+    source.tenantId,
+    database
+  );
   emit({ type: "step", key: "preparing", status: "done" });
 
   emit({ type: "step", key: "generating", status: "start" });
