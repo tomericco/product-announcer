@@ -86,3 +86,44 @@ describe("saveDraft bodyEditedAt stamping", () => {
     expect(row.bodyEditedAt).toBeNull();
   });
 });
+
+// A release that has left the draft state must not have its stored body
+// rewritten: publishing already delivered that text to users, and rejecting
+// handed the atomic updates back to the pool. The drafts list only renders
+// drafts, so these are reachable only from a stale tab, a bookmark, or a
+// crafted request — which is exactly why the guard belongs server-side.
+describe("saveDraft draft-status gate", () => {
+  afterEach(async () => {
+    await db.delete(tenants).where(eq(tenants.name, TENANT_NAME));
+    await db.delete(users).where(eq(users.email, USER_EMAIL));
+  });
+
+  it("refuses a published release and leaves its body untouched", async () => {
+    const { release } = await seed("Published body");
+    await db
+      .update(releases)
+      .set({ status: "published", publishedAt: new Date() })
+      .where(eq(releases.id, release.id));
+
+    await expect(saveDraft(formDataFor(release.id, "Hijacked title", "Hijacked body"))).rejects.toThrow(
+      /already been published/i
+    );
+
+    const row = await rowFor(release.id);
+    expect(row.body).toBe("Published body");
+    expect(row.title).toBe("Original title");
+  });
+
+  it("refuses a rejected release and leaves its body untouched", async () => {
+    const { release } = await seed("Rejected body");
+    await db.update(releases).set({ status: "rejected" }).where(eq(releases.id, release.id));
+
+    await expect(saveDraft(formDataFor(release.id, "Hijacked title", "Hijacked body"))).rejects.toThrow(
+      /rejected/i
+    );
+
+    const row = await rowFor(release.id);
+    expect(row.body).toBe("Rejected body");
+    expect(row.title).toBe("Original title");
+  });
+});

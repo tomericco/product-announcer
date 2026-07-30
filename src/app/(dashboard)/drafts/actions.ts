@@ -6,6 +6,7 @@ import { redirect } from "next/navigation";
 import { db } from "@/db";
 import { releases } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
+import { assertDraftEditable } from "@/lib/draft-editable";
 import { dispatchAllDestinations } from "@/lib/publishing/dispatch";
 import { revertReleaseAtomicUpdates, markReleaseAtomicUpdatesReleased } from "@/lib/change-events/release-claim";
 import type { DestinationId } from "@/lib/publishing/destinations/types";
@@ -62,6 +63,7 @@ export async function saveDraft(formData: FormData) {
   const session = await requireSession();
   const releaseId = formData.get("releaseId") as string;
   const existing = await loadOwnedDraft(session.user.tenantId, releaseId);
+  assertDraftEditable(existing);
 
   const body = resolveBody(formData.get("body") as string, existing.body);
   // Only a body that actually differs from what's stored counts as a hand
@@ -170,7 +172,10 @@ export async function approveDraft(formData: FormData): Promise<{ problems: Link
 export async function rejectDraft(formData: FormData) {
   const session = await requireSession();
   const releaseId = formData.get("releaseId") as string;
-  await loadOwnedDraft(session.user.tenantId, releaseId);
+  // Reverting a published release's atomic updates would flip work that already
+  // shipped back to `open`, so the compose list would offer it up for a new
+  // draft. Unpublishing is not a supported operation — refuse instead.
+  assertDraftEditable(await loadOwnedDraft(session.user.tenantId, releaseId));
 
   await db.transaction(async (tx) => {
     await tx.update(releases).set({ status: "rejected" }).where(eq(releases.id, releaseId));
@@ -237,7 +242,9 @@ export async function publishDraft(
 export async function deleteDraft(formData: FormData) {
   const session = await requireSession();
   const releaseId = formData.get("releaseId") as string;
-  await loadOwnedDraft(session.user.tenantId, releaseId);
+  // A published release is the record of what was sent; deleting it would erase
+  // that history and, via the revert below, reopen its shipped atomic updates.
+  assertDraftEditable(await loadOwnedDraft(session.user.tenantId, releaseId));
 
   await db.transaction(async (tx) => {
     // Must precede the delete: releaseId is ON DELETE SET NULL, so deleting

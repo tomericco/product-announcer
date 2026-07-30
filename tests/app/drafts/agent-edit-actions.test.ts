@@ -94,3 +94,55 @@ describe("saveDraftBody", () => {
     expect(row.bodyEditedAt).toBeNull();
   });
 });
+
+// See the equivalent block in save-draft.test.ts for why these paths are gated
+// server-side rather than only hidden in the UI.
+describe("draft-status gate", () => {
+  afterEach(async () => {
+    editReleaseBody.mockClear();
+    await db.delete(tenants).where(eq(tenants.name, TENANT_NAME));
+    await db.delete(users).where(eq(users.email, USER_EMAIL));
+  });
+
+  it("requestAgentEdit refuses a published release and never calls the agent", async () => {
+    const { release } = await seed();
+    await db
+      .update(releases)
+      .set({ status: "published", publishedAt: new Date() })
+      .where(eq(releases.id, release.id));
+
+    await expect(
+      requestAgentEdit({ releaseId: release.id, mode: "whole", instruction: "x", fullBody: "b" })
+    ).rejects.toThrow(/already been published/i);
+    // The gate must precede the LLM call — otherwise a stale tab burns tokens
+    // producing text that can never be saved.
+    expect(editReleaseBody).not.toHaveBeenCalled();
+  });
+
+  it("saveDraftBody refuses a published release and leaves its body untouched", async () => {
+    const { release } = await seed("Published body");
+    await db
+      .update(releases)
+      .set({ status: "published", publishedAt: new Date() })
+      .where(eq(releases.id, release.id));
+
+    await expect(saveDraftBody({ releaseId: release.id, body: "Hijacked body" })).rejects.toThrow(
+      /already been published/i
+    );
+
+    const row = await rowFor(release.id);
+    expect(row.body).toBe("Published body");
+  });
+
+  it("saveDraftBody refuses a rejected release", async () => {
+    const { release } = await seed("Rejected body");
+    await db.update(releases).set({ status: "rejected" }).where(eq(releases.id, release.id));
+
+    await expect(saveDraftBody({ releaseId: release.id, body: "Hijacked body" })).rejects.toThrow(
+      /rejected/i
+    );
+
+    const row = await rowFor(release.id);
+    expect(row.body).toBe("Rejected body");
+  });
+});
