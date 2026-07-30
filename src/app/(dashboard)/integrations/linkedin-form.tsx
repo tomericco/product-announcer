@@ -11,6 +11,7 @@ import { LinkedinOrgForm } from "./linkedin-org-form";
 import { LinkedinBaseUrlForm } from "./linkedin-base-url-form";
 import { LinkedinGuidelinesForm } from "./linkedin-guidelines-form";
 import { LinkedinDisconnectButton } from "./linkedin-disconnect-button";
+import { ConnectedIndicator } from "./connected-indicator";
 
 function describeError(error: unknown): string {
   if (error instanceof LinkedinApiError) {
@@ -43,6 +44,7 @@ export async function LinkedinForm({ connectError }: { connectError?: string | n
     <Card>
       <CardHeader className="flex flex-row items-center justify-between gap-2">
         <CardTitle>LinkedIn</CardTitle>
+        {connection?.status === "active" && <ConnectedIndicator />}
         {connection?.status === "needs_reauth" && <Badge variant="destructive">Needs reconnect</Badge>}
       </CardHeader>
       <CardContent className="space-y-4">

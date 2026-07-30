@@ -20,6 +20,7 @@ import { WebflowMappingForm } from "./webflow-mapping-form";
 import { WebflowDisconnectButton } from "./webflow-disconnect-button";
 import { WebflowChangeSite } from "./webflow-change-site";
 import { WebflowChangeCollection } from "./webflow-change-collection";
+import { ConnectedIndicator } from "./connected-indicator";
 
 // A Webflow outage or an expired token must not blank the whole integrations
 // page — the webhook card above lives on the same page and must keep
@@ -77,6 +78,7 @@ export async function WebflowForm() {
     <Card>
       <CardHeader className="flex flex-row items-center justify-between gap-2">
         <CardTitle>Webflow</CardTitle>
+        {connection?.status === "active" && <ConnectedIndicator />}
         {connection && connection.status !== "active" && (
           <Badge variant={connection.status === "needs_reauth" ? "destructive" : "outline"}>
             {connection.status === "needs_reauth" ? "Needs reconnect" : "Setup incomplete"}

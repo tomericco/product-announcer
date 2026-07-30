@@ -15,6 +15,7 @@ import { ComingSoonCard } from "./coming-soon-card";
 import { WebflowForm } from "./webflow-form";
 import { NotionForm } from "./notion-form";
 import { LinkedinForm } from "./linkedin-form";
+import { ConnectedIndicator } from "./connected-indicator";
 
 const COMING_SOON = ["Customer.io", "Mailchimp", "HubSpot"];
 
@@ -131,8 +132,9 @@ export default async function IntegrationsPage({
       <section className="space-y-4">
         <h1 className="font-heading text-3xl leading-[1.15] tracking-[0.015em]">Integrations</h1>
         <Card>
-          <CardHeader>
+          <CardHeader className="flex flex-row items-center justify-between gap-2">
             <CardTitle>Webhook</CardTitle>
+            {config?.active && <ConnectedIndicator />}
           </CardHeader>
           <CardContent>
             <WebhookConfigForm config={config ? { url: config.url, active: config.active } : null} />
@@ -152,8 +154,9 @@ export default async function IntegrationsPage({
         </Suspense>
 
         <Card>
-          <CardHeader>
+          <CardHeader className="flex flex-row items-center justify-between gap-2">
             <CardTitle>GitHub</CardTitle>
+            {tenant?.githubInstallationId && <ConnectedIndicator />}
           </CardHeader>
           <CardContent className="space-y-4">
             {githubError && (
