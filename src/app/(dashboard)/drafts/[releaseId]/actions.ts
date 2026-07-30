@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import { db } from "@/db";
 import { releases } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
+import { assertDraftEditable } from "@/lib/draft-editable";
 import { catchUpRelease, startOverRelease } from "@/lib/change-events/catch-up";
 import { prepareGenerationContext } from "@/lib/ai/generation-context";
 import { editReleaseBody } from "@/lib/ai/edit";
@@ -32,7 +33,7 @@ async function loadOwnedDraft(tenantId: string, releaseId: string) {
 export async function catchUp(formData: FormData) {
   const session = await requireSession();
   const releaseId = formData.get("releaseId") as string;
-  await loadOwnedDraft(session.user.tenantId, releaseId);
+  assertDraftEditable(await loadOwnedDraft(session.user.tenantId, releaseId));
 
   await catchUpRelease(releaseId);
 
@@ -47,7 +48,7 @@ export async function catchUp(formData: FormData) {
 export async function startOver(formData: FormData) {
   const session = await requireSession();
   const releaseId = formData.get("releaseId") as string;
-  await loadOwnedDraft(session.user.tenantId, releaseId);
+  assertDraftEditable(await loadOwnedDraft(session.user.tenantId, releaseId));
 
   await startOverRelease(releaseId);
 
@@ -70,6 +71,9 @@ export async function requestAgentEdit(input: {
 }): Promise<{ text: string }> {
   const session = await requireSession();
   const release = await loadOwnedDraft(session.user.tenantId, input.releaseId);
+  // Before the LLM call, not after: a stale tab must not burn tokens producing
+  // text that `saveDraftBody` will then refuse to persist.
+  assertDraftEditable(release);
 
   // Same prompt context the composer uses, so edits stay on brand.
   const { brandProfile, personas, examples } = await prepareGenerationContext(release.tenantId, db);
@@ -99,6 +103,7 @@ export async function requestAgentEdit(input: {
 export async function saveDraftBody(input: { releaseId: string; body: string }): Promise<void> {
   const session = await requireSession();
   const existing = await loadOwnedDraft(session.user.tenantId, input.releaseId);
+  assertDraftEditable(existing);
 
   const body =
     input.body.trim().length === 0 && existing.body.trim().length > 0 ? existing.body : input.body;

@@ -103,4 +103,31 @@ describe("catch-up actions (catchUp / startOver)", () => {
       expect(revalidatePath).not.toHaveBeenCalled();
     });
   });
+
+  // Both regenerate the stored body, so both are gated once a release leaves
+  // the draft state. See save-draft.test.ts for the full rationale.
+  describe("draft-status gate", () => {
+    it("catchUp refuses a published release — does not call catchUpRelease", async () => {
+      const { release } = await seed();
+      await db
+        .update(releases)
+        .set({ status: "published", publishedAt: new Date() })
+        .where(eq(releases.id, release.id));
+
+      await expect(catchUp(formDataFor(release.id))).rejects.toThrow(/already been published/i);
+
+      expect(catchUpRelease).not.toHaveBeenCalled();
+      expect(revalidatePath).not.toHaveBeenCalled();
+    });
+
+    it("startOver refuses a rejected release — does not call startOverRelease", async () => {
+      const { release } = await seed();
+      await db.update(releases).set({ status: "rejected" }).where(eq(releases.id, release.id));
+
+      await expect(startOver(formDataFor(release.id))).rejects.toThrow(/rejected/i);
+
+      expect(startOverRelease).not.toHaveBeenCalled();
+      expect(revalidatePath).not.toHaveBeenCalled();
+    });
+  });
 });

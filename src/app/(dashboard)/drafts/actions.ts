@@ -6,6 +6,7 @@ import { redirect } from "next/navigation";
 import { db } from "@/db";
 import { releases } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
+import { assertDraftEditable } from "@/lib/draft-editable";
 import { dispatchAllDestinations } from "@/lib/publishing/dispatch";
 import { revertReleaseAtomicUpdates, markReleaseAtomicUpdatesReleased } from "@/lib/change-events/release-claim";
 import type { DestinationId } from "@/lib/publishing/destinations/types";
@@ -62,6 +63,7 @@ export async function saveDraft(formData: FormData) {
   const session = await requireSession();
   const releaseId = formData.get("releaseId") as string;
   const existing = await loadOwnedDraft(session.user.tenantId, releaseId);
+  assertDraftEditable(existing);
 
   const body = resolveBody(formData.get("body") as string, existing.body);
   // Only a body that actually differs from what's stored counts as a hand
