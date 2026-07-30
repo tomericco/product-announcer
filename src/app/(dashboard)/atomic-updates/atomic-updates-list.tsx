@@ -15,66 +15,25 @@ import {
 import { groupByMonth } from "@/lib/group-by-month";
 import { AtomicUpdateCard } from "./atomic-update-card";
 import { DraftReleaseDialog } from "./draft-release-dialog";
-import { unhideAtomicUpdate, bulkMarkAtomicUpdatesHidden, bulkDeleteAtomicUpdates } from "./actions";
-import { CategoryBadge } from "./page";
+import { bulkHideAtomicUpdates, bulkDeleteAtomicUpdates } from "./actions";
 import type { AtomicUpdateRow } from "./actions";
 import type { ImportRepo } from "../change-events/actions";
-
-// Read-only summary of a hidden (non-user-facing) atomic update, plus its one
-// available action. Deliberately not the full `AtomicUpdateCard` — a hidden
-// update is a curation dead-end (out of scope: re-running the classifier or
-// editing evidence on it), so the only thing worth offering here is reversing
-// the hide.
-function HiddenAtomicUpdateCard({ row }: { row: AtomicUpdateRow }) {
-  const [pending, startTransition] = useTransition();
-
-  function unhide() {
-    startTransition(async () => {
-      const result = await unhideAtomicUpdate(row.id);
-      if (result.ok) {
-        toast.success("Atomic update restored");
-      } else {
-        toast.error("Could not un-hide this atomic update");
-      }
-    });
-  }
-
-  return (
-    <div className="rounded-lg border border-dashed p-4">
-      <div className="flex items-center gap-2">
-        <h2 className="font-medium text-muted-foreground">{row.title}</h2>
-        <CategoryBadge category={row.category} />
-      </div>
-      <p className="text-sm text-muted-foreground">{row.summary}</p>
-      <div className="mt-2 flex items-center gap-3 text-xs text-muted-foreground">
-        <span>
-          {row.events.length} {row.events.length === 1 ? "change" : "changes"}
-        </span>
-        <Button variant="ghost" size="sm" disabled={pending} onClick={unhide}>
-          {pending ? "Restoring…" : "Un-hide"}
-        </Button>
-      </div>
-    </div>
-  );
-}
 
 // Selection lives here rather than in the (async, server) page component: it's
 // pure client-side UI state driving which atomic updates go into the next
 // release draft, scoped to the list so the page itself stays a server component.
 export function AtomicUpdatesList({
   rows,
-  hiddenRows,
   repos,
   notionConnected = false,
-  showHidden,
 }: {
+  // Open updates, plus the hidden ones interleaved by month when the page's
+  // "Show hidden" filter is on — `row.hidden` is what tells them apart, and
+  // `AtomicUpdateCard` renders those dashed and read-only. There's no separate
+  // `showHidden` prop: the presence of a hidden row IS the toggle being on.
   rows: AtomicUpdateRow[];
-  hiddenRows: AtomicUpdateRow[];
   repos: ImportRepo[];
   notionConnected?: boolean;
-  // Whether the hidden section is expanded — driven by the URL/filter bar on
-  // the page, not local state, so it survives navigation like the filters.
-  showHidden: boolean;
 }) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [hiding, startHiding] = useTransition();
@@ -93,25 +52,30 @@ export function AtomicUpdatesList({
     });
   }
 
-  const allSelected = rows.length > 0 && selected.size === rows.length;
+  // Hidden cards are read-only, so they're not selectable and must stay out of
+  // both the select-all set and its "are they all selected?" test — otherwise
+  // select-all could never reach `allSelected`, and every bulk action would
+  // report the hidden ids as failures the server refused.
+  const selectableRows = rows.filter((row) => !row.hidden);
+  const allSelected = selectableRows.length > 0 && selected.size === selectableRows.length;
 
   function toggleAll(checked: boolean) {
-    setSelected(checked ? new Set(rows.map((r) => r.id)) : new Set());
+    setSelected(checked ? new Set(selectableRows.map((r) => r.id)) : new Set());
   }
 
   // Bulk-hide the current selection. The action skips any id that isn't an
   // open, unlinked update (released / already in a draft), so `count` may be
   // less than the number selected — surface that instead of claiming a clean
   // sweep. Clears the selection only when something actually changed.
-  function markSelectedHidden() {
+  function hideSelected() {
     const ids = [...selected];
     startHiding(async () => {
-      const { count } = await bulkMarkAtomicUpdatesHidden(ids);
+      const { count } = await bulkHideAtomicUpdates(ids);
       if (count === 0) {
-        toast.error("Nothing was marked — the selected updates can't be hidden");
+        toast.error("Nothing was hidden — the selected updates can't be hidden");
         return;
       }
-      toast.success(`Marked ${count} ${count === 1 ? "update" : "updates"} as not user-facing`);
+      toast.success(`Hid ${count} ${count === 1 ? "update" : "updates"}`);
       if (count < ids.length) {
         toast.warning(`${ids.length - count} couldn't be hidden and were left as-is`);
       }
@@ -145,7 +109,6 @@ export function AtomicUpdatesList({
   // `rows` already arrives newest-first from `listAtomicUpdates`, so this only
   // adds the headings — it never reorders the cards within a month.
   const monthGroups = groupByMonth(rows, (row) => row.createdAt);
-  const hiddenMonthGroups = groupByMonth(hiddenRows, (row) => row.createdAt);
 
   return (
     <div className="space-y-4">
@@ -153,39 +116,43 @@ export function AtomicUpdatesList({
         <p className="text-sm text-muted-foreground">No atomic updates match these filters.</p>
       ) : (
         <>
-          <div className="flex flex-wrap items-center gap-3">
-            <label className="flex items-center gap-2 text-sm text-muted-foreground">
-              <input
-                type="checkbox"
-                className="size-4 rounded border-input"
-                checked={allSelected}
-                onChange={(e) => toggleAll(e.target.checked)}
-                aria-label="Select all atomic updates"
-              />
-              {selected.size > 0 ? `${selected.size} selected` : "Select all"}
-            </label>
+          {/* Nothing selectable means every row on screen is hidden — the
+              select-all box and the bulk actions would all be no-ops. */}
+          {selectableRows.length > 0 && (
+            <div className="flex flex-wrap items-center gap-3">
+              <label className="flex items-center gap-2 text-sm text-muted-foreground">
+                <input
+                  type="checkbox"
+                  className="size-4 rounded border-input"
+                  checked={allSelected}
+                  onChange={(e) => toggleAll(e.target.checked)}
+                  aria-label="Select all atomic updates"
+                />
+                {selected.size > 0 ? `${selected.size} selected` : "Select all"}
+              </label>
 
-            {selected.size > 0 && (
-              <div className="flex items-center gap-2">
-                <Button variant="outline" size="sm" disabled={busy} onClick={markSelectedHidden}>
-                  {hiding ? "Marking…" : "Mark as not user-facing"}
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={busy}
-                  onClick={() => setConfirmDelete(true)}
-                  className="text-destructive hover:text-destructive"
-                >
-                  Delete
-                </Button>
+              {selected.size > 0 && (
+                <div className="flex items-center gap-2">
+                  <Button variant="outline" size="sm" disabled={busy} onClick={hideSelected}>
+                    {hiding ? "Hiding…" : "Hide"}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={busy}
+                    onClick={() => setConfirmDelete(true)}
+                    className="text-destructive hover:text-destructive"
+                  >
+                    Delete
+                  </Button>
+                </div>
+              )}
+
+              <div className="ml-auto">
+                <DraftReleaseDialog atomicUpdateIds={[...selected]} />
               </div>
-            )}
-
-            <div className="ml-auto">
-              <DraftReleaseDialog atomicUpdateIds={[...selected]} />
             </div>
-          </div>
+          )}
           {monthGroups.map((group) => (
             <section key={group.key} className="space-y-2">
               <h2 className="text-sm font-medium text-muted-foreground">{group.label}</h2>
@@ -196,7 +163,7 @@ export function AtomicUpdatesList({
                       row={row}
                       repos={repos}
                       notionConnected={notionConnected}
-                      selectable
+                      selectable={!row.hidden}
                       selected={selected.has(row.id)}
                       anySelected={selected.size > 0}
                       onSelectChange={onSelectChange}
@@ -207,29 +174,6 @@ export function AtomicUpdatesList({
             </section>
           ))}
         </>
-      )}
-      {showHidden && (
-        <div className="space-y-3 border-t pt-4">
-          {/* Not muted, unlike the month headings nested under it — this is the
-              section title, so it has to outrank them visually. */}
-          <h2 className="text-sm font-semibold">Hidden atomic updates</h2>
-          {hiddenRows.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No hidden atomic updates.</p>
-          ) : (
-            hiddenMonthGroups.map((group) => (
-              <section key={group.key} className="space-y-2">
-                <h3 className="text-sm font-medium text-muted-foreground">{group.label}</h3>
-                <ul className="flex flex-col gap-3">
-                  {group.items.map((row) => (
-                    <li key={row.id}>
-                      <HiddenAtomicUpdateCard row={row} />
-                    </li>
-                  ))}
-                </ul>
-              </section>
-            ))
-          )}
-        </div>
       )}
 
       <Dialog open={confirmDelete} onOpenChange={(next) => !next && !deleting && setConfirmDelete(false)}>

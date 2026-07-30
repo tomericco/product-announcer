@@ -6,7 +6,7 @@ import {
   EmptyStateTitle,
   EmptyStateDescription,
 } from "@/components/ui/empty-state";
-import { listAtomicUpdates, listHiddenAtomicUpdates, type AtomicUpdateListFilters } from "./actions";
+import { listAtomicUpdates, hasCuratableAtomicUpdates, type AtomicUpdateListFilters } from "./actions";
 import { listImportRepos } from "../change-events/actions";
 import { isNotionConnected } from "../change-events/import-actions";
 import { AtomicUpdatesList } from "./atomic-updates-list";
@@ -43,22 +43,25 @@ export default async function AtomicUpdatesPage({
   const showHidden = single(params.showHidden) === "1";
   const hasActiveFilter = category !== undefined || size !== undefined || showHidden;
 
-  // Fetched together: the (open, unclaimed) atomic updates for the cards —
-  // narrowed by the category/size filters — the events selectable as input for
-  // a brand-new one (or as evidence added to an existing one), and the hidden
-  // (non-user-facing) updates for the "Show hidden" section. All tenant-scoped
-  // server-side reads, so no client component here ever needs to import `db`.
-  const [rows, hiddenRows, importRepos, notionConnected] = await Promise.all([
-    listAtomicUpdates({ category, size }),
-    listHiddenAtomicUpdates(),
+  // Fetched together: the unclaimed atomic updates for the cards — open ones
+  // plus, when "Show hidden" is on, the hidden ones inline among them, all
+  // narrowed by the category/size filters — and the events selectable as input
+  // for a brand-new update (or as evidence added to an existing one). All
+  // tenant-scoped server-side reads, so no client component here ever needs to
+  // import `db`.
+  const [rows, anyCuratable, importRepos, notionConnected] = await Promise.all([
+    listAtomicUpdates({ category, size, showHidden }),
+    hasCuratableAtomicUpdates(),
     listImportRepos(),
     isNotionConnected(),
   ]);
 
   // The onboarding empty state is only for a genuinely empty workspace — never
   // when a filter is simply narrowing the view to nothing (that keeps the
-  // header + filter bar so the user can widen it again).
-  if (rows.length === 0 && hiddenRows.length === 0 && !hasActiveFilter) {
+  // header + filter bar so the user can widen it again). `anyCuratable` counts
+  // hidden updates too, so a workspace whose updates are all hidden still gets
+  // the list page, and with it the "Show hidden" toggle that reaches them.
+  if (!anyCuratable && !hasActiveFilter) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-4">
         <EmptyState>
@@ -92,13 +95,7 @@ export default async function AtomicUpdatesPage({
         <NewAtomicUpdateDialog repos={importRepos} notionConnected={notionConnected} />
       </div>
       <AtomicUpdatesFilters category={category ?? "all"} size={size ?? "all"} showHidden={showHidden} />
-      <AtomicUpdatesList
-        rows={rows}
-        hiddenRows={hiddenRows}
-        repos={importRepos}
-        notionConnected={notionConnected}
-        showHidden={showHidden}
-      />
+      <AtomicUpdatesList rows={rows} repos={importRepos} notionConnected={notionConnected} />
     </div>
   );
 }

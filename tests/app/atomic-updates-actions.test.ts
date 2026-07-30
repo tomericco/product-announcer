@@ -33,11 +33,11 @@ vi.mock("../../src/lib/change-events/reassign", () => ({
 import {
   editAtomicUpdate,
   listAtomicUpdates,
-  markAtomicUpdateHidden,
-  bulkMarkAtomicUpdatesHidden,
+  hideAtomicUpdate,
+  bulkHideAtomicUpdates,
   bulkDeleteAtomicUpdates,
   unhideAtomicUpdate,
-  listHiddenAtomicUpdates,
+  hasCuratableAtomicUpdates,
   removeEventFromAtomicUpdate,
   setAtomicUpdateSize,
   setAtomicUpdateCategory,
@@ -177,6 +177,65 @@ describe("atomic update actions", () => {
     ]);
   });
 
+  // Regression: the label chain used to read prTitle for anything that wasn't
+  // a commit, and a Notion task stores its title in taskTitle — so task
+  // evidence came back with label "" and the card rendered a row that showed
+  // nothing but its type chip.
+  it("labels task evidence from taskTitle", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    currentTenantId = tenant.id;
+    const [atomic] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "Task-backed", summary: "S" })
+      .returning();
+
+    await db.insert(changeEvents).values({
+      tenantId: tenant.id,
+      repoId: null,
+      type: "task",
+      provider: "notion",
+      externalId: "notion-page-1",
+      externalUrl: "https://notion.so/page-1",
+      taskTitle: "Ship the CSV exporter",
+      atomicUpdateId: atomic.id,
+    });
+
+    const rows = await listAtomicUpdates();
+    const row = rows.find((r) => r.id === atomic.id);
+    expect(row!.events).toEqual([
+      {
+        id: expect.any(String),
+        type: "task",
+        label: "Ship the CSV exporter",
+        externalUrl: "https://notion.so/page-1",
+      },
+    ]);
+  });
+
+  it("falls back to Untitled rather than an empty evidence label", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    currentTenantId = tenant.id;
+    const [atomic] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "Titleless evidence", summary: "S" })
+      .returning();
+
+    await db.insert(changeEvents).values({
+      tenantId: tenant.id,
+      repoId: null,
+      type: "task",
+      provider: "notion",
+      externalId: "notion-page-untitled",
+      // No taskTitle/prTitle at all — the row must still be visible and
+      // clickable on the card, which an empty label would prevent.
+      atomicUpdateId: atomic.id,
+    });
+
+    const rows = await listAtomicUpdates();
+    const row = rows.find((r) => r.id === atomic.id);
+    expect(row!.events[0].label).toBe("Untitled");
+  });
+
   it("returns a null externalUrl rather than throwing when the change event has none", async () => {
     const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
     currentTenantId = tenant.id;
@@ -308,7 +367,7 @@ describe("atomic update actions", () => {
   });
 });
 
-describe("markAtomicUpdateHidden / unhideAtomicUpdate / listHiddenAtomicUpdates", () => {
+describe("hideAtomicUpdate / unhideAtomicUpdate / showHidden listing", () => {
   afterEach(async () => {
     await db.delete(tenants).where(eq(tenants.name, TENANT));
   });
@@ -321,7 +380,7 @@ describe("markAtomicUpdateHidden / unhideAtomicUpdate / listHiddenAtomicUpdates"
       .values({ tenantId: tenant.id, title: "Noisy", summary: "S" })
       .returning();
 
-    const result = await markAtomicUpdateHidden(atomic.id);
+    const result = await hideAtomicUpdate(atomic.id);
 
     expect(result).toEqual({ ok: true });
     const [after] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, atomic.id));
@@ -337,7 +396,7 @@ describe("markAtomicUpdateHidden / unhideAtomicUpdate / listHiddenAtomicUpdates"
       .values({ tenantId: tenant.id, title: "Shipped", summary: "S", status: "released" })
       .returning();
 
-    const result = await markAtomicUpdateHidden(atomic.id);
+    const result = await hideAtomicUpdate(atomic.id);
 
     expect(result).toEqual({ ok: false });
     const [after] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, atomic.id));
@@ -356,7 +415,7 @@ describe("markAtomicUpdateHidden / unhideAtomicUpdate / listHiddenAtomicUpdates"
       .values({ tenantId: tenant.id, title: "In a draft", summary: "S", releaseId: release.id })
       .returning();
 
-    const result = await markAtomicUpdateHidden(atomic.id);
+    const result = await hideAtomicUpdate(atomic.id);
 
     expect(result).toEqual({ ok: false });
     const [after] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, atomic.id));
@@ -373,7 +432,7 @@ describe("markAtomicUpdateHidden / unhideAtomicUpdate / listHiddenAtomicUpdates"
       .returning();
     currentTenantId = tenant.id;
 
-    const result = await markAtomicUpdateHidden(foreign.id);
+    const result = await hideAtomicUpdate(foreign.id);
 
     expect(result).toEqual({ ok: false });
     const [after] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, foreign.id));
@@ -425,7 +484,7 @@ describe("markAtomicUpdateHidden / unhideAtomicUpdate / listHiddenAtomicUpdates"
     expect(after.status).toBe("hidden");
   });
 
-  it("excludes a hidden atomic update from listAtomicUpdates", async () => {
+  it("excludes a hidden atomic update from listAtomicUpdates by default", async () => {
     const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
     currentTenantId = tenant.id;
     await db.insert(atomicUpdates).values({ tenantId: tenant.id, title: "Open", summary: "S" });
@@ -437,15 +496,40 @@ describe("markAtomicUpdateHidden / unhideAtomicUpdate / listHiddenAtomicUpdates"
     expect(rows.map((r) => r.title)).toEqual(["Open"]);
   });
 
-  it("lists only hidden atomic updates for the tenant, with events populated", async () => {
+  // The inline treatment: showHidden folds hidden updates into the SAME result
+  // set as the open ones (ordered by createdAt, not segregated), each carrying
+  // the `hidden` flag the card reads to render itself dashed and read-only.
+  it("returns hidden updates inline with the open ones under showHidden, flagged and with events", async () => {
     const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
     currentTenantId = tenant.id;
     const repo = await seedRepo(tenant.id);
+    // Explicit createdAt: these are inserted in the same statement batch, and
+    // the assertion below is about the interleaved ORDER, which needs the two
+    // rows to be genuinely distinguishable by the sort key.
     const [hidden] = await db
       .insert(atomicUpdates)
-      .values({ tenantId: tenant.id, title: "Hidden one", summary: "S", status: "hidden" })
+      .values({
+        tenantId: tenant.id,
+        title: "Hidden one",
+        summary: "S",
+        status: "hidden",
+        createdAt: new Date("2026-03-02T00:00:00Z"),
+      })
       .returning();
-    await db.insert(atomicUpdates).values({ tenantId: tenant.id, title: "Open one", summary: "S" });
+    await db.insert(atomicUpdates).values({
+      tenantId: tenant.id,
+      title: "Open newer",
+      summary: "S",
+      createdAt: new Date("2026-03-03T00:00:00Z"),
+    });
+    await db.insert(atomicUpdates).values({
+      tenantId: tenant.id,
+      title: "Open older",
+      summary: "S",
+      createdAt: new Date("2026-03-01T00:00:00Z"),
+    });
+    // A released update stays out either way — showHidden widens the status
+    // filter to open+hidden, nothing more.
     await db
       .insert(atomicUpdates)
       .values({ tenantId: tenant.id, title: "Shipped one", summary: "S", status: "released" });
@@ -461,10 +545,27 @@ describe("markAtomicUpdateHidden / unhideAtomicUpdate / listHiddenAtomicUpdates"
       atomicUpdateId: hidden.id,
     });
 
-    const rows = await listHiddenAtomicUpdates();
+    const rows = await listAtomicUpdates({ showHidden: true });
 
-    expect(rows.map((r) => r.title)).toEqual(["Hidden one"]);
-    expect(rows[0].events.map((e) => e.label)).toEqual(["hidden change"]);
+    expect(rows.map((r) => r.title)).toEqual(["Open newer", "Hidden one", "Open older"]);
+    expect(rows.map((r) => r.hidden)).toEqual([false, true, false]);
+    const hiddenRow = rows.find((r) => r.title === "Hidden one");
+    expect(hiddenRow!.events.map((e) => e.label)).toEqual(["hidden change"]);
+  });
+
+  it("applies the category filter to hidden updates too", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    currentTenantId = tenant.id;
+    await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "Hidden fix", summary: "S", status: "hidden", category: "fix" });
+    await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "Hidden new", summary: "S", status: "hidden", category: "new" });
+
+    const rows = await listAtomicUpdates({ showHidden: true, category: "fix" });
+
+    expect(rows.map((r) => r.title)).toEqual(["Hidden fix"]);
   });
 
   it("never leaks another tenant's hidden atomic updates", async () => {
@@ -475,7 +576,7 @@ describe("markAtomicUpdateHidden / unhideAtomicUpdate / listHiddenAtomicUpdates"
       .insert(atomicUpdates)
       .values({ tenantId: other.id, title: "Foreign hidden", summary: "S", status: "hidden" });
 
-    const rows = await listHiddenAtomicUpdates();
+    const rows = await listAtomicUpdates({ showHidden: true });
 
     expect(rows.map((r) => r.title)).not.toContain("Foreign hidden");
   });
@@ -518,7 +619,60 @@ describe("listAtomicUpdates filters", () => {
   });
 });
 
-describe("bulkMarkAtomicUpdatesHidden", () => {
+// Guards the page's onboarding empty state. The hidden case is the reason this
+// exists: `listAtomicUpdates()` alone can't distinguish "brand-new workspace"
+// from "everything here is hidden", and showing the onboarding state for the
+// latter would hide the filter bar that reaches those updates.
+describe("hasCuratableAtomicUpdates", () => {
+  afterEach(async () => {
+    await db.delete(tenants).where(eq(tenants.name, TENANT));
+  });
+
+  it("is false for a workspace with no atomic updates", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    currentTenantId = tenant.id;
+
+    expect(await hasCuratableAtomicUpdates()).toBe(false);
+  });
+
+  it("is true when the only atomic update is hidden", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    currentTenantId = tenant.id;
+    await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "Hidden only", summary: "S", status: "hidden" });
+
+    expect(await hasCuratableAtomicUpdates()).toBe(true);
+  });
+
+  it("is false when every atomic update is released or claimed by a draft", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    currentTenantId = tenant.id;
+    const [release] = await db
+      .insert(releases)
+      .values({ tenantId: tenant.id, title: "Draft", body: "B" })
+      .returning();
+    await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "Shipped", summary: "S", status: "released" });
+    await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "Claimed", summary: "S", releaseId: release.id });
+
+    expect(await hasCuratableAtomicUpdates()).toBe(false);
+  });
+
+  it("is false for another tenant's atomic updates", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const [other] = await db.insert(tenants).values({ name: TENANT }).returning();
+    currentTenantId = tenant.id;
+    await db.insert(atomicUpdates).values({ tenantId: other.id, title: "Foreign", summary: "S" });
+
+    expect(await hasCuratableAtomicUpdates()).toBe(false);
+  });
+});
+
+describe("bulkHideAtomicUpdates", () => {
   afterEach(async () => {
     await db.delete(tenants).where(eq(tenants.name, TENANT));
   });
@@ -535,7 +689,7 @@ describe("bulkMarkAtomicUpdatesHidden", () => {
       .values({ tenantId: tenant.id, title: "B", summary: "S" })
       .returning();
 
-    const result = await bulkMarkAtomicUpdatesHidden([a.id, b.id]);
+    const result = await bulkHideAtomicUpdates([a.id, b.id]);
 
     expect(result).toEqual({ count: 2 });
     const rows = await db.select().from(atomicUpdates).where(eq(atomicUpdates.tenantId, tenant.id));
@@ -569,7 +723,7 @@ describe("bulkMarkAtomicUpdatesHidden", () => {
       .values({ tenantId: other.id, title: "Foreign", summary: "S" })
       .returning();
 
-    const result = await bulkMarkAtomicUpdatesHidden([open.id, released.id, linked.id, foreign.id]);
+    const result = await bulkHideAtomicUpdates([open.id, released.id, linked.id, foreign.id]);
 
     expect(result).toEqual({ count: 1 });
     const byId = async (id: string) =>
@@ -581,7 +735,7 @@ describe("bulkMarkAtomicUpdatesHidden", () => {
   });
 
   it("returns count 0 for an empty id list without touching the DB", async () => {
-    const result = await bulkMarkAtomicUpdatesHidden([]);
+    const result = await bulkHideAtomicUpdates([]);
     expect(result).toEqual({ count: 0 });
   });
 });

@@ -10,12 +10,33 @@ import { reassignChangeEvent, type ReassignResult } from "@/lib/change-events/re
 export type AtomicUpdateEvent = {
   id: string;
   type: "commit" | "pull_request" | "task";
-  // A PR's title, a commit's first message line, or (until a dedicated task
-  // pipeline exists) the same prTitle field — mirrors the fallback already
-  // used in regenerate-atomic-summary.ts.
+  // A commit's first message line, a PR's title, or a task's title. Never
+  // empty — the label is the only thing identifying a piece of evidence on the
+  // card now that the type chip is gone from view mode.
   label: string;
   externalUrl: string | null;
 };
+
+/**
+ * The display label for a piece of evidence, mirroring the title fallback in
+ * `listChangeEvents` (prTitle → commit first line → taskTitle → "Untitled").
+ *
+ * A Notion task keeps its title in `taskTitle`, NOT `prTitle` (see
+ * ingest-notion-task.ts), so a chain that stops at `prTitle` renders task
+ * evidence as an empty string — which used to leave nothing but a "Task" chip
+ * on the row. `"Untitled"` closes the last gap: an empty label would now be an
+ * invisible, unclickable evidence row.
+ */
+function eventLabel(event: {
+  type: "commit" | "pull_request" | "task";
+  prTitle: string | null;
+  commitMessage: string | null;
+  taskTitle: string | null;
+}): string {
+  const firstLine = event.commitMessage?.split("\n")[0]?.trim();
+  if (event.type === "commit") return firstLine || event.prTitle || "Untitled";
+  return event.prTitle || event.taskTitle || firstLine || "Untitled";
+}
 
 export type AtomicUpdateRow = {
   id: string;
@@ -28,11 +49,20 @@ export type AtomicUpdateRow = {
   updatedAt: Date;
   // Drives the month grouping in the list; stable, unlike updatedAt.
   createdAt: Date;
+  // `status = 'hidden'`. Only ever true when the caller asked for hidden rows;
+  // the list renders these inline with the open ones, set apart by a dashed
+  // outline and offering nothing but "Unhide" — same treatment hidden change
+  // events get on /change-events.
+  hidden: boolean;
 };
 
 export type AtomicUpdateListFilters = {
   category?: "new" | "improvement" | "fix" | "announcement";
   size?: "s" | "m" | "l" | "xl";
+  // Include `hidden` updates alongside the open ones, interleaved by createdAt
+  // rather than segregated into their own section (mirrors `showHidden` in
+  // `listChangeEvents`). The category/size filters apply to them too.
+  showHidden?: boolean;
 };
 
 export async function listAtomicUpdates(
@@ -50,15 +80,20 @@ export async function listAtomicUpdates(
       summaryEditedAt: atomicUpdates.summaryEditedAt,
       updatedAt: atomicUpdates.updatedAt,
       createdAt: atomicUpdates.createdAt,
+      status: atomicUpdates.status,
     })
     .from(atomicUpdates)
     .where(
       and(
         eq(atomicUpdates.tenantId, session.user.tenantId),
-        eq(atomicUpdates.status, "open"),
+        filters.showHidden
+          ? inArray(atomicUpdates.status, ["open", "hidden"])
+          : eq(atomicUpdates.status, "open"),
         // Compose candidate set: an atomic update already linked to a draft
         // release is spoken for and shows up on that draft instead — see
-        // getOpenAtomicUpdates in release-claim.ts for the same rule.
+        // getOpenAtomicUpdates in release-claim.ts for the same rule. A no-op
+        // for the hidden rows (only an unlinked update can be hidden), so it
+        // costs nothing to leave it applying to both.
         isNull(atomicUpdates.releaseId),
         // Optional list filters; `and` drops the undefined ones.
         filters.category ? eq(atomicUpdates.category, filters.category) : undefined,
@@ -91,6 +126,7 @@ export async function listAtomicUpdates(
       type: changeEvents.type,
       prTitle: changeEvents.prTitle,
       commitMessage: changeEvents.commitMessage,
+      taskTitle: changeEvents.taskTitle,
       externalUrl: changeEvents.externalUrl,
     })
     .from(changeEvents)
@@ -104,26 +140,55 @@ export async function listAtomicUpdates(
     // TS-nullability guard, not a reachable branch: inArray(atomicUpdateId, atomicIds)
     // can never match a null atomicUpdateId.
     if (!event.atomicUpdateId) continue;
-    const label = event.type === "commit" ? (event.commitMessage ?? "").split("\n")[0] : (event.prTitle ?? "");
     const list = eventsByAtomicId.get(event.atomicUpdateId) ?? [];
-    list.push({ id: event.id, type: event.type, label, externalUrl: event.externalUrl });
+    list.push({ id: event.id, type: event.type, label: eventLabel(event), externalUrl: event.externalUrl });
     eventsByAtomicId.set(event.atomicUpdateId, list);
   }
 
-  return atomics.map((atomic) => ({
+  // `status` is projected down to the `hidden` flag rather than passed through:
+  // it's the only distinction the list UI draws, and the row type is a client
+  // component's prop — no reason to ship a wider enum than that.
+  return atomics.map(({ status, ...atomic }) => ({
     ...atomic,
+    hidden: status === "hidden",
     events: eventsByAtomicId.get(atomic.id) ?? [],
   }));
 }
 
 /**
- * Marks an OPEN, unlinked atomic update as non-user-facing ("hidden"). This
+ * Whether the tenant has any atomic update the curation list could show —
+ * open or hidden, unlinked. Backs the page's onboarding empty state, which
+ * must NOT appear for a workspace whose only updates are hidden: that would
+ * swallow the filter bar and leave them unreachable.
+ */
+export async function hasCuratableAtomicUpdates(): Promise<boolean> {
+  const session = await requireSession();
+
+  const [any] = await db
+    .select({ id: atomicUpdates.id })
+    .from(atomicUpdates)
+    .where(
+      and(
+        eq(atomicUpdates.tenantId, session.user.tenantId),
+        inArray(atomicUpdates.status, ["open", "hidden"]),
+        isNull(atomicUpdates.releaseId)
+      )
+    )
+    .limit(1);
+
+  return any !== undefined;
+}
+
+/**
+ * Hides an OPEN, unlinked atomic update (the user-facing verb is "hide"; the
+ * stored state is `status = 'hidden'`, which also means non-user-facing). This
  * is a third status alongside `open`/`released`, not a boolean flag — every
  * candidate/list/resolver query in the codebase already filters
  * `status = 'open'` (see `loadOpenAtomicUpdates` in apply-resolution.ts,
  * `getOpenAtomicUpdates` in release-claim.ts, `listAtomicUpdates` above,
  * etc.), so a `hidden` update falls out of all of them automatically: it
- * disappears from the curation list, can't be claimed into a release, and —
+ * drops out of the curation list (unless "Show hidden" asks for it back, and
+ * then only as a read-only card), can't be claimed into a release, and —
  * load-bearing — the resolver can no longer attach a follow-up commit to it,
  * so later evidence for that feature spins up a brand-new visible atomic
  * update instead of silently reappearing on this one.
@@ -134,7 +199,7 @@ export async function listAtomicUpdates(
  * and `listAtomicUpdates` only ever shows unlinked-open updates in the first
  * place, so the UI never offers this action on a linked one anyway.
  */
-export async function markAtomicUpdateHidden(id: string): Promise<{ ok: boolean }> {
+export async function hideAtomicUpdate(id: string): Promise<{ ok: boolean }> {
   const session = await requireSession();
 
   const rows = await db
@@ -155,14 +220,14 @@ export async function markAtomicUpdateHidden(id: string): Promise<{ ok: boolean 
 }
 
 /**
- * Bulk form of `markAtomicUpdateHidden`: hides every OPEN, unlinked atomic
+ * Bulk form of `hideAtomicUpdate`: hides every OPEN, unlinked atomic
  * update in `ids` in one statement. The WHERE guard is identical
  * (`status = 'open' AND releaseId IS NULL`, tenant-scoped), so ids that are
  * released, already linked to a draft, or belong to another tenant are
  * silently skipped rather than erroring — `count` reports how many actually
  * flipped, letting the caller distinguish a full from a partial hide.
  */
-export async function bulkMarkAtomicUpdatesHidden(ids: string[]): Promise<{ count: number }> {
+export async function bulkHideAtomicUpdates(ids: string[]): Promise<{ count: number }> {
   const session = await requireSession();
   if (ids.length === 0) return { count: 0 };
 
@@ -185,7 +250,7 @@ export async function bulkMarkAtomicUpdatesHidden(ids: string[]): Promise<{ coun
 
 /**
  * Permanently deletes open, unlinked atomic updates (a hard DB row delete,
- * unlike `bulkMarkAtomicUpdatesHidden`, which only flips them to `hidden`).
+ * unlike `bulkHideAtomicUpdates`, which only flips them to `hidden`).
  * The WHERE guard matches the hide action's — `status = 'open' AND releaseId
  * IS NULL`, tenant-scoped — so a released update or one already in a draft is
  * skipped rather than erroring; `count` reports how many rows were removed.
@@ -218,7 +283,7 @@ export async function bulkDeleteAtomicUpdates(ids: string[]): Promise<{ count: n
 }
 
 /**
- * Reverses `markAtomicUpdateHidden`: flips a `hidden` atomic update back to
+ * Reverses `hideAtomicUpdate`: flips a `hidden` atomic update back to
  * `open`, re-entering it into every candidate set (list, compose, resolver)
  * that filters on that status.
  */
@@ -239,72 +304,6 @@ export async function unhideAtomicUpdate(id: string): Promise<{ ok: boolean }> {
 
   revalidatePath("/atomic-updates");
   return { ok: rows.length > 0 };
-}
-
-/**
- * The tenant's hidden atomic updates, mirroring `listAtomicUpdates`'s shape
- * and batched event join exactly, but filtered to `status = 'hidden'`. No
- * `releaseId IS NULL` filter here — a hidden update is never linked to a
- * release (only an unlinked open one can be hidden in the first place), so
- * adding that condition would be a no-op at best and misleading at worst.
- */
-export async function listHiddenAtomicUpdates(): Promise<AtomicUpdateRow[]> {
-  const session = await requireSession();
-
-  const atomics = await db
-    .select({
-      id: atomicUpdates.id,
-      title: atomicUpdates.title,
-      summary: atomicUpdates.summary,
-      category: atomicUpdates.category,
-      size: atomicUpdates.size,
-      summaryEditedAt: atomicUpdates.summaryEditedAt,
-      updatedAt: atomicUpdates.updatedAt,
-      createdAt: atomicUpdates.createdAt,
-    })
-    .from(atomicUpdates)
-    .where(and(eq(atomicUpdates.tenantId, session.user.tenantId), eq(atomicUpdates.status, "hidden")))
-    // Ordered by createdAt, matching `listAtomicUpdates` — the hidden section
-    // groups by created-in month, and sorting rows by updatedAt (which hiding
-    // and un-hiding both bump) would order them by an unrelated key inside
-    // those headings. id breaks ties for a deterministic order.
-    .orderBy(desc(atomicUpdates.createdAt), asc(atomicUpdates.id));
-
-  if (atomics.length === 0) return [];
-
-  const atomicIds = atomics.map((a) => a.id);
-
-  // Same batched join as listAtomicUpdates: one query for every event behind
-  // every listed atomic update, tenant-scoped independently of the atomicIds
-  // filter above.
-  const events = await db
-    .select({
-      id: changeEvents.id,
-      atomicUpdateId: changeEvents.atomicUpdateId,
-      type: changeEvents.type,
-      prTitle: changeEvents.prTitle,
-      commitMessage: changeEvents.commitMessage,
-      externalUrl: changeEvents.externalUrl,
-    })
-    .from(changeEvents)
-    .where(
-      and(eq(changeEvents.tenantId, session.user.tenantId), inArray(changeEvents.atomicUpdateId, atomicIds))
-    )
-    .orderBy(asc(changeEvents.createdAt), asc(changeEvents.id));
-
-  const eventsByAtomicId = new Map<string, AtomicUpdateEvent[]>();
-  for (const event of events) {
-    if (!event.atomicUpdateId) continue;
-    const label = event.type === "commit" ? (event.commitMessage ?? "").split("\n")[0] : (event.prTitle ?? "");
-    const list = eventsByAtomicId.get(event.atomicUpdateId) ?? [];
-    list.push({ id: event.id, type: event.type, label, externalUrl: event.externalUrl });
-    eventsByAtomicId.set(event.atomicUpdateId, list);
-  }
-
-  return atomics.map((atomic) => ({
-    ...atomic,
-    events: eventsByAtomicId.get(atomic.id) ?? [],
-  }));
 }
 
 export async function editAtomicUpdate(

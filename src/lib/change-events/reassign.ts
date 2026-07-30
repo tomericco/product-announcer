@@ -197,7 +197,7 @@ export async function reassignChangeEvent(
     // cleanup and the updatedAt bump when the source is `hidden` (a `released`
     // source is already rejected above). Editing a hidden update's evidence is
     // unreachable through the UI (the add-picker excludes hidden-AU events and
-    // hidden cards offer only Un-hide), so this only matters to a stale client
+    // hidden cards offer only Unhide), so this only matters to a stale client
     // hitting the exported action directly: the worst case is an empty hidden
     // atomic update left behind — out of the pipeline and harmless, not a leak.
     const leavesSource =
