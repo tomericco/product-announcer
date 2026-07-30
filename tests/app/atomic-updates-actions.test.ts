@@ -177,6 +177,65 @@ describe("atomic update actions", () => {
     ]);
   });
 
+  // Regression: the label chain used to read prTitle for anything that wasn't
+  // a commit, and a Notion task stores its title in taskTitle — so task
+  // evidence came back with label "" and the card rendered a row that showed
+  // nothing but its type chip.
+  it("labels task evidence from taskTitle", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    currentTenantId = tenant.id;
+    const [atomic] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "Task-backed", summary: "S" })
+      .returning();
+
+    await db.insert(changeEvents).values({
+      tenantId: tenant.id,
+      repoId: null,
+      type: "task",
+      provider: "notion",
+      externalId: "notion-page-1",
+      externalUrl: "https://notion.so/page-1",
+      taskTitle: "Ship the CSV exporter",
+      atomicUpdateId: atomic.id,
+    });
+
+    const rows = await listAtomicUpdates();
+    const row = rows.find((r) => r.id === atomic.id);
+    expect(row!.events).toEqual([
+      {
+        id: expect.any(String),
+        type: "task",
+        label: "Ship the CSV exporter",
+        externalUrl: "https://notion.so/page-1",
+      },
+    ]);
+  });
+
+  it("falls back to Untitled rather than an empty evidence label", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    currentTenantId = tenant.id;
+    const [atomic] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "Titleless evidence", summary: "S" })
+      .returning();
+
+    await db.insert(changeEvents).values({
+      tenantId: tenant.id,
+      repoId: null,
+      type: "task",
+      provider: "notion",
+      externalId: "notion-page-untitled",
+      // No taskTitle/prTitle at all — the row must still be visible and
+      // clickable on the card, which an empty label would prevent.
+      atomicUpdateId: atomic.id,
+    });
+
+    const rows = await listAtomicUpdates();
+    const row = rows.find((r) => r.id === atomic.id);
+    expect(row!.events[0].label).toBe("Untitled");
+  });
+
   it("returns a null externalUrl rather than throwing when the change event has none", async () => {
     const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
     currentTenantId = tenant.id;

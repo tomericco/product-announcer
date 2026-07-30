@@ -22,6 +22,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  PreviewCard,
+  PreviewCardContent,
+  PreviewCardTrigger,
+} from "@/components/ui/preview-card";
 import { cn } from "@/lib/utils";
 import {
   editAtomicUpdate,
@@ -55,25 +60,85 @@ const EVENT_TYPE_LABEL: Record<AtomicUpdateEvent["type"], string> = {
   task: "Task",
 };
 
-function EventRow({ event }: { event: AtomicUpdateEvent }) {
+/**
+ * One piece of evidence behind an atomic update. The type chip is edit-mode
+ * only: in view mode the reader is scanning what the update covers, and a
+ * column of Commit/PR/Task pills competes with the titles for attention
+ * without telling them anything the linked title doesn't. In the evidence
+ * editor it earns its place — that's where you're picking rows to remove, and
+ * where the same title can arrive from either a PR or a task.
+ */
+function EventRow({ event, showType = true }: { event: AtomicUpdateEvent; showType?: boolean }) {
   return (
     <div className="flex items-center gap-2 text-sm">
-      <Badge variant="secondary" className="shrink-0">
-        {EVENT_TYPE_LABEL[event.type]}
-      </Badge>
+      {showType && (
+        <Badge variant="secondary" className="shrink-0">
+          {EVENT_TYPE_LABEL[event.type]}
+        </Badge>
+      )}
+      {/* min-w-0: a flex item's min-width defaults to its content, so without
+          this a long title overflows the row instead of ellipsizing — which
+          `truncate` alone can't prevent, and which shows up as soon as the
+          container is shrink-to-fit (the evidence popover). */}
       {event.externalUrl ? (
         <a
           href={event.externalUrl}
           target="_blank"
           rel="noopener noreferrer"
-          className="truncate hover:underline"
+          className="min-w-0 truncate hover:underline"
         >
           {event.label}
         </a>
       ) : (
-        <span className="truncate text-muted-foreground">{event.label}</span>
+        <span className="min-w-0 truncate text-muted-foreground">{event.label}</span>
       )}
     </div>
+  );
+}
+
+/**
+ * The "N changes" line in a card's footer, which reveals the evidence behind
+ * the update on hover instead of listing it in the card body: a card with a
+ * dozen commits used to bury its own title and summary, and the list is
+ * reference material — wanted on demand, not while scanning the page.
+ *
+ * A preview card (not a tooltip) because the content is a list of links the
+ * pointer needs to be able to travel into, and it opens on keyboard focus too,
+ * so the evidence isn't mouse-only. With no evidence there's nothing to
+ * preview, so the count renders as plain text — no empty popup to open.
+ */
+function EvidenceCount({ events }: { events: AtomicUpdateEvent[] }) {
+  const label = `${events.length} ${events.length === 1 ? "change" : "changes"}`;
+
+  if (events.length === 0) return <span>{label}</span>;
+
+  return (
+    <PreviewCard>
+      <PreviewCardTrigger
+        // Not a link — `render` swaps the default <a> for a button so it's
+        // focusable (and so hovering it doesn't promise navigation).
+        render={<button type="button" />}
+        delay={150}
+        className="cursor-pointer underline decoration-dotted decoration-from-font underline-offset-2 outline-hidden hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring data-popup-open:text-foreground"
+      >
+        {label}
+      </PreviewCardTrigger>
+      {/* Hugs the titles it holds, so two short commit messages don't get a
+          half-empty panel — but never grows past 28rem, or the viewport if
+          that's narrower (one `max-w` utility, since twMerge would otherwise
+          drop the wrapper's `--available-width` cap in favour of this one). */}
+      <PreviewCardContent className="max-w-[min(28rem,var(--available-width))]">
+        <span className="text-xs font-medium text-muted-foreground">Change events</span>
+        {/* Caps the popup's height rather than the list's length: every piece
+            of evidence stays reachable, by scrolling, instead of a silent
+            "and N more". */}
+        <div className="flex max-h-64 flex-col gap-1.5 overflow-y-auto">
+          {events.map((event) => (
+            <EventRow key={event.id} event={event} showType={false} />
+          ))}
+        </div>
+      </PreviewCardContent>
+    </PreviewCard>
   );
 }
 
@@ -316,17 +381,8 @@ export function AtomicUpdateCard({
             <SizeBadge size={row.size} />
           </div>
           <p className="text-sm text-muted-foreground">{row.summary}</p>
-          {row.events.length > 0 && (
-            <div className="flex flex-col gap-1.5 border-t pt-2">
-              {row.events.map((event) => (
-                <EventRow key={event.id} event={event} />
-              ))}
-            </div>
-          )}
           <div className="flex items-center gap-3 text-xs text-muted-foreground">
-            <span>
-              {row.events.length} {row.events.length === 1 ? "change" : "changes"}
-            </span>
+            <EvidenceCount events={row.events} />
             {/* Signals to the user why this one stopped auto-updating. */}
             {row.summaryEditedAt && <span>Edited</span>}
             {/* A hidden update is a curation dead-end — the resolver won't

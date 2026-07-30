@@ -10,12 +10,33 @@ import { reassignChangeEvent, type ReassignResult } from "@/lib/change-events/re
 export type AtomicUpdateEvent = {
   id: string;
   type: "commit" | "pull_request" | "task";
-  // A PR's title, a commit's first message line, or (until a dedicated task
-  // pipeline exists) the same prTitle field — mirrors the fallback already
-  // used in regenerate-atomic-summary.ts.
+  // A commit's first message line, a PR's title, or a task's title. Never
+  // empty — the label is the only thing identifying a piece of evidence on the
+  // card now that the type chip is gone from view mode.
   label: string;
   externalUrl: string | null;
 };
+
+/**
+ * The display label for a piece of evidence, mirroring the title fallback in
+ * `listChangeEvents` (prTitle → commit first line → taskTitle → "Untitled").
+ *
+ * A Notion task keeps its title in `taskTitle`, NOT `prTitle` (see
+ * ingest-notion-task.ts), so a chain that stops at `prTitle` renders task
+ * evidence as an empty string — which used to leave nothing but a "Task" chip
+ * on the row. `"Untitled"` closes the last gap: an empty label would now be an
+ * invisible, unclickable evidence row.
+ */
+function eventLabel(event: {
+  type: "commit" | "pull_request" | "task";
+  prTitle: string | null;
+  commitMessage: string | null;
+  taskTitle: string | null;
+}): string {
+  const firstLine = event.commitMessage?.split("\n")[0]?.trim();
+  if (event.type === "commit") return firstLine || event.prTitle || "Untitled";
+  return event.prTitle || event.taskTitle || firstLine || "Untitled";
+}
 
 export type AtomicUpdateRow = {
   id: string;
@@ -105,6 +126,7 @@ export async function listAtomicUpdates(
       type: changeEvents.type,
       prTitle: changeEvents.prTitle,
       commitMessage: changeEvents.commitMessage,
+      taskTitle: changeEvents.taskTitle,
       externalUrl: changeEvents.externalUrl,
     })
     .from(changeEvents)
@@ -118,9 +140,8 @@ export async function listAtomicUpdates(
     // TS-nullability guard, not a reachable branch: inArray(atomicUpdateId, atomicIds)
     // can never match a null atomicUpdateId.
     if (!event.atomicUpdateId) continue;
-    const label = event.type === "commit" ? (event.commitMessage ?? "").split("\n")[0] : (event.prTitle ?? "");
     const list = eventsByAtomicId.get(event.atomicUpdateId) ?? [];
-    list.push({ id: event.id, type: event.type, label, externalUrl: event.externalUrl });
+    list.push({ id: event.id, type: event.type, label: eventLabel(event), externalUrl: event.externalUrl });
     eventsByAtomicId.set(event.atomicUpdateId, list);
   }
 
