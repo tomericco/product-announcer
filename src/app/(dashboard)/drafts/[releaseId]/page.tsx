@@ -15,6 +15,7 @@ import { DraftTitleField } from "./draft-title-field";
 import { DraftEditorProvider, SourceToggleButton } from "./draft-editor-context";
 import { AgentEditProvider } from "./agent-edit-context";
 import { AgentEditDialog } from "./agent-edit-dialog";
+import { ExtractDialog } from "./extract-dialog";
 import { AskAiButton } from "./ask-ai-button";
 import { SaveChangesButton, RejectButton } from "./draft-submit-buttons";
 import { PublishDialog } from "./publish-dialog";
@@ -139,6 +140,7 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
           )}
 
           <AgentEditDialog releaseId={update.id} />
+          <ExtractDialog releaseId={update.id} />
         </AgentEditProvider>
       </DraftEditorProvider>
     </div>

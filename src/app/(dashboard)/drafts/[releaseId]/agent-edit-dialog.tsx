@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Sparkles, Loader2, Check, Circle } from "lucide-react";
+import { Sparkles, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -15,17 +15,15 @@ import {
   DialogClose,
 } from "@/components/ui/dialog";
 import { EDIT_STEPS, type DraftProgressEvent, type DraftStepKey } from "@/lib/scheduling/draft-progress";
+import {
+  ProgressChecklist,
+  initialStepStatuses,
+  type StepStatus,
+} from "@/components/draft-progress-checklist";
+import { readDraftProgress } from "@/lib/scheduling/read-draft-progress";
 import { useUnsavedChanges } from "../../unsaved-changes";
 import { useAgentEdit, type EditorOps } from "./agent-edit-context";
 import { requestAgentEdit, saveDraftBody } from "./actions";
-
-type StepStatus = "pending" | "active" | "done";
-
-function initialEditStatuses(): Record<DraftStepKey, StepStatus> {
-  const statuses = {} as Record<DraftStepKey, StepStatus>;
-  for (const step of EDIT_STEPS) statuses[step.key] = "pending";
-  return statuses;
-}
 
 /**
  * Shared "Ask for changes" modal for both entry points.
@@ -43,14 +41,19 @@ export function AgentEditDialog({ releaseId }: { releaseId: string }) {
   const { notifySaved } = useUnsavedChanges();
   const [instruction, setInstruction] = useState("");
   const [busy, setBusy] = useState(false);
-  const [statuses, setStatuses] = useState<Record<DraftStepKey, StepStatus>>(initialEditStatuses);
+  const [statuses, setStatuses] = useState<Record<DraftStepKey, StepStatus>>(() =>
+    initialStepStatuses(EDIT_STEPS)
+  );
   const [detail, setDetail] = useState("");
 
-  const open = state !== null;
+  // Only this modal's own modes. The provider's state is shared with the
+  // extract flow, which has its own dialog — without this gate both would open
+  // at once and Ask AI's submit would run a whole-body rewrite on an extract.
+  const open = state?.mode === "selection" || state?.mode === "whole";
 
   function reset() {
     setInstruction("");
-    setStatuses(initialEditStatuses());
+    setStatuses(initialStepStatuses(EDIT_STEPS));
     setDetail("");
     close();
   }
@@ -59,7 +62,7 @@ export function AgentEditDialog({ releaseId }: { releaseId: string }) {
   // route, drive the step checklist, then drop the reviewed body (which the
   // route already persisted) into the editor.
   async function runWholeEdit(editorOps: EditorOps, fullBody: string, trimmed: string) {
-    setStatuses(initialEditStatuses());
+    setStatuses(initialStepStatuses(EDIT_STEPS));
     setDetail("");
 
     const res = await fetch("/api/drafts/edit", {
@@ -85,18 +88,7 @@ export function AgentEditDialog({ releaseId }: { releaseId: string }) {
       }
     };
 
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
-      for (const line of lines) if (line.trim()) handle(JSON.parse(line) as DraftProgressEvent);
-    }
-    if (buffer.trim()) handle(JSON.parse(buffer) as DraftProgressEvent);
+    await readDraftProgress(res.body, handle);
 
     if (errored) throw new Error(errored);
     if (finalBody == null) throw new Error("The edit finished without a result.");
@@ -165,28 +157,7 @@ export function AgentEditDialog({ releaseId }: { releaseId: string }) {
         </DialogHeader>
 
         {busy && isWhole ? (
-          <ol className="space-y-2 py-2">
-            {EDIT_STEPS.map((step) => {
-              const st = statuses[step.key];
-              return (
-                <li key={step.key} className="flex items-center gap-2 text-sm">
-                  {st === "done" ? (
-                    <Check className="size-4 text-emerald-600" />
-                  ) : st === "active" ? (
-                    <Loader2 className="size-4 animate-spin text-foreground" />
-                  ) : (
-                    <Circle className="size-4 text-muted-foreground/40" />
-                  )}
-                  <span className={st === "pending" ? "text-muted-foreground" : "text-foreground"}>
-                    {step.label}
-                  </span>
-                  {st === "active" && detail && (
-                    <span className="text-xs text-muted-foreground">· {detail}</span>
-                  )}
-                </li>
-              );
-            })}
-          </ol>
+          <ProgressChecklist steps={EDIT_STEPS} statuses={statuses} detail={detail} className="py-2" />
         ) : busy ? (
           <div className="flex items-center gap-3 py-8 text-sm text-muted-foreground">
             <Loader2 className="size-4 animate-spin" /> Rewriting the selected text…

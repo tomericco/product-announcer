@@ -8,7 +8,8 @@ import {
   useCellValue,
   type MDXEditorMethods,
 } from "@mdxeditor/editor";
-import { Sparkles } from "lucide-react";
+import { Sparkles, Split } from "lucide-react";
+import { toast } from "sonner";
 import {
   $getSelection,
   $isRangeSelection,
@@ -115,6 +116,44 @@ function AgentEditBridge({ editorRef }: { editorRef: React.RefObject<MDXEditorMe
           }
           editorRef.current?.insertMarkdown(markdown);
         }),
+      removeSelection: () =>
+        new Promise<string>((resolve) => {
+          const editor = activeEditorRef.current;
+          const saved = savedSelection.current;
+          // Nothing captured to remove: resolve with the unchanged body so the
+          // caller's guard (blank remaining body) can't be fooled into thinking
+          // a deletion happened.
+          if (!editor || !saved) {
+            resolve(editorRef.current?.getMarkdown() ?? "");
+            return;
+          }
+
+          // Consume the capture now, before the update below (which can throw
+          // synchronously and reject this promise). A failed extract's restore
+          // rebuilds the whole tree via root.clear() + insertMarkdown, which
+          // invalidates every node key this selection points at — so a retry
+          // in the same dialog session must NOT reuse it. Clearing here,
+          // unconditionally and ahead of the update, means a second call sees
+          // `saved` as null and takes the early-return branch above instead of
+          // restoring a selection over keys that no longer resolve.
+          savedSelection.current = null;
+
+          // Same one-shot listener as applyEdit: Lexical defers the commit that
+          // refreshes MDXEditor's markdown cell to a microtask, so reading
+          // synchronously after the update returns the PRE-deletion body.
+          const unregister = editor.registerUpdateListener(() => {
+            unregister();
+            resolve(editorRef.current?.getMarkdown() ?? "");
+          });
+
+          editor.update(() => {
+            $setSelection(saved.clone());
+            // Read the selection back rather than calling removeText() on the
+            // clone: removeText operates on the editor's ACTIVE selection.
+            const selection = $getSelection();
+            if ($isRangeSelection(selection)) selection.removeText();
+          });
+        }),
       getMarkdown: () => editorRef.current?.getMarkdown() ?? "",
     };
     registerOps(ops);
@@ -135,9 +174,30 @@ function AskAiSelectionButton() {
       title="Ask for changes to the selection"
       aria-label="Ask for changes to the selection"
       onClick={() => openSelectionEdit()}
-      className="ml-1 flex items-center gap-1 rounded border-l border-border/60 pl-2 pr-1 text-muted-foreground transition-colors hover:text-foreground"
+      className="ml-1 flex items-center gap-1 rounded border-l border-border/60 py-0.5 pl-2 pr-1.5 text-muted-foreground transition-colors hover:text-foreground"
     >
-      <Sparkles className="size-3.5" />
+      <Sparkles className="size-4" />
+    </button>
+  );
+}
+
+/** "Extract as a separate update" button in the selection popover — splits the
+ * highlighted text into a draft of its own. The surface's
+ * onMouseDown={preserveSelection} keeps the selection alive through the click,
+ * so captureSelection (inside openExtract) still sees it. */
+function ExtractSelectionButton() {
+  const { openExtract } = useAgentEdit();
+  return (
+    <button
+      type="button"
+      title="Extract as a separate update"
+      aria-label="Extract as a separate update"
+      onClick={() => {
+        if (!openExtract()) toast.error("Highlight some text to extract first.");
+      }}
+      className="flex items-center gap-1 rounded px-1.5 py-0.5 text-muted-foreground transition-colors hover:text-foreground"
+    >
+      <Split className="size-4" />
     </button>
   );
 }
@@ -165,7 +225,12 @@ export default function MdxEditor({
           <AgentEditBridge editorRef={editorRef} />
         </>
       }
-      selectionExtras={<AskAiSelectionButton />}
+      selectionExtras={
+        <>
+          <AskAiSelectionButton />
+          <ExtractSelectionButton />
+        </>
+      }
     />
   );
 }

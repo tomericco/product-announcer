@@ -214,3 +214,44 @@ export function composeWholeEditPrompt(args: {
   const prompt = `Apply this instruction to the product update below and return the full revised body. Format as Markdown (short paragraphs, and bullet lists where helpful).\n\nInstruction: ${args.instruction}\n\nCurrent body:\n${currentBody}`;
   return { system, prompt };
 }
+
+/**
+ * Prompt for EXTRACTING a highlighted passage out of a larger update into an
+ * update of its own. Unlike `composeScopedEditPrompt` (which revises an excerpt
+ * in place, returning only the excerpt) the result here is a whole new draft —
+ * title and body — that must stand alone with no back-reference to the update
+ * it was lifted from.
+ */
+export function composeExtractPrompt(args: {
+  excerpt: string;
+  instruction: string;
+  brandProfile: BrandProfileRow;
+  personas: ResolvedPersona[];
+  examples: ExampleRow[];
+}): { system: string; prompt: string } {
+  const base = buildSystemPrompt(args.brandProfile, args.personas, args.examples);
+  const system =
+    `${base}\n\nYou are rewriting a passage that was lifted out of a larger product update so that it ` +
+    `stands on its own. Return a complete, self-contained update with its own title — it must read as if ` +
+    `it had always been a separate announcement, with no reference to the update it came from and no ` +
+    `words like "also", "additionally", or "as mentioned above" that only made sense in the original. ` +
+    `Stay grounded strictly in the passage: keep every change it describes, and add no feature, benefit, ` +
+    `metric, or detail that is not already there.`;
+
+  const excerpt =
+    args.excerpt.length > DEFAULT_MAX_PROMPT_CHARS
+      ? `${args.excerpt.slice(0, DEFAULT_MAX_PROMPT_CHARS)}\n…(truncated)`
+      : args.excerpt;
+
+  const sections = [`Passage to rewrite as its own update:\n${excerpt}`];
+  const instruction = args.instruction.trim();
+  if (instruction.length > 0) {
+    sections.push(`Additional instruction from the editor:\n${instruction}`);
+  }
+
+  const prompt =
+    `Rewrite the passage below as a standalone product update. Format the body as Markdown ` +
+    `(short paragraphs, and bullet lists where helpful).\n\n${sections.join("\n\n")}`;
+
+  return { system, prompt };
+}

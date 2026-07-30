@@ -1,12 +1,10 @@
 import { eq } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
-import { scheduleConfigs, systemPersonas, systemUpdateExamples } from "@/db/schema";
+import { scheduleConfigs } from "@/db/schema";
 import { generateReleaseDraft } from "@/lib/ai/generation";
 import type { AtomicUpdateForPrompt } from "@/lib/ai/compose-prompt";
 import { getOpenAtomicUpdates, claimReleaseFromAtomicUpdates } from "@/lib/change-events/release-claim";
-import { getOrCreateBrandProfile } from "@/lib/workspace/brand-profile";
-import { resolvePersonaRefs, systemPersonaKeys } from "@/lib/workspace/personas";
-import { selectExamples } from "@/lib/ai/select-examples";
+import { prepareGenerationContext } from "@/lib/ai/generation-context";
 import { shouldTriggerRun, advanceNextScheduledAt, type Cadence } from "./scheduler-decision";
 import { reviewAndReconcile } from "@/lib/ai/review-draft";
 import { validateDraftLinks } from "@/lib/ai/validate-links";
@@ -31,15 +29,11 @@ export async function runBatchForWorkspace(
   if (items.length === 0) return false;
 
   onProgress?.({ type: "step", key: "preparing", status: "start" });
-  const brandProfile = await getOrCreateBrandProfile(tenantId, database);
-  const catalog = await database.select().from(systemPersonas);
-  const personas = resolvePersonaRefs(brandProfile.userPersonas, catalog);
-  const allExamples = await database.select().from(systemUpdateExamples);
-  const examples = selectExamples(allExamples, {
-    industry: brandProfile.industry,
-    personaKeys: systemPersonaKeys(brandProfile.userPersonas),
-    categories: atomicUpdateCategories(items),
-  });
+  const { brandProfile, personas, examples } = await prepareGenerationContext(
+    tenantId,
+    database,
+    atomicUpdateCategories(items)
+  );
   onProgress?.({ type: "step", key: "preparing", status: "done" });
 
   onProgress?.({ type: "step", key: "generating", status: "start" });

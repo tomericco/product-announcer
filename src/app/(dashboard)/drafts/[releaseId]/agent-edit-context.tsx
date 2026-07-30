@@ -13,6 +13,12 @@ import {
 export type AgentEditMode = "selection" | "whole";
 
 /**
+ * Which modal is open. `applyEdit` still takes only `AgentEditMode` — extract
+ * never routes through it — so the two types stay separate on purpose.
+ */
+export type DialogMode = AgentEditMode | "extract";
+
+/**
  * Imperative editor operations the modal needs, registered by a bridge that
  * lives inside the MDXEditor realm (only there can it reach the Lexical editor
  * and the editor's imperative ref).
@@ -29,11 +35,18 @@ export type EditorOps = {
    * microtask, so callers must await this rather than read back immediately.
    */
   applyEdit: (mode: AgentEditMode, markdown: string) => Promise<string>;
+  /**
+   * Deletes the captured selection from the document and resolves with the
+   * editor's authoritative full Markdown AFTER Lexical commits. Same deferred-
+   * commit caveat as `applyEdit`: a synchronous `getMarkdown()` would return
+   * the pre-deletion body.
+   */
+  removeSelection: () => Promise<string>;
   /** The current full editor body as Markdown. */
   getMarkdown: () => string;
 };
 
-type AgentEditState = { mode: AgentEditMode; excerpt: string };
+type AgentEditState = { mode: DialogMode; excerpt: string };
 
 type AgentEditContextValue = {
   ops: MutableRefObject<EditorOps | null>;
@@ -41,6 +54,7 @@ type AgentEditContextValue = {
   state: AgentEditState | null;
   openSelectionEdit: () => void;
   openWholeEdit: () => void;
+  openExtract: () => boolean;
   close: () => void;
 };
 
@@ -67,11 +81,24 @@ export function AgentEditProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const openWholeEdit = useCallback(() => setState({ mode: "whole", excerpt: "" }), []);
+
+  /**
+   * Opens the extract modal, snapshotting the selection first (the modal steals
+   * focus). Returns false — and opens nothing — when the selection is empty or
+   * whitespace, so the caller can say why.
+   */
+  const openExtract = useCallback(() => {
+    const excerpt = ops.current?.captureSelection() ?? "";
+    if (excerpt.trim().length === 0) return false;
+    setState({ mode: "extract", excerpt });
+    return true;
+  }, []);
+
   const close = useCallback(() => setState(null), []);
 
   return (
     <AgentEditContext.Provider
-      value={{ ops, registerOps, state, openSelectionEdit, openWholeEdit, close }}
+      value={{ ops, registerOps, state, openSelectionEdit, openWholeEdit, openExtract, close }}
     >
       {children}
     </AgentEditContext.Provider>
