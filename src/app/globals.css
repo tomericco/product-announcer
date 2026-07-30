@@ -181,6 +181,30 @@
   }
 }
 
+/* A 1px dashed outline with a tunable dash pattern, for rows that are present
+   but set aside (a hidden change event). `border-style: dashed` can't be used:
+   the browser picks the dash length and gap from the border width and CSS
+   exposes no way to loosen them. So the outline is an SVG rect stroke with an
+   explicit stroke-dasharray, drawn as a background image — which also follows
+   the element's rounded corners, unlike the repeating-linear-gradient trick.
+
+   Pair it with `border-transparent`: the element keeps its 1px border for
+   layout, and `background-origin: border-box` maps the SVG onto the border box
+   so the 2px stroke, centred on that edge and half-clipped, lands exactly
+   where the border would have drawn. `rx` must track `--radius` (rounded-lg).
+
+   The grey is a literal, not a theme token: --border and --muted-foreground
+   are both warm (hue ~92), and this outline reads as neutral-and-inert on
+   purpose. Hence the light/dark pair, since a data URI can't carry a var(). */
+.dashed-outline {
+  background-origin: border-box;
+  background-repeat: no-repeat;
+  background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' width='100%25' height='100%25'%3e%3crect width='100%25' height='100%25' rx='8' ry='8' fill='none' stroke='%23a3a3a3' stroke-width='2' stroke-dasharray='7 6'/%3e%3c/svg%3e");
+}
+.dark .dashed-outline {
+  background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' width='100%25' height='100%25'%3e%3crect width='100%25' height='100%25' rx='8' ry='8' fill='none' stroke='%23767676' stroke-width='2' stroke-dasharray='7 6'/%3e%3c/svg%3e");
+}
+
 .mdx-content p {
   line-height: 1.75;
   margin: 0.75rem 0;
