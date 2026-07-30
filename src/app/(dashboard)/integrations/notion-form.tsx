@@ -10,6 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { NotionDatabaseForm } from "./notion-database-form";
 import { NotionCompletionForm } from "./notion-completion-form";
 import { NotionDisconnectButton } from "./notion-disconnect-button";
+import { ConnectedIndicator } from "./connected-indicator";
 
 function describeError(error: unknown): string {
   if (error instanceof NotionApiError) {
@@ -42,6 +43,7 @@ export async function NotionForm({ connectError }: { connectError?: string | nul
     <Card>
       <CardHeader className="flex flex-row items-center justify-between gap-2">
         <CardTitle>Notion</CardTitle>
+        {connection?.status === "active" && <ConnectedIndicator />}
         {connection && connection.status !== "active" && (
           <Badge variant={connection.status === "needs_reauth" ? "destructive" : "outline"}>
             {connection.status === "needs_reauth" ? "Needs reconnect" : "Setup incomplete"}
