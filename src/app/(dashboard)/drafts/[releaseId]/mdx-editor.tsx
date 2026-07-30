@@ -128,6 +128,16 @@ function AgentEditBridge({ editorRef }: { editorRef: React.RefObject<MDXEditorMe
             return;
           }
 
+          // Consume the capture now, before the update below (which can throw
+          // synchronously and reject this promise). A failed extract's restore
+          // rebuilds the whole tree via root.clear() + insertMarkdown, which
+          // invalidates every node key this selection points at — so a retry
+          // in the same dialog session must NOT reuse it. Clearing here,
+          // unconditionally and ahead of the update, means a second call sees
+          // `saved` as null and takes the early-return branch above instead of
+          // restoring a selection over keys that no longer resolve.
+          savedSelection.current = null;
+
           // Same one-shot listener as applyEdit: Lexical defers the commit that
           // refreshes MDXEditor's markdown cell to a microtask, so reading
           // synchronously after the update returns the PRE-deletion body.

@@ -117,6 +117,17 @@ export function ExtractDialog({ releaseId }: { releaseId: string }) {
       let removed = false;
       try {
         const remainingBody = await editorOps.removeSelection();
+        // An identical body means removeSelection had nothing valid to
+        // consume — most likely a stale selection left over from an earlier
+        // failed attempt in this same dialog session (see the comment on
+        // savedSelection.current in AgentEditBridge). Nothing was deleted, so
+        // `removed` stays false: there is nothing here for the catch to
+        // restore, and re-running applyEdit would just be a pointless rebuild.
+        if (remainingBody === originalBody) {
+          throw new Error(
+            "Nothing was removed — re-highlight the text in the editor and try again."
+          );
+        }
         removed = true;
         if (remainingBody.trim().length === 0) {
           throw new Error("You can't extract the entire update — leave some text behind.");
