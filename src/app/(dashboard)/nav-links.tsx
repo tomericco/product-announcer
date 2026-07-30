@@ -2,17 +2,25 @@
 
 import { GuardedLink } from "./unsaved-changes";
 import { usePathname } from "next/navigation";
+import {
+  Activity,
+  FilePen,
+  History,
+  Palette,
+  Plug,
+  ToyBrick,
+} from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 const NAV = [
-  { href: "/change-events", label: "Change events" },
-  { href: "/atomic-updates", label: "Atomic updates" },
-  { href: "/drafts", label: "Drafts" },
-  { href: "/history", label: "Release history" },
-  { href: "/integrations", label: "Integrations" },
-  { href: "/brand-guidelines", label: "Brand guidelines" },
+  { href: "/change-events", label: "Change events", icon: Activity },
+  { href: "/atomic-updates", label: "Atomic updates", icon: ToyBrick },
+  { href: "/drafts", label: "Drafts", icon: FilePen },
+  { href: "/history", label: "Release history", icon: History },
+  { href: "/integrations", label: "Integrations", icon: Plug },
+  { href: "/brand-guidelines", label: "Brand guidelines", icon: Palette },
 ];
 
 export function NavLinks({ draftCount }: { draftCount: number }) {
@@ -24,6 +32,7 @@ export function NavLinks({ draftCount }: { draftCount: number }) {
         // Highlight the item for its own route and any nested route under it
         // (e.g. /drafts/[updateId] keeps "Drafts" active).
         const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
+        const Icon = item.icon;
         return (
           <Button
             key={item.href}
@@ -39,6 +48,9 @@ export function NavLinks({ draftCount }: { draftCount: number }) {
             aria-current={active ? "page" : undefined}
             render={<GuardedLink href={item.href} />}
           >
+            {/* Muted when idle so the label leads; the active item's accent
+                colour is inherited instead. */}
+            <Icon className={cn(!active && "text-muted-foreground")} />
             {item.label}
             {item.href === "/drafts" && draftCount > 0 && (
               <Badge variant="secondary" className="ml-auto">
