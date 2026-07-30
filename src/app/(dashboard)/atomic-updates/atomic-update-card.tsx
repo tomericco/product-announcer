@@ -22,9 +22,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { cn } from "@/lib/utils";
 import {
   editAtomicUpdate,
-  markAtomicUpdateHidden,
+  hideAtomicUpdate,
+  unhideAtomicUpdate,
   removeEventFromAtomicUpdate,
   setAtomicUpdateCategory,
   setAtomicUpdateSize,
@@ -166,17 +168,35 @@ export function AtomicUpdateCard({
 
   function hide() {
     startHideTransition(async () => {
-      const result = await markAtomicUpdateHidden(row.id);
+      const result = await hideAtomicUpdate(row.id);
       if (result.ok) {
-        toast.success("Marked as not user-facing");
+        toast.success("Atomic update hidden");
       } else {
         toast.error("Could not hide this atomic update");
       }
     });
   }
 
+  function unhide() {
+    startHideTransition(async () => {
+      const result = await unhideAtomicUpdate(row.id);
+      if (result.ok) {
+        toast.success("Atomic update restored");
+      } else {
+        toast.error("Could not unhide this atomic update");
+      }
+    });
+  }
+
   return (
-    <div className="group rounded-lg border p-4">
+    <div
+      className={cn(
+        "group rounded-lg border p-4",
+        // Same dashed grey treatment hidden change events get on
+        // /change-events, so "set aside" reads identically on both pages.
+        row.hidden && "dashed-outline border-transparent opacity-85"
+      )}
+    >
       {editing ? (
         <div className="flex flex-col gap-3">
           <Input value={title} onChange={(e) => setTitle(e.target.value)} aria-label="Title" />
@@ -309,12 +329,23 @@ export function AtomicUpdateCard({
             </span>
             {/* Signals to the user why this one stopped auto-updating. */}
             {row.summaryEditedAt && <span>Edited</span>}
-            <Button variant="ghost" size="sm" onClick={() => setEditing(true)}>
-              Edit
-            </Button>
-            <Button variant="ghost" size="sm" disabled={hidePending} onClick={hide}>
-              {hidePending ? "Hiding…" : "Mark not user-facing"}
-            </Button>
+            {/* A hidden update is a curation dead-end — the resolver won't
+                cluster onto it and it can't be drafted — so editing it or its
+                evidence would be busywork. Unhide is the only way forward. */}
+            {row.hidden ? (
+              <Button variant="ghost" size="sm" disabled={hidePending} onClick={unhide}>
+                {hidePending ? "Unhiding…" : "Unhide"}
+              </Button>
+            ) : (
+              <>
+                <Button variant="ghost" size="sm" onClick={() => setEditing(true)}>
+                  Edit
+                </Button>
+                <Button variant="ghost" size="sm" disabled={hidePending} onClick={hide}>
+                  {hidePending ? "Hiding…" : "Hide"}
+                </Button>
+              </>
+            )}
           </div>
         </div>
       )}
