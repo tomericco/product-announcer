@@ -56,11 +56,25 @@ export function ExtractDialog({ releaseId }: { releaseId: string }) {
   }
 
   async function runExtract(remainingBody: string, excerpt: string, trimmed: string) {
-    const res = await fetch("/api/drafts/extract", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ releaseId, excerpt, remainingBody, instruction: trimmed }),
-    });
+    // A prior failed attempt may have left steps marked active/done and a
+    // stale detail string — re-arm before this run emits anything of its own.
+    setStatuses(initialStepStatuses(EDIT_STEPS));
+    setDetail("");
+
+    // Wrapped narrowly: only a rejected fetch (network down, server
+    // unreachable) needs normalizing to the friendly message below. A stream
+    // the server deliberately sends with an `error` event must keep its own
+    // message, so the read loop stays outside this try.
+    let res: Response;
+    try {
+      res = await fetch("/api/drafts/extract", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ releaseId, excerpt, remainingBody, instruction: trimmed }),
+      });
+    } catch {
+      throw new Error("Couldn't start the extraction. Please try again.");
+    }
     if (!res.ok || !res.body) {
       throw new Error("Couldn't start the extraction. Please try again.");
     }
@@ -118,9 +132,25 @@ export function ExtractDialog({ releaseId }: { releaseId: string }) {
         });
         reset();
       } catch (error) {
-        // Put the passage back — nothing else holds it at this point.
-        if (removed) await editorOps.applyEdit("whole", originalBody);
+        // Tell the user what happened before attempting the restore — if the
+        // restore itself throws below, this message must already be visible,
+        // not lost underneath a second toast.
         toast.error(error instanceof Error ? error.message : "Something went wrong");
+        // Put the passage back — nothing else holds it at this point. Its own
+        // try/catch: a failed restore must not escape silently, since that
+        // would drop the user back at the form with the passage simply gone.
+        if (removed) {
+          try {
+            await editorOps.applyEdit("whole", originalBody);
+          } catch {
+            // The blockquote above the textarea (still showing `state.excerpt`,
+            // since this catch never calls reset()) is the last remaining copy
+            // — say so plainly.
+            toast.error(
+              "Couldn't restore the removed text automatically. It's still shown above — copy it before closing this dialog."
+            );
+          }
+        }
       } finally {
         setBusy(false);
       }
