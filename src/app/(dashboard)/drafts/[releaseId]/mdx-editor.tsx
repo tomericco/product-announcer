@@ -174,9 +174,9 @@ function AskAiSelectionButton() {
       title="Ask for changes to the selection"
       aria-label="Ask for changes to the selection"
       onClick={() => openSelectionEdit()}
-      className="ml-1 flex items-center gap-1 rounded border-l border-border/60 pl-2 pr-1 text-muted-foreground transition-colors hover:text-foreground"
+      className="ml-1 flex items-center gap-1 rounded border-l border-border/60 py-0.5 pl-2 pr-1.5 text-muted-foreground transition-colors hover:text-foreground"
     >
-      <Sparkles className="size-3.5" />
+      <Sparkles className="size-4" />
     </button>
   );
 }
@@ -195,9 +195,9 @@ function ExtractSelectionButton() {
       onClick={() => {
         if (!openExtract()) toast.error("Highlight some text to extract first.");
       }}
-      className="flex items-center gap-1 rounded pr-1 text-muted-foreground transition-colors hover:text-foreground"
+      className="flex items-center gap-1 rounded px-1.5 py-0.5 text-muted-foreground transition-colors hover:text-foreground"
     >
-      <Split className="size-3.5" />
+      <Split className="size-4" />
     </button>
   );
 }
