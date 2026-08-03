@@ -2,8 +2,11 @@ import { db } from "@/db";
 import { systemPersonas } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { getOrCreateCompanyProfile } from "@/lib/workspace/company-profile";
+import { listCompetitors } from "@/lib/workspace/competitors";
 import { saveGuidelines } from "./actions";
 import { BrandStyleImport } from "./brand-style-import";
+import { CompanyContextForm } from "./company-context-form";
+import { CompetitorsEditor } from "./competitors-editor";
 import { IndustrySelect } from "./industry-select";
 import { PersonasEditor } from "./personas-editor";
 import { GuidelinesEditor } from "./guidelines-editor";
@@ -11,9 +14,10 @@ import { ToastForm } from "../settings/toast-form";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
-export default async function BrandGuidelinesPage() {
+export default async function CompanyPage() {
   const session = await requireSession();
   const brandProfile = await getOrCreateCompanyProfile(session.user.tenantId);
+  const competitors = await listCompetitors(session.user.tenantId);
   const personaCatalog = await db
     .select({
       key: systemPersonas.key,
@@ -23,35 +27,72 @@ export default async function BrandGuidelinesPage() {
     .from(systemPersonas)
     .orderBy(systemPersonas.sortOrder);
 
+  // Keys the context form on every server-derived field it shows, for the same
+  // reason IndustrySelect and GuidelinesEditor below are keyed on their own
+  // server value: a successful "Draft from my website" overwrites these
+  // columns server-side and calls router.refresh(), but CompanyContextForm
+  // seeds its inputs from `defaultValue` once and never looks again -- without
+  // this key, a fresh draft would silently not appear until a hard reload.
+  const contextKey = [
+    brandProfile.websiteUrl,
+    brandProfile.oneLiner,
+    brandProfile.category,
+    brandProfile.positioning,
+    brandProfile.topics.join(","),
+  ].join("|");
+
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="font-heading text-3xl leading-[1.15] tracking-[0.015em]">Brand guidelines</h1>
+        <h1 className="font-heading text-3xl leading-[1.15] tracking-[0.015em]">Company</h1>
         <p className="text-sm text-muted-foreground">
-          How your product updates should be written. Every draft is generated and reviewed against this.
+          Who you are, what you&apos;re up against, and how your product updates should be written. Every draft is
+          generated and reviewed against this.
         </p>
       </div>
 
+      {/* Each card owns its own save: industry and persona add/remove write on
+          click, a custom persona has a Save inside it, competitors add/remove
+          write immediately, and the context and guidelines cards have their
+          own forms below. There is deliberately no page-level Save. */}
       <Card>
         <CardHeader>
-          <CardTitle>Derive from your updates page</CardTitle>
+          <CardTitle>Company context</CardTitle>
+          <CardDescription>
+            Who you are, what makes you different, and the subjects you cover. Used to score how relevant incoming
+            signals are.
+          </CardDescription>
         </CardHeader>
         <CardContent>
-          <BrandStyleImport defaultUrl={brandProfile.updatesPageUrl ?? ""} />
+          <CompanyContextForm
+            key={contextKey}
+            defaultWebsiteUrl={brandProfile.websiteUrl ?? ""}
+            defaultOneLiner={brandProfile.oneLiner ?? ""}
+            defaultCategory={brandProfile.category ?? ""}
+            defaultPositioning={brandProfile.positioning ?? ""}
+            defaultTopics={brandProfile.topics.join(", ")}
+          />
         </CardContent>
       </Card>
 
-      {/* Each card owns its own save: industry and persona add/remove write on
-          click, a custom persona has a Save inside it, and the guidelines
-          document has the form below. There is deliberately no page-level Save. */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Competitors</CardTitle>
+          <CardDescription>Who you&apos;re up against. The bootstrap above proposes some; add more by hand.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <CompetitorsEditor competitors={competitors} />
+        </CardContent>
+      </Card>
+
       <Card>
         <CardHeader>
           <CardTitle>Industry</CardTitle>
-          <CardDescription>Grounds updates in the language of your market.</CardDescription>
+          <CardDescription>Grounds updates in the language of your market — selects the writing exemplars generation draws on.</CardDescription>
         </CardHeader>
         <CardContent>
           {/* Keyed on the server value. A successful import (BrandStyleImport,
-              above) overwrites `industry` server-side and calls router.refresh(),
+              below) overwrites `industry` server-side and calls router.refresh(),
               which re-renders this page with the new brandProfile. IndustrySelect
               owns its selection as internal state, so without a key React would
               keep the existing instance and the new defaultValue would be
@@ -68,6 +109,15 @@ export default async function BrandGuidelinesPage() {
         </CardHeader>
         <CardContent>
           <PersonasEditor personas={brandProfile.userPersonas} catalog={personaCatalog} />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Derive from your updates page</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <BrandStyleImport defaultUrl={brandProfile.updatesPageUrl ?? ""} />
         </CardContent>
       </Card>
 

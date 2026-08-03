@@ -18,13 +18,13 @@ import {
 
 /**
  * Re-derives the brand guidelines and industry from a public updates/changelog
- * page — the same extraction offered during onboarding, exposed on the Brand
- * guidelines page. It OVERWRITES the current guidelines and industry, so it
+ * page — the same extraction offered during onboarding, exposed on the Company
+ * page. It OVERWRITES the current guidelines and industry, so it
  * confirms first (they're usually hand-tuned). The server revalidates
- * /brand-guidelines on success; router.refresh() re-renders the page's server
+ * /company on success; router.refresh() re-renders the page's server
  * component with the newly derived values. Those values only reach the form
  * below because the page keys GuidelinesEditor and IndustrySelect on the
- * server value (see brand-guidelines/page.tsx) — without that key, React
+ * server value (see company/page.tsx) — without that key, React
  * would keep the existing client instances and the refresh would silently do
  * nothing to what's on screen.
  */
