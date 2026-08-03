@@ -27,6 +27,22 @@ export default async function BrandStepPage({
   const showReview = Boolean(profile.websiteUrl);
   const proposedCompetitors = showReview ? await listCompetitors(session.user.tenantId) : [];
 
+  // Keys the review form on the same tuple of drafted values company/page.tsx's
+  // CompanyContextForm is keyed on (see the comment there for the full
+  // rationale): bootstrapOnboardingCompany writes new columns and redirects
+  // back to THIS SAME route on every re-draft — a soft navigation, so without
+  // this key React reconciles the same <form> in place and its uncontrolled
+  // `defaultValue` inputs keep showing the previous draft even though `profile`
+  // above (and the database) now holds the new one. saveOnboardingCompany would
+  // then persist what's on screen: the stale draft, not the fresh one.
+  const draftKey = [
+    profile.websiteUrl,
+    profile.oneLiner,
+    profile.category,
+    profile.positioning,
+    profile.topics.join(","),
+  ].join("|");
+
   return (
     <div className="space-y-8">
       <StepHeader
@@ -55,16 +71,35 @@ export default async function BrandStepPage({
               like the workspace-name step. A blocked site is an EXPECTED soft
               outcome with two offered exits (try another URL, or skip), and dressing
               a routine result in an alarming red banner trains people to ignore red.
-              Don't "fix" this into destructive to match the line above. */}
-          {bootstrap === "failed" && (
+              Don't "fix" this into destructive to match the line above.
+
+              Two different failure kinds share this slot, and they get different
+              advice: `bootstrap` carries bootstrapCompanyContext's actual `reason`
+              (a PageError like "blocked", or "analysis-empty"), not a flat "failed".
+              A PageError means the site itself didn't come through, so "try another
+              URL" is right. "analysis-empty" means the site read FINE but the model
+              derived nothing usable from it — a different URL won't help there, so
+              it gets its own message instead of the misleading one below. */}
+          {bootstrap === "analysis-empty" ? (
             <p className="text-muted-foreground text-sm">
-              We couldn&apos;t read that site. Try another URL, or skip and fill in your company details under
-              Company.
+              We read your site, but couldn&apos;t draft anything useful from it. Fill in your company details under
+              Company instead, or skip for now.
             </p>
+          ) : (
+            bootstrap && (
+              <p className="text-muted-foreground text-sm">
+                We couldn&apos;t read that site. Try another URL, or skip and fill in your company details under
+                Company.
+              </p>
+            )
           )}
         </div>
         <SubmitButton className="w-full" pendingLabel="Reading your site…">
-          Continue
+          {/* Distinct from the review form's own "Continue" below -- that one
+              saves and advances; this one re-runs a paid crawl and overwrites
+              the draft in place without advancing. Identical labels would make
+              two very different actions look like the same one. */}
+          {showReview ? "Re-draft from this URL" : "Draft my profile"}
         </SubmitButton>
         <div className="flex justify-center">
           <SecondaryFormAction action={skipBrandStep} className="text-muted-foreground">
@@ -90,7 +125,7 @@ export default async function BrandStepPage({
               Check this over before continuing — it&apos;s what every future update gets scored against.
             </p>
           </div>
-          <form action={saveOnboardingCompany} className="space-y-4">
+          <form key={draftKey} action={saveOnboardingCompany} className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="oneLiner">One-liner</Label>
               <Input

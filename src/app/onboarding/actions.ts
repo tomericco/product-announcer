@@ -70,6 +70,16 @@ export async function skipScheduleStep() {
   redirect("/atomic-updates");
 }
 
+/**
+ * Derives brand voice from a public updates page and stores it. A tertiary
+ * action on step 2 (below the profile review that bootstrapOnboardingCompany /
+ * saveOnboardingCompany drives) — reads a different page for a different
+ * purpose, so it neither replaces nor is replaced by that flow. It deliberately
+ * does NOT advance the step: saveOnboardingCompany is the step's only exit,
+ * because advancing here would skip past the review and strand any unsaved
+ * corrections — and guardOnboardingStep(2) would then bounce a user who
+ * navigates back to fix them.
+ */
 export async function importBrandStyle(formData: FormData) {
   const session = await requireSession();
   // Re-gated after the wizard rewrite dropped it. guardOnboardingStep(2) protects
@@ -77,20 +87,19 @@ export async function importBrandStyle(formData: FormData) {
   // directly — and importBrandStyleForTenant fetches a live page and runs an LLM
   // derivation, so an ungated replay burns real money on a tenant who is already
   // done. The write itself is idempotent; the cost is not.
-  if (await isOnboardingComplete(session.user.tenantId)) redirect("/atomic-updates");
+  if (await isOnboardingComplete(session.user.tenantId)) return redirect("/atomic-updates");
 
   const url = (formData.get("updatesPageUrl") as string)?.trim();
   // An empty URL is a hard validation error, so it gets the same visible
   // treatment as an empty workspace name rather than a silent bounce.
-  if (!url) redirect("/onboarding/brand?error=empty");
+  if (!url) return redirect("/onboarding/brand?error=empty");
 
   const result = await importBrandStyleForTenant(session.user.tenantId, url);
-  // A failed scrape keeps the user on step 2 so they can try another URL or skip;
-  // only a success advances.
-  if (!result.ok) redirect("/onboarding/brand?brandImport=failed");
+  // A failed scrape keeps the user on step 2 so they can try another URL; only
+  // a success returns there too, now with the imported style in place.
+  if (!result.ok) return redirect("/onboarding/brand?brandImport=failed");
 
-  await advanceOnboardingStep(session.user.tenantId, 3);
-  redirect("/onboarding/connect");
+  return redirect("/onboarding/brand");
 }
 
 export async function bootstrapOnboardingCompany(formData: FormData) {
@@ -108,7 +117,11 @@ export async function bootstrapOnboardingCompany(formData: FormData) {
   const result = await bootstrapCompanyContext(session.user.tenantId, url);
   // A failed crawl keeps the user on step 2 so they can try another URL or skip;
   // only a success advances. A company whose site blocks us must never be trapped.
-  if (!result.ok) return redirect("/onboarding/brand?bootstrap=failed");
+  // The reason travels in the query string (rather than a flat "failed") so the
+  // page can tell "we couldn't read your site" (a PageError) apart from "we read
+  // it fine but the model derived nothing" (analysis-empty) — those need
+  // different advice, and "try another URL" is actively wrong for the latter.
+  if (!result.ok) return redirect(`/onboarding/brand?bootstrap=${result.reason ?? "failed"}`);
 
   // Deliberately does NOT advance the step or leave the page. The profile is
   // the ranking function every later agent scores signals against, so a wrong
