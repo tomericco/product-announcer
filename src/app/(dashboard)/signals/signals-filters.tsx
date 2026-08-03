@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -35,10 +35,80 @@ type FilterState = {
   includeStale: boolean;
 };
 
+const COMMIT_DEBOUNCE_MS = 500;
+
+/**
+ * Buffers a free-text filter locally and commits it (via `onCommit`, which
+ * pushes a new URL and re-renders the Server Component page) on a debounce,
+ * or immediately when the caller calls `commitNow` (blur/Enter).
+ *
+ * Why this exists: `minScore` and the date inputs used to be controlled
+ * straight from the server-rendered `value` prop with every keystroke pushing
+ * a new route immediately. Typing "0.55" fired four navigations; when the
+ * first one landed with `minScore=0`, the page re-rendered with that prop and
+ * React reset the DOM value mid-type, discarding the rest of what was typed.
+ * Buffering locally means the input always reflects what the user is
+ * actually typing, and only the settled value is pushed.
+ *
+ * `value` still wins over local state when it changes for a reason other
+ * than our own last commit — "Clear filters", browser back/forward, or
+ * another filter control's push replacing the whole query string. `lastCommitted`
+ * is what distinguishes "the server echoed back what we just sent" (ignore)
+ * from "something else changed this filter out from under us" (resync).
+ */
+function useDebouncedFilterValue(value: string, onCommit: (next: string) => void, delay = COMMIT_DEBOUNCE_MS) {
+  const [local, setLocal] = useState(value);
+  const lastCommitted = useRef(value);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (value !== lastCommitted.current) {
+      setLocal(value);
+      lastCommitted.current = value;
+    }
+  }, [value]);
+
+  useEffect(() => {
+    return () => {
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    };
+  }, []);
+
+  function handleChange(next: string) {
+    setLocal(next);
+    if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    timeoutRef.current = setTimeout(() => {
+      timeoutRef.current = null;
+      lastCommitted.current = next;
+      onCommit(next);
+    }, delay);
+  }
+
+  function commitNow() {
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
+    if (local !== lastCommitted.current) {
+      lastCommitted.current = local;
+      onCommit(local);
+    }
+  }
+
+  return { local, handleChange, commitNow };
+}
+
 // Mirrors `DateFilter` in change-events/import-dialog.tsx: native
 // <input type="date"> ignores `placeholder`, so this renders as a text input
 // (showing the placeholder) while empty and unfocused, and swaps to a real
 // date picker on focus or once a date is set.
+//
+// Debounced like `minScore` (see `useDebouncedFilterValue`) rather than
+// pushed on every change: a date picker's `onChange` fires per keystroke while
+// typing digits directly into the text-mode field too, and the same
+// value-reset-mid-type bug applies. Also commits immediately on blur, so
+// picking a date from the native calendar (which fires one `onChange` then
+// blurs) doesn't wait out the debounce.
 function DateFilter({
   value,
   onChange,
@@ -49,16 +119,23 @@ function DateFilter({
   placeholder: string;
 }) {
   const [focused, setFocused] = useState(false);
+  const { local, handleChange, commitNow } = useDebouncedFilterValue(value, onChange);
   return (
     <Input
-      type={value || focused ? "date" : "text"}
+      type={local || focused ? "date" : "text"}
       className="w-36"
       placeholder={placeholder}
       aria-label={placeholder}
-      value={value}
+      value={local}
       onFocus={() => setFocused(true)}
-      onBlur={() => setFocused(false)}
-      onChange={(e) => onChange(e.target.value)}
+      onBlur={() => {
+        setFocused(false);
+        commitNow();
+      }}
+      onChange={(e) => handleChange(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") commitNow();
+      }}
     />
   );
 }
@@ -78,6 +155,10 @@ function DateFilter({
  * `minScore` is a plain text field rather than a slider: unscored signals
  * (relevanceScore null) always survive this filter regardless of its value,
  * which a slider's implied 0..1 range would misleadingly suggest it controls.
+ *
+ * `kind`, `competitorId` and `includeStale` push on every change and need no
+ * debouncing — they're a Select/Switch, so every "change" is already one
+ * discrete, complete value, unlike a free-text field mid-keystroke.
  */
 export function SignalsFilters({
   kind,
@@ -105,6 +186,8 @@ export function SignalsFilters({
     const qs = params.toString();
     router.push(qs ? `/signals?${qs}` : "/signals");
   }
+
+  const minScoreFilter = useDebouncedFilterValue(minScore, (value) => push({ minScore: value }));
 
   const competitorOptions = [
     { value: "all", label: "All competitors" },
@@ -154,8 +237,12 @@ export function SignalsFilters({
         placeholder="Min score"
         aria-label="Minimum relevance score"
         className="w-28"
-        value={minScore}
-        onChange={(e) => push({ minScore: e.target.value })}
+        value={minScoreFilter.local}
+        onChange={(e) => minScoreFilter.handleChange(e.target.value)}
+        onBlur={minScoreFilter.commitNow}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") minScoreFilter.commitNow();
+        }}
       />
 
       <div className="ml-auto flex items-center gap-3">

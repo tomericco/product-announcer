@@ -9,32 +9,9 @@ import {
 import { requireSession } from "@/lib/workspace/session";
 import { listCompetitors } from "@/lib/workspace/competitors";
 import { listSignals, type SignalFilters } from "@/lib/signals/query";
+import { single, parseKind, parseCompetitorId, parseMinScore, parseDateFrom, parseDateTo } from "@/lib/signals/params";
 import { SignalsFilters } from "./signals-filters";
 import { SignalsList } from "./signals-list";
-
-const KIND_VALUES = ["shipped_work", "competitor_move", "market_news", "manual"] as const;
-
-function single(value: string | string[] | undefined): string | undefined {
-  return Array.isArray(value) ? value[0] : value;
-}
-
-function parseKind(value: string | undefined): SignalFilters["kind"] {
-  return (KIND_VALUES as readonly string[]).includes(value ?? "")
-    ? (value as SignalFilters["kind"])
-    : undefined;
-}
-
-function parseDate(value: string | undefined): Date | undefined {
-  if (!value) return undefined;
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? undefined : date;
-}
-
-function parseMinScore(value: string | undefined): number | undefined {
-  if (!value) return undefined;
-  const score = Number(value);
-  return Number.isFinite(score) ? score : undefined;
-}
 
 /**
  * The signals browser: a debugging surface first, a feature second (see the
@@ -51,8 +28,8 @@ function parseMinScore(value: string | undefined): number | undefined {
  * every request), mirroring `/change-events`.
  *
  * The 60-day window is deliberately NOT one of these filters: `listSignals`
- * applies `signalWindowStart` unconditionally, before any filter below, so
- * nothing this page reads from the URL can widen it.
+ * applies `signalWindowCondition()` unconditionally, before any filter below,
+ * so nothing this page reads from the URL can widen it.
  */
 export default async function SignalsPage({
   searchParams,
@@ -68,10 +45,10 @@ export default async function SignalsPage({
 
   const filters: SignalFilters = {
     kind: parseKind(single(params.kind)),
-    competitorId: competitorIdRaw || undefined,
+    competitorId: parseCompetitorId(competitorIdRaw),
     minScore: parseMinScore(minScoreRaw),
-    from: parseDate(fromRaw),
-    to: parseDate(toRaw),
+    from: parseDateFrom(fromRaw),
+    to: parseDateTo(toRaw),
     includeStale: single(params.includeStale) === "1",
   };
 
