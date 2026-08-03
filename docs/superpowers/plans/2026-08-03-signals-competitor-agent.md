@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build the `signals` layer every later spec reads from, project existing shipped work into it, keep it pruned, and make it visible.
+**Goal:** Build the `signals` layer every later spec reads from, project existing shipped work into it, and make it visible behind a 60-day read window.
 
 **Scope:** This is the first half of the design doc's spec 3. The competitor agent is the second half and needs its own plan — see "The competitor agent needs its own plan" below for why, and for the design decisions already settled for it.
 
@@ -16,7 +16,7 @@
 - Tests run against a **real Postgres database whose name must end in `_test`** (`vitest.setup.ts` hard-fails otherwise). After every schema change run `npm run db:migrate:test` before `npm run test`.
 - The LLM provider is **Anthropic directly** via `@ai-sdk/anthropic`, not the Vercel AI Gateway. Do not "fix" this.
 - Every LLM call records usage via `recordLlmUsage`. **`operation` is typed as `LlmOperation`, a closed string-literal union in `src/lib/ai/llm-usage.ts`** — a new operation must be added there or the call will not type-check. The database column is free text, so this is invisible until `tsc` runs.
-- **Every external page fetch goes through `fetchPageText`** (`src/lib/workspace/fetch-page.ts`). Nothing in Tasks 1-3 fetches, but this binds the competitor-agent plan absolutely: that function carries redirect re-validation, private-IP rejection, a hard byte cap, a timeout, and a scan clamp against quadratic regex backtracking. A bare `fetch` to a competitor URL bypasses all of it.
+- **Every external page fetch goes through `fetchPageText`** (`src/lib/workspace/fetch-page.ts`). Nothing in this plan fetches, but this binds the competitor-agent plan absolutely: that function carries redirect re-validation, private-IP rejection, a hard byte cap, a timeout, and a scan clamp against quadratic regex backtracking. A bare `fetch` to a competitor URL bypasses all of it.
 - Follow the existing schema conventions in `src/db/schema.ts`: comments explain *why* a column exists, not what it is.
 - Never edit the Vercel `DATABASE_URL` env var.
 - **Deletion lists come from exports and importers, never from a module's name.** Spec 1 lost coverage five times by trusting that a directory or file name described its contents. Before deleting or wholesale-replacing any file, `grep -n "^export"` it and grep its importers.
@@ -25,7 +25,9 @@
 
 **Shipped work is reconciled, not hooked.** Atomic updates are created in three places (`create-from-events.ts:168`, `reassign.ts:241`, `apply-resolution.ts:84`) with no shared helper. Hooking all three means a fourth site added later silently stops producing signals. Instead `syncShippedWorkSignals` reconciles: it upserts a signal for every non-hidden atomic update and deletes signals whose atomic update is gone or hidden. Idempotent, self-healing, and it makes hide/unhide work for free.
 
-**Retention keys off `createdAt`, not `occurredAt`.** Retention answers "how long do we keep this", not "how old is the news". A backfilled competitor post from last year would be deleted on arrival under an `occurredAt` rule.
+**There is no deletion yet — the 60-day window is enforced on read.** Nothing prunes the table in this plan. Every reader filters to the last 60 days instead, which defers the irreversible half of retention until the shape of the data is known. Deletion lands later.
+
+**The window keys off `createdAt`, not `occurredAt`, and it is defined once.** Two reasons. First, the window answers "how long do we consider this", not "how old is the news" — a backfilled competitor post from last year would be invisible on arrival under an `occurredAt` rule. Second and more important: **when real deletion is built it must use the same column and the same number as this read window.** If they diverge, you get either signals that are visible but already scheduled for deletion, or signals retained forever that nobody can see. `SIGNAL_WINDOW_DAYS` lives in one module so the browser, spec 5's ideation read, and the eventual deleter cannot drift apart.
 
 **`sources` lands in Task 1 alongside `signals`.** It has no consumer until the agent plan, but its foreign key is what `signals.sourceId` points at — declaring both together means one migration and a well-formed key from the start, rather than a second migration to add the reference later.
 
@@ -35,10 +37,10 @@
 | --- | --- | --- |
 | `src/db/schema.ts` | `signals` and `sources` tables and their enums | 1 |
 | `src/lib/signals/shipped-work.ts` | Reconcile atomic updates → signals | 1 |
-| `src/lib/signals/retention.ts` | Mark stale at 30 days, delete at 90 | 2 |
-| `src/app/(dashboard)/signals/*` | The signals browser | 3 |
-| `src/lib/signals/query.ts` | Filtered signal reads for the browser | 3 |
-| `src/app/api/cron/scheduler/route.ts` | Runs the sweeps | 1, 2 |
+| `src/lib/signals/window.ts` | The single definition of the 60-day signal window | 2 |
+| `src/app/(dashboard)/signals/*` | The signals browser | 2 |
+| `src/lib/signals/query.ts` | Filtered signal reads, windowed | 2 |
+| `src/app/api/cron/scheduler/route.ts` | Runs the shipped-work sync | 1 |
 
 ---
 
@@ -418,188 +420,43 @@ would silently stop producing. Hide/unhide works for free."
 
 ---
 
-### Task 2: Retention — stale at 30 days, deleted at 90
-
-**Files:**
-- Create: `src/lib/signals/retention.ts`
-- Modify: `src/app/api/cron/scheduler/route.ts`
-- Test: `tests/lib/signals/retention.test.ts`
-
-**Interfaces:**
-- Consumes: `signals` (Task 1)
-- Produces: `pruneSignals(now: Date, deps?): Promise<{ marked: number; deleted: number }>`
-
-- [ ] **Step 1: Write the failing test**
-
-Create `tests/lib/signals/retention.test.ts`:
-
-```ts
-import { describe, it, expect, afterEach } from "vitest";
-import { eq } from "drizzle-orm";
-import { db } from "../../../src/db";
-import { tenants, signals } from "../../../src/db/schema";
-import { pruneSignals } from "../../../src/lib/signals/retention";
-
-const TENANT = "Signal Retention Test Tenant";
-const NOW = new Date("2026-08-03T00:00:00Z");
-
-function daysAgo(days: number): Date {
-  return new Date(NOW.getTime() - days * 24 * 60 * 60 * 1000);
-}
-
-async function seed(createdAt: Date, overrides: Record<string, unknown> = {}) {
-  const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
-  const [signal] = await db
-    .insert(signals)
-    .values({
-      tenantId: tenant.id,
-      kind: "competitor_move",
-      externalId: `e-${createdAt.getTime()}-${Math.round(createdAt.getTime() % 1000)}`,
-      title: "T",
-      occurredAt: createdAt,
-      createdAt,
-      ...overrides,
-    })
-    .returning();
-  return { tenant, signal };
-}
-
-describe("pruneSignals", () => {
-  afterEach(async () => {
-    await db.delete(tenants).where(eq(tenants.name, TENANT));
-  });
-
-  it("leaves a recent signal alone", async () => {
-    const { signal } = await seed(daysAgo(5));
-    const result = await pruneSignals(NOW);
-    const [after] = await db.select().from(signals).where(eq(signals.id, signal.id));
-    expect(after.status).toBe("new");
-    expect(result.deleted).toBe(0);
-  });
-
-  it("marks an uncited signal stale past 30 days without deleting it", async () => {
-    const { signal } = await seed(daysAgo(45));
-    const result = await pruneSignals(NOW);
-    const [after] = await db.select().from(signals).where(eq(signals.id, signal.id));
-    expect(after.status).toBe("stale");
-    expect(result.marked).toBe(1);
-    expect(result.deleted).toBe(0);
-  });
-
-  it("does not mark a used signal stale", async () => {
-    const { signal } = await seed(daysAgo(45), { status: "used" });
-    await pruneSignals(NOW);
-    const [after] = await db.select().from(signals).where(eq(signals.id, signal.id));
-    expect(after.status).toBe("used");
-  });
-
-  it("deletes any signal past 90 days", async () => {
-    const { signal } = await seed(daysAgo(120));
-    const result = await pruneSignals(NOW);
-    const rows = await db.select().from(signals).where(eq(signals.id, signal.id));
-    expect(rows).toHaveLength(0);
-    expect(result.deleted).toBe(1);
-  });
-
-  it("keys off createdAt, not occurredAt — a freshly-ingested old post survives", async () => {
-    const { signal } = await seed(daysAgo(2), { occurredAt: daysAgo(400) });
-    await pruneSignals(NOW);
-    const rows = await db.select().from(signals).where(eq(signals.id, signal.id));
-    expect(rows).toHaveLength(1);
-  });
-});
-```
-
-- [ ] **Step 2: Run it to confirm it fails**
-
-Run: `npx vitest run tests/lib/signals/retention.test.ts`
-Expected: FAIL — module not found.
-
-- [ ] **Step 3: Implement**
-
-Create `src/lib/signals/retention.ts`:
-
-```ts
-import { and, eq, lt, sql } from "drizzle-orm";
-import { db as defaultDb } from "@/db";
-import { signals } from "@/db/schema";
-
-export type RetentionDeps = { database?: typeof defaultDb };
-
-const STALE_AFTER_DAYS = 30;
-const DELETE_AFTER_DAYS = 90;
-
-function daysBefore(now: Date, days: number): Date {
-  return new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
-}
-
-/**
- * Signal retention. Both cutoffs key off `createdAt`, not `occurredAt`:
- * retention answers "how long do we keep this", not "how old is the news", and
- * a backfilled year-old competitor post must not be deleted on arrival.
- *
- * `stale` means "older than spec 5's ideation window and never cited" — it is a
- * pruning and reporting flag, not a consumption gate.
- *
- * SPEC 5 MUST EXTEND THIS. Signals cited by an *accepted* brief are the evidence
- * trail behind published content and are exempt from the 90-day delete. That
- * exemption cannot be written yet because `brief_signals` does not exist — and
- * until it does nothing is cited, so nothing is at risk. When spec 5 lands the
- * join, add a `NOT EXISTS (accepted brief citing this signal)` clause to the
- * delete below. `brief_signals` cascades on signal delete, so omitting it would
- * silently erase evidence rows out from under published pieces.
- */
-export async function pruneSignals(
-  now: Date,
-  deps: RetentionDeps = {}
-): Promise<{ marked: number; deleted: number }> {
-  const database = deps.database ?? defaultDb;
-
-  const marked = await database
-    .update(signals)
-    .set({ status: "stale" })
-    .where(and(eq(signals.status, "new"), lt(signals.createdAt, daysBefore(now, STALE_AFTER_DAYS))))
-    .returning({ id: signals.id });
-
-  const deleted = await database
-    .delete(signals)
-    .where(lt(signals.createdAt, daysBefore(now, DELETE_AFTER_DAYS)))
-    .returning({ id: signals.id });
-
-  return { marked: marked.length, deleted: deleted.length };
-}
-```
-
-- [ ] **Step 4: Wire into the cron**
-
-Add `await pruneSignals(new Date());` to `src/app/api/cron/scheduler/route.ts` after the shipped-work sync, wrapped in its own try/catch so a retention failure cannot reject the handler.
-
-- [ ] **Step 5: Verify and commit**
-
-```bash
-npm run typecheck && npm run test && npm run lint
-git add -A
-git commit -m "feat: signal retention, stale at 30 days and deleted at 90
-
-Both cutoffs key off createdAt: retention is how long we keep a signal,
-not how old the news is. Spec 5 must add the accepted-brief exemption
-before brief_signals can cascade evidence away."
-```
-
----
-
-### Task 3: The signals browser
+### Task 2: The signals browser
 
 An ingestion pipeline you cannot see is undebuggable. This ships **before** the competitor agent deliberately, so the first external run lands on a working surface.
 
 **Files:**
+- Create: `src/lib/signals/window.ts`, `src/lib/signals/query.ts`
 - Create: `src/app/(dashboard)/signals/page.tsx`, `signals-list.tsx`, `signals-filters.tsx`, `signal-row.tsx`
 - Modify: `src/app/(dashboard)/nav-links.tsx`
-- Test: `tests/app/signals-page.test.ts` (query-level, not render-level)
+- Test: `tests/lib/signals/query.test.ts` (query-level, not render-level)
 
 **Interfaces:**
 - Consumes: `signals`, `sources`, `competitors`
-- Produces: `listSignals(tenantId, filters, database?): Promise<Signal[]>` in `src/lib/signals/query.ts`
+- Produces: `SIGNAL_WINDOW_DAYS` and `signalWindowStart(now: Date): Date` in `src/lib/signals/window.ts`; `listSignals(tenantId, filters, database?): Promise<Signal[]>` in `src/lib/signals/query.ts`
+
+- [ ] **Step 0: Define the window in one place**
+
+Create `src/lib/signals/window.ts`:
+
+```ts
+/**
+ * How far back signals are considered. Enforced on READ — nothing deletes from
+ * the table yet, deliberately: the irreversible half of retention waits until
+ * the shape of the data is known.
+ *
+ * When deletion is built it MUST use this same constant and the same column
+ * (`createdAt`). If the delete rule and this read window ever diverge you get
+ * signals that are visible but already scheduled for deletion, or signals
+ * retained forever that nobody can see. That is why this lives in its own
+ * module rather than as a literal in the query.
+ */
+export const SIGNAL_WINDOW_DAYS = 60;
+
+/** The oldest `createdAt` still inside the window. */
+export function signalWindowStart(now: Date): Date {
+  return new Date(now.getTime() - SIGNAL_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+}
+```
 
 - [ ] **Step 1: Write the failing query test**
 
@@ -711,10 +568,38 @@ describe("listSignals", () => {
       new Set([fresh.id, stale.id])
     );
   });
+
+  it("excludes signals created outside the 60-day window", async () => {
+    const tenant = await seedTenant(TENANT);
+    const inside = await seedSignal(tenant.id, { createdAt: daysAgo(59) });
+    await seedSignal(tenant.id, { createdAt: daysAgo(70) });
+
+    const rows = await listSignals(tenant.id, {});
+    expect(rows.map((r) => r.id)).toEqual([inside.id]);
+  });
+
+  it("windows on createdAt, so a freshly-ingested old post is still visible", async () => {
+    const tenant = await seedTenant(TENANT);
+    const backfilled = await seedSignal(tenant.id, {
+      createdAt: daysAgo(1),
+      occurredAt: daysAgo(400),
+    });
+
+    const rows = await listSignals(tenant.id, {});
+    expect(rows.map((r) => r.id)).toEqual([backfilled.id]);
+  });
 });
 ```
 
-The unscored-signal case is the one that matters most. A `>= minScore` comparison drops NULLs silently in SQL, which would hide exactly the rows a debugging surface exists to show.
+Add the helper the last two cases use, alongside `seedSignal`:
+
+```ts
+function daysAgo(days: number): Date {
+  return new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+}
+```
+
+Two cases carry most of the value here. **The unscored-signal case:** a `>= minScore` comparison drops NULLs silently in SQL, which would hide exactly the rows a debugging surface exists to show. **The `createdAt` window case:** it pins the column the window uses, which is what stops a future deletion job from being written against `occurredAt` and silently disagreeing with what the browser shows.
 
 - [ ] **Step 2: Run it to confirm it fails**
 
@@ -725,7 +610,11 @@ Expected: FAIL — `listSignals` not exported.
 
 `listSignals` takes `{ kind?, competitorId?, minScore?, from?, to?, includeStale? }` and composes `and(...)` conditions, omitting any filter that is undefined.
 
+**The 60-day window is not one of those optional filters — it is always applied.** Start the condition list with `gte(signals.createdAt, signalWindowStart(new Date()))` from `src/lib/signals/window.ts`, before any caller-supplied filter. It is not a parameter and callers cannot opt out: it is the stand-in for deletion, and a read path that can bypass it would show data the eventual delete job has already discarded.
+
 **The unscored case is the one to get right.** A signal whose `relevanceScore` is null failed scoring — it is not low-relevance. A `>= minScore` comparison silently drops NULLs in SQL, which would hide exactly the rows a debugging surface exists to show. Treat null as always-included when a minimum is set, and label it in the UI as "not scored" rather than showing a blank.
+
+The `from`/`to` filters narrow *within* the window on `occurredAt` — they are a user-facing date filter over when things happened, which is a different question from how long we keep them. Do not collapse the two.
 
 For the page, follow `src/app/(dashboard)/change-events/` — it already has the page / list / filters / row split and a filter component driven by search params. Match that structure rather than inventing one.
 
@@ -777,10 +666,10 @@ These came out of reading the codebase and are worth not re-deriving:
 - `npm run typecheck`, `npm run test`, and `npm run lint` all pass.
 - Existing atomic updates appear as `shipped_work` signals; hiding one withdraws its signal and unhiding restores it.
 - The signals browser lists, filters, and shows unscored signals distinctly from low-scored ones.
-- Retention marks stale at 30 days and deletes at 90, keyed off `createdAt`.
+- `listSignals` returns only signals created within the last 60 days, and unscored signals survive a minimum-score filter.
 
 ## Notes for spec 4 and spec 5
 
 - **Spec 4 (news agent)** reuses `sources` with `type: "news"` and a null `url`, searching against `companyProfiles.topics`. `scoreRelevance` is shared as-is; only acquisition differs.
-- **Spec 5 must extend `pruneSignals`** with the accepted-brief exemption before `brief_signals` exists to cascade. The comment in `retention.ts` says so at the point of change.
+- **Deletion is deferred, not cancelled.** Whoever builds it must use `SIGNAL_WINDOW_DAYS` and `createdAt` from `src/lib/signals/window.ts`, and must exempt signals cited by an ACCEPTED brief — those are the evidence trail behind published content, and `brief_signals` will cascade on signal delete. Nothing is at risk until spec 5 creates that join, which is exactly why deferring deletion past it is safe.
 - **`signals.status = 'used'` is not a consumption gate.** Ideation reads every signal in its window regardless of status.
