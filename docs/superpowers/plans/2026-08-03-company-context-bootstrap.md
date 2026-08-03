@@ -1332,13 +1332,32 @@ export async function bootstrapOnboardingCompany(formData: FormData) {
 
   const result = await bootstrapCompanyContext(session.user.tenantId, url);
   // A failed crawl keeps the user on step 2 so they can try another URL or skip;
-  // only a success advances. A company whose site blocks us must never be trapped.
+  // A company whose site blocks us must never be trapped.
   if (!result.ok) return redirect("/onboarding/brand?bootstrap=failed");
 
-  await advanceOnboardingStep(session.user.tenantId, 3);
-  return redirect("/onboarding/connect");
+  // Success does NOT advance. Step 2 is two-phase: drafting returns to the same
+  // step, which then renders the drafted profile for review. `saveOnboardingCompany`
+  // is what advances, once the human has seen what the agent concluded about them.
+  return redirect("/onboarding/brand?drafted=1");
 }
 ```
+
+**Step 2 is two-phase, and the second phase is not optional.** The company profile
+is the ranking function every later agent scores signals against, so a wrong
+profile silently degrades every brief the product ever proposes — and a user who
+never opens `/company` never sees what was inferred about them. Phase B renders
+`oneLiner`, `category` and `positioning` as editable fields plus a `topics`
+textarea (reusing Task 5's labels and `parseTopics`), lists the proposed
+competitors each with a remove control, and offers Continue alongside the
+existing Skip. Detect the phase from `companyProfiles.websiteUrl` being non-null
+rather than from `?drafted=1` alone, so a refresh does not drop the user back to
+a blank form. Leave the URL form visible above the review so a bad draft can be
+re-run against a different URL.
+
+`saveOnboardingCompany(formData)` is what advances: same `isOnboardingComplete`
+guard as its neighbours, persist the four fields exactly as `saveCompanyContext`
+does, then `advanceOnboardingStep(tenantId, 3)` and
+`return redirect("/onboarding/connect")`.
 
 Two deliberate details, neither of which is style preference:
 
