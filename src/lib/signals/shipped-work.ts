@@ -19,8 +19,15 @@ export type ShippedWorkDeps = { database?: typeof defaultDb };
 export async function syncShippedWorkSignals(deps: ShippedWorkDeps = {}): Promise<void> {
   const database = deps.database ?? defaultDb;
 
+  let visible: Array<{
+    id: string;
+    tenantId: string;
+    title: string;
+    summary: string;
+    createdAt: Date;
+  }>;
   try {
-    const visible = await database
+    visible = await database
       .select({
         id: atomicUpdates.id,
         tenantId: atomicUpdates.tenantId,
@@ -30,8 +37,18 @@ export async function syncShippedWorkSignals(deps: ShippedWorkDeps = {}): Promis
       })
       .from(atomicUpdates)
       .where(ne(atomicUpdates.status, "hidden"));
+  } catch (error) {
+    // Nothing to reconcile against without the candidate list. Log and
+    // return — next run retries. Matches resolve-sweep's posture.
+    console.error("[shipped-work-signals] failed to load candidate atomic updates:", error);
+    return;
+  }
 
-    for (const update of visible) {
+  // Each update's upsert gets its own try/catch, same as resolve-sweep scopes
+  // failure per tenant: one bad row must not abort the loop for every other
+  // atomic update across every tenant, nor skip the withdrawal delete below.
+  for (const update of visible) {
+    try {
       await database
         .insert(signals)
         .values({
@@ -50,19 +67,23 @@ export async function syncShippedWorkSignals(deps: ShippedWorkDeps = {}): Promis
           // signal, and a re-sync must not undo them.
           set: { title: update.title, excerpt: update.summary, atomicUpdateId: update.id },
         });
+    } catch (error) {
+      console.error(`[shipped-work-signals] upsert failed for atomic update ${update.id}:`, error);
     }
+  }
 
-    // Withdraw signals whose atomic update went away or was hidden. Scoped to
-    // this kind so no other producer's rows are ever touched.
-    const visibleIds = visible.map((update) => update.id);
+  // Withdraw signals whose atomic update went away or was hidden. Scoped to
+  // this kind so no other producer's rows are ever touched. `visibleIds`
+  // comes from the select above, not from which upserts succeeded, so a
+  // failed upsert cannot cause a wrongful withdrawal here.
+  const visibleIds = visible.map((update) => update.id);
+  try {
     await database.delete(signals).where(
       visibleIds.length > 0
         ? and(eq(signals.kind, "shipped_work"), notInArray(signals.externalId, visibleIds))
         : eq(signals.kind, "shipped_work")
     );
   } catch (error) {
-    // Runs alongside other cron steps; a failure here must not reject the whole
-    // handler and undo their completed work. Next run reconciles.
-    console.error("[shipped-work-signals] sync failed:", error);
+    console.error("[shipped-work-signals] withdrawal delete failed:", error);
   }
 }

@@ -41,8 +41,17 @@ describe("syncShippedWorkSignals", () => {
     const tenant = await seedTenant();
     await db.insert(atomicUpdates).values({ tenantId: tenant.id, title: "A", summary: "S" });
     await syncShippedWorkSignals();
+    const [first] = await shippedSignals(tenant.id);
+
     await syncShippedWorkSignals();
-    expect(await shippedSignals(tenant.id)).toHaveLength(1);
+
+    const rows = await shippedSignals(tenant.id);
+    expect(rows).toHaveLength(1);
+    // Same row, not a delete-and-reinsert: a plain insert (rather than an
+    // upsert) would violate the unique constraint on the second run, and if
+    // that violation were swallowed the row count alone wouldn't catch it.
+    expect(rows[0].id).toBe(first.id);
+    expect(rows[0].createdAt).toEqual(first.createdAt);
   });
 
   it("refreshes title and excerpt when the atomic update changes", async () => {
