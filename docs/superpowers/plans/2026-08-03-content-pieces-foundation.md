@@ -854,7 +854,8 @@ Auto-composing drafts is autopilot, which contradicts the human-gated model. Thi
 - Move: `src/lib/scheduling/read-draft-progress.ts` → `src/lib/drafting/read-draft-progress.ts`
 - Move: `runBatchForWorkspace` out of `src/lib/scheduling/run-schedule.ts` → `src/lib/drafting/compose-draft.ts`
 - Delete: `src/lib/scheduling/` entirely (`run-schedule.ts`, `scheduler-decision.ts`, `format-schedule.ts`)
-- Delete: `tests/lib/scheduling/run-schedule.test.ts`, `scheduler-decision.test.ts`, `format-schedule.test.ts`, `tests/db/scheduler-generation-schema.test.ts`
+- Split: `tests/lib/scheduling/run-schedule.test.ts` — its 9 tests cover two functions with opposite fates. Move the 7 `runBatchForWorkspace` tests to `tests/lib/drafting/compose-draft.test.ts` (import path only; assertions byte-identical, since they are the proof the move was verbatim), delete the 2 `runSchedulerTick` tests, then delete the file.
+- Delete: `tests/lib/scheduling/scheduler-decision.test.ts`, `format-schedule.test.ts`, `tests/db/scheduler-generation-schema.test.ts` — each covers only behavior that ceases to exist. Verify that before deleting; a test for surviving behavior gets split out, never dropped to reach green.
 - Move: `tests/lib/scheduling/read-draft-progress.test.ts` → `tests/lib/drafting/read-draft-progress.test.ts`
 - Test: `tests/db/schedule-configs-schema.test.ts`
 
