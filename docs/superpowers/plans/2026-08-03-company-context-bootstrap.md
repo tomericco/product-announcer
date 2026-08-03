@@ -13,7 +13,7 @@
 - **This is not the Next.js you know.** Read the relevant guide in `node_modules/next/dist/docs/` before writing any App Router code. Heed deprecation notices. (`AGENTS.md`)
 - Tests run against a **real Postgres database whose name must end in `_test`** (`vitest.setup.ts` hard-fails otherwise). After every schema change run `npm run db:migrate:test` before `npm run test`.
 - The LLM provider is **Anthropic directly** via `@ai-sdk/anthropic`, not the Vercel AI Gateway. Do not "fix" this.
-- Every LLM call records usage via `recordLlmUsage` with a distinct `operation` string. Follow `analyze-brand-style.ts:36-51`.
+- Every LLM call records usage via `recordLlmUsage` with a distinct `operation` string. Follow `analyze-brand-style.ts:36-51`. **`recordLlmUsage`'s `operation` parameter is typed as `LlmOperation`, a closed string-literal union in `src/lib/ai/llm-usage.ts` — a new operation must be added there or the call will not type-check.** The database column is free text, so this constraint is invisible until `tsc` runs.
 - Model specs come from an env var with a literal fallback, e.g. `process.env.ONBOARDING_ANALYSIS_MODEL ?? "anthropic/claude-sonnet-4-5"`, resolved through `resolveModel`.
 - Follow the existing schema conventions in `src/db/schema.ts`: comments explain *why* a column exists, not what it is.
 - Never edit the Vercel `DATABASE_URL` env var.
