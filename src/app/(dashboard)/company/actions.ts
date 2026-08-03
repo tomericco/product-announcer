@@ -9,7 +9,7 @@ import { getOrCreateCompanyProfile } from "@/lib/workspace/company-profile";
 import { importBrandStyleForTenant } from "@/lib/workspace/brand-import";
 import { sanitizePersonas } from "@/lib/workspace/persona-form";
 import { parseTopics } from "@/lib/workspace/parse-topics";
-import { addCompetitor, removeCompetitor } from "@/lib/workspace/competitors";
+import { addCompetitor, listCompetitors, removeCompetitor } from "@/lib/workspace/competitors";
 import { bootstrapCompanyContext } from "@/lib/workspace/company-bootstrap";
 
 /**
@@ -98,6 +98,7 @@ export async function saveCompanyContext(formData: FormData) {
   await db
     .update(companyProfiles)
     .set({
+      websiteUrl: (formData.get("websiteUrl") as string)?.trim() || null,
       oneLiner: (formData.get("oneLiner") as string)?.trim() || null,
       category: (formData.get("category") as string)?.trim() || null,
       positioning: (formData.get("positioning") as string)?.trim() || null,
@@ -109,10 +110,20 @@ export async function saveCompanyContext(formData: FormData) {
   revalidatePath("/company");
 }
 
+/**
+ * Adds a competitor. Reports `reason: "exists"` on success when the name
+ * (case-insensitively) was already on the list, so the client can tell the
+ * user rather than silently clearing the inputs and appearing to do nothing --
+ * `addCompetitor` itself is idempotent and returns the existing row in that
+ * case, which is indistinguishable from a fresh insert unless checked here.
+ */
 export async function addCompetitorAction(formData: FormData): Promise<{ ok: boolean; reason?: string }> {
   const session = await requireSession();
   const name = (formData.get("name") as string)?.trim();
   if (!name) return { ok: false, reason: "empty-name" };
+
+  const existing = await listCompetitors(session.user.tenantId);
+  const alreadyExists = existing.some((c) => c.name.toLowerCase() === name.toLowerCase());
 
   await addCompetitor(session.user.tenantId, {
     name,
@@ -120,16 +131,19 @@ export async function addCompetitorAction(formData: FormData): Promise<{ ok: boo
   });
 
   revalidatePath("/company");
-  return { ok: true };
+  return alreadyExists ? { ok: true, reason: "exists" } : { ok: true };
 }
 
 /**
- * Takes `unknown`-shaped client input like `savePersonas` does: a Server Action
- * argument is public input, and the tenant scoping lives inside `removeCompetitor`
- * so an id from another workspace matches nothing.
+ * Removes a competitor. Takes `unknown`, like `savePersonas` does: a Server
+ * Action argument is client input, so it's checked here rather than trusted as
+ * the `string` TypeScript would otherwise imply. Tenant scoping lives inside
+ * `removeCompetitor`, so a well-formed id from another workspace still
+ * matches nothing.
  */
-export async function removeCompetitorAction(id: string): Promise<void> {
+export async function removeCompetitorAction(id: unknown): Promise<void> {
   const session = await requireSession();
+  if (typeof id !== "string" || !id) return;
   await removeCompetitor(session.user.tenantId, id);
   revalidatePath("/company");
 }

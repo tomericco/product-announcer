@@ -35,6 +35,9 @@ export function CompetitorsEditor({ competitors }: { competitors: Competitor[] }
         setName("");
         setWebsiteUrl("");
         router.refresh();
+        if (result.reason === "exists") {
+          toast.warning(`${trimmed} is already on your list`);
+        }
       } else {
         toast.error("Enter a name first");
       }

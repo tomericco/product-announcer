@@ -110,10 +110,13 @@ export function CompanyContextForm({
         </DialogContent>
       </Dialog>
 
-      {/* No hidden `websiteUrl` field here: saveCompanyContext only writes the
-          prose fields and topics. The website itself is set by the draft above
-          (bootstrapCompanyContext writes it alongside whatever it derives). */}
       <ToastForm action={saveCompanyContext} successMessage="Company context saved" className="space-y-4">
+        {/* The visible Website input above is deliberately outside this form
+            (it also drives the draft button), so without this hidden field
+            Save would never submit it -- correcting a stale URL by hand would
+            silently revert on the next render even though Save reported
+            success. Mirrors the `websiteUrl` state already tracked above. */}
+        <input type="hidden" name="websiteUrl" value={websiteUrl} />
         <div className="space-y-2">
           <Label htmlFor="oneLiner">One-liner</Label>
           <Input

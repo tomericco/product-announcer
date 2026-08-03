@@ -9,10 +9,16 @@ vi.mock("../../src/lib/workspace/session", () => ({
 }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 
+const bootstrapMock = vi.fn(async (..._args: unknown[]) => ({ ok: true }) as { ok: boolean; reason?: string });
+vi.mock("../../src/lib/workspace/company-bootstrap", () => ({
+  bootstrapCompanyContext: (...args: unknown[]) => bootstrapMock(...args),
+}));
+
 import {
   saveCompanyContext,
   addCompetitorAction,
   removeCompetitorAction,
+  bootstrapFromWebsite,
 } from "../../src/app/(dashboard)/company/actions";
 
 const TENANT = "Company Actions Test Tenant";
@@ -45,6 +51,22 @@ describe("saveCompanyContext", () => {
     expect(profile.oneLiner).toBe("Issue tracking for software teams.");
     expect(profile.category).toBe("Project management");
     expect(profile.topics).toEqual(["developer productivity", "issue tracking"]);
+  });
+
+  it("round-trips the websiteUrl field alongside the prose fields", async () => {
+    const tenant = await seed(TENANT);
+    currentTenantId = tenant.id;
+
+    const form = new FormData();
+    form.set("websiteUrl", "  https://acme.com  ");
+    form.set("oneLiner", "Issue tracking for software teams.");
+    form.set("category", "Project management");
+    form.set("positioning", "Fast where incumbents are configurable.");
+    form.set("topics", "developer productivity");
+    await saveCompanyContext(form);
+
+    const [profile] = await db.select().from(companyProfiles).where(eq(companyProfiles.tenantId, tenant.id));
+    expect(profile.websiteUrl).toBe("https://acme.com");
   });
 
   it("stores null rather than an empty string for a cleared prose field", async () => {
@@ -90,5 +112,72 @@ describe("competitor actions", () => {
 
     const [stillThere] = await db.select().from(competitors).where(eq(competitors.id, victim.id));
     expect(stillThere).toBeDefined();
+  });
+
+  it("ignores a non-string id rather than throwing", async () => {
+    const tenant = await seed(TENANT);
+    currentTenantId = tenant.id;
+    const [row] = await db.insert(competitors).values({ tenantId: tenant.id, name: "Jira" }).returning();
+
+    await expect(removeCompetitorAction(42 as unknown as string)).resolves.toBeUndefined();
+    await expect(removeCompetitorAction(null as unknown as string)).resolves.toBeUndefined();
+
+    const [stillThere] = await db.select().from(competitors).where(eq(competitors.id, row.id));
+    expect(stillThere).toBeDefined();
+  });
+
+  it("reports reason: \"exists\" (not a fresh add) for a case-insensitive duplicate name", async () => {
+    const tenant = await seed(TENANT);
+    currentTenantId = tenant.id;
+
+    const form1 = new FormData();
+    form1.set("name", "GitHub");
+    const first = await addCompetitorAction(form1);
+    expect(first).toEqual({ ok: true });
+
+    const form2 = new FormData();
+    form2.set("name", "github");
+    const second = await addCompetitorAction(form2);
+    expect(second).toEqual({ ok: true, reason: "exists" });
+
+    const rows = await db.select().from(competitors).where(eq(competitors.tenantId, tenant.id));
+    expect(rows).toHaveLength(1);
+  });
+});
+
+describe("bootstrapFromWebsite", () => {
+  afterEach(() => {
+    bootstrapMock.mockClear();
+    bootstrapMock.mockResolvedValue({ ok: true });
+  });
+
+  it("rejects an empty url without spending a crawl", async () => {
+    const tenant = await seed(TENANT);
+    currentTenantId = tenant.id;
+
+    const result = await bootstrapFromWebsite("   ");
+
+    expect(result).toEqual({ ok: false, reason: "empty" });
+    expect(bootstrapMock).not.toHaveBeenCalled();
+  });
+
+  it("delegates to bootstrapCompanyContext with the trimmed url", async () => {
+    const tenant = await seed(TENANT);
+    currentTenantId = tenant.id;
+
+    const result = await bootstrapFromWebsite("  https://acme.com  ");
+
+    expect(bootstrapMock).toHaveBeenCalledWith(tenant.id, "https://acme.com");
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("surfaces a failed crawl's reason instead of throwing", async () => {
+    const tenant = await seed(TENANT);
+    currentTenantId = tenant.id;
+    bootstrapMock.mockResolvedValue({ ok: false, reason: "blocked" });
+
+    const result = await bootstrapFromWebsite("https://acme.com");
+
+    expect(result).toEqual({ ok: false, reason: "blocked" });
   });
 });
