@@ -1,0 +1,1 @@
+DROP TABLE "system_update_examples" CASCADE;

@@ -1,7 +1,7 @@
-import type { companyProfiles, ResolvedPersona, systemUpdateExamples } from "@/db/schema";
+import type { companyProfiles, ResolvedPersona, systemContentExamples } from "@/db/schema";
 
 type BrandProfileRow = typeof companyProfiles.$inferSelect;
-type ExampleRow = typeof systemUpdateExamples.$inferSelect;
+type ExampleRow = typeof systemContentExamples.$inferSelect;
 
 const DEFAULT_MAX_PROMPT_CHARS = 24000;
 const MAX_GUIDELINES_CHARS = 6000;

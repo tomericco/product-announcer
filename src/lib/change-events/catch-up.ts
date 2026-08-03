@@ -1,6 +1,6 @@
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
-import { atomicUpdates, contentPieces, systemPersonas, systemUpdateExamples } from "@/db/schema";
+import { atomicUpdates, contentPieces, systemPersonas, systemContentExamples } from "@/db/schema";
 import type { AtomicUpdateForPrompt } from "@/lib/ai/compose-prompt";
 import { generateReleaseDraft, mergeReleaseDraft } from "@/lib/ai/generation";
 import { validateDraftLinks } from "@/lib/ai/validate-links";
@@ -41,7 +41,7 @@ async function loadPromptContext(tenantId: string) {
   const brandProfile = await getOrCreateCompanyProfile(tenantId, defaultDb);
   const catalog = await defaultDb.select().from(systemPersonas);
   const personas = resolvePersonaRefs(brandProfile.userPersonas, catalog);
-  const allExamples = await defaultDb.select().from(systemUpdateExamples);
+  const allExamples = await defaultDb.select().from(systemContentExamples);
   return { brandProfile, personas, allExamples };
 }
 
@@ -102,6 +102,7 @@ export async function catchUpRelease(contentPieceId: string, deps: CatchUpDeps =
   const examples = selectExamples(allExamples, {
     industry: brandProfile.industry,
     personaKeys: systemPersonaKeys(brandProfile.userPersonas),
+    contentType: "product_update",
     categories: distinctCategories([...newItems, ...changedItems]),
   });
 
@@ -174,6 +175,7 @@ export async function startOverRelease(contentPieceId: string, deps: StartOverDe
   const examples = selectExamples(allExamples, {
     industry: brandProfile.industry,
     personaKeys: systemPersonaKeys(brandProfile.userPersonas),
+    contentType: "product_update",
     categories: distinctCategories(fullItems),
   });
 

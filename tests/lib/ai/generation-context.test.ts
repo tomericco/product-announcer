@@ -1,12 +1,12 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, companyProfiles, systemPersonas, systemUpdateExamples } from "../../../src/db/schema";
+import { tenants, companyProfiles, systemPersonas, systemContentExamples } from "../../../src/db/schema";
 import { prepareGenerationContext } from "../../../src/lib/ai/generation-context";
 
 const TENANT_NAME = "Generation Context Test Tenant";
 
-// systemPersonas and systemUpdateExamples are GLOBAL seeded catalogs (no
+// systemPersonas and systemContentExamples are GLOBAL seeded catalogs (no
 // tenantId column) — rows inserted here are visible to every other test in
 // the suite for the duration of the test. Keys are unique to this file so
 // they can't collide with the real seed data or another test file, and every
@@ -33,8 +33,8 @@ describe("prepareGenerationContext", () => {
     // Safety net alongside each test's own try/finally: idempotent no-ops if
     // already cleaned up, but catches the case where cleanup was skipped.
     await db.delete(systemPersonas).where(eq(systemPersonas.key, PERSONA_KEY));
-    await db.delete(systemUpdateExamples).where(eq(systemUpdateExamples.key, EXAMPLE_KEY_NEW));
-    await db.delete(systemUpdateExamples).where(eq(systemUpdateExamples.key, EXAMPLE_KEY_FIX));
+    await db.delete(systemContentExamples).where(eq(systemContentExamples.key, EXAMPLE_KEY_NEW));
+    await db.delete(systemContentExamples).where(eq(systemContentExamples.key, EXAMPLE_KEY_FIX));
   });
 
   it("creates the brand profile on first use and returns personas and examples", async () => {
@@ -92,7 +92,7 @@ describe("prepareGenerationContext", () => {
       // the "new" example has the lower sort_order, so it sorts first when
       // no category is requested; requesting "fix" should promote the fix
       // example ahead of it despite its higher sort_order.
-      await db.insert(systemUpdateExamples).values([
+      await db.insert(systemContentExamples).values([
         {
           key: EXAMPLE_KEY_NEW,
           industry: EXAMPLE_INDUSTRY,
@@ -126,8 +126,8 @@ describe("prepareGenerationContext", () => {
       expect(withNone.examples[0]?.key).toBe(EXAMPLE_KEY_NEW);
       expect(withFix.examples[0]?.key).toBe(EXAMPLE_KEY_FIX);
     } finally {
-      await db.delete(systemUpdateExamples).where(eq(systemUpdateExamples.key, EXAMPLE_KEY_NEW));
-      await db.delete(systemUpdateExamples).where(eq(systemUpdateExamples.key, EXAMPLE_KEY_FIX));
+      await db.delete(systemContentExamples).where(eq(systemContentExamples.key, EXAMPLE_KEY_NEW));
+      await db.delete(systemContentExamples).where(eq(systemContentExamples.key, EXAMPLE_KEY_FIX));
     }
   });
 });

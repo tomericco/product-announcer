@@ -1,12 +1,12 @@
 import { generateObject } from "ai";
 import { z } from "zod";
-import type { companyProfiles, ResolvedPersona, systemUpdateExamples } from "@/db/schema";
+import type { companyProfiles, ResolvedPersona, systemContentExamples } from "@/db/schema";
 import { composeReleasePrompt, composeMergePrompt, composeExtractPrompt, type AtomicUpdateForPrompt } from "./compose-prompt";
 import { resolveModel, modelId } from "./model";
 import { recordLlmUsage } from "./llm-usage";
 
 type BrandProfileRow = typeof companyProfiles.$inferSelect;
-type ExampleRow = typeof systemUpdateExamples.$inferSelect;
+type ExampleRow = typeof systemContentExamples.$inferSelect;
 
 export const UpdateDraftSchema = z.object({
   title: z.string(),

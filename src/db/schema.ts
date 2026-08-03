@@ -76,6 +76,7 @@ export const changeItemStatusEnum = pgEnum("change_item_status", ["pending", "ba
 export const cadenceEnum = pgEnum("cadence", ["daily", "weekly", "biweekly", "monthly", "none"]);
 export const reviewStatusEnum = pgEnum("review_status", ["passed", "failed", "error"]);
 export const updateCategoryEnum = pgEnum("update_category", ["new", "improvement", "fix", "announcement"]);
+export const contentTypeEnum = pgEnum("content_type", ["product_update", "blog_post", "social_post"]);
 
 export const changeEventTypeEnum = pgEnum("change_event_type", ["commit", "pull_request", "task"]);
 export const changeEventProviderEnum = pgEnum("change_event_provider", ["github", "notion"]);
@@ -255,21 +256,25 @@ export const systemPersonas = pgTable("system_personas", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
-// Global, seeded catalog of example product updates. Selected at generation time
-// by industry/persona match and injected into the prompt as few-shot exemplars.
-export const systemUpdateExamples = pgTable("system_update_examples", {
+// Global, seeded catalog of example content pieces. Selected at generation time
+// by industry/persona match (and content type) and injected into the prompt as
+// few-shot exemplars.
+export const systemContentExamples = pgTable("system_content_examples", {
   id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
   key: text("key").notNull().unique(),
   industry: text("industry"),
   personaKey: text("persona_key"),
-  category: updateCategoryEnum("category").notNull(),
+  // Which kind of content this exemplar demonstrates. Few-shot selection filters
+  // on it, so a blog prompt never sees changelog exemplars.
+  contentType: contentTypeEnum("content_type").notNull().default("product_update"),
+  // Meaningful only for product updates; null for blog and social exemplars.
+  category: updateCategoryEnum("category"),
   title: text("title").notNull(),
   body: text("body").notNull(),
   sortOrder: integer("sort_order").notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
-export const contentTypeEnum = pgEnum("content_type", ["product_update", "blog_post", "social_post"]);
 export const contentPieceStatusEnum = pgEnum("content_piece_status", [
   "brief",
   "draft",
