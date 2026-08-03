@@ -10,6 +10,7 @@ import { parseRepoSelections } from "@/lib/workspace/repo-selection-form";
 import { advanceOnboardingStep, isOnboardingComplete, markOnboardingComplete } from "@/lib/workspace/onboarding";
 import { listRepoBranches } from "@/lib/integrations/github/github";
 import { importBrandStyleForTenant } from "@/lib/workspace/brand-import";
+import { parseHour } from "@/lib/workspace/parse-hour";
 
 export async function addOnboardingRepos(formData: FormData) {
   const session = await requireSession();
@@ -44,9 +45,7 @@ export async function finishConnectStep() {
 
 export async function saveOnboardingSchedule(formData: FormData) {
   const session = await requireSession();
-  const hourRaw = formData.get("hour");
-  const parsed = hourRaw !== null ? Number(hourRaw) : NaN;
-  const hour = Number.isFinite(parsed) ? Math.min(23, Math.max(0, Math.trunc(parsed))) : 9;
+  const hour = parseHour(formData.get("hour"));
 
   await db
     .insert(scheduleConfigs)

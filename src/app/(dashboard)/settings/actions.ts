@@ -11,6 +11,7 @@ import { addSelectedRepos } from "@/lib/workspace/repo-sync";
 import { listRepoBranches } from "@/lib/integrations/github/github";
 import { createInvite, revokeActiveInvite } from "@/lib/workspace/invites";
 import { removeWorkspaceMember } from "@/lib/workspace/members";
+import { parseHour } from "@/lib/workspace/parse-hour";
 
 export async function saveWorkspaceName(formData: FormData) {
   const session = await requireSession();
@@ -74,15 +75,9 @@ export async function updateRepoBranch(formData: FormData) {
   revalidatePath("/atomic-updates");
 }
 
-function parseIntOrNull(value: FormDataEntryValue | null): number | null {
-  if (value === null || value === "") return null;
-  const n = Number(value);
-  return Number.isFinite(n) ? Math.trunc(n) : null;
-}
-
 export async function saveWorkspaceSchedule(formData: FormData) {
   const session = await requireSession();
-  const hour = Math.min(23, Math.max(0, parseIntOrNull(formData.get("hour")) ?? 9));
+  const hour = parseHour(formData.get("hour"));
 
   // onConflictDoUpdate (not a plain insert) so a concurrent first-time save can't
   // violate the one-per-tenant unique constraint — matches saveOnboardingSchedule.
