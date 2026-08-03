@@ -120,7 +120,16 @@ describe("selectExamples", () => {
     expect(picked.map((r) => r.id)).toEqual(["b"]);
   });
 
-  it("treats a null category as no category match rather than throwing", () => {
+  it("does not treat a null category as matching a category filter", () => {
+    // Note: this asserts the intended runtime behavior (null never matches),
+    // which the pre-guard implementation also happened to satisfy at
+    // runtime — `[...].includes(null)` is `false`, not a throw. The guard in
+    // `categoryMatch` exists to keep this null-safe under the type system now
+    // that `category` is nullable; that null-safety is enforced by
+    // `npm run typecheck` (it fails with TS2345 without the guard), not by
+    // this test. Kept anyway because the behavior itself — null never
+    // matches — is real intended behavior worth pinning independent of how
+    // it's implemented.
     const rows = [{ ...base, id: "b", contentType: "blog_post" as const, category: null }];
     const picked = selectExamples(rows, {
       industry: "developer tools",
