@@ -707,3 +707,25 @@ These came out of reading the codebase and are worth not re-deriving:
 - **Spec 4 (news agent)** reuses `sources` with `type: "news"` and a null `url`, searching against `companyProfiles.topics`. `scoreRelevance` is shared as-is; only acquisition differs.
 - **Deletion is deferred, not cancelled.** Whoever builds it must use `SIGNAL_WINDOW_DAYS` and `createdAt` from `src/lib/signals/window.ts`, and must exempt signals cited by an ACCEPTED brief — those are the evidence trail behind published content, and `brief_signals` will cascade on signal delete. Nothing is at risk until spec 5 creates that join, which is exactly why deferring deletion past it is safe.
 - **`signals.status = 'used'` is not a consumption gate.** Ideation reads every signal in its window regardless of status.
+
+## Known gap, parked (2026-08-03)
+
+**Hiding then unhiding a signal whose status was `used` loses that status.**
+`syncShippedWorkSignals` marks withdrawn signals `stale` unconditionally, so the
+upsert's `CASE WHEN status = 'stale' THEN 'new' ELSE status END` can only restore
+them to `new` — the prior `used` is already gone by then. The routine re-sync path
+(atomic update stays visible) *is* protected and tested; only the hide→unhide
+round trip is affected.
+
+Judged real but not load-bearing, and deliberately left for spec 5 to decide:
+
+- `used` is documented as a reporting and pruning flag, **not** a consumption
+  gate — ideation reads every signal in its window regardless of status.
+- `brief_signals` joins by row id, so no evidence is lost.
+- The deferred retention exemption is specified to work by join, not by status.
+
+**Why it was not simply fixed:** the obvious repair — marking stale only
+`WHERE status = 'new'` — would leave withdrawn `used` signals visible in the
+browser, which is a different bug. Preserving the prior status through the
+withdrawal needs somewhere to put it. Whoever builds spec 5 should choose with
+the citation model in hand rather than have this guessed at now.
