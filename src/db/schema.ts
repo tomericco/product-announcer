@@ -76,6 +76,14 @@ export const changeItemStatusEnum = pgEnum("change_item_status", ["pending", "ba
 export const reviewStatusEnum = pgEnum("review_status", ["passed", "failed", "error"]);
 export const updateCategoryEnum = pgEnum("update_category", ["new", "improvement", "fix", "announcement"]);
 export const contentTypeEnum = pgEnum("content_type", ["product_update", "blog_post", "social_post"]);
+export const contentPieceStatusEnum = pgEnum("content_piece_status", [
+  "brief",
+  "draft",
+  "review",
+  "scheduled",
+  "published",
+  "archived",
+]);
 
 export const changeEventTypeEnum = pgEnum("change_event_type", ["commit", "pull_request", "task"]);
 export const changeEventProviderEnum = pgEnum("change_event_provider", ["github", "notion"]);
@@ -198,8 +206,14 @@ export const scheduleConfigs = pgTable("schedule_configs", {
     .notNull()
     .unique()
     .references(() => tenants.id, { onDelete: "cascade" }),
-  // Time-of-day (0-23, UTC) the ideation agent runs for this tenant.
+  // Time-of-day (0-23, UTC) the ideation agent runs for this tenant. `vercel.ts`
+  // pins the cron to a single daily fixed-time invocation (Hobby plan limit),
+  // so a per-tenant hour cannot literally be honoured by the current
+  // infrastructure — spec 5 will need either a different cron plan or to treat
+  // this as a "preferred window" rather than an exact trigger time.
   hour: integer("hour").notNull().default(9),
+  // No reader and no writer today — both save paths write only `hour`.
+  // Retained deliberately: spec 5's ideation run uses these.
   lastRunAt: timestamp("last_run_at", { withTimezone: true }),
   nextScheduledAt: timestamp("next_scheduled_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -215,16 +229,23 @@ export const companyProfiles = pgTable("company_profiles", {
   // draft everything below; the human then corrects it.
   websiteUrl: text("website_url"),
   oneLiner: text("one_liner"),
+  // The company's market category (e.g. "Project management software"). New and
+  // inert — nothing reads or writes it yet; it's for the onboarding bootstrap
+  // agent (spec 2) and as relevance context for the source agents (spec 3).
+  // Distinct from `industry` below, which is live today.
   category: text("category"),
   // Differentiators and the messages the company wants to own. Not a setting —
   // this is the yardstick every incoming signal is scored for relevance against.
   positioning: text("positioning"),
   // The subjects in the company's lane. Drives the news agent's search (spec 4).
   topics: text("topics").array().notNull().default([]),
-  // The team's product-update communication guidelines, as Markdown. Null until
-  // they save for the first time — the editor shows a starter template instead,
-  // and the prompt builders omit the guidelines block entirely while it is null.
+  // The team's company-wide content guidelines, as Markdown. Null until they
+  // save for the first time — the editor shows a starter template instead, and
+  // the prompt builders omit the guidelines block entirely while it is null.
   guidelines: text("guidelines"),
+  // Live and load-bearing, unlike `category` above: `selectExamples` matches
+  // few-shot exemplars on this, and `brand-import.ts` writes it from the
+  // scraped page.
   industry: text("industry"),
   updatesPageUrl: text("updates_page_url"),
   userPersonas: jsonb("user_personas").$type<PersonaRef[]>().notNull().default([]),
@@ -262,15 +283,6 @@ export const systemContentExamples = pgTable("system_content_examples", {
   sortOrder: integer("sort_order").notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
-
-export const contentPieceStatusEnum = pgEnum("content_piece_status", [
-  "brief",
-  "draft",
-  "review",
-  "scheduled",
-  "published",
-  "archived",
-]);
 
 export const contentPieces = pgTable("content_pieces", {
   id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
