@@ -351,6 +351,13 @@
       "when": 1785774734071,
       "tag": "0049_blue_pixie",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1785777171275,
+      "tag": "0050_flat_the_hand",
+      "breakpoints": true
     }
   ]
 }

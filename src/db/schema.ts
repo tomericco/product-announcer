@@ -314,9 +314,15 @@ export const sources = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
-    // One row per watched URL per tenant, so re-running discovery tops up
-    // instead of duplicating.
-    uniqueIndex("sources_tenant_url_unique").on(table.tenantId, table.url),
+    // One row per watched (non-null) URL per tenant, so re-running discovery
+    // tops up instead of duplicating. Partial (`url IS NOT NULL`): Postgres
+    // treats NULLs as distinct from one another, so this gives no uniqueness
+    // to null-url sources — spec 4's topic-driven news sources are the
+    // null-url case *by design*, and need their own idempotency story
+    // (e.g. a tenant+type uniqueness rule) when that spec lands.
+    uniqueIndex("sources_tenant_url_unique")
+      .on(table.tenantId, table.url)
+      .where(sql`${table.url} IS NOT NULL`),
   ]
 );
 
@@ -333,6 +339,12 @@ export const signals = pgTable(
     kind: signalKindEnum("kind").notNull(),
     // Idempotency key, namespaced per kind. Shipped work uses the atomic
     // update's id; feed entries use their guid; news uses the article URL.
+    // `syncShippedWorkSignals` withdraws/stale-marks shipped_work signals with
+    // an unscoped, cross-tenant query — safe only because the atomic update's
+    // UUID is globally unique, unlike a feed guid or article URL, which this
+    // column anticipates being shared across tenants for other kinds. A future
+    // producer that writes `shipped_work` rows with a non-UUID externalId
+    // would silently break that cross-tenant safety.
     externalId: text("external_id").notNull(),
     url: text("url"),
     title: text("title").notNull(),
@@ -361,6 +373,12 @@ export const signals = pgTable(
     uniqueIndex("signals_tenant_kind_external_unique").on(table.tenantId, table.kind, table.externalId),
     index("signals_tenant_occurred_idx").on(table.tenantId, table.occurredAt),
     index("signals_tenant_kind_occurred_idx").on(table.tenantId, table.kind, table.occurredAt),
+    // Every read (the browser, the eventual purge) unconditionally filters on
+    // (tenantId, createdAt) for the 60-day window — the two existing indexes
+    // above lead with occurredAt, which doesn't serve that predicate. Nothing
+    // prunes the table yet, so without this a tenant's full history is
+    // scanned to find the recent slice.
+    index("signals_tenant_created_idx").on(table.tenantId, table.createdAt),
   ]
 );
 
