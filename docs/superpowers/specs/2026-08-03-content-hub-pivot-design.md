@@ -361,9 +361,8 @@ Findings that change the specs:
 
 1. **Quantity is not self-limiting.** "Up to 6" produced exactly 6 every time.
    Left as-is this manufactures content on quiet weeks — the exact failure mode
-   the human-gated model exists to avoid. Spec 5 must instruct the agent that
-   returning zero or two briefs is a correct outcome, and should be evaluated on
-   a deliberately thin signal week before shipping.
+   the human-gated model exists to avoid. **RESOLVED — see the quiet-week spike
+   below.**
 2. **Noise rejection works.** Planted low-value signals — Cloudflare V8 version
    bumps, a "platform improvements and fixes" maintenance release, market-size
    forecasts — were left uncited in every run. The ignore-noise rule earns its
@@ -393,6 +392,63 @@ Findings that change the specs:
 7. **Excerpt quality drives brief quality.** The tier-2 relevance pass in spec 3
    must preserve a meaningful excerpt, not just a score — the briefs lean on
    excerpt detail heavily.
+
+### Quiet-week spike — run 2026-08-03
+
+Finding 1 above was the one that could invalidate the premise, so it was tested
+directly before building further. Three configurations, two companies (Linear,
+and Frontitude as the low-ship-velocity case), using real signals plus a
+hand-built quiet week of routine material — dependency bumps, a Safari label fix,
+a Jira maintenance patch, a competitor's cosmetic restyle, an analyst market-size
+report.
+
+| prompt | week | briefs returned |
+| --- | --- | --- |
+| v1 (as spiked) | thin | 4 (Linear), 5 (Frontitude) |
+| v2 (revised) | thin | **0, 0** |
+| v2 (revised) | rich | 3 (Linear), 2 (Frontitude) |
+
+**The failure is real and worse than "it pads".** On the quiet week, v1 proposed a
+blog post titled *"Dashboard refreshes and maintenance releases: what a quiet
+quarter in localization tooling actually means"* — a brief whose subject is the
+absence of anything to write about — and a product update justifying a
+stability-only release. That is not a marginal call; it is the tool inventing
+work.
+
+**The fix is achievable in the prompt alone. No code mechanism is needed.** v2
+returned zero briefs on both quiet weeks, with an honest one-line judgement
+instead: *"a dependency bump, a Safari label fix, a 'modest' sync improvement, a
+Jira maintenance patch, and a generic market forecast add up to a genuinely
+routine week, so Linear should publish nothing and keep its changelog
+credibility intact."*
+
+**Volume on a good week drops from 6 to 2–3, and that is the intended effect.**
+v2's briefs cite more evidence and reject weak material explicitly — Linear's
+top brief clusters eight signals, and the assessment names the funding and
+market-forecast signals as supporting nothing. Run 1's briefs 5 and 6 were
+already noted as compressed restatements of the flagship argument; those are what
+disappeared. Spec 5 should expect a handful of strong briefs per run, not an
+inbox that always looks full.
+
+**What v2 changed** (all at once — attribution between them is untested):
+
+- Removed the "up to 6" quota entirely: *"There is no target number."*
+- Licensed silence explicitly: *"Most weeks are quiet. Returning an empty list is
+  a correct and common outcome."*
+- Stated a bar: would you defend this to a skeptical head of marketing? If the
+  answer to "why publish this" is "because it is Tuesday", it fails.
+- Named padding as the worst outcome: *"Two strong briefs beat six padded ones;
+  zero strong briefs beat one padded one."*
+- Listed what never clears the bar alone: version bumps, maintenance releases,
+  generic market statistics, cosmetic competitor changes.
+- Added a required `weekAssessment` field, answered **before** the brief list, so
+  the model judges density before enumerating rather than filling a list.
+- Capped `keyPoints` at 3–5 structurally in the schema, and dropped `outline`.
+
+**`weekAssessment` should reach the UI.** It was added to force judgement, but it
+is also the right empty state: "Quiet week — nothing clears the bar", with the
+reasoning, is far better than a blank inbox that reads as broken. Keep the field
+whether or not it turns out to be load-bearing for the fix.
 
 Four prompt rules earned their place and should carry into spec 5 close to
 verbatim: favour clusters, the swap test ("if it reads the same with a
