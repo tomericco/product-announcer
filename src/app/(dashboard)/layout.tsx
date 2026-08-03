@@ -3,7 +3,7 @@ import { and, count, eq } from "drizzle-orm";
 import { redirect } from "next/navigation";
 import { ChevronsUpDown } from "lucide-react";
 import { db } from "@/db";
-import { releases, tenants } from "@/db/schema";
+import { contentPieces, tenants } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { isOnboardingComplete } from "@/lib/workspace/onboarding";
 import { Button } from "@/components/ui/button";
@@ -27,8 +27,8 @@ export default async function DashboardLayout({ children }: { children: React.Re
 
   const [draftCountRow] = await db
     .select({ value: count() })
-    .from(releases)
-    .where(and(eq(releases.tenantId, session.user.tenantId), eq(releases.status, "draft")));
+    .from(contentPieces)
+    .where(and(eq(contentPieces.tenantId, session.user.tenantId), eq(contentPieces.status, "draft")));
   const draftCount = draftCountRow?.value ?? 0;
 
   return (

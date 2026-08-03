@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { linkedinDestination } from "../../../src/lib/publishing/destinations/linkedin";
-import type { Release, DbClient } from "../../../src/lib/publishing/destinations/types";
+import type { ContentPiece, DbClient } from "../../../src/lib/publishing/destinations/types";
 
 vi.mock("../../../src/lib/integrations/linkedin/token", () => ({ getValidAccessToken: vi.fn() }));
 vi.mock("../../../src/lib/integrations/linkedin/client", async (importOriginal) => {
@@ -10,8 +10,8 @@ vi.mock("../../../src/lib/integrations/linkedin/client", async (importOriginal) 
 import { getValidAccessToken } from "../../../src/lib/integrations/linkedin/token";
 import { createPost, LinkedinApiError } from "../../../src/lib/integrations/linkedin/client";
 
-const release = (over: Partial<Release> = {}): Release =>
-  ({ id: "r1", tenantId: "t1", title: "New Dashboard", body: "b", linkedinBody: "Hook.\n\nDetails.", ...over } as Release);
+const release = (over: Partial<ContentPiece> = {}): ContentPiece =>
+  ({ id: "r1", tenantId: "t1", title: "New Dashboard", body: "b", linkedinBody: "Hook.\n\nDetails.", ...over } as ContentPiece);
 
 const connection = (over: Record<string, unknown> = {}) =>
   ({ id: "c1", status: "active", organizationUrn: "urn:li:organization:1", baseUrl: "https://acme.com/changelog/", ...over } as never);

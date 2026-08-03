@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../src/db";
-import { tenants, repos, changeEvents, atomicUpdates, releases } from "../../src/db/schema";
+import { tenants, repos, changeEvents, atomicUpdates, contentPieces } from "../../src/db/schema";
 
 const TENANT = "Atomic Updates Actions Test Tenant";
 let currentTenantId = "";
@@ -80,13 +80,13 @@ describe("atomic update actions", () => {
     const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
     currentTenantId = tenant.id;
     const [release] = await db
-      .insert(releases)
+      .insert(contentPieces)
       .values({ tenantId: tenant.id, title: "Draft", body: "B" })
       .returning();
     await db.insert(atomicUpdates).values({ tenantId: tenant.id, title: "Open, unclaimed", summary: "S" });
     await db
       .insert(atomicUpdates)
-      .values({ tenantId: tenant.id, title: "Open, but in a draft", summary: "S", releaseId: release.id });
+      .values({ tenantId: tenant.id, title: "Open, but in a draft", summary: "S", contentPieceId: release.id });
 
     const rows = await listAtomicUpdates();
     expect(rows.map((r) => r.title)).toEqual(["Open, unclaimed"]);
@@ -407,12 +407,12 @@ describe("hideAtomicUpdate / unhideAtomicUpdate / showHidden listing", () => {
     const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
     currentTenantId = tenant.id;
     const [release] = await db
-      .insert(releases)
+      .insert(contentPieces)
       .values({ tenantId: tenant.id, title: "Draft", body: "B" })
       .returning();
     const [atomic] = await db
       .insert(atomicUpdates)
-      .values({ tenantId: tenant.id, title: "In a draft", summary: "S", releaseId: release.id })
+      .values({ tenantId: tenant.id, title: "In a draft", summary: "S", contentPieceId: release.id })
       .returning();
 
     const result = await hideAtomicUpdate(atomic.id);
@@ -420,7 +420,7 @@ describe("hideAtomicUpdate / unhideAtomicUpdate / showHidden listing", () => {
     expect(result).toEqual({ ok: false });
     const [after] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, atomic.id));
     expect(after.status).toBe("open");
-    expect(after.releaseId).toBe(release.id);
+    expect(after.contentPieceId).toBe(release.id);
   });
 
   it("refuses to hide another tenant's atomic update", async () => {
@@ -649,7 +649,7 @@ describe("hasCuratableAtomicUpdates", () => {
     const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
     currentTenantId = tenant.id;
     const [release] = await db
-      .insert(releases)
+      .insert(contentPieces)
       .values({ tenantId: tenant.id, title: "Draft", body: "B" })
       .returning();
     await db
@@ -657,7 +657,7 @@ describe("hasCuratableAtomicUpdates", () => {
       .values({ tenantId: tenant.id, title: "Shipped", summary: "S", status: "released" });
     await db
       .insert(atomicUpdates)
-      .values({ tenantId: tenant.id, title: "Claimed", summary: "S", releaseId: release.id });
+      .values({ tenantId: tenant.id, title: "Claimed", summary: "S", contentPieceId: release.id });
 
     expect(await hasCuratableAtomicUpdates()).toBe(false);
   });
@@ -711,12 +711,12 @@ describe("bulkHideAtomicUpdates", () => {
       .values({ tenantId: tenant.id, title: "Released", summary: "S", status: "released" })
       .returning();
     const [release] = await db
-      .insert(releases)
+      .insert(contentPieces)
       .values({ tenantId: tenant.id, title: "Draft", body: "B" })
       .returning();
     const [linked] = await db
       .insert(atomicUpdates)
-      .values({ tenantId: tenant.id, title: "Linked", summary: "S", releaseId: release.id })
+      .values({ tenantId: tenant.id, title: "Linked", summary: "S", contentPieceId: release.id })
       .returning();
     const [foreign] = await db
       .insert(atomicUpdates)
@@ -797,12 +797,12 @@ describe("bulkDeleteAtomicUpdates", () => {
       .values({ tenantId: tenant.id, title: "Released", summary: "S", status: "released" })
       .returning();
     const [release] = await db
-      .insert(releases)
+      .insert(contentPieces)
       .values({ tenantId: tenant.id, title: "Draft", body: "B" })
       .returning();
     const [linked] = await db
       .insert(atomicUpdates)
-      .values({ tenantId: tenant.id, title: "Linked", summary: "S", releaseId: release.id })
+      .values({ tenantId: tenant.id, title: "Linked", summary: "S", contentPieceId: release.id })
       .returning();
     const [foreign] = await db
       .insert(atomicUpdates)

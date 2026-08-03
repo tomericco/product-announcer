@@ -8,7 +8,7 @@ vi.mock("next/headers", () => ({ cookies: vi.fn(async () => ({ get: () => undefi
 
 import { getServerSession } from "next-auth";
 import { db } from "../../../src/db";
-import { tenants, repos, releases, webhookConfigs, webflowConnections, deliveryAttempts, users, tenantMembers } from "../../../src/db/schema";
+import { tenants, repos, contentPieces, webhookConfigs, webflowConnections, deliveryAttempts, users, tenantMembers } from "../../../src/db/schema";
 import { encryptSecret } from "../../../src/lib/credentials/encryption";
 import { approveDraft, publishDraft } from "../../../src/app/(dashboard)/drafts/actions";
 
@@ -37,7 +37,7 @@ async function seed(tenantName = TENANT_NAME) {
     .returning();
   await db.insert(webhookConfigs).values({ tenantId: tenant.id, url: "https://example.com/hook", ...encryptedSecret() });
   const [update] = await db
-    .insert(releases)
+    .insert(contentPieces)
     .values({
       tenantId: tenant.id,
       repoId: repo.id,
@@ -63,17 +63,17 @@ async function seedOtherTenantMember() {
 }
 
 async function rowFor(releaseId: string) {
-  const [row] = await db.select().from(releases).where(eq(releases.id, releaseId));
+  const [row] = await db.select().from(contentPieces).where(eq(contentPieces.id, releaseId));
   return row;
 }
 
 async function deliveriesFor(releaseId: string) {
-  return db.select().from(deliveryAttempts).where(eq(deliveryAttempts.releaseId, releaseId));
+  return db.select().from(deliveryAttempts).where(eq(deliveryAttempts.contentPieceId, releaseId));
 }
 
 function approveFormData(releaseId: string, publishedAt: string, destinations: string[] = ["webhook"]) {
   const fd = new FormData();
-  fd.set("releaseId", releaseId);
+  fd.set("contentPieceId", releaseId);
   fd.set("title", "Original title");
   fd.set("body", "Original body");
   fd.set("publishedAt", publishedAt);
@@ -83,7 +83,7 @@ function approveFormData(releaseId: string, publishedAt: string, destinations: s
 
 function publishFormData(releaseId: string, publishedAt: string) {
   const fd = new FormData();
-  fd.set("releaseId", releaseId);
+  fd.set("contentPieceId", releaseId);
   fd.set("publishedAt", publishedAt);
   return fd;
 }

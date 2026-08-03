@@ -2,7 +2,7 @@ import { and, desc, eq, inArray } from "drizzle-orm";
 import Link from "next/link";
 import { FileText, ArrowRight } from "lucide-react";
 import { db } from "@/db";
-import { releases, atomicUpdates } from "@/db/schema";
+import { contentPieces, atomicUpdates } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -21,29 +21,29 @@ export default async function DraftsPage() {
   const session = await requireSession();
   const drafts = await db
     .select()
-    .from(releases)
-    .where(and(eq(releases.tenantId, session.user.tenantId), eq(releases.status, "draft")))
+    .from(contentPieces)
+    .where(and(eq(contentPieces.tenantId, session.user.tenantId), eq(contentPieces.status, "draft")))
     // Newest first — the list shows creation times, so an unordered result
     // would read as broken.
-    .orderBy(desc(releases.createdAt));
+    .orderBy(desc(contentPieces.createdAt));
 
   // The composition link for a draft's constituent changes is
-  // `atomicUpdates.releaseId` — releases carry no column of their own for
-  // this — so the per-draft count is a small side query rather than a plain
-  // field read.
+  // `atomicUpdates.contentPieceId` — content pieces carry no column of their
+  // own for this — so the per-draft count is a small side query rather than a
+  // plain field read.
   const atomicUpdateCounts = new Map<string, number>();
   if (drafts.length > 0) {
     const linked = await db
-      .select({ releaseId: atomicUpdates.releaseId })
+      .select({ contentPieceId: atomicUpdates.contentPieceId })
       .from(atomicUpdates)
       .where(
         inArray(
-          atomicUpdates.releaseId,
+          atomicUpdates.contentPieceId,
           drafts.map((d) => d.id)
         )
       );
-    for (const { releaseId } of linked) {
-      if (releaseId) atomicUpdateCounts.set(releaseId, (atomicUpdateCounts.get(releaseId) ?? 0) + 1);
+    for (const { contentPieceId } of linked) {
+      if (contentPieceId) atomicUpdateCounts.set(contentPieceId, (atomicUpdateCounts.get(contentPieceId) ?? 0) + 1);
     }
   }
 
@@ -101,7 +101,7 @@ export default async function DraftsPage() {
             </span>
             <div className="relative shrink-0">
               <DraftRowMenu
-                releaseId={d.id}
+                contentPieceId={d.id}
                 title={d.title}
                 atomicUpdateCount={atomicUpdateCounts.get(d.id) ?? 0}
                 publishedAt={d.publishedAt ? d.publishedAt.toISOString() : null}

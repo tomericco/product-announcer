@@ -94,7 +94,7 @@ export async function listAtomicUpdates(
         // getOpenAtomicUpdates in release-claim.ts for the same rule. A no-op
         // for the hidden rows (only an unlinked update can be hidden), so it
         // costs nothing to leave it applying to both.
-        isNull(atomicUpdates.releaseId),
+        isNull(atomicUpdates.contentPieceId),
         // Optional list filters; `and` drops the undefined ones.
         filters.category ? eq(atomicUpdates.category, filters.category) : undefined,
         filters.size ? eq(atomicUpdates.size, filters.size) : undefined
@@ -171,7 +171,7 @@ export async function hasCuratableAtomicUpdates(): Promise<boolean> {
       and(
         eq(atomicUpdates.tenantId, session.user.tenantId),
         inArray(atomicUpdates.status, ["open", "hidden"]),
-        isNull(atomicUpdates.releaseId)
+        isNull(atomicUpdates.contentPieceId)
       )
     )
     .limit(1);
@@ -194,7 +194,7 @@ export async function hasCuratableAtomicUpdates(): Promise<boolean> {
  * update instead of silently reappearing on this one.
  *
  * Only an open, UNLINKED update may be hidden: `status = 'open' AND
- * releaseId IS NULL`. One already claimed into a draft release must not be
+ * contentPieceId IS NULL`. One already claimed into a draft release must not be
  * hidden here — hiding a title mid-draft is a different, unhandled concern,
  * and `listAtomicUpdates` only ever shows unlinked-open updates in the first
  * place, so the UI never offers this action on a linked one anyway.
@@ -210,7 +210,7 @@ export async function hideAtomicUpdate(id: string): Promise<{ ok: boolean }> {
         eq(atomicUpdates.id, id),
         eq(atomicUpdates.tenantId, session.user.tenantId),
         eq(atomicUpdates.status, "open"),
-        isNull(atomicUpdates.releaseId)
+        isNull(atomicUpdates.contentPieceId)
       )
     )
     .returning({ id: atomicUpdates.id });
@@ -222,7 +222,7 @@ export async function hideAtomicUpdate(id: string): Promise<{ ok: boolean }> {
 /**
  * Bulk form of `hideAtomicUpdate`: hides every OPEN, unlinked atomic
  * update in `ids` in one statement. The WHERE guard is identical
- * (`status = 'open' AND releaseId IS NULL`, tenant-scoped), so ids that are
+ * (`status = 'open' AND contentPieceId IS NULL`, tenant-scoped), so ids that are
  * released, already linked to a draft, or belong to another tenant are
  * silently skipped rather than erroring — `count` reports how many actually
  * flipped, letting the caller distinguish a full from a partial hide.
@@ -239,7 +239,7 @@ export async function bulkHideAtomicUpdates(ids: string[]): Promise<{ count: num
         inArray(atomicUpdates.id, ids),
         eq(atomicUpdates.tenantId, session.user.tenantId),
         eq(atomicUpdates.status, "open"),
-        isNull(atomicUpdates.releaseId)
+        isNull(atomicUpdates.contentPieceId)
       )
     )
     .returning({ id: atomicUpdates.id });
@@ -251,7 +251,7 @@ export async function bulkHideAtomicUpdates(ids: string[]): Promise<{ count: num
 /**
  * Permanently deletes open, unlinked atomic updates (a hard DB row delete,
  * unlike `bulkHideAtomicUpdates`, which only flips them to `hidden`).
- * The WHERE guard matches the hide action's — `status = 'open' AND releaseId
+ * The WHERE guard matches the hide action's — `status = 'open' AND contentPieceId
  * IS NULL`, tenant-scoped — so a released update or one already in a draft is
  * skipped rather than erroring; `count` reports how many rows were removed.
  *
@@ -273,7 +273,7 @@ export async function bulkDeleteAtomicUpdates(ids: string[]): Promise<{ count: n
         inArray(atomicUpdates.id, ids),
         eq(atomicUpdates.tenantId, session.user.tenantId),
         eq(atomicUpdates.status, "open"),
-        isNull(atomicUpdates.releaseId)
+        isNull(atomicUpdates.contentPieceId)
       )
     )
     .returning({ id: atomicUpdates.id });

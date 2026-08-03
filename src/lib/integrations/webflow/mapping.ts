@@ -1,11 +1,11 @@
 import type { WebflowFieldMapping } from "@/db/schema";
 import { markdownToWebflowHtml } from "@/lib/publishing/markdown-to-html";
 import { slugify } from "@/lib/publishing/slug";
-import type { Release } from "@/lib/publishing/destinations/types";
+import type { ContentPiece } from "@/lib/publishing/destinations/types";
 import type { WebflowField } from "./client";
 
 export function buildFieldData(
-  release: Release,
+  piece: ContentPiece,
   mapping: WebflowFieldMapping,
   fields: WebflowField[],
   slugOverride?: string
@@ -18,18 +18,18 @@ export function buildFieldData(
 
     switch (entry.source) {
       case "title":
-        data[field.slug] = release.title;
+        data[field.slug] = piece.title;
         break;
       case "body":
-        data[field.slug] = markdownToWebflowHtml(release.body);
+        data[field.slug] = markdownToWebflowHtml(piece.body);
         break;
       case "slug":
-        data[field.slug] = slugOverride ?? slugify(release.title);
+        data[field.slug] = slugOverride ?? slugify(piece.title);
         break;
       case "publishedAt":
         // Webflow DateTime fields take ISO-8601. Fall back to now for an update
         // that has not been stamped yet.
-        data[field.slug] = (release.publishedAt ?? new Date()).toISOString();
+        data[field.slug] = (piece.publishedAt ?? new Date()).toISOString();
         break;
       case "static":
         data[field.slug] = entry.value;

@@ -7,7 +7,7 @@ vi.mock("../../../../../src/lib/ai/extract-release", () => ({ runExtractForRelea
 
 import { getServerSession } from "next-auth";
 import { db } from "../../../../../src/db";
-import { users, tenants, tenantMembers, releases } from "../../../../../src/db/schema";
+import { users, tenants, tenantMembers, contentPieces } from "../../../../../src/db/schema";
 import { runExtractForRelease } from "../../../../../src/lib/ai/extract-release";
 import { POST } from "../../../../../src/app/api/drafts/extract/route";
 
@@ -45,7 +45,7 @@ afterEach(async () => {
   for (const name of [TENANT_NAME, OTHER_TENANT_NAME]) {
     const [tenant] = await db.select().from(tenants).where(eq(tenants.name, name));
     if (tenant) {
-      await db.delete(releases).where(eq(releases.tenantId, tenant.id));
+      await db.delete(contentPieces).where(eq(contentPieces.tenantId, tenant.id));
       await db.delete(tenants).where(eq(tenants.id, tenant.id));
     }
   }
@@ -54,7 +54,7 @@ afterEach(async () => {
 describe("POST /api/drafts/extract", () => {
   it("returns 401 when unauthenticated", async () => {
     vi.mocked(getServerSession).mockResolvedValue(null as never);
-    const res = await POST(postRequest({ releaseId: "r", excerpt: "x", remainingBody: "y" }));
+    const res = await POST(postRequest({ contentPieceId: "r", excerpt: "x", remainingBody: "y" }));
     expect(res.status).toBe(401);
     expect(runExtractForRelease).not.toHaveBeenCalled();
   });
@@ -62,7 +62,7 @@ describe("POST /api/drafts/extract", () => {
   it("returns 401 when the user has no membership", async () => {
     const [user] = await db.insert(users).values({ email: emails[0] }).returning();
     vi.mocked(getServerSession).mockResolvedValue({ user: { id: user.id } } as never);
-    const res = await POST(postRequest({ releaseId: "r", excerpt: "x", remainingBody: "y" }));
+    const res = await POST(postRequest({ contentPieceId: "r", excerpt: "x", remainingBody: "y" }));
     expect(res.status).toBe(401);
     expect(runExtractForRelease).not.toHaveBeenCalled();
   });
@@ -73,12 +73,12 @@ describe("POST /api/drafts/extract", () => {
 
     const [other] = await db.insert(tenants).values({ name: OTHER_TENANT_NAME }).returning();
     const [foreign] = await db
-      .insert(releases)
+      .insert(contentPieces)
       .values({ tenantId: other.id, title: "T", body: "B" })
       .returning();
 
     const res = await POST(
-      postRequest({ releaseId: foreign.id, excerpt: "x", remainingBody: "y", instruction: "" })
+      postRequest({ contentPieceId: foreign.id, excerpt: "x", remainingBody: "y", instruction: "" })
     );
     const events = await readNdjson(res);
     expect(events.some((e) => e.type === "error")).toBe(true);
@@ -92,13 +92,13 @@ describe("POST /api/drafts/extract", () => {
     const { user, tenant } = await makeAuthedUserAndTenant();
     vi.mocked(getServerSession).mockResolvedValue({ user: { id: user.id } } as never);
     const [release] = await db
-      .insert(releases)
+      .insert(contentPieces)
       .values({ tenantId: tenant.id, title: "T", body: "B", status: "published", publishedAt: new Date() })
       .returning();
 
     const res = await POST(
       postRequest({
-        releaseId: release.id,
+        contentPieceId: release.id,
         excerpt: "Extracted paragraph.",
         remainingBody: "Kept paragraph.",
         instruction: "",
@@ -109,24 +109,24 @@ describe("POST /api/drafts/extract", () => {
     expect(runExtractForRelease).not.toHaveBeenCalled();
   });
 
-  it("streams an error for a rejected release and never runs the pipeline", async () => {
+  it("streams an error for an archived piece and never runs the pipeline", async () => {
     const { user, tenant } = await makeAuthedUserAndTenant();
     vi.mocked(getServerSession).mockResolvedValue({ user: { id: user.id } } as never);
     const [release] = await db
-      .insert(releases)
-      .values({ tenantId: tenant.id, title: "T", body: "B", status: "rejected" })
+      .insert(contentPieces)
+      .values({ tenantId: tenant.id, title: "T", body: "B", status: "archived" })
       .returning();
 
     const res = await POST(
       postRequest({
-        releaseId: release.id,
+        contentPieceId: release.id,
         excerpt: "Extracted paragraph.",
         remainingBody: "Kept paragraph.",
         instruction: "",
       })
     );
     const events = await readNdjson(res);
-    expect(events.some((e) => e.type === "error" && /rejected/i.test(e.message))).toBe(true);
+    expect(events.some((e) => e.type === "error" && /archived/i.test(e.message))).toBe(true);
     expect(runExtractForRelease).not.toHaveBeenCalled();
   });
 
@@ -134,12 +134,12 @@ describe("POST /api/drafts/extract", () => {
     const { user, tenant } = await makeAuthedUserAndTenant();
     vi.mocked(getServerSession).mockResolvedValue({ user: { id: user.id } } as never);
     const [release] = await db
-      .insert(releases)
+      .insert(contentPieces)
       .values({ tenantId: tenant.id, title: "T", body: "B" })
       .returning();
 
     const res = await POST(
-      postRequest({ releaseId: release.id, excerpt: "x", remainingBody: "   ", instruction: "" })
+      postRequest({ contentPieceId: release.id, excerpt: "x", remainingBody: "   ", instruction: "" })
     );
     const events = await readNdjson(res);
     expect(events.some((e) => e.type === "error")).toBe(true);
@@ -150,19 +150,19 @@ describe("POST /api/drafts/extract", () => {
     const { user, tenant } = await makeAuthedUserAndTenant();
     vi.mocked(getServerSession).mockResolvedValue({ user: { id: user.id } } as never);
     const [release] = await db
-      .insert(releases)
+      .insert(contentPieces)
       .values({ tenantId: tenant.id, title: "T", body: "B" })
       .returning();
 
     vi.mocked(runExtractForRelease).mockImplementation(async (_args, _db, onProgress) => {
       onProgress?.({ type: "step", key: "preparing", status: "start" });
       onProgress?.({ type: "done", updateId: "new-release-id" });
-      return { releaseId: "new-release-id", title: "Generated title" };
+      return { contentPieceId: "new-release-id", title: "Generated title" };
     });
 
     const res = await POST(
       postRequest({
-        releaseId: release.id,
+        contentPieceId: release.id,
         excerpt: "Extracted paragraph.",
         remainingBody: "Kept paragraph.",
         instruction: "keep it short",
@@ -174,7 +174,7 @@ describe("POST /api/drafts/extract", () => {
 
     expect(runExtractForRelease).toHaveBeenCalledTimes(1);
     expect(vi.mocked(runExtractForRelease).mock.calls[0][0]).toMatchObject({
-      releaseId: release.id,
+      contentPieceId: release.id,
       excerpt: "Extracted paragraph.",
       remainingBody: "Kept paragraph.",
       instruction: "keep it short",

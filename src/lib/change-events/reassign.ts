@@ -61,14 +61,14 @@ export type ReassignNeedsConfirmation = {
 export type ReassignResult = ReassignSuccess | ReassignRejection | ReassignNeedsConfirmation;
 
 /**
- * All `status='open'` atomic updates for the tenant, regardless of `releaseId`
- * — the valid reassign-target set. An atomic update sitting in an unpublished
- * draft release is still open (nothing has shipped yet), so it's a legitimate
- * destination for a manually reassigned event. Deliberately does NOT filter
- * `releaseId IS NULL` the way the compose-side candidate set does
- * (`getOpenAtomicUpdates` in release-claim.ts) — that filter exists to avoid
- * offering an already-claimed atomic update for a SECOND release, which is
- * irrelevant here.
+ * All `status='open'` atomic updates for the tenant, regardless of
+ * `contentPieceId` — the valid reassign-target set. An atomic update sitting
+ * in an unpublished draft release is still open (nothing has shipped yet),
+ * so it's a legitimate destination for a manually reassigned event.
+ * Deliberately does NOT filter `contentPieceId IS NULL` the way the
+ * compose-side candidate set does (`getOpenAtomicUpdates` in release-claim.ts)
+ * — that filter exists to avoid offering an already-claimed atomic update for
+ * a SECOND release, which is irrelevant here.
  */
 export async function openAtomicUpdatesForReassign(
   tenantId: string,
@@ -101,8 +101,8 @@ export function seedFromEvent(event: typeof changeEvents.$inferSelect): {
  * A single `now` timestamp is captured for the whole transaction and used to
  * deterministically bump `updatedAt` on every affected still-open atomic
  * update (the target for `existing`/`new`, and the source if it survives).
- * This is what fires a draft release's catch-up "evidence delta"
- * (`atomicUpdates.updatedAt > release.composedAt`) reliably — it must not
+ * This is what fires a draft's catch-up "evidence delta"
+ * (`atomicUpdates.updatedAt > contentPiece.composedAt`) reliably — it must not
  * depend on the best-effort, freeze-skippable summary regen below.
  *
  * Summary regeneration for the affected atomic update(s) runs best-effort
@@ -148,21 +148,21 @@ export async function reassignChangeEvent(
     const sourceAtomicUpdateId = event.atomicUpdateId;
     let sourceStatus: AtomicUpdateRow["status"] | null = null;
     let sourceTitle: string | null = null;
-    let sourceReleaseId: string | null = null;
+    let sourceContentPieceId: string | null = null;
 
     if (sourceAtomicUpdateId) {
       const [source] = await tx
         .select({
           status: atomicUpdates.status,
           title: atomicUpdates.title,
-          releaseId: atomicUpdates.releaseId,
+          contentPieceId: atomicUpdates.contentPieceId,
         })
         .from(atomicUpdates)
         .where(and(eq(atomicUpdates.id, sourceAtomicUpdateId), eq(atomicUpdates.tenantId, tenantId)))
         .limit(1);
       sourceStatus = source?.status ?? null;
       sourceTitle = source?.title ?? null;
-      sourceReleaseId = source?.releaseId ?? null;
+      sourceContentPieceId = source?.contentPieceId ?? null;
 
       if (sourceStatus === "released") {
         return { ok: false, reason: "Cannot move an event out of a published atomic update." };
@@ -219,7 +219,7 @@ export async function reassignChangeEvent(
           emptiedAtomicUpdate: {
             id: sourceAtomicUpdateId!,
             title: sourceTitle ?? "",
-            inDraft: sourceReleaseId !== null,
+            inDraft: sourceContentPieceId !== null,
           },
         };
       }

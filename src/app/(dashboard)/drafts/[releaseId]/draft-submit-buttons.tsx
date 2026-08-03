@@ -29,8 +29,8 @@ export function RejectButton() {
   const { pending } = useFormStatus();
   return (
     // formAction overrides the form's default action (saveDraft) for this
-    // button only. rejectDraft reads just releaseId (a hidden field in the
-    // form), so submitting the whole form here is harmless.
+    // button only. rejectDraft reads just contentPieceId (a hidden field in
+    // the form), so submitting the whole form here is harmless.
     <Button
       type="submit"
       formAction={rejectDraft}

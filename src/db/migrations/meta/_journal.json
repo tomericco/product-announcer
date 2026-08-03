@@ -274,6 +274,20 @@
       "when": 1785336430171,
       "tag": "0038_dry_thaddeus_ross",
       "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1785757160693,
+      "tag": "0039_volatile_dracula",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1785757175099,
+      "tag": "0040_woozy_christian_walker",
+      "breakpoints": true
     }
   ]
 }

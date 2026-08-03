@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, atomicUpdates, releases } from "../../../src/db/schema";
+import { tenants, atomicUpdates, contentPieces } from "../../../src/db/schema";
 import { computeReleaseDelta } from "../../../src/lib/change-events/release-deltas";
 
 const TENANT = "Release Deltas Test Tenant";
@@ -20,7 +20,7 @@ describe("computeReleaseDelta", () => {
   it("includes an open, unlinked AU created after composedAt in newAtomicUpdates", async () => {
     const [t] = await db.insert(tenants).values({ name: TENANT }).returning();
     const [r] = await db
-      .insert(releases)
+      .insert(contentPieces)
       .values({ tenantId: t.id, title: "R", body: "B", composedAt: T })
       .returning();
     const [au] = await db
@@ -35,7 +35,7 @@ describe("computeReleaseDelta", () => {
   it("excludes an open, unlinked AU created before composedAt from newAtomicUpdates", async () => {
     const [t] = await db.insert(tenants).values({ name: TENANT }).returning();
     const [r] = await db
-      .insert(releases)
+      .insert(contentPieces)
       .values({ tenantId: t.id, title: "R", body: "B", composedAt: T })
       .returning();
     await db.insert(atomicUpdates).values({ tenantId: t.id, title: "Old", summary: "S", createdAt: BEFORE });
@@ -47,12 +47,12 @@ describe("computeReleaseDelta", () => {
   it("includes an AU linked to this release with updatedAt > composedAt in changedAtomicUpdates", async () => {
     const [t] = await db.insert(tenants).values({ name: TENANT }).returning();
     const [r] = await db
-      .insert(releases)
+      .insert(contentPieces)
       .values({ tenantId: t.id, title: "R", body: "B", composedAt: T })
       .returning();
     const [au] = await db
       .insert(atomicUpdates)
-      .values({ tenantId: t.id, releaseId: r.id, title: "Changed", summary: "S", createdAt: BEFORE, updatedAt: AFTER })
+      .values({ tenantId: t.id, contentPieceId: r.id, title: "Changed", summary: "S", createdAt: BEFORE, updatedAt: AFTER })
       .returning();
 
     const delta = await computeReleaseDelta(r.id);
@@ -62,12 +62,12 @@ describe("computeReleaseDelta", () => {
   it("excludes an AU linked to this release with updatedAt <= composedAt from changedAtomicUpdates", async () => {
     const [t] = await db.insert(tenants).values({ name: TENANT }).returning();
     const [r] = await db
-      .insert(releases)
+      .insert(contentPieces)
       .values({ tenantId: t.id, title: "R", body: "B", composedAt: T })
       .returning();
     await db
       .insert(atomicUpdates)
-      .values({ tenantId: t.id, releaseId: r.id, title: "Unchanged", summary: "S", createdAt: BEFORE, updatedAt: T });
+      .values({ tenantId: t.id, contentPieceId: r.id, title: "Unchanged", summary: "S", createdAt: BEFORE, updatedAt: T });
 
     const delta = await computeReleaseDelta(r.id);
     expect(delta.changedAtomicUpdates).toEqual([]);
@@ -76,14 +76,14 @@ describe("computeReleaseDelta", () => {
   it("count equals the sum of both lists", async () => {
     const [t] = await db.insert(tenants).values({ name: TENANT }).returning();
     const [r] = await db
-      .insert(releases)
+      .insert(contentPieces)
       .values({ tenantId: t.id, title: "R", body: "B", composedAt: T })
       .returning();
     await db.insert(atomicUpdates).values({ tenantId: t.id, title: "New1", summary: "S", createdAt: AFTER });
     await db.insert(atomicUpdates).values({ tenantId: t.id, title: "New2", summary: "S", createdAt: AFTER });
     await db
       .insert(atomicUpdates)
-      .values({ tenantId: t.id, releaseId: r.id, title: "Changed", summary: "S", createdAt: BEFORE, updatedAt: AFTER });
+      .values({ tenantId: t.id, contentPieceId: r.id, title: "Changed", summary: "S", createdAt: BEFORE, updatedAt: AFTER });
 
     const delta = await computeReleaseDelta(r.id);
     expect(delta.newAtomicUpdates).toHaveLength(2);
@@ -95,7 +95,7 @@ describe("computeReleaseDelta", () => {
     const [t] = await db.insert(tenants).values({ name: TENANT }).returning();
     const [other] = await db.insert(tenants).values({ name: TENANT }).returning();
     const [r] = await db
-      .insert(releases)
+      .insert(contentPieces)
       .values({ tenantId: t.id, title: "R", body: "B", composedAt: T })
       .returning();
     await db.insert(atomicUpdates).values({ tenantId: other.id, title: "Foreign New", summary: "S", createdAt: AFTER });
@@ -105,7 +105,7 @@ describe("computeReleaseDelta", () => {
     expect(delta.count).toBe(0);
   });
 
-  it("returns the empty delta without throwing for a nonexistent releaseId", async () => {
+  it("returns the empty delta without throwing for a nonexistent contentPieceId", async () => {
     const delta = await computeReleaseDelta("00000000-0000-0000-0000-000000000000");
     expect(delta).toEqual({ newAtomicUpdates: [], changedAtomicUpdates: [], count: 0 });
   });

@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, atomicUpdates, releases } from "../../../src/db/schema";
+import { tenants, atomicUpdates, contentPieces } from "../../../src/db/schema";
 import {
   claimReleaseFromAtomicUpdates,
   revertReleaseAtomicUpdates,
@@ -35,7 +35,7 @@ describe("claimReleaseFromAtomicUpdates", () => {
       review: { status: "passed", issues: [] },
     });
     expect(r).not.toBeNull();
-    const claimed = await db.select().from(atomicUpdates).where(eq(atomicUpdates.releaseId, r!.id));
+    const claimed = await db.select().from(atomicUpdates).where(eq(atomicUpdates.contentPieceId, r!.id));
     expect(claimed).toHaveLength(2);
     // Atomic updates stay `open` while their release is a draft — only
     // publishing (markReleaseAtomicUpdatesReleased) flips them to `released`.
@@ -66,7 +66,7 @@ describe("claimReleaseFromAtomicUpdates", () => {
     });
     expect(first).not.toBeNull();
 
-    // a1 is now open AND releaseId-linked — exclusivity must key off releaseId,
+    // a1 is now open AND contentPieceId-linked — exclusivity must key off contentPieceId,
     // not status, since status is still 'open'.
     const second = await claimReleaseFromAtomicUpdates({
       tenantId: t.id,
@@ -76,7 +76,7 @@ describe("claimReleaseFromAtomicUpdates", () => {
     expect(second).toBeNull();
 
     const [after] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, a1.id));
-    expect(after.releaseId).toBe(first!.id);
+    expect(after.contentPieceId).toBe(first!.id);
   });
 
   it("returns null when none of the ids are open", async () => {
@@ -144,11 +144,11 @@ describe("claimReleaseFromAtomicUpdates", () => {
     const count = await markReleaseAtomicUpdatesReleased(r!.id);
     expect(count).toBe(2);
 
-    const rows = await db.select().from(atomicUpdates).where(eq(atomicUpdates.releaseId, r!.id));
+    const rows = await db.select().from(atomicUpdates).where(eq(atomicUpdates.contentPieceId, r!.id));
     expect(rows.every((a) => a.status === "released")).toBe(true);
   });
 
-  it("revertReleaseAtomicUpdates reopens and clears releaseId", async () => {
+  it("revertReleaseAtomicUpdates reopens and clears contentPieceId", async () => {
     const [t] = await db.insert(tenants).values({ name: TENANT }).returning();
     const [a1] = await seed(t.id, ["A1"]);
     const r = await claimReleaseFromAtomicUpdates({
@@ -159,7 +159,7 @@ describe("claimReleaseFromAtomicUpdates", () => {
     expect(await revertReleaseAtomicUpdates(r!.id)).toBe(1);
     const [after] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, a1.id));
     expect(after.status).toBe("open");
-    expect(after.releaseId).toBeNull();
+    expect(after.contentPieceId).toBeNull();
   });
 
   it("reports zero evidence delta immediately after composing (no phantom catch-up)", async () => {
@@ -215,7 +215,7 @@ describe("claimReleaseFromAtomicUpdates", () => {
       draft: { title: "First", body: "B" },
     });
 
-    const before = await db.select().from(releases).where(eq(releases.tenantId, t.id));
+    const before = await db.select().from(contentPieces).where(eq(contentPieces.tenantId, t.id));
 
     const second = await claimReleaseFromAtomicUpdates({
       tenantId: t.id,
@@ -224,7 +224,7 @@ describe("claimReleaseFromAtomicUpdates", () => {
     });
     expect(second).toBeNull();
 
-    const after = await db.select().from(releases).where(eq(releases.tenantId, t.id));
+    const after = await db.select().from(contentPieces).where(eq(contentPieces.tenantId, t.id));
     expect(after).toHaveLength(before.length);
     expect(after.some((r) => r.title === "Second (should not persist)")).toBe(false);
   });

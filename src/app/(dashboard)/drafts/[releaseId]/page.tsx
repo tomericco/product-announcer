@@ -3,7 +3,7 @@ import { GuardedLink } from "../../unsaved-changes";
 import { ArrowLeft } from "lucide-react";
 import { notFound } from "next/navigation";
 import { db } from "@/db";
-import { releases, webflowConnections } from "@/db/schema";
+import { contentPieces, webflowConnections } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { reviewStatusLabel } from "@/lib/ai/review-status";
 import { containsCodeBlock } from "@/lib/publishing/markdown-to-html";
@@ -32,8 +32,8 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
 
   const [update] = await db
     .select()
-    .from(releases)
-    .where(and(eq(releases.id, releaseId), eq(releases.tenantId, session.user.tenantId)));
+    .from(contentPieces)
+    .where(and(eq(contentPieces.id, releaseId), eq(contentPieces.tenantId, session.user.tenantId)));
 
   if (!update) notFound();
 
@@ -91,9 +91,9 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
             </div>
           )}
 
-          {showCodeWarning && <WebflowCodeWarning releaseId={update.id} />}
+          {showCodeWarning && <WebflowCodeWarning contentPieceId={update.id} />}
 
-          {delta.count > 0 && <CatchUpBanner count={delta.count} releaseId={update.id} />}
+          {delta.count > 0 && <CatchUpBanner count={delta.count} contentPieceId={update.id} />}
 
           {/* ToastForm, not a plain <form>: saveDraft stays a Server Action but
               the confirmation toast fires client-side once it resolves. Only the
@@ -101,7 +101,7 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
               formAction, and Publish reads the form via a ref instead of
               submitting, so neither reports "Changes saved". */}
           <ToastForm action={saveDraft} successMessage="Changes saved" className="space-y-4">
-            <input type="hidden" name="releaseId" value={update.id} />
+            <input type="hidden" name="contentPieceId" value={update.id} />
             {/* The value published_at had when this page was rendered. Approve
                 submits it back so the action can detect a double-submit of this
                 same form (published_at unchanged) versus an intentional
@@ -123,7 +123,7 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
               <SaveChangesButton />
               <AskAiButton />
               <div className="ml-auto">
-                <PublishDialog releaseId={update.id} targets={publishTargets} />
+                <PublishDialog contentPieceId={update.id} targets={publishTargets} />
               </div>
             </div>
           </ToastForm>
@@ -132,15 +132,15 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
               rather than nested inside it (nested <form>s are invalid HTML). */}
           {linkedinConfig && (
             <LinkedinPanel
-              releaseId={update.id}
+              contentPieceId={update.id}
               initialBody={update.linkedinBody ?? ""}
               baseUrl={linkedinConfig.baseUrl!}
               slug={slugify(update.title)}
             />
           )}
 
-          <AgentEditDialog releaseId={update.id} />
-          <ExtractDialog releaseId={update.id} />
+          <AgentEditDialog contentPieceId={update.id} />
+          <ExtractDialog contentPieceId={update.id} />
         </AgentEditProvider>
       </DraftEditorProvider>
     </div>

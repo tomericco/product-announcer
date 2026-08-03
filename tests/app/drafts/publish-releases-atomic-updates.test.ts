@@ -23,7 +23,7 @@ async function seedTenantAndUser() {
 }
 
 async function atomicUpdatesFor(releaseId: string) {
-  return db.select().from(atomicUpdates).where(eq(atomicUpdates.releaseId, releaseId));
+  return db.select().from(atomicUpdates).where(eq(atomicUpdates.contentPieceId, releaseId));
 }
 
 // approveDraft now requires the form to name at least one valid destination
@@ -32,7 +32,7 @@ async function atomicUpdatesFor(releaseId: string) {
 // here since no webhook/webflow config is seeded (dispatch skips it).
 function formDataFor(releaseId: string, publishedAt: string, destinations: string[] = ["webhook"]) {
   const fd = new FormData();
-  fd.set("releaseId", releaseId);
+  fd.set("contentPieceId", releaseId);
   fd.set("title", "R");
   fd.set("body", "B");
   fd.set("publishedAt", publishedAt);

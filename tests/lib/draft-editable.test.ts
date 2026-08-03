@@ -10,12 +10,12 @@ describe("assertDraftEditable", () => {
     expect(() => assertDraftEditable({ status: "published" })).toThrow(/already been published/i);
   });
 
-  it("refuses a rejected release", () => {
-    expect(() => assertDraftEditable({ status: "rejected" })).toThrow(/rejected/i);
+  it("refuses an archived piece", () => {
+    expect(() => assertDraftEditable({ status: "archived" })).toThrow(/archived/i);
   });
 
-  it("refuses an approved release", () => {
-    expect(() => assertDraftEditable({ status: "approved" })).toThrow(/approved/i);
+  it("refuses a piece under review", () => {
+    expect(() => assertDraftEditable({ status: "review" })).toThrow(/review/i);
   });
 });
 

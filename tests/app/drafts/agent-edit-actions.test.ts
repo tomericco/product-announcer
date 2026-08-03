@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, releases, users } from "../../../src/db/schema";
+import { tenants, contentPieces, users } from "../../../src/db/schema";
 
 const TENANT_NAME = "Agent Edit Test Tenant";
 const OTHER_NAME = "Agent Edit Other Tenant";
@@ -25,11 +25,11 @@ async function seed(body = "Original body") {
   const [user] = await db.insert(users).values({ email: USER_EMAIL }).returning();
   currentTenantId = tenant.id;
   currentUserId = user.id;
-  const [release] = await db.insert(releases).values({ tenantId: tenant.id, title: "T", body }).returning();
+  const [release] = await db.insert(contentPieces).values({ tenantId: tenant.id, title: "T", body }).returning();
   return { tenant, release };
 }
 async function rowFor(id: string) {
-  const [row] = await db.select().from(releases).where(eq(releases.id, id));
+  const [row] = await db.select().from(contentPieces).where(eq(contentPieces.id, id));
   return row;
 }
 
@@ -44,7 +44,7 @@ describe("requestAgentEdit", () => {
   it("returns the agent text for an owned release and passes the live body through", async () => {
     const { release } = await seed();
     const result = await requestAgentEdit({
-      releaseId: release.id,
+      contentPieceId: release.id,
       mode: "selection",
       instruction: "punchier",
       fullBody: "live edited body",
@@ -63,9 +63,9 @@ describe("requestAgentEdit", () => {
   it("refuses a foreign release and never calls the agent", async () => {
     await seed();
     const [other] = await db.insert(tenants).values({ name: OTHER_NAME }).returning();
-    const [foreign] = await db.insert(releases).values({ tenantId: other.id, title: "X", body: "b" }).returning();
+    const [foreign] = await db.insert(contentPieces).values({ tenantId: other.id, title: "X", body: "b" }).returning();
     await expect(
-      requestAgentEdit({ releaseId: foreign.id, mode: "whole", instruction: "x", fullBody: "b" })
+      requestAgentEdit({ contentPieceId: foreign.id, mode: "whole", instruction: "x", fullBody: "b" })
     ).rejects.toThrow();
     expect(editReleaseBody).not.toHaveBeenCalled();
   });
@@ -79,7 +79,7 @@ describe("saveDraftBody", () => {
 
   it("updates only the body and stamps bodyEditedAt, leaving the title intact", async () => {
     const { release } = await seed("Original body");
-    await saveDraftBody({ releaseId: release.id, body: "Agent-revised body" });
+    await saveDraftBody({ contentPieceId: release.id, body: "Agent-revised body" });
     const row = await rowFor(release.id);
     expect(row.body).toBe("Agent-revised body");
     expect(row.title).toBe("T");
@@ -88,7 +88,7 @@ describe("saveDraftBody", () => {
 
   it("keeps the existing body when handed a blank one (blank-guard)", async () => {
     const { release } = await seed("Original body");
-    await saveDraftBody({ releaseId: release.id, body: "   " });
+    await saveDraftBody({ contentPieceId: release.id, body: "   " });
     const row = await rowFor(release.id);
     expect(row.body).toBe("Original body");
     expect(row.bodyEditedAt).toBeNull();
@@ -107,12 +107,12 @@ describe("draft-status gate", () => {
   it("requestAgentEdit refuses a published release and never calls the agent", async () => {
     const { release } = await seed();
     await db
-      .update(releases)
+      .update(contentPieces)
       .set({ status: "published", publishedAt: new Date() })
-      .where(eq(releases.id, release.id));
+      .where(eq(contentPieces.id, release.id));
 
     await expect(
-      requestAgentEdit({ releaseId: release.id, mode: "whole", instruction: "x", fullBody: "b" })
+      requestAgentEdit({ contentPieceId: release.id, mode: "whole", instruction: "x", fullBody: "b" })
     ).rejects.toThrow(/already been published/i);
     // The gate must precede the LLM call — otherwise a stale tab burns tokens
     // producing text that can never be saved.
@@ -122,11 +122,11 @@ describe("draft-status gate", () => {
   it("saveDraftBody refuses a published release and leaves its body untouched", async () => {
     const { release } = await seed("Published body");
     await db
-      .update(releases)
+      .update(contentPieces)
       .set({ status: "published", publishedAt: new Date() })
-      .where(eq(releases.id, release.id));
+      .where(eq(contentPieces.id, release.id));
 
-    await expect(saveDraftBody({ releaseId: release.id, body: "Hijacked body" })).rejects.toThrow(
+    await expect(saveDraftBody({ contentPieceId: release.id, body: "Hijacked body" })).rejects.toThrow(
       /already been published/i
     );
 
@@ -134,15 +134,15 @@ describe("draft-status gate", () => {
     expect(row.body).toBe("Published body");
   });
 
-  it("saveDraftBody refuses a rejected release", async () => {
-    const { release } = await seed("Rejected body");
-    await db.update(releases).set({ status: "rejected" }).where(eq(releases.id, release.id));
+  it("saveDraftBody refuses an archived piece", async () => {
+    const { release } = await seed("Archived body");
+    await db.update(contentPieces).set({ status: "archived" }).where(eq(contentPieces.id, release.id));
 
-    await expect(saveDraftBody({ releaseId: release.id, body: "Hijacked body" })).rejects.toThrow(
-      /rejected/i
+    await expect(saveDraftBody({ contentPieceId: release.id, body: "Hijacked body" })).rejects.toThrow(
+      /archived/i
     );
 
     const row = await rowFor(release.id);
-    expect(row.body).toBe("Rejected body");
+    expect(row.body).toBe("Archived body");
   });
 });

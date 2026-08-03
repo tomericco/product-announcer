@@ -1,6 +1,6 @@
 import { and, eq, gt, isNull } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
-import { atomicUpdates, releases } from "@/db/schema";
+import { atomicUpdates, contentPieces } from "@/db/schema";
 
 type Database = typeof defaultDb;
 type AtomicUpdateRow = typeof atomicUpdates.$inferSelect;
@@ -25,12 +25,15 @@ const EMPTY_DELTA: ReleaseDelta = { newAtomicUpdates: [], changedAtomicUpdates: 
  *   this release whose evidence (summary, attached commit) changed after
  *   compose, i.e. `updatedAt > composedAt`.
  *
- * A nonexistent releaseId returns the empty delta rather than throwing — a
- * missing release trivially has no deltas.
+ * A nonexistent contentPieceId returns the empty delta rather than throwing —
+ * a missing content piece trivially has no deltas.
  */
-export async function computeReleaseDelta(releaseId: string, database: Database = defaultDb): Promise<ReleaseDelta> {
-  const [release] = await database.select().from(releases).where(eq(releases.id, releaseId));
-  if (!release) return EMPTY_DELTA;
+export async function computeReleaseDelta(
+  contentPieceId: string,
+  database: Database = defaultDb
+): Promise<ReleaseDelta> {
+  const [piece] = await database.select().from(contentPieces).where(eq(contentPieces.id, contentPieceId));
+  if (!piece) return EMPTY_DELTA;
 
   const [newAtomicUpdates, changedAtomicUpdates] = await Promise.all([
     database
@@ -38,10 +41,10 @@ export async function computeReleaseDelta(releaseId: string, database: Database 
       .from(atomicUpdates)
       .where(
         and(
-          eq(atomicUpdates.tenantId, release.tenantId),
+          eq(atomicUpdates.tenantId, piece.tenantId),
           eq(atomicUpdates.status, "open"),
-          isNull(atomicUpdates.releaseId),
-          gt(atomicUpdates.createdAt, release.composedAt)
+          isNull(atomicUpdates.contentPieceId),
+          gt(atomicUpdates.createdAt, piece.composedAt)
         )
       ),
     database
@@ -49,9 +52,9 @@ export async function computeReleaseDelta(releaseId: string, database: Database 
       .from(atomicUpdates)
       .where(
         and(
-          eq(atomicUpdates.tenantId, release.tenantId),
-          eq(atomicUpdates.releaseId, release.id),
-          gt(atomicUpdates.updatedAt, release.composedAt)
+          eq(atomicUpdates.tenantId, piece.tenantId),
+          eq(atomicUpdates.contentPieceId, piece.id),
+          gt(atomicUpdates.updatedAt, piece.composedAt)
         )
       ),
   ]);

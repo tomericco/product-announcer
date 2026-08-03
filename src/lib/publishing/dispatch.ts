@@ -1,10 +1,10 @@
 import { and, eq, lt } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
-import { deliveryAttempts, releases } from "@/db/schema";
+import { deliveryAttempts, contentPieces } from "@/db/schema";
 import { webhookDestination } from "./destinations/webhook";
 import { webflowDestination } from "./destinations/webflow";
 import { linkedinDestination } from "./destinations/linkedin";
-import type { Destination, DeliveryResult, Release, DestinationId, PublishTarget } from "./destinations/types";
+import type { Destination, DeliveryResult, ContentPiece, DestinationId, PublishTarget } from "./destinations/types";
 
 const MAX_ATTEMPTS = 3;
 
@@ -18,10 +18,10 @@ function statusFor(result: DeliveryResult) {
   return "failed" as const;
 }
 
-// A unique-violation on delivery_attempts_release_id_destination_unique
+// A unique-violation on delivery_attempts_content_piece_destination_unique
 // (Postgres code 23505). Only possible on the insert branch below, when two
-// claimants race to create the row for the same release+destination for the
-// very first time — the row-lock further down only protects an EXISTING row.
+// claimants race to create the row for the same content piece+destination for
+// the very first time — the row-lock further down only protects an EXISTING row.
 //
 // Drizzle wraps the driver error in a DrizzleQueryError and puts the
 // original pg error on `.cause` (verified against real Postgres: the code
@@ -75,7 +75,7 @@ function nextAttempts(result: DeliveryResult, onOtherwise: number): number | und
 async function claimAndDeliver(
   database: typeof defaultDb,
   destination: Destination<unknown>,
-  release: Release,
+  piece: ContentPiece,
   config: unknown,
   attemptsFor: (result: DeliveryResult, currentAttempts: number) => number | undefined,
   // "publish": dispatchAllDestinations — a fresh publish, which deliberately
@@ -89,7 +89,7 @@ async function claimAndDeliver(
     const [existing] = await tx
       .select()
       .from(deliveryAttempts)
-      .where(and(eq(deliveryAttempts.releaseId, release.id), eq(deliveryAttempts.destination, destination.id)))
+      .where(and(eq(deliveryAttempts.contentPieceId, piece.id), eq(deliveryAttempts.destination, destination.id)))
       .for("update")
       .limit(1);
 
@@ -106,7 +106,7 @@ async function claimAndDeliver(
         // error, not just the failing statement. The savepoint confines the
         // rollback to the insert alone.
         [attempt] = await tx.transaction(async (tx2) =>
-          tx2.insert(deliveryAttempts).values({ releaseId: release.id, destination: destination.id }).returning()
+          tx2.insert(deliveryAttempts).values({ contentPieceId: piece.id, destination: destination.id }).returning()
         );
       } catch (error) {
         // Another claimant inserted the row first (unique-index race on a
@@ -116,7 +116,7 @@ async function claimAndDeliver(
         [attempt] = await tx
           .select()
           .from(deliveryAttempts)
-          .where(and(eq(deliveryAttempts.releaseId, release.id), eq(deliveryAttempts.destination, destination.id)))
+          .where(and(eq(deliveryAttempts.contentPieceId, piece.id), eq(deliveryAttempts.destination, destination.id)))
           .for("update")
           .limit(1);
       }
@@ -137,7 +137,7 @@ async function claimAndDeliver(
       return;
     }
 
-    const result = await destination.deliver(release, config, attempt.externalId, tx);
+    const result = await destination.deliver(piece, config, attempt.externalId, tx);
     const attempts = attemptsFor(result, attempt.attempts);
 
     await tx
@@ -178,7 +178,7 @@ export function destinationLabel(id: DestinationId): string {
 }
 
 export async function dispatchAllDestinations(
-  releaseId: string,
+  contentPieceId: string,
   database: typeof defaultDb = defaultDb,
   // When provided, restricts delivery to these destinations — the publish
   // modal's chosen subset. Omitted (publishDraft, the list quick-publish)
@@ -189,26 +189,26 @@ export async function dispatchAllDestinations(
   // Runs AFTER the update is already published. Nothing here may throw — not the
   // network call, not the DB writes — or it 500s an action that already succeeded.
   try {
-    const [release] = await database.select().from(releases).where(eq(releases.id, releaseId)).limit(1);
-    if (!release) return;
+    const [piece] = await database.select().from(contentPieces).where(eq(contentPieces.id, contentPieceId)).limit(1);
+    if (!piece) return;
 
     const targets = only ? DESTINATIONS.filter((d) => only.includes(d.id)) : DESTINATIONS;
     for (const destination of targets) {
       try {
-        const config = await destination.loadConfig(release.tenantId, database);
+        const config = await destination.loadConfig(piece.tenantId, database);
         if (!config) continue;
 
         // A fresh publish always gets a full retry budget, regardless of how
         // many attempts a prior publish burned through — otherwise a single
         // transient failure on a re-publish pushes the row past MAX_ATTEMPTS
         // and the sweep (`retryFailedDeliveries`) stops retrying it forever.
-        await claimAndDeliver(database, destination, release, config, (result) => nextAttempts(result, 1), "publish");
+        await claimAndDeliver(database, destination, piece, config, (result) => nextAttempts(result, 1), "publish");
       } catch (error) {
-        console.error(`Dispatch to ${destination.id} failed for update ${releaseId}:`, error);
+        console.error(`Dispatch to ${destination.id} failed for update ${contentPieceId}:`, error);
       }
     }
   } catch (error) {
-    console.error(`Dispatch failed for update ${releaseId}:`, error);
+    console.error(`Dispatch failed for update ${contentPieceId}:`, error);
   }
 }
 
@@ -225,17 +225,17 @@ export async function retryFailedDeliveries(database: typeof defaultDb = default
       const destination = DESTINATIONS.find((d) => d.id === attempt.destination);
       if (!destination) continue;
 
-      const [release] = await database.select().from(releases).where(eq(releases.id, attempt.releaseId)).limit(1);
-      if (!release) continue;
+      const [piece] = await database.select().from(contentPieces).where(eq(contentPieces.id, attempt.contentPieceId)).limit(1);
+      if (!piece) continue;
 
-      const config = await destination.loadConfig(release.tenantId, database);
+      const config = await destination.loadConfig(piece.tenantId, database);
       // Skip if the config was deactivated or removed since the original attempt.
       if (!config) continue;
 
       await claimAndDeliver(
         database,
         destination,
-        release,
+        piece,
         config,
         (result, currentAttempts) => nextAttempts(result, currentAttempts + 1),
         "retry"

@@ -41,7 +41,7 @@ import { approveDraft, checkDraftLinks } from "../actions";
  * the router on success (a server action invoked in a transition navigates;
  * see the Next server-actions guide).
  */
-export function PublishDialog({ releaseId, targets }: { releaseId: string; targets: PublishTarget[] }) {
+export function PublishDialog({ contentPieceId, targets }: { contentPieceId: string; targets: PublishTarget[] }) {
   const { ops } = useAgentEdit();
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState<Set<DestinationId>>(
@@ -101,7 +101,7 @@ export function PublishDialog({ releaseId, targets }: { releaseId: string; targe
   // visible content and the hidden body field update together), then persist it.
   async function saveFixes(patchedBody: string) {
     const authoritative = ops.current ? await ops.current.applyEdit("whole", patchedBody) : patchedBody;
-    await saveDraftBody({ releaseId, body: authoritative });
+    await saveDraftBody({ contentPieceId, body: authoritative });
     setFixTarget(null);
     toast.success("Links updated — you can publish now.");
   }

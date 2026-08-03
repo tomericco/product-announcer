@@ -74,7 +74,6 @@ export const tenantInvites = pgTable(
 
 export const changeItemStatusEnum = pgEnum("change_item_status", ["pending", "batched", "excluded", "ignored"]);
 export const cadenceEnum = pgEnum("cadence", ["daily", "weekly", "biweekly", "monthly", "none"]);
-export const releaseStatusEnum = pgEnum("release_status", ["draft", "approved", "published", "rejected"]);
 export const reviewStatusEnum = pgEnum("review_status", ["passed", "failed", "error"]);
 export const updateCategoryEnum = pgEnum("update_category", ["new", "improvement", "fix", "announcement"]);
 
@@ -175,9 +174,9 @@ export const atomicUpdates = pgTable("atomic_updates", {
   tenantId: uuid("tenant_id")
     .notNull()
     .references(() => tenants.id, { onDelete: "cascade" }),
-  // Set when this atomic update joins a release draft. At most one release ever,
-  // so "which release is this shipping in" always has a single answer.
-  releaseId: uuid("release_id").references(() => releases.id, { onDelete: "set null" }),
+  // Set when this atomic update joins a content piece. At most one ever, so
+  // "which piece is this shipping in" always has a single answer.
+  contentPieceId: uuid("content_piece_id").references(() => contentPieces.id, { onDelete: "set null" }),
   title: text("title").notNull(),
   summary: text("summary").notNull(),
   category: updateCategoryEnum("category"),
@@ -260,15 +259,34 @@ export const systemUpdateExamples = pgTable("system_update_examples", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
-export const releases = pgTable("releases", {
+export const contentTypeEnum = pgEnum("content_type", ["product_update", "blog_post", "social_post"]);
+export const contentPieceStatusEnum = pgEnum("content_piece_status", [
+  "brief",
+  "draft",
+  "review",
+  "scheduled",
+  "published",
+  "archived",
+]);
+
+export const contentPieces = pgTable("content_pieces", {
   id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
   tenantId: uuid("tenant_id")
     .notNull()
     .references(() => tenants.id, { onDelete: "cascade" }),
   repoId: uuid("repo_id").references(() => repos.id, { onDelete: "cascade" }),
+  // Which kind of content this is. Drives the draft prompt and the channels it
+  // can publish to. Defaults to product_update because that is the only type the
+  // generation pipeline can produce until spec 9 adds the others.
+  type: contentTypeEnum("type").notNull().default("product_update"),
   title: text("title").notNull(),
   body: text("body").notNull(),
-  status: releaseStatusEnum("status").notNull().default("draft"),
+  // "brief" means approved-but-not-yet-drafted, so a lead can approve several
+  // briefs at once and generate drafts across the week.
+  status: contentPieceStatusEnum("status").notNull().default("draft"),
+  // When this is due to go out. Null until scheduled; the calendar renders this.
+  scheduledFor: timestamp("scheduled_for", { withTimezone: true }),
+  assignedTo: uuid("assigned_to").references(() => users.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   publishedAt: timestamp("published_at", { withTimezone: true }),
   editedBy: uuid("edited_by").references(() => users.id),
@@ -280,15 +298,11 @@ export const releases = pgTable("releases", {
   // (or new commits on already-attached ones) have appeared since. Set at
   // claim, advanced again whenever a "catch up" merges the new material in.
   composedAt: timestamp("composed_at", { withTimezone: true }).notNull().defaultNow(),
-  // Non-null means the body was hand-edited — the body's analogue of
-  // atomicUpdates.summaryEditedAt. Lets the UI/merge know the body carries
-  // hand edits worth preserving rather than silently overwriting.
+  // Non-null means the body was hand-edited — lets the merge preserve hand
+  // edits rather than silently overwriting them.
   bodyEditedAt: timestamp("body_edited_at", { withTimezone: true }),
-  // AI-generated, human-editable LinkedIn post copy for this release. Null until
-  // generated. The link-back is NOT stored here — it is appended at delivery.
+  // Removed in Task 2 once channel_variants can hold per-channel content.
   linkedinBody: text("linkedin_body"),
-  // Non-null marks a hand-edit of linkedinBody (analogue of bodyEditedAt), so
-  // regeneration can warn before overwriting hand edits.
   linkedinBodyEditedAt: timestamp("linkedin_body_edited_at", { withTimezone: true }),
 });
 
@@ -314,9 +328,9 @@ export const deliveryAttempts = pgTable(
   "delivery_attempts",
   {
     id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
-    releaseId: uuid("release_id")
+    contentPieceId: uuid("content_piece_id")
       .notNull()
-      .references(() => releases.id, { onDelete: "cascade" }),
+      .references(() => contentPieces.id, { onDelete: "cascade" }),
     destination: destinationEnum("destination").notNull(),
     status: webhookDeliveryStatusEnum("status").notNull().default("pending"),
     attempts: integer("attempts").notNull().default(0),
@@ -329,10 +343,13 @@ export const deliveryAttempts = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
-    // One row per release+destination: dispatch reuses this row across
+    // One row per content piece+destination: dispatch reuses this row across
     // re-publishes, so a race between two concurrent publishes must not be
     // able to insert two rows for the same pair.
-    uniqueIndex("delivery_attempts_release_id_destination_unique").on(table.releaseId, table.destination),
+    uniqueIndex("delivery_attempts_content_piece_destination_unique").on(
+      table.contentPieceId,
+      table.destination
+    ),
   ]
 );
 

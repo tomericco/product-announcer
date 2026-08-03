@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { eq, like } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, repos, changeEvents, atomicUpdates, releases, users } from "../../../src/db/schema";
+import { tenants, repos, changeEvents, atomicUpdates, contentPieces, users } from "../../../src/db/schema";
 import { createAtomicUpdateFromEvents } from "../../../src/lib/change-events/create-from-events";
 
 const TENANT = "Create From Events Test Tenant";
@@ -283,13 +283,13 @@ describe("createAtomicUpdateFromEvents", () => {
       expect(new Set(ids)).toEqual(new Set([result.atomicUpdateId, survivingSource.id]));
     });
 
-    it("inDraft is true when the emptied source AU has a releaseId", async () => {
+    it("inDraft is true when the emptied source AU has a contentPieceId", async () => {
       const { tenant, repo } = await seed();
       const [release] = await db
-        .insert(releases)
+        .insert(contentPieces)
         .values({ tenantId: tenant.id, title: "Draft", body: "B" })
         .returning();
-      const emptiedSource = await insertAtomic(tenant.id, "In draft source", { releaseId: release.id });
+      const emptiedSource = await insertAtomic(tenant.id, "In draft source", { contentPieceId: release.id });
       const event = await insertEvent(tenant.id, repo.id, "sha-in-draft", { atomicUpdateId: emptiedSource.id });
       const refresh = vi.fn().mockResolvedValue(undefined);
 
@@ -387,11 +387,11 @@ describe("createAtomicUpdateFromEvents", () => {
       const { tenant, repo } = await seed();
       const composedAt = new Date(Date.now() - 60_000);
       const [release] = await db
-        .insert(releases)
+        .insert(contentPieces)
         .values({ tenantId: tenant.id, title: "Draft", body: "B", composedAt })
         .returning();
       const survivingSource = await insertAtomic(tenant.id, "In-draft surviving source", {
-        releaseId: release.id,
+        contentPieceId: release.id,
         updatedAt: composedAt,
       });
       const eventToMove = await insertEvent(tenant.id, repo.id, "sha-move-from-draft", {

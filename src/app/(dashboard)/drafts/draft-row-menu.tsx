@@ -27,7 +27,7 @@ import { InvalidLinksDialog } from "./invalid-links-dialog";
 import type { LinkProblem } from "@/lib/ai/validate-links";
 
 type Props = {
-  releaseId: string;
+  contentPieceId: string;
   title: string;
   /** Atomic updates composed into this draft; named in the delete confirmation. */
   atomicUpdateCount: number;
@@ -42,7 +42,7 @@ type Props = {
 
 type Confirming = "publish" | "delete" | null;
 
-export function DraftRowMenu({ releaseId, title, atomicUpdateCount, publishedAt }: Props) {
+export function DraftRowMenu({ contentPieceId, title, atomicUpdateCount, publishedAt }: Props) {
   const router = useRouter();
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirming, setConfirming] = useState<Confirming>(null);
@@ -56,7 +56,7 @@ export function DraftRowMenu({ releaseId, title, atomicUpdateCount, publishedAt 
   ) {
     setSubmitting(true);
     const formData = new FormData();
-    formData.set("releaseId", releaseId);
+    formData.set("contentPieceId", contentPieceId);
     formData.set("publishedAt", publishedAt ?? "");
     try {
       const result = await action(formData);
@@ -77,7 +77,7 @@ export function DraftRowMenu({ releaseId, title, atomicUpdateCount, publishedAt 
   // Save inline link fixes to the stored body, then refresh so the list reflects
   // the edit. No editor to sync here — the list has no live editor.
   async function saveFixes(patchedBody: string) {
-    await saveDraftBody({ releaseId, body: patchedBody });
+    await saveDraftBody({ contentPieceId, body: patchedBody });
     setFixTarget(null);
     toast.success("Links updated — you can publish now.");
     router.refresh();

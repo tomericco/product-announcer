@@ -1,11 +1,11 @@
 import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
-import { atomicUpdates, releases } from "@/db/schema";
+import { atomicUpdates, contentPieces } from "@/db/schema";
 import type { ReviewStatus } from "@/lib/ai/review-draft";
 
 type Database = typeof defaultDb;
 type Executor = Database | Parameters<Parameters<Database["transaction"]>[0]>[0];
-type Release = typeof releases.$inferSelect;
+type Release = typeof contentPieces.$inferSelect;
 type AtomicUpdateRow = typeof atomicUpdates.$inferSelect;
 
 export type DraftInput = { title: string; body: string };
@@ -26,8 +26,8 @@ export async function getOpenAtomicUpdates(
         // Compose candidate set: an atomic update already linked to a draft
         // release is spoken for — it must not be offered again for a second
         // release until that draft is rejected/deleted (revertReleaseAtomicUpdates)
-        // and its releaseId cleared.
-        isNull(atomicUpdates.releaseId)
+        // and its contentPieceId cleared.
+        isNull(atomicUpdates.contentPieceId)
       )
     )
     // Same-webhook-batch atomic updates can share createdAt; tie-break on id
@@ -37,13 +37,13 @@ export async function getOpenAtomicUpdates(
 
 /**
  * Claims the given OPEN, unlinked atomic updates into a new draft release:
- * inserts the release and sets `releaseId` on the atomic updates, all in one
- * transaction. Atomic updates stay `status = 'open'` — they only become
+ * inserts the release and sets `contentPieceId` on the atomic updates, all in
+ * one transaction. Atomic updates stay `status = 'open'` — they only become
  * `released` when the release is published (see `markReleaseAtomicUpdatesReleased`).
- * Only tenant-owned, still-open, not-yet-linked (`releaseId IS NULL`) atomic
- * updates are claimable, so a re-submit or concurrent claim cannot double-claim
- * one into two releases. Returns null if nothing was claimable (the release
- * insert is rolled back).
+ * Only tenant-owned, still-open, not-yet-linked (`contentPieceId IS NULL`)
+ * atomic updates are claimable, so a re-submit or concurrent claim cannot
+ * double-claim one into two releases. Returns null if nothing was claimable
+ * (the release insert is rolled back).
  */
 export async function claimReleaseFromAtomicUpdates(
   input: {
@@ -68,7 +68,7 @@ export async function claimReleaseFromAtomicUpdates(
   return database
     .transaction(async (tx) => {
       const [release] = await tx
-        .insert(releases)
+        .insert(contentPieces)
         .values({
           tenantId: input.tenantId,
           title: input.draft.title,
@@ -85,13 +85,13 @@ export async function claimReleaseFromAtomicUpdates(
 
       const claimed = await tx
         .update(atomicUpdates)
-        .set({ releaseId: release.id, updatedAt: now })
+        .set({ contentPieceId: release.id, updatedAt: now })
         .where(
           and(
             inArray(atomicUpdates.id, input.atomicUpdateIds),
             eq(atomicUpdates.tenantId, input.tenantId),
             eq(atomicUpdates.status, "open"),
-            isNull(atomicUpdates.releaseId)
+            isNull(atomicUpdates.contentPieceId)
           )
         )
         .returning({ id: atomicUpdates.id });
@@ -111,33 +111,33 @@ export async function claimReleaseFromAtomicUpdates(
  * transitions to `released`.
  */
 export async function markReleaseAtomicUpdatesReleased(
-  releaseId: string,
+  contentPieceId: string,
   database: Executor = defaultDb
 ): Promise<number> {
   const released = await database
     .update(atomicUpdates)
     .set({ status: "released", updatedAt: new Date() })
-    .where(eq(atomicUpdates.releaseId, releaseId))
+    .where(eq(atomicUpdates.contentPieceId, contentPieceId))
     .returning({ id: atomicUpdates.id });
   return released.length;
 }
 
 /**
  * Inverse of the claim: reopens a release's atomic updates (status → open,
- * releaseId → null). Load-bearing on reject and delete — `releaseId` is
- * ON DELETE SET NULL, so a delete nulls the FK but leaves `status = 'released'`,
+ * contentPieceId → null). Load-bearing on reject and delete — `contentPieceId`
+ * is ON DELETE SET NULL, so a delete nulls the FK but leaves `status = 'released'`,
  * which would strand the atomic update, invisible to every open-only query.
- * Run it BEFORE deleting the release, or the FK is already null and this matches
- * zero rows.
+ * Run it BEFORE deleting the content piece, or the FK is already null and this
+ * matches zero rows.
  */
 export async function revertReleaseAtomicUpdates(
-  releaseId: string,
+  contentPieceId: string,
   database: Executor = defaultDb
 ): Promise<number> {
   const reverted = await database
     .update(atomicUpdates)
-    .set({ status: "open", releaseId: null, updatedAt: new Date() })
-    .where(eq(atomicUpdates.releaseId, releaseId))
+    .set({ status: "open", contentPieceId: null, updatedAt: new Date() })
+    .where(eq(atomicUpdates.contentPieceId, contentPieceId))
     .returning({ id: atomicUpdates.id });
   return reverted.length;
 }

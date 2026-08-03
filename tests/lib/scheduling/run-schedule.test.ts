@@ -8,7 +8,7 @@ vi.mock("../../../src/lib/ai/review-draft", () => ({ reviewAndReconcile: vi.fn()
 import { generateObject } from "ai";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, atomicUpdates, releases, scheduleConfigs, brandProfiles, llmUsage } from "../../../src/db/schema";
+import { tenants, atomicUpdates, contentPieces, scheduleConfigs, brandProfiles, llmUsage } from "../../../src/db/schema";
 import { runBatchForWorkspace, runSchedulerTick } from "../../../src/lib/scheduling/run-schedule";
 import { getOpenAtomicUpdates } from "../../../src/lib/change-events/release-claim";
 import { advanceNextScheduledAt } from "../../../src/lib/scheduling/scheduler-decision";
@@ -39,7 +39,7 @@ describe("run-schedule (workspace-level)", () => {
     return out;
   }
 
-  it("runBatchForWorkspace makes one release from all open atomic updates and links them via releaseId", async () => {
+  it("runBatchForWorkspace makes one release from all open atomic updates and links them via contentPieceId", async () => {
     const { tenant } = await seed();
     const [a1, a2] = await seedAtomicUpdates(tenant.id, ["A", "B"]);
     vi.mocked(generateObject).mockResolvedValue({
@@ -50,7 +50,7 @@ describe("run-schedule (workspace-level)", () => {
     const created = await runBatchForWorkspace(tenant.id, open);
 
     expect(created).toBe(true);
-    const createdReleases = await db.select().from(releases).where(eq(releases.tenantId, tenant.id));
+    const createdReleases = await db.select().from(contentPieces).where(eq(contentPieces.tenantId, tenant.id));
     expect(createdReleases).toHaveLength(1);
     const release = createdReleases[0];
     // Nothing publishes: the release stays a draft awaiting review.
@@ -62,13 +62,13 @@ describe("run-schedule (workspace-level)", () => {
       .from(atomicUpdates)
       .where(eq(atomicUpdates.tenantId, tenant.id));
     expect(linked.map((a) => a.id).sort()).toEqual([a1.id, a2.id].sort());
-    expect(linked.every((a) => a.releaseId === release.id)).toBe(true);
+    expect(linked.every((a) => a.contentPieceId === release.id)).toBe(true);
     // Open-until-publish: the release is still a draft, so its atomic updates
-    // stay `open` (with releaseId set) rather than flipping to `released` —
+    // stay `open` (with contentPieceId set) rather than flipping to `released` —
     // that only happens when the release is published.
     expect(linked.every((a) => a.status === "open")).toBe(true);
     // getOpenAtomicUpdates is the compose candidate set: it excludes AUs
-    // already linked to a (draft) release via releaseId, even though they're
+    // already linked to a (draft) release via contentPieceId, even though they're
     // still status='open'.
     expect(await getOpenAtomicUpdates(tenant.id)).toHaveLength(0);
   });
@@ -92,7 +92,7 @@ describe("run-schedule (workspace-level)", () => {
     expect(generateObject).toHaveBeenCalledTimes(2);
     const [after] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, a1.id));
     expect(after.status).toBe("open");
-    expect(after.releaseId).toBeNull();
+    expect(after.contentPieceId).toBeNull();
   });
 
   it("runSchedulerTick fires the workspace config, creates one release, advances nextScheduledAt on cadence", async () => {
@@ -106,7 +106,7 @@ describe("run-schedule (workspace-level)", () => {
 
     await runSchedulerTick(new Date("2026-07-14T00:00:00Z"));
 
-    expect(await db.select().from(releases).where(eq(releases.tenantId, tenant.id))).toHaveLength(1);
+    expect(await db.select().from(contentPieces).where(eq(contentPieces.tenantId, tenant.id))).toHaveLength(1);
     const [config] = await db.select().from(scheduleConfigs).where(eq(scheduleConfigs.tenantId, tenant.id));
     expect(config.nextScheduledAt).toEqual(advanceNextScheduledAt(past, "weekly"));
   });
@@ -122,7 +122,7 @@ describe("run-schedule (workspace-level)", () => {
 
     await runSchedulerTick(new Date("2026-07-14T00:00:00Z"));
 
-    expect(await db.select().from(releases).where(eq(releases.tenantId, tenant.id))).toHaveLength(1);
+    expect(await db.select().from(contentPieces).where(eq(contentPieces.tenantId, tenant.id))).toHaveLength(1);
     const [config] = await db.select().from(scheduleConfigs).where(eq(scheduleConfigs.tenantId, tenant.id));
     expect(config.nextScheduledAt).toEqual(future);
   });
@@ -170,7 +170,7 @@ describe("run-schedule (workspace-level)", () => {
     ]);
     const done = events.at(-1);
     expect(done?.type).toBe("done");
-    const [row] = await db.select().from(releases).where(eq(releases.tenantId, tenant.id));
+    const [row] = await db.select().from(contentPieces).where(eq(contentPieces.tenantId, tenant.id));
     expect(done).toEqual({ type: "done", updateId: row.id });
   });
 

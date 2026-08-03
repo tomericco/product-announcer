@@ -36,7 +36,7 @@ import { requestAgentEdit, saveDraftBody } from "./actions";
  * Rendered once at page level; open state and mode come from the agent-edit
  * context.
  */
-export function AgentEditDialog({ releaseId }: { releaseId: string }) {
+export function AgentEditDialog({ contentPieceId }: { contentPieceId: string }) {
   const { state, close, ops } = useAgentEdit();
   const { notifySaved } = useUnsavedChanges();
   const [instruction, setInstruction] = useState("");
@@ -68,7 +68,7 @@ export function AgentEditDialog({ releaseId }: { releaseId: string }) {
     const res = await fetch("/api/drafts/edit", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ releaseId, instruction: trimmed, fullBody }),
+      body: JSON.stringify({ contentPieceId, instruction: trimmed, fullBody }),
     });
     if (!res.ok || !res.body) {
       throw new Error("Couldn't start the edit. Please try again.");
@@ -116,7 +116,7 @@ export function AgentEditDialog({ releaseId }: { releaseId: string }) {
       try {
         if (mode === "selection") {
           const { text } = await requestAgentEdit({
-            releaseId,
+            contentPieceId,
             mode,
             instruction: trimmed,
             fullBody,
@@ -125,7 +125,7 @@ export function AgentEditDialog({ releaseId }: { releaseId: string }) {
           // applyEdit resolves with the editor's authoritative body AFTER
           // Lexical commits (a synchronous read would be the pre-edit body).
           const newBody = await editorOps.applyEdit(mode, text);
-          await saveDraftBody({ releaseId, body: newBody });
+          await saveDraftBody({ contentPieceId, body: newBody });
           notifySaved();
         } else {
           await runWholeEdit(editorOps, fullBody, trimmed);

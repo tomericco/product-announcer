@@ -19,7 +19,7 @@ type Props = {
    * this component pulls in no `db`/pg import (see the pg-in-client-bundle
    * boundary noted elsewhere in this codebase). */
   count: number;
-  releaseId: string;
+  contentPieceId: string;
 };
 
 /**
@@ -31,13 +31,13 @@ type Props = {
  * Both calls are multi-second LLM round trips with no streaming, hence the
  * pending state disabling the row instead of an optimistic update.
  */
-export function CatchUpBanner({ count, releaseId }: Props) {
+export function CatchUpBanner({ count, contentPieceId }: Props) {
   const [isPending, startTransition] = useTransition();
   const [confirmingStartOver, setConfirmingStartOver] = useState(false);
 
   function run(action: (formData: FormData) => Promise<void>, success: string) {
     const formData = new FormData();
-    formData.set("releaseId", releaseId);
+    formData.set("contentPieceId", contentPieceId);
     startTransition(async () => {
       try {
         await action(formData);

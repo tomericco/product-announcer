@@ -48,7 +48,7 @@ export function DraftReleaseDialog({ atomicUpdateIds }: { atomicUpdateIds: strin
   );
   const [detail, setDetail] = useState("");
   const [error, setError] = useState("");
-  const [releaseId, setReleaseId] = useState<string | null>(null);
+  const [contentPieceId, setContentPieceId] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const lastTransitionRef = useRef(0);
   // Set by the Abort button so its programmatic close is allowed through the
@@ -62,7 +62,7 @@ export function DraftReleaseDialog({ atomicUpdateIds }: { atomicUpdateIds: strin
     setStatuses(initialStepStatuses(DRAFT_STEPS));
     setDetail("");
     setError("");
-    setReleaseId(null);
+    setContentPieceId(null);
   }
 
   function apply(event: DraftProgressEvent) {
@@ -72,7 +72,7 @@ export function DraftReleaseDialog({ atomicUpdateIds }: { atomicUpdateIds: strin
     } else if (event.type === "detail") {
       setDetail(event.text);
     } else if (event.type === "done") {
-      setReleaseId(event.updateId);
+      setContentPieceId(event.updateId);
       setPhase("success");
     } else if (event.type === "error") {
       setError(event.message);
@@ -217,7 +217,7 @@ export function DraftReleaseDialog({ atomicUpdateIds }: { atomicUpdateIds: strin
             </div>
             <div className="flex justify-end gap-2">
               <Button variant="outline" onClick={() => setOpen(false)}>Close</Button>
-              {releaseId && <Button render={<Link href={`/drafts/${releaseId}`} />}>Review it</Button>}
+              {contentPieceId && <Button render={<Link href={`/drafts/${contentPieceId}`} />}>Review it</Button>}
             </div>
           </div>
         )}

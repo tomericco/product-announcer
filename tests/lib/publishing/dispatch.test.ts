@@ -4,7 +4,7 @@ import { db } from "../../../src/db";
 import {
   tenants,
   repos,
-  releases,
+  contentPieces,
   webhookConfigs,
   webflowConnections,
   deliveryAttempts,
@@ -54,7 +54,7 @@ describe("dispatch", () => {
       .values({ tenantId: tenant.id, githubRepoFullName: "acme/x", githubInstallationId: "1", watchedBranch: "main" })
       .returning();
     const [update] = await db
-      .insert(releases)
+      .insert(contentPieces)
       .values({
         tenantId: tenant.id,
         repoId: repo.id,
@@ -85,7 +85,7 @@ describe("dispatch", () => {
       ["body", "createdAt", "id", "publishedAt", "status", "tenantId", "title"].sort()
     );
 
-    const [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.releaseId, update.id));
+    const [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.contentPieceId, update.id));
     expect(delivery.status).toBe("success");
     expect(delivery.attempts).toBe(1);
   });
@@ -103,7 +103,7 @@ describe("dispatch", () => {
     expect(headers["x-product-announcer-signature"]).toBeUndefined();
     expect(headers["content-type"]).toBe("application/json");
 
-    const [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.releaseId, update.id));
+    const [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.contentPieceId, update.id));
     expect(delivery.status).toBe("success");
   });
 
@@ -115,7 +115,7 @@ describe("dispatch", () => {
 
     await expect(dispatchAllDestinations(update.id)).resolves.not.toThrow();
 
-    const [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.releaseId, update.id));
+    const [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.contentPieceId, update.id));
     expect(delivery.status).toBe("failed");
   });
 
@@ -124,7 +124,7 @@ describe("dispatch", () => {
 
     await dispatchAllDestinations(update.id);
 
-    const deliveries = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.releaseId, update.id));
+    const deliveries = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.contentPieceId, update.id));
     expect(deliveries).toHaveLength(0);
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -150,7 +150,7 @@ describe("dispatch", () => {
     const deliveries = await db
       .select()
       .from(deliveryAttempts)
-      .where(and(eq(deliveryAttempts.releaseId, update.id), eq(deliveryAttempts.destination, "webflow")));
+      .where(and(eq(deliveryAttempts.contentPieceId, update.id), eq(deliveryAttempts.destination, "webflow")));
     expect(deliveries).toHaveLength(0);
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -198,7 +198,7 @@ describe("dispatch", () => {
 
     await dispatchAllDestinations(update.id, db, ["webhook"]);
 
-    const deliveries = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.releaseId, update.id));
+    const deliveries = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.contentPieceId, update.id));
     expect(deliveries.map((d) => d.destination)).toEqual(["webhook"]);
     // Webflow untouched: its delivery would be 2 fetches (schema + create); webhook is 1.
     expect(fetch).toHaveBeenCalledTimes(1);
@@ -220,7 +220,7 @@ describe("dispatch", () => {
 
     await dispatchAllDestinations(update.id, db);
 
-    const deliveries = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.releaseId, update.id));
+    const deliveries = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.contentPieceId, update.id));
     expect(deliveries.map((d) => d.destination).sort()).toEqual(["webflow", "webhook"]);
   });
 
@@ -229,7 +229,7 @@ describe("dispatch", () => {
 
     await dispatchAllDestinations(update.id, db, ["webflow"]);
 
-    const deliveries = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.releaseId, update.id));
+    const deliveries = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.contentPieceId, update.id));
     expect(deliveries).toHaveLength(0);
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -238,7 +238,7 @@ describe("dispatch", () => {
     const { tenant, update } = await seed();
     await db.insert(webhookConfigs).values({ tenantId: tenant.id, url: "https://example.com/hook", ...encryptedSecret() }).returning();
     await db.insert(deliveryAttempts).values({
-      releaseId: update.id,
+      contentPieceId: update.id,
       destination: "webhook",
       status: "failed",
       attempts: 1,
@@ -248,7 +248,7 @@ describe("dispatch", () => {
 
     await retryFailedDeliveries();
 
-    const [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.releaseId, update.id));
+    const [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.contentPieceId, update.id));
     expect(delivery.status).toBe("success");
     expect(delivery.attempts).toBe(2);
   });
@@ -269,7 +269,7 @@ describe("dispatch", () => {
       status: "active",
     });
     await db.insert(deliveryAttempts).values({
-      releaseId: update.id,
+      contentPieceId: update.id,
       destination: "webflow",
       status: "failed",
       attempts: 1,
@@ -281,7 +281,7 @@ describe("dispatch", () => {
 
     await retryFailedDeliveries();
 
-    const [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.releaseId, update.id));
+    const [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.contentPieceId, update.id));
     expect(delivery.status).toBe("success");
     expect(delivery.attempts).toBe(2);
     expect(delivery.externalId).toBe("item1");
@@ -292,7 +292,7 @@ describe("dispatch", () => {
     const { tenant, update } = await seed();
     await db.insert(webhookConfigs).values({ tenantId: tenant.id, url: "https://example.com/hook", ...encryptedSecret() }).returning();
     await db.insert(deliveryAttempts).values({
-      releaseId: update.id,
+      contentPieceId: update.id,
       destination: "webhook",
       status: "failed",
       attempts: 3,
@@ -325,7 +325,7 @@ describe("dispatch", () => {
       .values({ tenantId: tenant.id, url: "https://example.com/hook", ...encryptedSecret(), active: false })
       .returning();
     await db.insert(deliveryAttempts).values({
-      releaseId: update.id,
+      contentPieceId: update.id,
       destination: "webhook",
       status: "failed",
       attempts: 1,
@@ -334,7 +334,7 @@ describe("dispatch", () => {
     await retryFailedDeliveries();
 
     expect(fetch).not.toHaveBeenCalled();
-    const [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.releaseId, update.id));
+    const [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.contentPieceId, update.id));
     expect(delivery.status).toBe("failed");
     expect(delivery.attempts).toBe(1);
   });
@@ -347,7 +347,7 @@ describe("dispatch", () => {
     vi.mocked(fetch).mockRejectedValue(new Error("timeout"));
     await dispatchAllDestinations(update.id);
 
-    let [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.releaseId, update.id));
+    let [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.contentPieceId, update.id));
     expect(delivery.status).toBe("failed");
     expect(delivery.attempts).toBe(1);
 
@@ -355,7 +355,7 @@ describe("dispatch", () => {
     await retryFailedDeliveries();
     await retryFailedDeliveries();
 
-    [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.releaseId, update.id));
+    [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.contentPieceId, update.id));
     expect(delivery.status).toBe("failed");
     expect(delivery.attempts).toBe(3);
 
@@ -368,7 +368,7 @@ describe("dispatch", () => {
     // would never be retried again.
     await dispatchAllDestinations(update.id);
 
-    [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.releaseId, update.id));
+    [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.contentPieceId, update.id));
     expect(delivery.status).toBe("failed");
     expect(delivery.attempts).toBe(1);
 
@@ -376,7 +376,7 @@ describe("dispatch", () => {
     vi.mocked(fetch).mockResolvedValue({ ok: true } as Response);
     await retryFailedDeliveries();
 
-    [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.releaseId, update.id));
+    [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.contentPieceId, update.id));
     expect(delivery.status).toBe("success");
     expect(delivery.attempts).toBe(2);
   });
@@ -397,7 +397,7 @@ describe("dispatch", () => {
 
     expect(fetch).not.toHaveBeenCalled();
 
-    const [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.releaseId, update.id));
+    const [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.contentPieceId, update.id));
     expect(delivery.status).toBe("failed");
     // A decrypt failure is config-shaped (rotating CREDENTIALS_ENCRYPTION_KEY
     // back fixes it), so it must not pin attempts to MAX_ATTEMPTS the way a
@@ -424,7 +424,7 @@ describe("dispatch", () => {
 
     await dispatchAllDestinations(update.id);
 
-    const [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.releaseId, update.id));
+    const [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.contentPieceId, update.id));
     expect(delivery.status).toBe("failed");
     expect(delivery.attempts).toBeLessThan(3);
 
@@ -438,7 +438,7 @@ describe("dispatch", () => {
 
     await retryFailedDeliveries();
 
-    const [retried] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.releaseId, update.id));
+    const [retried] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.contentPieceId, update.id));
     expect(retried.status).toBe("success");
   });
 
@@ -465,7 +465,7 @@ describe("dispatch", () => {
 
     await dispatchAllDestinations(update.id);
 
-    const [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.releaseId, update.id));
+    const [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.contentPieceId, update.id));
     expect(delivery.status).toBe("failed");
     expect(delivery.attempts).toBe(3);
 
@@ -504,7 +504,7 @@ describe("dispatch", () => {
       );
     await dispatchAllDestinations(update.id);
 
-    let [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.releaseId, update.id));
+    let [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.contentPieceId, update.id));
     expect(delivery.status).toBe("failed");
     expect(delivery.attempts).toBe(3);
 
@@ -512,7 +512,7 @@ describe("dispatch", () => {
     vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(WEBFLOW_SCHEMA)).mockResolvedValueOnce(jsonResponse({ id: "item1" }, 202));
     await dispatchAllDestinations(update.id);
 
-    [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.releaseId, update.id));
+    [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.contentPieceId, update.id));
     expect(delivery.status).toBe("success");
     expect(delivery.attempts).toBe(1);
   });
@@ -543,7 +543,7 @@ describe("dispatch", () => {
     // The state a concurrent "sweep the failure" + "user re-publishes" race
     // starts from: a prior attempt failed before ever creating an item.
     await db.insert(deliveryAttempts).values({
-      releaseId: update.id,
+      contentPieceId: update.id,
       destination: "webflow",
       status: "failed",
       attempts: 1,
@@ -613,7 +613,7 @@ describe("dispatch", () => {
     expect(createdIds).toHaveLength(1);
     expect(updatedIds).toHaveLength(0);
 
-    const [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.releaseId, update.id));
+    const [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.contentPieceId, update.id));
     expect(delivery.status).toBe("success");
     expect(delivery.externalId).toBe(createdIds[0]);
   });
@@ -679,7 +679,7 @@ describe("dispatch", () => {
 
     // Exactly one row: the unique constraint holds regardless of the fix —
     // what the fix changes is whether the loser recovers into it cleanly.
-    const deliveries = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.releaseId, update.id));
+    const deliveries = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.contentPieceId, update.id));
     expect(deliveries).toHaveLength(1);
     expect(deliveries[0].status).toBe("success");
 
@@ -707,7 +707,7 @@ describe("dispatch", () => {
     const { tenant, update } = await seed();
     await db.insert(webhookConfigs).values({ tenantId: tenant.id, url: "https://example.com/hook", ...encryptedSecret() });
     await db.insert(deliveryAttempts).values({
-      releaseId: update.id,
+      contentPieceId: update.id,
       destination: "webhook",
       status: "failed",
       attempts: 1,
@@ -753,7 +753,7 @@ describe("dispatch", () => {
     // instead of redelivering.
     expect(fetchCount).toBe(1);
 
-    const [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.releaseId, update.id));
+    const [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.contentPieceId, update.id));
     expect(delivery.status).toBe("success");
     // Started at 1, one sweep's delivery increments it — not two.
     expect(delivery.attempts).toBe(2);

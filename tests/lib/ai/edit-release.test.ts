@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, releases, users, brandProfiles } from "../../../src/db/schema";
+import { tenants, contentPieces, users, brandProfiles } from "../../../src/db/schema";
 import { runWholeEditForRelease } from "../../../src/lib/ai/edit-release";
 import type { DraftProgressEvent } from "../../../src/lib/scheduling/draft-progress";
 import type { ReviewOutcome } from "../../../src/lib/ai/review-draft";
@@ -12,12 +12,12 @@ const USER_EMAIL = "whole-edit-test@example.com";
 async function seed(body = "Original body", title = "Original title") {
   const [tenant] = await db.insert(tenants).values({ name: TENANT_NAME }).returning();
   const [user] = await db.insert(users).values({ email: USER_EMAIL }).returning();
-  const [release] = await db.insert(releases).values({ tenantId: tenant.id, title, body }).returning();
+  const [release] = await db.insert(contentPieces).values({ tenantId: tenant.id, title, body }).returning();
   return { tenant, user, release };
 }
 
 async function rowFor(releaseId: string) {
-  const [row] = await db.select().from(releases).where(eq(releases.id, releaseId));
+  const [row] = await db.select().from(contentPieces).where(eq(contentPieces.id, releaseId));
   return row;
 }
 
@@ -25,7 +25,7 @@ describe("runWholeEditForRelease", () => {
   afterEach(async () => {
     const [tenant] = await db.select().from(tenants).where(eq(tenants.name, TENANT_NAME));
     if (tenant) {
-      await db.delete(releases).where(eq(releases.tenantId, tenant.id));
+      await db.delete(contentPieces).where(eq(contentPieces.tenantId, tenant.id));
       await db.delete(brandProfiles).where(eq(brandProfiles.tenantId, tenant.id));
     }
     await db.delete(users).where(eq(users.email, USER_EMAIL));
@@ -44,7 +44,7 @@ describe("runWholeEditForRelease", () => {
     });
 
     const result = await runWholeEditForRelease(
-      { releaseId: release.id, instruction: "make it shorter", fullBody: "live edited body", editedBy: user.id },
+      { contentPieceId: release.id, instruction: "make it shorter", fullBody: "live edited body", editedBy: user.id },
       db,
       (e) => events.push(e),
       { generateEdit, review }
@@ -75,10 +75,10 @@ describe("runWholeEditForRelease", () => {
     expect(events.at(-1)).toEqual({ type: "done", updateId: release.id, body: "reviewed body" });
   });
 
-  it("returns null and emits an error when the release does not exist", async () => {
+  it("returns null and emits an error when the content piece does not exist", async () => {
     const events: DraftProgressEvent[] = [];
     const result = await runWholeEditForRelease(
-      { releaseId: "00000000-0000-0000-0000-000000000000", instruction: "x", fullBody: "y", editedBy: "z" },
+      { contentPieceId: "00000000-0000-0000-0000-000000000000", instruction: "x", fullBody: "y", editedBy: "z" },
       db,
       (e) => events.push(e),
       { generateEdit: async () => "unused", review: async (d) => ({ finalDraft: d, status: "passed", issues: [] }) }

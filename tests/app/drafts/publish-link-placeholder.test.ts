@@ -8,7 +8,7 @@ vi.mock("next/headers", () => ({ cookies: vi.fn(async () => ({ get: () => undefi
 
 import { getServerSession } from "next-auth";
 import { db } from "../../../src/db";
-import { tenants, atomicUpdates, releases, users, tenantMembers } from "../../../src/db/schema";
+import { tenants, atomicUpdates, contentPieces, users, tenantMembers } from "../../../src/db/schema";
 import { claimReleaseFromAtomicUpdates } from "../../../src/lib/change-events/release-claim";
 import { approveDraft, publishDraft, checkDraftLinks } from "../../../src/app/(dashboard)/drafts/actions";
 
@@ -35,7 +35,7 @@ async function seedDraft(tenantId: string, body: string) {
 
 function formDataFor(releaseId: string, body: string) {
   const fd = new FormData();
-  fd.set("releaseId", releaseId);
+  fd.set("contentPieceId", releaseId);
   fd.set("title", "R");
   fd.set("body", body);
   fd.set("publishedAt", "");
@@ -44,7 +44,7 @@ function formDataFor(releaseId: string, body: string) {
 }
 
 async function assertUnpublished(releaseId: string, atomicUpdateId: string) {
-  const [row] = await db.select().from(releases).where(eq(releases.id, releaseId));
+  const [row] = await db.select().from(contentPieces).where(eq(contentPieces.id, releaseId));
   expect(row.status).toBe("draft");
   expect(row.publishedAt).toBeNull();
   const [au] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, atomicUpdateId));
@@ -82,7 +82,7 @@ describe("publishing is blocked when the body has invalid links", () => {
     const { release, atomicUpdateId } = await seedDraft(tenant.id, "Grab it here [add link].");
 
     const fd = new FormData();
-    fd.set("releaseId", release.id);
+    fd.set("contentPieceId", release.id);
     fd.set("publishedAt", "");
 
     const result = await publishDraft(fd);
@@ -96,7 +96,7 @@ describe("publishing is blocked when the body has invalid links", () => {
     const { release, atomicUpdateId } = await seedDraft(tenant.id, "Original body");
 
     const fd = new FormData();
-    fd.set("releaseId", release.id);
+    fd.set("contentPieceId", release.id);
     fd.set("body", "See the docs [add link] here.");
 
     const { problems } = await checkDraftLinks(fd);
@@ -109,7 +109,7 @@ describe("publishing is blocked when the body has invalid links", () => {
     const { release } = await seedDraft(tenant.id, "Original body");
 
     const fd = new FormData();
-    fd.set("releaseId", release.id);
+    fd.set("contentPieceId", release.id);
     fd.set("body", "A perfectly clean body.");
 
     const { problems } = await checkDraftLinks(fd);
@@ -123,7 +123,7 @@ describe("publishing is blocked when the body has invalid links", () => {
     const result = await approveDraft(formDataFor(release.id, "A perfectly clean body."));
 
     expect(result).toBeUndefined();
-    const [row] = await db.select().from(releases).where(eq(releases.id, release.id));
+    const [row] = await db.select().from(contentPieces).where(eq(contentPieces.id, release.id));
     expect(row.status).toBe("published");
     const [au] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, atomicUpdateId));
     expect(au.status).toBe("released");

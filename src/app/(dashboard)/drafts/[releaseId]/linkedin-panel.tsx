@@ -5,12 +5,12 @@ import { LINKEDIN_MAX_CHARS } from "@/lib/publishing/linkedin-constants";
 import { generateLinkedinCopyAction, saveLinkedinCopyAction } from "./linkedin-actions";
 
 export function LinkedinPanel({
-  releaseId,
+  contentPieceId,
   initialBody,
   baseUrl,
   slug,
 }: {
-  releaseId: string;
+  contentPieceId: string;
   initialBody: string;
   baseUrl: string;
   slug: string;
@@ -24,14 +24,14 @@ export function LinkedinPanel({
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-semibold">LinkedIn post</h2>
         <form action={generateLinkedinCopyAction}>
-          <input type="hidden" name="releaseId" value={releaseId} />
+          <input type="hidden" name="contentPieceId" value={contentPieceId} />
           <button type="submit" className="text-sm underline">
             {initialBody ? "Regenerate" : "Generate"}
           </button>
         </form>
       </div>
       <form action={saveLinkedinCopyAction} className="space-y-2">
-        <input type="hidden" name="releaseId" value={releaseId} />
+        <input type="hidden" name="contentPieceId" value={contentPieceId} />
         <textarea
           name="linkedinBody"
           value={body}

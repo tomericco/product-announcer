@@ -2,7 +2,7 @@ import { createHmac } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { webhookConfigs } from "@/db/schema";
 import { decryptSecret } from "@/lib/credentials/encryption";
-import type { Destination, DeliveryResult, DbClient, Release } from "./types";
+import type { Destination, DeliveryResult, DbClient, ContentPiece } from "./types";
 
 const DELIVERY_TIMEOUT_MS = 5000;
 
@@ -12,15 +12,15 @@ function signPayload(secret: string, payload: string): string {
   return `sha256=${createHmac("sha256", secret).update(payload).digest("hex")}`;
 }
 
-function buildPayload(release: Release) {
+function buildPayload(piece: ContentPiece) {
   return {
-    id: release.id,
-    tenantId: release.tenantId,
-    title: release.title,
-    body: release.body,
-    status: release.status,
-    createdAt: release.createdAt,
-    publishedAt: release.publishedAt,
+    id: piece.id,
+    tenantId: piece.tenantId,
+    title: piece.title,
+    body: piece.body,
+    status: piece.status,
+    createdAt: piece.createdAt,
+    publishedAt: piece.publishedAt,
   };
 }
 
@@ -41,7 +41,7 @@ export const webhookDestination: Destination<WebhookConfig> = {
   // (webflow needs `database` to record `needs_reauth`), but webhook
   // delivery has no notion of an external id and no DB write of its own.
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  async deliver(release, config, _externalId, _database): Promise<DeliveryResult> {
+  async deliver(piece, config, _externalId, _database): Promise<DeliveryResult> {
     // A secret is optional. With one, sign the body (HMAC) and, on a decrypt
     // failure (rotated/misconfigured CREDENTIALS_ENCRYPTION_KEY), fail
     // permanently as a config fault — retrying can't help, and it must not be
@@ -49,7 +49,7 @@ export const webhookDestination: Destination<WebhookConfig> = {
     // fetch's try block so a decrypt failure is never caught there and
     // misclassified as retryable. Without a secret, deliver unsigned: no
     // signature header at all.
-    const body = JSON.stringify(buildPayload(release));
+    const body = JSON.stringify(buildPayload(piece));
     let signature: string | null = null;
     if (config.secretCiphertext && config.secretIv && config.secretAuthTag) {
       let secret: string;
