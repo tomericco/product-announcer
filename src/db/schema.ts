@@ -229,10 +229,11 @@ export const companyProfiles = pgTable("company_profiles", {
   // draft everything below; the human then corrects it.
   websiteUrl: text("website_url"),
   oneLiner: text("one_liner"),
-  // The company's market category (e.g. "Project management software"). New and
-  // inert — nothing reads or writes it yet; it's for the onboarding bootstrap
-  // agent (spec 2) and as relevance context for the source agents (spec 3).
-  // Distinct from `industry` below, which is live today.
+  // The company's market category (e.g. "Project management software").
+  // Written by the onboarding bootstrap agent (spec 2) and hand-correctable
+  // in Company settings; intended as relevance context for spec 3's source
+  // agents, which don't exist yet. Distinct from `industry` below, which
+  // selects writing exemplars rather than describing the market.
   category: text("category"),
   // Differentiators and the messages the company wants to own. Not a setting —
   // this is the yardstick every incoming signal is scored for relevance against.

@@ -1391,7 +1391,7 @@ different page for a different purpose."
 - No reference to `scrape-updates-page`, `fetchUpdatesPageText`, or `/brand-guidelines` remains in `src/` or `tests/`.
 - A tenant can enter a website URL — in onboarding or in settings — and get a drafted `oneLiner`, `category`, `positioning`, `topics` and competitor list they can edit.
 - A failed or blocked crawl leaves onboarding completable and writes nothing.
-- Re-running the bootstrap does not duplicate competitors and does not overwrite hand-edited profile fields.
+- Re-running the bootstrap does not duplicate competitors (case-insensitively: an LLM emitting "GitHub" then "Github" still yields one row). It **does** overwrite hand-edited `oneLiner`/`category`/`positioning`/`topics` with the fresh derivation whenever that derivation produces a non-null value — a null field never clears an existing one, but a successful one always replaces it, including text a human wrote. In Settings this is mitigated by a confirmation dialog ("Replace your company context?") in front of `CompanyContextForm`'s "Draft from my website" button, shown before the re-draft runs. Onboarding has no such dialog: a fresh profile there has nothing to lose.
 
 ## Notes for spec 3
 
