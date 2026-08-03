@@ -116,7 +116,12 @@ the relevance floor, and what has already been proposed and published.
    year ago" is a comparison piece. Single-signal clusters are legitimate, but a
    system that only ever produces them is a formatter, not an ideation engine.
 2. **Propose** — each cluster yields a complete brief: title, angle, why-now,
-   content type, audience, key points, outline, target length, evidence.
+   content type, audience, key points, target length, evidence.
+
+   **Briefs are capped: 3–5 key points, one sentence each.** A brief is a
+   commission, not a first draft. The spike produced 6.5 points averaging 27
+   words, which is something a writer skims rather than reads — and it doubles
+   the token cost of the highest-volume call in the system.
 3. **Dedupe** — a cluster matches against briefs with status `new` only. On a
    match the brief absorbs the new signals, `lastEvidenceAt` is bumped, and it
    re-ranks upward. Accepted and dismissed briefs are excluded from matching and
@@ -212,7 +217,7 @@ export const briefDismissReasonEnum = pgEnum("brief_dismiss_reason", [
 
 Columns: `id, tenantId, origin, createdBy?, contentType, title, angle, whyNow,
 suggestedChannel (text, not an enum — destinations will grow and Postgres has no
-DROP VALUE), audience?, keyPoints[], outline?, targetLength?, score,
+DROP VALUE), audience?, keyPoints[], targetLength?, score,
 scoreRationale?, status, acceptedBy?, acceptedAt?, contentPieceId?,
 dismissReason?, dismissNote?, dismissedBy?, dismissedAt?, editedAt?,
 lastEvidenceAt, expiresAt, createdAt, updatedAt`.
@@ -244,30 +249,49 @@ honest.
   `personas`. Gains `websiteUrl`, `oneLiner`, `category`, `positioning`,
   `topics[]`.
 
-### Migration steps
+### Migration
+
+**The app is not in real use, so there is no production data to preserve.** This
+is a schema replacement, not a data migration — no backfill, no status remapping,
+no two-phase column drops, no verification step between them:
 
 1. Create the six new tables.
-2. Rename `releases` → `content_pieces`; add new columns; backfill every existing
-   row to `type = 'product_update'`.
-3. Map statuses: `draft→draft`, `approved→scheduled`, `published→published`,
-   `rejected→archived`.
-4. For every row with a non-null `linkedin_body`, insert a `channel_variants` row
-   (channel `linkedin`, `editedAt` from `linkedin_body_edited_at`); then drop both
-   columns in a **separate migration** after the backfill is verified.
-5. Rename FKs: `atomic_updates.release_id` and `delivery_attempts.release_id` →
-   `content_piece_id`.
-6. Rename and extend `brand_profiles`.
-7. Strip `schedule_configs` to ideation cadence — drop `cadence`, `threshold`,
+2. Drop `releases`; create `content_pieces` fresh with the full column set.
+3. Drop `linkedin_body` and `linkedin_body_edited_at` outright. `channel_variants`
+   starts empty.
+4. Point `atomic_updates` and `delivery_attempts` at `content_piece_id` directly.
+5. Drop `brand_profiles`; create `company_profiles` fresh.
+6. Strip `schedule_configs` to ideation cadence — drop `cadence`, `threshold`,
    `thresholdEnabled`, `dayOfWeek`, `dayOfMonth`.
 
-Steps 2–5 are the only ones touching live data. All are reversible except the
-column drops in step 4.
+All of it collapses into one generated migration. Spec 1 drops from M to S.
+
+Optional cleanup while nothing depends on history: the 39 accumulated migrations
+in `src/db/migrations` can be squashed into a single baseline. Worth doing here
+or never.
+
+### What the clean slate does not solve
+
+`system_personas` and `system_update_examples` are **seeded global catalogs**, not
+tenant data. They must exist for generation to work, and six modules read them
+(`select-examples.ts`, `compose-prompt.ts`, `generation.ts`, `generation-context.ts`,
+`edit.ts`, `catch-up.ts`).
+
+`system_update_examples` is product-update-shaped: each row carries an
+`update_category` and a body written as a changelog entry. With three content
+types, few-shot selection needs examples per type.
+
+Decision for spec 1: rename to `system_content_examples`, add a `contentType`
+column, make `update_category` nullable (it is meaningful only for product
+updates), and re-seed. Blog and social exemplars can be seeded thin and grown
+later — but the **column** lands in spec 1 rather than forcing a second schema
+change midway through spec 9.
 
 ## Specs
 
 | # | Spec | Delivers | Depends on | Size |
 | --- | --- | --- | --- | --- |
-| 1 | Content pieces foundation | The full migration above | — | M |
+| 1 | Content pieces foundation | The schema replacement above, plus the `system_content_examples` rename | — | S |
 | 2 | Company context & bootstrap | Profile fields, `competitors` CRUD, crawl-site bootstrap agent, onboarding | 1 | M |
 | 3 | Signals layer + competitor agent | `signals`/`sources`, retention job, shipped-work adapter, competitor agent, signals browser | 2 | L |
 | 4 | News agent | Topic-driven search, relevance, cross-source dedupe | 3 | M |
@@ -338,8 +362,16 @@ Findings that change the specs:
 5. **Scores cluster narrowly** (0.66–0.92). Absolute scores will rank poorly once
    a backlog accumulates. Spec 5 should rank relatively within a run rather than
    trusting the absolute number.
-6. **Brief generation is output-heavy** — 6 briefs is 6–9k output tokens and
-   overflows a 4096 default. Set `maxOutputTokens` explicitly and budget for it.
+6. **Briefs came out far too long, and `outline` was dead weight.** Measured:
+   6.5 key points per brief averaging 27 words each, plus a separate 41-word
+   `outline` field that only restated them in compressed form. Two decisions
+   follow. **Cap key points at 3–5, one sentence each** — a brief is a
+   commission, not a first draft, and 175 words of instructions is something a
+   writer skims. **Drop the `outline` column entirely** — ordered key points
+   *are* the outline, and keeping both guarantees they drift apart once a human
+   edits one of them. Together this roughly halves the output tokens of the
+   highest-volume call in the system. Set `maxOutputTokens` explicitly
+   regardless: 6 uncapped briefs overflowed a 4096 default.
 7. **Excerpt quality drives brief quality.** The tier-2 relevance pass in spec 3
    must preserve a meaningful excerpt, not just a score — the briefs lean on
    excerpt detail heavily.
