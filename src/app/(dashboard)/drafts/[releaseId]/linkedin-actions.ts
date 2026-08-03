@@ -6,6 +6,7 @@ import { db } from "@/db";
 import { contentPieces, linkedinConnections } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { generateLinkedinCopy } from "@/lib/ai/linkedin-copy";
+import { writeVariant } from "@/lib/publishing/channel-variants";
 
 async function loadTenantContentPiece(contentPieceId: string, tenantId: string) {
   const [piece] = await db
@@ -41,10 +42,9 @@ export async function generateLinkedinCopyAction(formData: FormData): Promise<vo
     guidelines,
   });
 
-  await db
-    .update(contentPieces)
-    .set({ linkedinBody: post, linkedinBodyEditedAt: null })
-    .where(and(eq(contentPieces.id, contentPieceId), eq(contentPieces.tenantId, session.user.tenantId)));
+  // Generation path: never marks the write as a hand-edit, so a later
+  // regeneration knows this copy was never hand-touched.
+  await writeVariant(db, contentPieceId, "linkedin", post);
   revalidatePath(`/drafts/${contentPieceId}`);
 }
 
@@ -53,9 +53,13 @@ export async function saveLinkedinCopyAction(formData: FormData): Promise<void> 
   const contentPieceId = String(formData.get("contentPieceId") ?? "");
   const linkedinBody = String(formData.get("linkedinBody") ?? "");
 
-  await db
-    .update(contentPieces)
-    .set({ linkedinBody, linkedinBodyEditedAt: new Date() })
-    .where(and(eq(contentPieces.id, contentPieceId), eq(contentPieces.tenantId, session.user.tenantId)));
+  // Tenant-scoped existence check first: writeVariant itself has no tenant
+  // column to filter on, so ownership must be confirmed before writing.
+  const piece = await loadTenantContentPiece(contentPieceId, session.user.tenantId);
+  if (!piece) return;
+
+  // Hand-edit save path: stamps editedAt so regeneration can warn before
+  // overwriting a human's words.
+  await writeVariant(db, contentPieceId, "linkedin", linkedinBody, { edited: true });
   revalidatePath(`/drafts/${contentPieceId}`);
 }

@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../src/db";
-import { tenants, linkedinConnections, contentPieces } from "../../src/db/schema";
+import { tenants, linkedinConnections } from "../../src/db/schema";
 
 const TENANT = "LinkedIn Connections Schema Test Tenant";
 
@@ -31,15 +31,5 @@ describe("linkedin_connections schema", () => {
     expect(row.organizationUrn).toBeNull();
     expect(row.baseUrl).toBeNull();
     expect(row.refreshTokenCiphertext).toBeNull();
-  });
-
-  it("adds nullable linkedin copy columns to content_pieces", async () => {
-    const tenantId = await seedTenant();
-    const [row] = await db
-      .insert(contentPieces)
-      .values({ tenantId, title: "T", body: "B", status: "draft" })
-      .returning({ linkedinBody: contentPieces.linkedinBody, linkedinBodyEditedAt: contentPieces.linkedinBodyEditedAt });
-    expect(row.linkedinBody).toBeNull();
-    expect(row.linkedinBodyEditedAt).toBeNull();
   });
 });

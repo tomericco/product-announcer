@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
 import { tenants, contentPieces } from "../../../src/db/schema";
+import { readVariant } from "../../../src/lib/publishing/channel-variants";
 
 vi.mock("../../../src/lib/workspace/session", () => ({ requireSession: vi.fn() }));
 vi.mock("../../../src/lib/ai/linkedin-copy", () => ({ generateLinkedinCopy: vi.fn() }));
@@ -42,25 +43,25 @@ describe("linkedin draft actions", () => {
     vi.mocked(requireSession).mockResolvedValue({ user: { tenantId } } as never);
     vi.mocked(generateLinkedinCopy).mockResolvedValue("Generated post.");
     await generateLinkedinCopyAction(fd({ contentPieceId: releaseId }));
-    const [row] = await db.select().from(contentPieces).where(eq(contentPieces.id, releaseId));
-    expect(row.linkedinBody).toBe("Generated post.");
-    expect(row.linkedinBodyEditedAt).toBeNull();
+    const variant = await readVariant(db, releaseId, "linkedin");
+    expect(variant?.body).toBe("Generated post.");
+    expect(variant?.editedAt).toBeNull();
   });
 
   it("saves hand-edited copy and stamps the edited marker", async () => {
     const { tenantId, releaseId } = await seedRelease();
     vi.mocked(requireSession).mockResolvedValue({ user: { tenantId } } as never);
     await saveLinkedinCopyAction(fd({ contentPieceId: releaseId, linkedinBody: "My edit." }));
-    const [row] = await db.select().from(contentPieces).where(eq(contentPieces.id, releaseId));
-    expect(row.linkedinBody).toBe("My edit.");
-    expect(row.linkedinBodyEditedAt).not.toBeNull();
+    const variant = await readVariant(db, releaseId, "linkedin");
+    expect(variant?.body).toBe("My edit.");
+    expect(variant?.editedAt).not.toBeNull();
   });
 
   it("refuses to touch a release from another tenant", async () => {
     const { releaseId } = await seedRelease();
     vi.mocked(requireSession).mockResolvedValue({ user: { tenantId: "00000000-0000-0000-0000-000000000000" } } as never);
     await saveLinkedinCopyAction(fd({ contentPieceId: releaseId, linkedinBody: "x" }));
-    const [row] = await db.select().from(contentPieces).where(eq(contentPieces.id, releaseId));
-    expect(row.linkedinBody).toBeNull();
+    const variant = await readVariant(db, releaseId, "linkedin");
+    expect(variant).toBeNull();
   });
 });

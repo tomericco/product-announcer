@@ -3,6 +3,7 @@ import { linkedinConnections } from "@/db/schema";
 import { getValidAccessToken } from "@/lib/integrations/linkedin/token";
 import { createPost, LinkedinApiError } from "@/lib/integrations/linkedin/client";
 import { slugify } from "@/lib/publishing/slug";
+import { readVariant } from "@/lib/publishing/channel-variants";
 import type { Destination, DeliveryResult, DbClient, ContentPiece } from "./types";
 
 type LinkedinConnection = typeof linkedinConnections.$inferSelect;
@@ -72,12 +73,13 @@ export const linkedinDestination: Destination<LinkedinConnection> = {
     if (!connection.organizationUrn.startsWith("urn:li:organization:")) {
       return { status: "permanent", error: "LinkedIn author must be an organization page.", configFault: true };
     }
-    if (!piece.linkedinBody || !piece.linkedinBody.trim()) {
+    const variant = await readVariant(database, piece.id, "linkedin");
+    if (!variant || !variant.body.trim()) {
       return { status: "permanent", error: "Generate a LinkedIn post before publishing." };
     }
 
     const link = new URL(slugify(piece.title), connection.baseUrl).toString();
-    const commentary = `${piece.linkedinBody.trim()}\n\n${link}`;
+    const commentary = `${variant.body.trim()}\n\n${link}`;
 
     // Acquire the token BEFORE the network try-block. getValidAccessToken can
     // fail two ways that must NOT be lumped in with a retryable network error:

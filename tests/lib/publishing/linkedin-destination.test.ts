@@ -11,15 +11,24 @@ import { getValidAccessToken } from "../../../src/lib/integrations/linkedin/toke
 import { createPost, LinkedinApiError } from "../../../src/lib/integrations/linkedin/client";
 
 const release = (over: Partial<ContentPiece> = {}): ContentPiece =>
-  ({ id: "r1", tenantId: "t1", title: "New Dashboard", body: "b", linkedinBody: "Hook.\n\nDetails.", ...over } as ContentPiece);
+  ({ id: "r1", tenantId: "t1", title: "New Dashboard", body: "b", ...over } as ContentPiece);
 
 const connection = (over: Record<string, unknown> = {}) =>
   ({ id: "c1", status: "active", organizationUrn: "urn:li:organization:1", baseUrl: "https://acme.com/changelog/", ...over } as never);
 
-// A DbClient stub that records update().set() payloads.
-function dbStub() {
+// A DbClient stub that records update().set() payloads and serves a fixed
+// channel_variants row (or none) for the readVariant() lookup inside deliver().
+function dbStub(linkedinBody: string | undefined = "Hook.\n\nDetails.") {
   const sets: Record<string, unknown>[] = [];
   const database = {
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          limit: () =>
+            Promise.resolve(linkedinBody === undefined ? [] : [{ body: linkedinBody, editedAt: null }]),
+        }),
+      }),
+    }),
     update: () => ({ set: (v: Record<string, unknown>) => { sets.push(v); return { where: () => Promise.resolve() }; } }),
   } as unknown as DbClient;
   return { database, sets };
@@ -38,9 +47,9 @@ describe("linkedin destination", () => {
     expect(createPost).not.toHaveBeenCalled();
   });
 
-  it("permanently fails when linkedinBody is empty", async () => {
-    const { database } = dbStub();
-    const result = await linkedinDestination.deliver(release({ linkedinBody: "  " }), connection(), null, database);
+  it("permanently fails when the linkedin channel variant is empty", async () => {
+    const { database } = dbStub("  ");
+    const result = await linkedinDestination.deliver(release(), connection(), null, database);
     expect(result.status).toBe("permanent");
   });
 

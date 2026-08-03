@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../src/db";
 import { tenants, users, contentPieces, deliveryAttempts } from "../../src/db/schema";
+import { writeVariant } from "../../src/lib/publishing/channel-variants";
 
 const TENANT = "History Actions Test Tenant";
 let currentTenantId = "";
@@ -22,12 +23,12 @@ async function seed() {
       tenantId: tenant.id,
       title: "Ship it",
       body: "# Notes\n\nWe **shipped**.",
-      linkedinBody: "We shipped 🎉",
       status: "published",
       publishedAt: new Date("2026-07-25T10:00:00Z"),
       publishedBy: pub.id,
     })
     .returning({ id: contentPieces.id });
+  await writeVariant(db, rel.id, "linkedin", "We shipped 🎉");
   await db.insert(deliveryAttempts).values([
     { contentPieceId: rel.id, destination: "webhook", status: "success" },
     { contentPieceId: rel.id, destination: "webflow", status: "failed", lastError: "401 Unauthorized" },

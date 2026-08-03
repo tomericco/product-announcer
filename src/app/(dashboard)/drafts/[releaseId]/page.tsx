@@ -23,6 +23,7 @@ import { CatchUpBanner } from "./catch-up-banner";
 import { WebflowCodeWarning } from "./webflow-code-warning";
 import { listPublishTargets } from "@/lib/publishing/dispatch";
 import { linkedinDestination } from "@/lib/publishing/destinations/linkedin";
+import { readVariant } from "@/lib/publishing/channel-variants";
 import { slugify } from "@/lib/publishing/slug";
 import { LinkedinPanel } from "./linkedin-panel";
 
@@ -62,6 +63,7 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
   // separate "is LinkedIn set up" check) so this panel can never drift out
   // of sync with what `deliver()` actually requires at publish time.
   const linkedinConfig = await linkedinDestination.loadConfig(session.user.tenantId, db);
+  const linkedinVariant = linkedinConfig ? await readVariant(db, update.id, "linkedin") : null;
 
   return (
     <div className="mx-auto w-full max-w-3xl space-y-6">
@@ -133,7 +135,7 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
           {linkedinConfig && (
             <LinkedinPanel
               contentPieceId={update.id}
-              initialBody={update.linkedinBody ?? ""}
+              initialBody={linkedinVariant?.body ?? ""}
               baseUrl={linkedinConfig.baseUrl!}
               slug={slugify(update.title)}
             />

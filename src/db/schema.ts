@@ -301,10 +301,29 @@ export const contentPieces = pgTable("content_pieces", {
   // Non-null means the body was hand-edited — lets the merge preserve hand
   // edits rather than silently overwriting them.
   bodyEditedAt: timestamp("body_edited_at", { withTimezone: true }),
-  // Removed in Task 2 once channel_variants can hold per-channel content.
-  linkedinBody: text("linkedin_body"),
-  linkedinBodyEditedAt: timestamp("linkedin_body_edited_at", { withTimezone: true }),
 });
+
+export const channelVariants = pgTable(
+  "channel_variants",
+  {
+    id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    contentPieceId: uuid("content_piece_id")
+      .notNull()
+      .references(() => contentPieces.id, { onDelete: "cascade" }),
+    // Plain text, not an enum: the destination list will grow and Postgres has
+    // no DROP VALUE. Values match `destinationEnum` where they overlap.
+    channel: text("channel").notNull(),
+    body: text("body").notNull(),
+    // Non-null marks a hand-edit, so regeneration can warn before overwriting.
+    editedAt: timestamp("edited_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    // One body per piece per channel — two rows would make "what do we post to
+    // LinkedIn" ambiguous at delivery time.
+    uniqueIndex("channel_variants_piece_channel_unique").on(table.contentPieceId, table.channel),
+  ]
+);
 
 export const webhookDeliveryStatusEnum = pgEnum("webhook_delivery_status", ["pending", "success", "failed"]);
 

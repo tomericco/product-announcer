@@ -6,6 +6,7 @@ import { contentPieces, deliveryAttempts, users } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { destinationLabel } from "@/lib/publishing/dispatch";
 import { renderMarkdown } from "@/lib/markdown/render";
+import { readVariant } from "@/lib/publishing/channel-variants";
 
 export type ReleaseDestinationStatus = {
   destination: "webhook" | "webflow" | "linkedin";
@@ -32,7 +33,6 @@ export async function getReleaseDetail(contentPieceId: string): Promise<ReleaseD
       id: contentPieces.id,
       title: contentPieces.title,
       body: contentPieces.body,
-      linkedinBody: contentPieces.linkedinBody,
       publishedAt: contentPieces.publishedAt,
       publisherName: users.name,
       publisherEmail: users.email,
@@ -44,8 +44,11 @@ export async function getReleaseDetail(contentPieceId: string): Promise<ReleaseD
     .limit(1);
   if (!row) return null;
 
-  // The content piece is confirmed the caller's above, so its delivery
-  // attempts (FK'd to it) are safe to read by contentPieceId alone.
+  // The content piece is confirmed the caller's above, so its channel variant
+  // and delivery attempts (both FK'd to it) are safe to read by
+  // contentPieceId alone.
+  const linkedinVariant = await readVariant(db, contentPieceId, "linkedin");
+
   const attempts = await db
     .select({
       destination: deliveryAttempts.destination,
@@ -60,7 +63,7 @@ export async function getReleaseDetail(contentPieceId: string): Promise<ReleaseD
     id: row.id,
     title: row.title,
     bodyHtml: renderMarkdown(row.body),
-    linkedinBody: row.linkedinBody,
+    linkedinBody: linkedinVariant?.body ?? null,
     publishedAt: row.publishedAt ? row.publishedAt.toISOString() : null,
     publisherName: row.publisherName ?? row.publisherEmail ?? null,
     destinations: attempts.map((a) => ({

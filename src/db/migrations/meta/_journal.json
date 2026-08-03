@@ -288,6 +288,20 @@
       "when": 1785757175099,
       "tag": "0040_woozy_christian_walker",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1785759301082,
+      "tag": "0041_glossy_nico_minoru",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1785759654564,
+      "tag": "0042_fat_valkyrie",
+      "breakpoints": true
     }
   ]
 }
