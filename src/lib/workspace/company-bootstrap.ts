@@ -17,8 +17,17 @@ export type BootstrapDeps = {
  *
  * Mirrors `importBrandStyleForTenant`: a null derived field means "the pages gave
  * the model nothing to go on", never "the user wants this cleared", so only
- * fields the analysis actually produced are written. Competitors are topped up
- * rather than replaced, since the human may have added their own.
+ * fields the analysis actually produced are written. But that guard is
+ * one-directional -- it says nothing about what happens when the analysis
+ * *does* produce a value. A successful derivation for oneLiner/category/
+ * positioning/topics REPLACES whatever is already in that column, including
+ * text a human wrote and refined by hand. The onboarding caller (Task 6) runs
+ * this against a fresh profile with nothing to lose, but the settings-side
+ * caller (CompanyContextForm's "Draft from my website") can re-run this
+ * against an already-edited profile, which is exactly that case -- which is
+ * why that caller confirms first, the same way importBrandStyleFromUrl does.
+ * Competitors are topped up rather than replaced either way, since the human
+ * may have added their own.
  */
 export async function bootstrapCompanyContext(
   tenantId: string,

@@ -10,6 +10,15 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 export function CompanyContextForm({
   defaultWebsiteUrl,
@@ -26,14 +35,24 @@ export function CompanyContextForm({
 }) {
   const [websiteUrl, setWebsiteUrl] = useState(defaultWebsiteUrl);
   const [drafting, setDrafting] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const router = useRouter();
 
   // This only ever DRAFTS the fields below -- the human reviews and corrects
-  // before Save. Unlike importBrandStyleFromUrl next door, there is nothing
-  // destructive to confirm first: bootstrapCompanyContext only fills in
-  // fields the analysis actually produced, so it never blanks something the
-  // human already wrote, and re-running just tops up competitors.
+  // before Save. But bootstrapCompanyContext's merge is one-directional: a
+  // null derivation never clears an existing value, but a *successful* one
+  // for one-liner/category/positioning/topics replaces whatever is already
+  // there, including hand-written edits (see the comment on that merge in
+  // company-bootstrap.ts). Re-running this from settings against an
+  // already-edited profile is exactly that case, so it confirms first --
+  // same interaction as importBrandStyleFromUrl next door.
+  function requestDraft() {
+    if (!websiteUrl.trim() || drafting) return;
+    setConfirmOpen(true);
+  }
+
   async function draft() {
+    setConfirmOpen(false);
     const trimmed = websiteUrl.trim();
     if (!trimmed || drafting) return;
     setDrafting(true);
@@ -63,7 +82,7 @@ export function CompanyContextForm({
             onChange={(e) => setWebsiteUrl(e.target.value)}
             className="flex-1"
           />
-          <Button type="button" variant="outline" onClick={draft} disabled={drafting || !websiteUrl.trim()}>
+          <Button type="button" variant="outline" onClick={requestDraft} disabled={drafting || !websiteUrl.trim()}>
             {drafting ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
             {drafting ? "Drafting…" : "Draft from my website"}
           </Button>
@@ -73,6 +92,23 @@ export function CompanyContextForm({
           below is used until you review it and hit Save.
         </p>
       </div>
+
+      <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Replace your company context?</DialogTitle>
+            <DialogDescription>
+              This replaces your one-liner, market category, positioning, and topics with what we derive from the
+              site — including anything you&apos;ve written or edited by hand. Competitors are only added to, never
+              removed.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <DialogClose render={<Button variant="outline" />}>Cancel</DialogClose>
+            <Button onClick={draft}>Continue</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* No hidden `websiteUrl` field here: saveCompanyContext only writes the
           prose fields and topics. The website itself is set by the draft above
