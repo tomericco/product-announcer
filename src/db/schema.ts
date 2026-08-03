@@ -253,6 +253,28 @@ export const companyProfiles = pgTable("company_profiles", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+export const competitors = pgTable(
+  "competitors",
+  {
+    id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    // The competitor's home page. The specific pages we watch — changelog, blog,
+    // releases — are `sources` rows in spec 3, so one competitor can have several.
+    websiteUrl: text("website_url"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    // The bootstrap proposes competitors and a human adds more by hand; without
+    // this a re-run would silently duplicate every name it proposed before.
+    uniqueIndex("competitors_tenant_name_unique").on(table.tenantId, table.name),
+  ]
+);
+
+export type Competitor = typeof competitors.$inferSelect;
+
 // Global, seeded catalog of built-in personas. Tenants reference these by `key`
 // from their company profile; the brief steers how updates are written for them.
 export const systemPersonas = pgTable("system_personas", {

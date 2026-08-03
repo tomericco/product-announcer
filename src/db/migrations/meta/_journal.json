@@ -337,6 +337,13 @@
       "when": 1785762629935,
       "tag": "0047_magenta_zodiak",
       "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1785767950278,
+      "tag": "0048_fresh_patriot",
+      "breakpoints": true
     }
   ]
 }
