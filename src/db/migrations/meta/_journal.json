@@ -330,6 +330,13 @@
       "when": 1785761104107,
       "tag": "0046_vengeful_micromax",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1785762629935,
+      "tag": "0047_magenta_zodiak",
+      "breakpoints": true
     }
   ]
 }

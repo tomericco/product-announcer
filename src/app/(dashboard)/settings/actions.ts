@@ -7,7 +7,6 @@ import { db } from "@/db";
 import { repos, scheduleConfigs, tenants } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { requireRole } from "@/lib/workspace/active-tenant";
-import { computeNextScheduledAt, type Cadence } from "@/lib/scheduling/scheduler-decision";
 import { addSelectedRepos } from "@/lib/workspace/repo-sync";
 import { listRepoBranches } from "@/lib/integrations/github/github";
 import { createInvite, revokeActiveInvite } from "@/lib/workspace/invites";
@@ -83,33 +82,14 @@ function parseIntOrNull(value: FormDataEntryValue | null): number | null {
 
 export async function saveWorkspaceSchedule(formData: FormData) {
   const session = await requireSession();
-  const cadence = formData.get("cadence") as Cadence;
-  const thresholdRaw = formData.get("threshold");
-  const threshold = thresholdRaw ? Number(thresholdRaw) : null;
-
   const hour = Math.min(23, Math.max(0, parseIntOrNull(formData.get("hour")) ?? 9));
-  const thresholdEnabled = formData.get("thresholdEnabled") === "on";
-  // Day-of-week is meaningful for the weekly and biweekly cadences, day-of-month
-  // for the monthly cadence — store null for the others so the data stays honest.
-  const dayOfWeek =
-    cadence === "weekly" || cadence === "biweekly" ? parseIntOrNull(formData.get("dayOfWeek")) : null;
-  const dayOfMonth = cadence === "monthly" ? parseIntOrNull(formData.get("dayOfMonth")) : null;
-
-  // Recompute the next run from now on every save so a changed hour/day/cadence
-  // takes effect immediately. Subsequent runs advance from this anchor.
-  const nextScheduledAt =
-    cadence === "none"
-      ? null
-      : computeNextScheduledAt(new Date(), cadence, { hour, dayOfWeek, dayOfMonth });
-
-  const values = { cadence, threshold, thresholdEnabled, hour, dayOfWeek, dayOfMonth, nextScheduledAt };
 
   // onConflictDoUpdate (not a plain insert) so a concurrent first-time save can't
   // violate the one-per-tenant unique constraint — matches saveOnboardingSchedule.
   await db
     .insert(scheduleConfigs)
-    .values({ tenantId: session.user.tenantId, ...values })
-    .onConflictDoUpdate({ target: scheduleConfigs.tenantId, set: values });
+    .values({ tenantId: session.user.tenantId, hour })
+    .onConflictDoUpdate({ target: scheduleConfigs.tenantId, set: { hour } });
 
   revalidatePath("/settings");
   revalidatePath("/atomic-updates");

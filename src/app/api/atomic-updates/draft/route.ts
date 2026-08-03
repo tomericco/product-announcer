@@ -5,8 +5,8 @@ import { hasValidSession } from "@/lib/workspace/session";
 import { ACTIVE_TENANT_COOKIE, resolveActiveTenant } from "@/lib/workspace/active-tenant";
 import { db } from "@/db";
 import { getOpenAtomicUpdates } from "@/lib/change-events/release-claim";
-import { runBatchForWorkspace } from "@/lib/scheduling/run-schedule";
-import type { DraftProgressEvent } from "@/lib/scheduling/draft-progress";
+import { runBatchForWorkspace } from "@/lib/drafting/compose-draft";
+import type { DraftProgressEvent } from "@/lib/drafting/draft-progress";
 
 function unauthorized(): Response {
   return new Response(JSON.stringify({ error: "unauthorized" }), {

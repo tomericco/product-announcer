@@ -8,10 +8,9 @@ vi.mock("../../../src/lib/ai/review-draft", () => ({ reviewAndReconcile: vi.fn()
 import { generateObject } from "ai";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, atomicUpdates, contentPieces, scheduleConfigs, companyProfiles, llmUsage } from "../../../src/db/schema";
-import { runBatchForWorkspace, runSchedulerTick } from "../../../src/lib/scheduling/run-schedule";
+import { tenants, atomicUpdates, contentPieces, companyProfiles, llmUsage } from "../../../src/db/schema";
+import { runBatchForWorkspace } from "../../../src/lib/drafting/compose-draft";
 import { getOpenAtomicUpdates } from "../../../src/lib/change-events/release-claim";
-import { advanceNextScheduledAt } from "../../../src/lib/scheduling/scheduler-decision";
 import { reviewAndReconcile } from "../../../src/lib/ai/review-draft";
 
 const TENANT = "Run Batch Test Tenant";
@@ -95,38 +94,6 @@ describe("run-schedule (workspace-level)", () => {
     expect(after.contentPieceId).toBeNull();
   });
 
-  it("runSchedulerTick fires the workspace config, creates one release, advances nextScheduledAt on cadence", async () => {
-    const { tenant } = await seed();
-    await seedAtomicUpdates(tenant.id, ["A"]);
-    const past = new Date("2026-07-01T00:00:00Z");
-    await db.insert(scheduleConfigs).values({ tenantId: tenant.id, cadence: "weekly", threshold: null, nextScheduledAt: past });
-    vi.mocked(generateObject).mockResolvedValue({
-      object: { title: "T", body: "B", category: "new" },
-    } as never);
-
-    await runSchedulerTick(new Date("2026-07-14T00:00:00Z"));
-
-    expect(await db.select().from(contentPieces).where(eq(contentPieces.tenantId, tenant.id))).toHaveLength(1);
-    const [config] = await db.select().from(scheduleConfigs).where(eq(scheduleConfigs.tenantId, tenant.id));
-    expect(config.nextScheduledAt).toEqual(advanceNextScheduledAt(past, "weekly"));
-  });
-
-  it("runSchedulerTick does NOT advance nextScheduledAt on a threshold-reason fire", async () => {
-    const { tenant } = await seed();
-    await seedAtomicUpdates(tenant.id, ["A"]);
-    const future = new Date("2026-08-01T00:00:00Z");
-    await db.insert(scheduleConfigs).values({ tenantId: tenant.id, cadence: "weekly", threshold: 1, thresholdEnabled: true, nextScheduledAt: future });
-    vi.mocked(generateObject).mockResolvedValue({
-      object: { title: "T", body: "B", category: "new" },
-    } as never);
-
-    await runSchedulerTick(new Date("2026-07-14T00:00:00Z"));
-
-    expect(await db.select().from(contentPieces).where(eq(contentPieces.tenantId, tenant.id))).toHaveLength(1);
-    const [config] = await db.select().from(scheduleConfigs).where(eq(scheduleConfigs.tenantId, tenant.id));
-    expect(config.nextScheduledAt).toEqual(future);
-  });
-
   it("selects matching seeded examples and injects them into the generation prompt", async () => {
     const { tenant } = await seed();
     // Brand profile whose industry + system persona match the seeded devtools/developer examples.
@@ -155,7 +122,7 @@ describe("run-schedule (workspace-level)", () => {
       object: { title: "T", body: "B", category: "new" },
     } as never);
 
-    const events: import("../../../src/lib/scheduling/draft-progress").DraftProgressEvent[] = [];
+    const events: import("../../../src/lib/drafting/draft-progress").DraftProgressEvent[] = [];
     const open = await getOpenAtomicUpdates(tenant.id);
     const created = await runBatchForWorkspace(tenant.id, open, db, (e) => events.push(e));
 
@@ -197,7 +164,7 @@ describe("run-schedule (workspace-level)", () => {
     await seedAtomicUpdates(tenant.id, ["Flaky"]);
     vi.mocked(generateObject).mockRejectedValue(new Error("model unavailable"));
 
-    const events: import("../../../src/lib/scheduling/draft-progress").DraftProgressEvent[] = [];
+    const events: import("../../../src/lib/drafting/draft-progress").DraftProgressEvent[] = [];
     const open = await getOpenAtomicUpdates(tenant.id);
     const created = await runBatchForWorkspace(tenant.id, open, db, (e) => events.push(e));
 

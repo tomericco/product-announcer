@@ -8,7 +8,7 @@ import { db } from "@/db";
 import { contentPieces } from "@/db/schema";
 import { notEditableMessage } from "@/lib/draft-editable";
 import { runWholeEditForRelease } from "@/lib/ai/edit-release";
-import type { DraftProgressEvent } from "@/lib/scheduling/draft-progress";
+import type { DraftProgressEvent } from "@/lib/drafting/draft-progress";
 
 function unauthorized(): Response {
   return new Response(JSON.stringify({ error: "unauthorized" }), {

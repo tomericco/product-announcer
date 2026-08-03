@@ -1,11 +1,8 @@
-import { eq } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
-import { scheduleConfigs } from "@/db/schema";
 import { generateReleaseDraft } from "@/lib/ai/generation";
 import type { AtomicUpdateForPrompt } from "@/lib/ai/compose-prompt";
-import { getOpenAtomicUpdates, claimReleaseFromAtomicUpdates } from "@/lib/change-events/release-claim";
+import { claimReleaseFromAtomicUpdates } from "@/lib/change-events/release-claim";
 import { prepareGenerationContext } from "@/lib/ai/generation-context";
-import { shouldTriggerRun, advanceNextScheduledAt, type Cadence } from "./scheduler-decision";
 import { reviewAndReconcile } from "@/lib/ai/review-draft";
 import { validateDraftLinks } from "@/lib/ai/validate-links";
 import type { OnDraftProgress } from "./draft-progress";
@@ -78,41 +75,4 @@ export async function runBatchForWorkspace(
 
   onProgress?.({ type: "done", updateId: release.id });
   return true;
-}
-
-export async function runSchedulerTick(now: Date, database: typeof defaultDb = defaultDb): Promise<void> {
-  const configs = await database.select().from(scheduleConfigs);
-
-  for (const config of configs) {
-    try {
-      const pending = await getOpenAtomicUpdates(config.tenantId, database);
-
-      const reason = shouldTriggerRun(
-        {
-          cadence: config.cadence,
-          nextScheduledAt: config.nextScheduledAt,
-          threshold: config.threshold,
-          thresholdEnabled: config.thresholdEnabled,
-          pendingCount: pending.length,
-        },
-        now
-      );
-
-      if (!reason) continue;
-
-      const created = await runBatchForWorkspace(config.tenantId, pending, database);
-
-      const updateFields: Partial<typeof scheduleConfigs.$inferInsert> = { lastRunAt: now };
-      if (created && reason === "cadence" && config.cadence !== "none" && config.nextScheduledAt) {
-        updateFields.nextScheduledAt = advanceNextScheduledAt(
-          config.nextScheduledAt,
-          config.cadence as Exclude<Cadence, "none">
-        );
-      }
-      await database.update(scheduleConfigs).set(updateFields).where(eq(scheduleConfigs.id, config.id));
-    } catch (error) {
-      // One tenant's failure must not starve the others in this tick.
-      console.error(`Scheduler tick failed for tenant ${config.tenantId}:`, error);
-    }
-  }
 }

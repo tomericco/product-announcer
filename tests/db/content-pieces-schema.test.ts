@@ -30,6 +30,15 @@ describe("content_pieces schema", () => {
     expect(piece.status).toBe("scheduled");
   });
 
+  it("allows a cross-repo content piece (null repoId)", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const [piece] = await db
+      .insert(contentPieces)
+      .values({ tenantId: tenant.id, title: "T", body: "B" })
+      .returning();
+    expect(piece.repoId).toBeNull();
+  });
+
   it("defaults composedAt to now and leaves bodyEditedAt and scheduledFor null", async () => {
     const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
     const [piece] = await db

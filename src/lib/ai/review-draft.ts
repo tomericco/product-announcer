@@ -4,7 +4,7 @@ import type { companyProfiles } from "@/db/schema";
 import type { UpdateDraft } from "./generation";
 import { resolveModel, modelId } from "./model";
 import { recordLlmUsage } from "./llm-usage";
-import type { OnDraftProgress } from "@/lib/scheduling/draft-progress";
+import type { OnDraftProgress } from "@/lib/drafting/draft-progress";
 import { truncateGuidelines } from "./compose-prompt";
 
 type BrandProfileRow = typeof companyProfiles.$inferSelect;

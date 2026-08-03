@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { readDraftProgress } from "../../../src/lib/scheduling/read-draft-progress";
-import type { DraftProgressEvent } from "../../../src/lib/scheduling/draft-progress";
+import { readDraftProgress } from "../../../src/lib/drafting/read-draft-progress";
+import type { DraftProgressEvent } from "../../../src/lib/drafting/draft-progress";
 
 /** Builds a stream that emits the given raw chunks in order, so a test can
  * split NDJSON lines across chunk boundaries on purpose. */

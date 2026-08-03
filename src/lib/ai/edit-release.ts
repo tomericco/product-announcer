@@ -5,7 +5,7 @@ import { prepareGenerationContext } from "@/lib/ai/generation-context";
 import { editReleaseBody } from "@/lib/ai/edit";
 import { reviewAndReconcile } from "@/lib/ai/review-draft";
 import { validateDraftLinks } from "@/lib/ai/validate-links";
-import type { OnDraftProgress } from "@/lib/scheduling/draft-progress";
+import type { OnDraftProgress } from "@/lib/drafting/draft-progress";
 
 type Database = typeof defaultDb;
 

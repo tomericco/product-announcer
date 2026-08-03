@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
 import { tenants, contentPieces, users, companyProfiles, atomicUpdates } from "../../../src/db/schema";
 import { runExtractForRelease } from "../../../src/lib/ai/extract-release";
-import type { DraftProgressEvent } from "../../../src/lib/scheduling/draft-progress";
+import type { DraftProgressEvent } from "../../../src/lib/drafting/draft-progress";
 import type { ReviewOutcome } from "../../../src/lib/ai/review-draft";
 
 const TENANT_NAME = "Extract Release Test Tenant";

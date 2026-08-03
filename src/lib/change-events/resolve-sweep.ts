@@ -26,9 +26,9 @@ export type ResolveSweepDeps = {
  *                                    correctly excluded, not orphaned)
  *
  * Grouped by tenant so `resolvePendingEvents` (which batches internally) is
- * called once per tenant. Each tenant's call is wrapped in its own try/catch,
- * mirroring `runSchedulerTick`'s per-tenant isolation, so one tenant's
- * resolver failure doesn't prevent the sweep from covering the rest.
+ * called once per tenant. Each tenant's call is wrapped in its own try/catch
+ * so one tenant's resolver failure doesn't prevent the sweep from covering
+ * the rest.
  */
 export async function sweepUnresolvedEvents(deps: ResolveSweepDeps = {}): Promise<void> {
   const database = deps.database ?? defaultDb;
@@ -48,9 +48,9 @@ export async function sweepUnresolvedEvents(deps: ResolveSweepDeps = {}): Promis
         )
       );
   } catch (error) {
-    // This runs after runSchedulerTick/retryFailedDeliveries in the cron
-    // handler; a DB error here must not reject the whole cron and undo their
-    // already-completed work. Log and return — next hour's sweep retries.
+    // This may run alongside other steps in the cron handler; a DB error here
+    // must not reject the whole cron and undo their already-completed work.
+    // Log and return — next hour's sweep retries.
     console.error("[resolve-sweep] failed to load candidate events:", error);
     return;
   }

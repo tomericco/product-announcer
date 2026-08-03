@@ -2,7 +2,7 @@
 
 import { Loader2, Check, Circle } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { DraftStepKey } from "@/lib/scheduling/draft-progress";
+import type { DraftStepKey } from "@/lib/drafting/draft-progress";
 
 export type StepStatus = "pending" | "active" | "done";
 

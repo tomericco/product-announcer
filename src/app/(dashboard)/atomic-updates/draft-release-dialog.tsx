@@ -3,7 +3,7 @@
 import { useState, useRef } from "react";
 import Link from "next/link";
 import { Check, AlertCircle } from "lucide-react";
-import { DRAFT_STEPS, type DraftProgressEvent, type DraftStepKey } from "@/lib/scheduling/draft-progress";
+import { DRAFT_STEPS, type DraftProgressEvent, type DraftStepKey } from "@/lib/drafting/draft-progress";
 import {
   ProgressChecklist,
   initialStepStatuses,

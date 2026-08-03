@@ -15,13 +15,13 @@ import {
   DialogFooter,
   DialogClose,
 } from "@/components/ui/dialog";
-import { EDIT_STEPS, type DraftProgressEvent, type DraftStepKey } from "@/lib/scheduling/draft-progress";
+import { EDIT_STEPS, type DraftProgressEvent, type DraftStepKey } from "@/lib/drafting/draft-progress";
 import {
   ProgressChecklist,
   initialStepStatuses,
   type StepStatus,
 } from "@/components/draft-progress-checklist";
-import { readDraftProgress } from "@/lib/scheduling/read-draft-progress";
+import { readDraftProgress } from "@/lib/drafting/read-draft-progress";
 import { useUnsavedChanges } from "../../unsaved-changes";
 import { useAgentEdit } from "./agent-edit-context";
 

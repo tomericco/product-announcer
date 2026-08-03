@@ -5,7 +5,6 @@ import { redirect } from "next/navigation";
 import { db } from "@/db";
 import { scheduleConfigs, tenants } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
-import { advanceNextScheduledAt, type Cadence } from "@/lib/scheduling/scheduler-decision";
 import { addSelectedRepos } from "@/lib/workspace/repo-sync";
 import { parseRepoSelections } from "@/lib/workspace/repo-selection-form";
 import { advanceOnboardingStep, isOnboardingComplete, markOnboardingComplete } from "@/lib/workspace/onboarding";
@@ -45,23 +44,14 @@ export async function finishConnectStep() {
 
 export async function saveOnboardingSchedule(formData: FormData) {
   const session = await requireSession();
-  const cadence = formData.get("cadence") as Cadence;
-  const thresholdRaw = formData.get("threshold");
-  const threshold = thresholdRaw ? Number(thresholdRaw) : null;
-  const nextScheduledAt = cadence === "none" ? null : advanceNextScheduledAt(new Date(), cadence);
-  // "No fixed cadence" leaves nextScheduledAt null, so the threshold is the only
-  // thing left that can trigger a draft — enable it, or picking that option would
-  // silently mean "never draft anything". With a real cadence the cadence drives
-  // it and the threshold stays off, as before.
-  const thresholdEnabled = cadence === "none";
+  const hourRaw = formData.get("hour");
+  const parsed = hourRaw !== null ? Number(hourRaw) : NaN;
+  const hour = Number.isFinite(parsed) ? Math.min(23, Math.max(0, Math.trunc(parsed))) : 9;
 
   await db
     .insert(scheduleConfigs)
-    .values({ tenantId: session.user.tenantId, cadence, threshold, thresholdEnabled, nextScheduledAt })
-    .onConflictDoUpdate({
-      target: scheduleConfigs.tenantId,
-      set: { cadence, threshold, thresholdEnabled, nextScheduledAt },
-    });
+    .values({ tenantId: session.user.tenantId, hour })
+    .onConflictDoUpdate({ target: scheduleConfigs.tenantId, set: { hour } });
 
   await markOnboardingComplete(session.user.tenantId);
   redirect("/atomic-updates");
@@ -69,8 +59,8 @@ export async function saveOnboardingSchedule(formData: FormData) {
 
 /**
  * Finish onboarding without configuring a schedule at all. Deliberately writes no
- * scheduleConfigs row: runSchedulerTick iterates the rows that exist, so a tenant
- * without one is simply never picked up until they set a schedule in Settings.
+ * scheduleConfigs row: the ideation run (spec 5) iterates the rows that exist, so
+ * a tenant without one is simply never picked up until they set an hour in Settings.
  */
 export async function skipScheduleStep() {
   const session = await requireSession();

@@ -73,7 +73,6 @@ export const tenantInvites = pgTable(
 );
 
 export const changeItemStatusEnum = pgEnum("change_item_status", ["pending", "batched", "excluded", "ignored"]);
-export const cadenceEnum = pgEnum("cadence", ["daily", "weekly", "biweekly", "monthly", "none"]);
 export const reviewStatusEnum = pgEnum("review_status", ["passed", "failed", "error"]);
 export const updateCategoryEnum = pgEnum("update_category", ["new", "improvement", "fix", "announcement"]);
 export const contentTypeEnum = pgEnum("content_type", ["product_update", "blog_post", "social_post"]);
@@ -199,19 +198,8 @@ export const scheduleConfigs = pgTable("schedule_configs", {
     .notNull()
     .unique()
     .references(() => tenants.id, { onDelete: "cascade" }),
-  cadence: cadenceEnum("cadence").notNull().default("weekly"),
-  threshold: integer("threshold"),
-  // Whether the threshold trigger is active. Off by default so a bulk import
-  // doesn't auto-generate a draft ahead of the scheduled cadence; the threshold
-  // number above is retained regardless, so re-enabling restores it.
-  thresholdEnabled: boolean("threshold_enabled").notNull().default(false),
-  // Time-of-day (0-23, UTC) the scheduled update is generated. Applies to every
-  // cadence except "none".
+  // Time-of-day (0-23, UTC) the ideation agent runs for this tenant.
   hour: integer("hour").notNull().default(9),
-  // Weekday (0=Sunday … 6=Saturday) for the weekly cadence; null otherwise.
-  dayOfWeek: integer("day_of_week"),
-  // Calendar day (1-31) for the monthly cadence; null otherwise.
-  dayOfMonth: integer("day_of_month"),
   lastRunAt: timestamp("last_run_at", { withTimezone: true }),
   nextScheduledAt: timestamp("next_scheduled_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

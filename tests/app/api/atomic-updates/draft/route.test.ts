@@ -3,13 +3,13 @@ import { eq, inArray } from "drizzle-orm";
 
 vi.mock("next-auth", () => ({ getServerSession: vi.fn() }));
 vi.mock("next/headers", () => ({ cookies: vi.fn(async () => ({ get: () => undefined, set: () => {} })) }));
-vi.mock("../../../../../src/lib/scheduling/run-schedule", () => ({ runBatchForWorkspace: vi.fn() }));
+vi.mock("../../../../../src/lib/drafting/compose-draft", () => ({ runBatchForWorkspace: vi.fn() }));
 vi.mock("../../../../../src/lib/change-events/release-claim", () => ({ getOpenAtomicUpdates: vi.fn() }));
 
 import { getServerSession } from "next-auth";
 import { db } from "../../../../../src/db";
 import { users, tenants, tenantMembers } from "../../../../../src/db/schema";
-import { runBatchForWorkspace } from "../../../../../src/lib/scheduling/run-schedule";
+import { runBatchForWorkspace } from "../../../../../src/lib/drafting/compose-draft";
 import { getOpenAtomicUpdates } from "../../../../../src/lib/change-events/release-claim";
 import { POST } from "../../../../../src/app/api/atomic-updates/draft/route";
 

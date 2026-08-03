@@ -51,16 +51,7 @@ export default async function SettingsPage() {
           <CardTitle>Publishing schedule</CardTitle>
         </CardHeader>
         <CardContent>
-          <ScheduleForm
-            defaults={{
-              cadence: workspaceSchedule?.cadence ?? "weekly",
-              threshold: workspaceSchedule?.threshold ?? null,
-              thresholdEnabled: workspaceSchedule?.thresholdEnabled ?? false,
-              hour: workspaceSchedule?.hour ?? 9,
-              dayOfWeek: workspaceSchedule?.dayOfWeek ?? null,
-              dayOfMonth: workspaceSchedule?.dayOfMonth ?? null,
-            }}
-          />
+          <ScheduleForm defaults={{ hour: workspaceSchedule?.hour ?? 9 }} />
         </CardContent>
       </Card>
     </div>

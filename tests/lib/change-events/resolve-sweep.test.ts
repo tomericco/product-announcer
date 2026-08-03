@@ -70,11 +70,10 @@ describe("sweepUnresolvedEvents", () => {
 
     await sweepUnresolvedEvents({ database: db, resolvePending });
 
-    // Tests run concurrently against a shared database (see
-    // run-schedule.test.ts's `runSchedulerTick` tests for the same pattern),
-    // so other tenants may also appear in `resolvePending`'s calls. Scope the
-    // assertion to this test's own tenant: exactly the orphan's id, proving
-    // the assigned, non-user-facing, and filtered siblings were excluded.
+    // Tests run concurrently against a shared database, so other tenants may
+    // also appear in `resolvePending`'s calls. Scope the assertion to this
+    // test's own tenant: exactly the orphan's id, proving the assigned,
+    // non-user-facing, and filtered siblings were excluded.
     const ourCall = resolvePending.mock.calls.find((c) => c[0] === tenant.id);
     expect(ourCall?.[1]).toEqual([orphan.id]);
 
