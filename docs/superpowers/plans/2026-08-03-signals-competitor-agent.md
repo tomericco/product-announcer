@@ -366,24 +366,31 @@ export async function syncShippedWorkSignals(deps: ShippedWorkDeps = {}): Promis
       .where(ne(atomicUpdates.status, "hidden"));
 
     for (const update of visible) {
-      await database
-        .insert(signals)
-        .values({
-          tenantId: update.tenantId,
-          kind: "shipped_work",
-          externalId: update.id,
-          title: update.title,
-          excerpt: update.summary,
-          occurredAt: update.createdAt,
-          atomicUpdateId: update.id,
-        })
-        .onConflictDoUpdate({
-          target: [signals.tenantId, signals.kind, signals.externalId],
-          // Refresh only what can change upstream. Never touch relevanceScore,
-          // topics or status — those belong to whatever scored or cited this
-          // signal, and a re-sync must not undo them.
-          set: { title: update.title, excerpt: update.summary, atomicUpdateId: update.id },
-        });
+      // Per-row isolation, matching resolve-sweep's per-tenant isolation. A
+      // single transient failure must not abort the remaining rows across every
+      // other tenant, nor skip the withdrawal delete below.
+      try {
+        await database
+          .insert(signals)
+          .values({
+            tenantId: update.tenantId,
+            kind: "shipped_work",
+            externalId: update.id,
+            title: update.title,
+            excerpt: update.summary,
+            occurredAt: update.createdAt,
+            atomicUpdateId: update.id,
+          })
+          .onConflictDoUpdate({
+            target: [signals.tenantId, signals.kind, signals.externalId],
+            // Refresh only what can change upstream. Never touch relevanceScore,
+            // topics or status — those belong to whatever scored or cited this
+            // signal, and a re-sync must not undo them.
+            set: { title: update.title, excerpt: update.summary, atomicUpdateId: update.id },
+          });
+      } catch (error) {
+        console.error(`[shipped-work-signals] upsert failed for atomic update ${update.id}:`, error);
+      }
     }
 
     // Withdraw signals whose atomic update went away or was hidden. Scoped to
