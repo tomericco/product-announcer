@@ -255,16 +255,23 @@ honest.
 is a schema replacement, not a data migration — no backfill, no status remapping,
 no two-phase column drops, no verification step between them:
 
-1. Create the six new tables.
+1. Create `channel_variants` — the only one of the six new tables spec 1 needs.
+   `signals`, `sources`, `competitors`, `briefs`, and `brief_signals` are
+   deferred to specs 3 and 5, where their first consumers live: with no
+   production data there is no cost to adding tables later, and schema written
+   two specs ahead of its first use tends to be wrong.
 2. Drop `releases`; create `content_pieces` fresh with the full column set.
-3. Drop `linkedin_body` and `linkedin_body_edited_at` outright. `channel_variants`
-   starts empty.
+3. Drop `linkedin_body` and `linkedin_body_edited_at` outright now that
+   `channel_variants` can hold the content.
 4. Point `atomic_updates` and `delivery_attempts` at `content_piece_id` directly.
 5. Drop `brand_profiles`; create `company_profiles` fresh.
 6. Strip `schedule_configs` to ideation cadence — drop `cadence`, `threshold`,
    `thresholdEnabled`, `dayOfWeek`, `dayOfMonth`.
 
-All of it collapses into one generated migration. Spec 1 drops from M to S.
+In execution this became nine separate migrations rather than one generated
+diff — each mechanical step left the app compiling and the suite green, which
+a single collapsed migration spanning all of them would not have allowed.
+Spec 1 still drops from M to S.
 
 Optional cleanup while nothing depends on history: the 39 accumulated migrations
 in `src/db/migrations` can be squashed into a single baseline. Worth doing here

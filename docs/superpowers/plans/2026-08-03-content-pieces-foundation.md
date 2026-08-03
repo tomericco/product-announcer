@@ -1025,5 +1025,5 @@ With 39 accumulated migrations and no production data, this is the only moment s
 ## Definition of done
 
 - `npm run typecheck`, `npm run test`, and `npm run lint` all pass.
-- No reference to `releases`, `brandProfiles`, `systemUpdateExamples`, `linkedinBody`, `cadenceEnum`, or `releaseStatusEnum` remains outside `src/db/migrations/`.
+- No reference to the removed schema identifiers `releases`, `brandProfiles`, `systemUpdateExamples`, `linkedinBody` (the column), `cadenceEnum`, or `releaseStatusEnum` remains outside `src/db/migrations/`. (`linkedinBody` legitimately survives as an HTML form field name and a `ReleaseDetail` DTO field — those aren't schema identifiers.)
 - The app builds and the drafts, history, and integrations pages still render and publish.
