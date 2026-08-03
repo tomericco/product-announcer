@@ -610,7 +610,7 @@ Two cases carry most of the value here. **The unscored-signal case:** a `>= minS
 
 - [ ] **Step 2: Run it to confirm it fails**
 
-Run: `npx vitest run tests/app/signals-page.test.ts`
+Run: `npx vitest run tests/lib/signals/query.test.ts`
 Expected: FAIL — `listSignals` not exported.
 
 - [ ] **Step 3: Implement the query and the page**
