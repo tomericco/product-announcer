@@ -88,10 +88,16 @@ observability.
 Three agents in v1:
 
 - **Shipped work** — already built, event-driven. GitHub and Notion flow through
-  `change_events` → `atomic_updates` unchanged. A thin adapter projects each
-  atomic update into a signal, 1:1, at creation. Hiding an atomic update removes
-  its signal. No relevance pass — dedupe and enrichment already happened
-  upstream.
+  `change_events` → `atomic_updates` unchanged. Rather than a creation-time hook,
+  a `syncShippedWorkSignals` reconciler upserts a signal for every non-hidden,
+  in-window atomic update and marks stale any signal whose atomic update was
+  hidden or is gone. It runs as a cron step, not at creation, because atomic
+  updates are inserted from three sites with no shared helper — hooking all
+  three means a fourth site added later silently stops producing signals.
+  Reconciling is idempotent, self-healing, and gets hide/unhide for free: a
+  hidden update's signal goes stale and comes back on unhide, without losing
+  whatever scored or cited it in the meantime. No relevance pass — dedupe and
+  enrichment already happened upstream.
 - **Competitor** — one per configured source, polled daily. RSS/Atom where
   discoverable; HTML fetch with readable extraction and a content hash
   otherwise. Watermark per source.
@@ -150,8 +156,13 @@ copilot.
   Shipped-work signals get no count-based special case.
 - **The cadence scheduler is retired.** Auto-composing drafts is autopilot, which
   contradicts the human-gated model.
-- **Signal retention is 90 days**, except signals cited by an accepted brief,
+- **Signal retention is 60 days** (`SIGNAL_WINDOW_DAYS` in `src/lib/signals/window.ts`
+  is the single source of truth), except signals cited by an accepted brief,
   which are the evidence trail behind published content and are exempt.
+  **Deletion is deferred, not implemented**: today the window is enforced on
+  read only (every reader filters to the last 60 days by `createdAt`), and
+  nothing prunes the table yet. Whoever builds the purge job must read that
+  file first — it documents the reconciler's own dependency on the same bound.
 - **Manual creation goes through a brief, not around it.** `brief_signals` is
   the only evidence join and `content_pieces.briefId` the only route from a piece
   back to its sources. A second path would make evidence inconsistent depending
@@ -233,7 +244,7 @@ Invariants enforced in the app, since each spans columns: `dismissReason` is set
 only when status is `dismissed`; `contentPieceId` only when `accepted`.
 
 `brief_signals` cascades on signal delete, which is precisely why accepted-brief
-signals are exempt from the 90-day purge — the exemption is what keeps the join
+signals are exempt from the 60-day purge — the exemption is what keeps the join
 honest.
 
 ### Generalized tables

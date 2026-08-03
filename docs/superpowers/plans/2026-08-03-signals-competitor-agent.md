@@ -6,7 +6,7 @@
 
 **Scope:** This is the first half of the design doc's spec 3. The competitor agent is the second half and needs its own plan — see "The competitor agent needs its own plan" below for why, and for the design decisions already settled for it.
 
-**Architecture:** `signals` is one heterogeneous table written by several producers and read by one consumer (spec 5's brief agent). Producers follow the shape `resolve-sweep.ts` already establishes: a cron sweep grouped per tenant, each tenant wrapped in its own try/catch so one failure cannot undo the rest of the cron's work. Shipped work is *reconciled* into signals rather than hooked at creation, because there are three `insert(atomicUpdates)` sites and no shared helper.
+**Architecture:** `signals` is one heterogeneous table written by several producers and read by one consumer (spec 5's brief agent). Shipped work is *reconciled* into signals rather than hooked at creation, because there are three `insert(atomicUpdates)` sites and no shared helper. Unlike `resolve-sweep.ts`'s per-tenant grouping, the shipped-work reconciler's candidate query and its per-row upsert loop run across every tenant in one pass — there is no per-tenant grouping step — with each row's upsert wrapped in its own try/catch so one bad row cannot abort the rest, and the withdrawal/stale-marking step wrapped in a third try/catch so it always runs even if some upserts failed.
 
 **Tech Stack:** Next.js 16 (App Router), Drizzle ORM + drizzle-kit, Postgres (Supabase), AI SDK v7 + `@ai-sdk/anthropic`, Vitest against a real `_test` database, TypeScript strict.
 
@@ -23,7 +23,7 @@
 
 ## Decisions this plan locks in
 
-**Shipped work is reconciled, not hooked.** Atomic updates are created in three places (`create-from-events.ts:168`, `reassign.ts:241`, `apply-resolution.ts:84`) with no shared helper. Hooking all three means a fourth site added later silently stops producing signals. Instead `syncShippedWorkSignals` reconciles: it upserts a signal for every non-hidden atomic update and deletes signals whose atomic update is gone or hidden. Idempotent, self-healing, and it makes hide/unhide work for free.
+**Shipped work is reconciled, not hooked.** Atomic updates are created in three places (`create-from-events.ts:168`, `reassign.ts:241`, `apply-resolution.ts:84`) with no shared helper. Hooking all three means a fourth site added later silently stops producing signals. Instead `syncShippedWorkSignals` reconciles: it upserts a signal for every non-hidden, in-window atomic update and marks `stale` (never deletes) any signal whose atomic update is gone or hidden — a hard delete would discard the durable evidence trail and would undo itself the moment the update is unhidden. Idempotent, self-healing, and it makes hide/unhide work for free.
 
 **There is no deletion yet — the 60-day window is enforced on read.** Nothing prunes the table in this plan. Every reader filters to the last 60 days instead, which defers the irreversible half of retention until the shape of the data is known. Deletion lands later.
 
@@ -280,8 +280,17 @@ describe("syncShippedWorkSignals", () => {
     const tenant = await seedTenant();
     await db.insert(atomicUpdates).values({ tenantId: tenant.id, title: "A", summary: "S" });
     await syncShippedWorkSignals();
+    const [first] = await shippedSignals(tenant.id);
+
     await syncShippedWorkSignals();
-    expect(await shippedSignals(tenant.id)).toHaveLength(1);
+
+    const rows = await shippedSignals(tenant.id);
+    expect(rows).toHaveLength(1);
+    // Same row, not a delete-and-reinsert: a plain insert (rather than an
+    // upsert) would violate the unique constraint on the second run, and if
+    // that violation were swallowed the row count alone wouldn't catch it.
+    expect(rows[0].id).toBe(first.id);
+    expect(rows[0].createdAt).toEqual(first.createdAt);
   });
 
   it("refreshes title and excerpt when the atomic update changes", async () => {
@@ -331,80 +340,98 @@ Expected: FAIL — module not found.
 
 Create `src/lib/signals/shipped-work.ts`. Read `src/lib/change-events/resolve-sweep.ts` first and match its error-handling posture — log and return, never throw, because this runs alongside other cron steps whose completed work must not be undone.
 
+**Three independent try/catch blocks, not one outer one** — this is what actually shipped (see the follow-up fix "isolate per-row failures in the shipped-work reconciler", and the further window/occurredAt/stale-marking refinements from the whole-plan fix round on top of it): one around the candidate select (a failure here means there's nothing to reconcile against — log and return), one per row inside the upsert loop (one bad row must not abort every other atomic update across every tenant), and one around the withdrawal/stale-marking step (so it always runs even if some upserts failed, and its own failure doesn't take down a handler that already did useful work). A single outer try/catch would let one row's failure skip every row after it, and skip the withdrawal entirely.
+
+The version below is the reconciler as it stands today, including the fixes from the whole-plan review: the candidate select and the stale-marking are both bounded by `SIGNAL_WINDOW_DAYS` (see `./window`), the withdrawal marks signals `stale` rather than deleting them (so relevanceScore/topics/`used` survive a hide→unhide round trip), and `occurredAt` is derived from the linked change events' real dates rather than from `atomicUpdates.createdAt`. See `src/lib/signals/shipped-work.ts` directly for the current source of truth rather than trusting this snapshot to stay in sync.
+
 ```ts
-import { and, eq, ne, notInArray } from "drizzle-orm";
+import { and, eq, gte, ne, notInArray, sql } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
-import { atomicUpdates, signals } from "@/db/schema";
+import { atomicUpdates, changeEvents, signals } from "@/db/schema";
+import { signalWindowStart } from "./window";
 
 export type ShippedWorkDeps = { database?: typeof defaultDb };
 
-/**
- * Reconciles atomic updates into `shipped_work` signals.
- *
- * A reconciler rather than a hook at creation: atomic updates are inserted in
- * three places with no shared helper, so a fourth site added later would
- * silently stop producing signals. Reconciling is idempotent, self-healing, and
- * gets hide/unhide for free — a hidden update's signal disappears and comes back
- * when it is unhidden.
- *
- * `externalId` is the atomic update's id, so the unique index on
- * (tenantId, kind, externalId) is what makes the upsert safe.
- */
 export async function syncShippedWorkSignals(deps: ShippedWorkDeps = {}): Promise<void> {
   const database = deps.database ?? defaultDb;
+  const now = new Date();
+  const windowStart = signalWindowStart(now);
 
+  let visible: Array<{
+    id: string;
+    tenantId: string;
+    title: string;
+    summary: string;
+    createdAt: Date;
+    latestEvidenceAt: Date | string | null;
+  }>;
   try {
-    const visible = await database
+    visible = await database
       .select({
         id: atomicUpdates.id,
         tenantId: atomicUpdates.tenantId,
         title: atomicUpdates.title,
         summary: atomicUpdates.summary,
         createdAt: atomicUpdates.createdAt,
+        latestEvidenceAt: sql<Date | null>`max(coalesce(${changeEvents.mergedAt}, ${changeEvents.committedAt}, ${changeEvents.completedAt}, ${changeEvents.releasedAt}))`,
       })
       .from(atomicUpdates)
-      .where(ne(atomicUpdates.status, "hidden"));
+      .leftJoin(changeEvents, eq(changeEvents.atomicUpdateId, atomicUpdates.id))
+      .where(and(ne(atomicUpdates.status, "hidden"), gte(atomicUpdates.createdAt, windowStart)))
+      .groupBy(atomicUpdates.id, atomicUpdates.tenantId, atomicUpdates.title, atomicUpdates.summary, atomicUpdates.createdAt);
+  } catch (error) {
+    // Nothing to reconcile against without the candidate list. Log and
+    // return — next run retries. Matches resolve-sweep's posture.
+    console.error("[shipped-work-signals] failed to load candidate atomic updates:", error);
+    return;
+  }
 
-    for (const update of visible) {
-      // Per-row isolation, matching resolve-sweep's per-tenant isolation. A
-      // single transient failure must not abort the remaining rows across every
-      // other tenant, nor skip the withdrawal delete below.
-      try {
-        await database
-          .insert(signals)
-          .values({
-            tenantId: update.tenantId,
-            kind: "shipped_work",
-            externalId: update.id,
+  // Each update's upsert gets its own try/catch, same as resolve-sweep scopes
+  // failure per tenant: one bad row must not abort the loop for every other
+  // atomic update across every tenant, nor skip the stale-marking below.
+  for (const update of visible) {
+    try {
+      const occurredAt = update.latestEvidenceAt ? new Date(update.latestEvidenceAt) : update.createdAt;
+      await database
+        .insert(signals)
+        .values({
+          tenantId: update.tenantId,
+          kind: "shipped_work",
+          externalId: update.id,
+          title: update.title,
+          excerpt: update.summary,
+          occurredAt,
+          atomicUpdateId: update.id,
+        })
+        .onConflictDoUpdate({
+          target: [signals.tenantId, signals.kind, signals.externalId],
+          // Refresh only what can change upstream. Never touch relevanceScore,
+          // topics or `used`. `status` is the one exception, and only in one
+          // direction: a previously-stale signal flips back to `new`.
+          set: {
             title: update.title,
             excerpt: update.summary,
-            occurredAt: update.createdAt,
             atomicUpdateId: update.id,
-          })
-          .onConflictDoUpdate({
-            target: [signals.tenantId, signals.kind, signals.externalId],
-            // Refresh only what can change upstream. Never touch relevanceScore,
-            // topics or status — those belong to whatever scored or cited this
-            // signal, and a re-sync must not undo them.
-            set: { title: update.title, excerpt: update.summary, atomicUpdateId: update.id },
-          });
-      } catch (error) {
-        console.error(`[shipped-work-signals] upsert failed for atomic update ${update.id}:`, error);
-      }
+            status: sql`CASE WHEN ${signals.status} = 'stale' THEN 'new' ELSE ${signals.status} END`,
+          },
+        });
+    } catch (error) {
+      console.error(`[shipped-work-signals] upsert failed for atomic update ${update.id}:`, error);
     }
+  }
 
-    // Withdraw signals whose atomic update went away or was hidden. Scoped to
-    // this kind so no other producer's rows are ever touched.
-    const visibleIds = visible.map((update) => update.id);
-    await database.delete(signals).where(
+  // Mark stale (never delete) any shipped_work signal whose atomic update
+  // went away or was hidden, scoped to signals created within the window.
+  const visibleIds = visible.map((update) => update.id);
+  try {
+    const staleCondition =
       visibleIds.length > 0
-        ? and(eq(signals.kind, "shipped_work"), notInArray(signals.externalId, visibleIds))
-        : eq(signals.kind, "shipped_work")
-    );
+        ? and(eq(signals.kind, "shipped_work"), notInArray(signals.externalId, visibleIds), gte(signals.createdAt, windowStart))
+        : and(eq(signals.kind, "shipped_work"), gte(signals.createdAt, windowStart));
+
+    await database.update(signals).set({ status: "stale" }).where(staleCondition);
   } catch (error) {
-    // Runs alongside other cron steps; a failure here must not reject the whole
-    // handler and undo their completed work. Next run reconciles.
-    console.error("[shipped-work-signals] sync failed:", error);
+    console.error("[shipped-work-signals] stale-marking failed:", error);
   }
 }
 ```
