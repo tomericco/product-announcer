@@ -8,6 +8,7 @@ import {
   FilePen,
   History,
   Plug,
+  Radar,
   ToyBrick,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -16,6 +17,7 @@ import { cn } from "@/lib/utils";
 
 const NAV = [
   { href: "/change-events", label: "Change events", icon: Activity },
+  { href: "/signals", label: "Signals", icon: Radar },
   { href: "/atomic-updates", label: "Atomic updates", icon: ToyBrick },
   { href: "/drafts", label: "Drafts", icon: FilePen },
   { href: "/history", label: "Release history", icon: History },
