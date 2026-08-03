@@ -2,11 +2,11 @@ import { eq } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
 import { companyProfiles } from "@/db/schema";
 import { getOrCreateCompanyProfile } from "@/lib/workspace/company-profile";
-import { fetchUpdatesPageText, type ScrapeResult } from "@/lib/workspace/scrape-updates-page";
+import { fetchPageText, type PageResult } from "@/lib/workspace/fetch-page";
 import { analyzeBrandStyle, type DerivedBrandProfile } from "@/lib/workspace/analyze-brand-style";
 
 export type ImportBrandStyleDeps = {
-  scrape?: (url: string) => Promise<ScrapeResult>;
+  scrape?: (url: string) => Promise<PageResult>;
   analyze?: (text: string, tenantId: string) => Promise<DerivedBrandProfile>;
   database?: typeof defaultDb;
 };
@@ -21,7 +21,7 @@ export async function importBrandStyleForTenant(
   url: string,
   deps: ImportBrandStyleDeps = {}
 ): Promise<{ ok: boolean; reason?: string }> {
-  const scrape = deps.scrape ?? fetchUpdatesPageText;
+  const scrape = deps.scrape ?? fetchPageText;
   const analyze = deps.analyze ?? analyzeBrandStyle;
   const database = deps.database ?? defaultDb;
 

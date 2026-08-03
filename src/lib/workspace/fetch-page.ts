@@ -1,7 +1,8 @@
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 
-export type ScrapeResult = { text: string } | { error: "invalid-url" | "blocked" | "fetch-failed" | "insufficient-content" };
+export type PageError = "invalid-url" | "blocked" | "fetch-failed" | "insufficient-content";
+export type PageResult = { text: string; html: string } | { error: PageError };
 
 export type ResolveHost = (hostname: string) => Promise<string[]>;
 
@@ -115,15 +116,16 @@ export function htmlToText(html: string): string {
 }
 
 /**
- * Fetches a public updates page and returns its readable text. SSRF-guarded:
+ * Fetches a public page and returns its readable text alongside the raw HTML
+ * (so callers can discover links without a second request). SSRF-guarded:
  * http(s) only, every hop's host must resolve entirely to public IPs, redirects
  * are followed manually and re-validated. Bounded by timeout, size, and content
  * type; returns `insufficient-content` for JS-only shells with little text.
  */
-export async function fetchUpdatesPageText(
+export async function fetchPageText(
   url: string,
   deps: { fetchImpl?: typeof fetch; resolveHost?: ResolveHost } = {}
-): Promise<ScrapeResult> {
+): Promise<PageResult> {
   const fetchImpl = deps.fetchImpl ?? fetch;
   const resolveHost = deps.resolveHost ?? defaultResolveHost;
 
@@ -171,12 +173,12 @@ export async function fetchUpdatesPageText(
       // below), so a slow/stalled body still gets aborted at TIMEOUT_MS.
       // A mid-stream abort or connection reset throws out of readBodyCapped
       // (AbortError / network error), so this must be caught too — otherwise
-      // it escapes fetchUpdatesPageText instead of yielding a clean result.
+      // it escapes fetchPageText instead of yielding a clean result.
       try {
         const html = await readBodyCapped(res, MAX_BYTES);
         const text = htmlToText(html).slice(0, MAX_TEXT_CHARS);
         if (text.length < MIN_TEXT_CHARS) return { error: "insufficient-content" };
-        return { text };
+        return { text, html };
       } catch {
         return { error: "fetch-failed" };
       }
@@ -186,4 +188,37 @@ export async function fetchUpdatesPageText(
   }
 
   return { error: "fetch-failed" }; // too many redirects
+}
+
+/**
+ * Same-origin links from a page's HTML, absolute and deduplicated.
+ *
+ * Deliberately a regex over raw HTML rather than a DOM parse: the crawl only
+ * needs candidate hrefs, a wrong or missed link costs one page of context, and
+ * pulling in a parser for this is not worth the dependency. Fragments are
+ * stripped before deduplication so `/product` and `/product#features` count once.
+ */
+export function extractSameOriginLinks(html: string, baseUrl: string): string[] {
+  let base: URL;
+  try {
+    base = new URL(baseUrl);
+  } catch {
+    return [];
+  }
+
+  const seen = new Set<string>();
+  for (const match of html.matchAll(/<a\b[^>]*\bhref\s*=\s*["']([^"']+)["']/gi)) {
+    let candidate: URL;
+    try {
+      candidate = new URL(match[1], base);
+    } catch {
+      continue;
+    }
+    if (candidate.protocol !== "http:" && candidate.protocol !== "https:") continue;
+    if (candidate.origin !== base.origin) continue;
+    candidate.hash = "";
+    if (candidate.href === base.href) continue;
+    seen.add(candidate.href);
+  }
+  return [...seen];
 }
