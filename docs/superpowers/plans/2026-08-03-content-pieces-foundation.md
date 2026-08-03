@@ -742,9 +742,14 @@ it("treats a null category as no category match rather than throwing", () => {
 });
 ```
 
-The second test guards a real bug this task introduces: `categoryMatch` currently
-does `criteria.categories.includes(example.category)`, which stops type-checking
-the moment `category` becomes nullable.
+The second test pins intended behavior — a null category must never match a
+category filter. Be precise about what it does and does not do: `categoryMatch`
+currently does `criteria.categories.includes(example.category)`, which stops
+**type-checking** the moment `category` becomes nullable (TS2345). At runtime
+`["new"].includes(null)` already returns `false` and never throws, so this test
+passes with or without the guard, and vitest runs through esbuild without type
+checking. The guard's null-safety is enforced by `npm run typecheck`, not by
+this test. Word the test accordingly.
 
 - [ ] **Step 2: Run it to confirm it fails**
 
