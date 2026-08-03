@@ -836,10 +836,21 @@ sees changelog exemplars. Category becomes product-update-only."
 
 Auto-composing drafts is autopilot, which contradicts the human-gated model. This task is mostly deletion.
 
+> **Corrected after pre-flight scan.** An earlier draft of this task deleted
+> `draft-progress.ts`, `read-draft-progress.ts`, and all of `run-schedule.ts`.
+> That was wrong: the first two define the progress-step vocabulary for the
+> NDJSON draft-streaming UI and have 10 source consumers, and `run-schedule.ts`
+> exports `runBatchForWorkspace`, which powers the *manual* draft-from-atomic-
+> updates button. Only the cadence machinery goes.
+
 **Files:**
-- Modify: `src/db/schema.ts` (`scheduleConfigs`), `src/app/(dashboard)/settings/actions.ts`, `src/app/(dashboard)/settings/page.tsx`, `src/app/onboarding/actions.ts`, `src/app/api/cron/scheduler/route.ts`
-- Delete: `src/lib/scheduling/run-schedule.ts`, `src/lib/scheduling/scheduler-decision.ts`, `src/lib/scheduling/format-schedule.ts`, `src/lib/scheduling/draft-progress.ts`, `src/lib/scheduling/read-draft-progress.ts`
-- Delete: `tests/lib/scheduling/run-schedule.test.ts`, `scheduler-decision.test.ts`, `format-schedule.test.ts`, `read-draft-progress.test.ts`, `tests/db/scheduler-generation-schema.test.ts`
+- Modify: `src/db/schema.ts` (`scheduleConfigs`), `src/app/(dashboard)/settings/actions.ts`, `src/app/(dashboard)/settings/page.tsx`, `src/app/onboarding/actions.ts`, `src/app/onboarding/schedule/`, `src/app/api/cron/scheduler/route.ts`, `src/app/api/atomic-updates/draft/route.ts`, `src/lib/change-events/catch-up.ts`
+- Move: `src/lib/scheduling/draft-progress.ts` → `src/lib/drafting/draft-progress.ts`
+- Move: `src/lib/scheduling/read-draft-progress.ts` → `src/lib/drafting/read-draft-progress.ts`
+- Move: `runBatchForWorkspace` out of `src/lib/scheduling/run-schedule.ts` → `src/lib/drafting/compose-draft.ts`
+- Delete: `src/lib/scheduling/` entirely (`run-schedule.ts`, `scheduler-decision.ts`, `format-schedule.ts`)
+- Delete: `tests/lib/scheduling/run-schedule.test.ts`, `scheduler-decision.test.ts`, `format-schedule.test.ts`, `tests/db/scheduler-generation-schema.test.ts`
+- Move: `tests/lib/scheduling/read-draft-progress.test.ts` → `tests/lib/drafting/read-draft-progress.test.ts`
 - Test: `tests/db/schedule-configs-schema.test.ts`
 
 **Interfaces:**
@@ -890,16 +901,46 @@ In `src/db/schema.ts`, delete `cadence`, `threshold`, `thresholdEnabled`, `dayOf
   hour: integer("hour").notNull().default(9),
 ```
 
-- [ ] **Step 4: Delete the cadence engine**
+- [ ] **Step 4: Rescue the survivors, then delete the cadence engine**
+
+`src/lib/scheduling/` holds three things that are not scheduling. Move them
+first, so the deletion afterwards is unambiguous:
 
 ```bash
-git rm src/lib/scheduling/run-schedule.ts src/lib/scheduling/scheduler-decision.ts \
-       src/lib/scheduling/format-schedule.ts src/lib/scheduling/draft-progress.ts \
-       src/lib/scheduling/read-draft-progress.ts
-git rm tests/lib/scheduling/run-schedule.test.ts tests/lib/scheduling/scheduler-decision.test.ts \
-       tests/lib/scheduling/format-schedule.test.ts tests/lib/scheduling/read-draft-progress.test.ts \
-       tests/db/scheduler-generation-schema.test.ts
+mkdir -p src/lib/drafting tests/lib/drafting
+git mv src/lib/scheduling/draft-progress.ts src/lib/drafting/draft-progress.ts
+git mv src/lib/scheduling/read-draft-progress.ts src/lib/drafting/read-draft-progress.ts
+git mv tests/lib/scheduling/read-draft-progress.test.ts tests/lib/drafting/read-draft-progress.test.ts
 ```
+
+Then create `src/lib/drafting/compose-draft.ts` containing **only** the
+`runBatchForWorkspace` function moved verbatim out of `run-schedule.ts`, with
+its imports carried across. Do not change its behaviour — it is the manual
+"draft from selected atomic updates" path, which stays, and spec 5's
+accept-a-brief flow will call it.
+
+Now delete what is genuinely cadence machinery:
+
+```bash
+git rm -r src/lib/scheduling
+git rm tests/lib/scheduling/run-schedule.test.ts tests/lib/scheduling/scheduler-decision.test.ts \
+       tests/lib/scheduling/format-schedule.test.ts tests/db/scheduler-generation-schema.test.ts
+```
+
+Update the importers of the moved modules:
+
+```bash
+grep -rln "lib/scheduling" src tests
+```
+
+- `@/lib/scheduling/draft-progress` → `@/lib/drafting/draft-progress` (10 files)
+- `@/lib/scheduling/read-draft-progress` → `@/lib/drafting/read-draft-progress` (2 files)
+- `runBatchForWorkspace` from `@/lib/scheduling/run-schedule` → `@/lib/drafting/compose-draft`
+  (`src/app/api/atomic-updates/draft/route.ts`, and the reference in `src/lib/change-events/catch-up.ts`)
+
+`tests/app/api/atomic-updates/draft/route.test.ts` exercises
+`runBatchForWorkspace` through the route — it must still pass unchanged apart
+from the import path. If it fails, the move was not verbatim.
 
 - [ ] **Step 5: Reduce the cron route to a no-op stub**
 
