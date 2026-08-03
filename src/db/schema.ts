@@ -276,6 +276,96 @@ export const competitors = pgTable(
 
 export type Competitor = typeof competitors.$inferSelect;
 
+export const signalKindEnum = pgEnum("signal_kind", ["shipped_work", "competitor_move", "market_news", "manual"]);
+export const signalStatusEnum = pgEnum("signal_status", ["new", "used", "stale"]);
+export const sourceTypeEnum = pgEnum("source_type", ["competitor_web", "news"]);
+export const sourceStatusEnum = pgEnum("source_status", ["active", "failing", "disabled"]);
+
+export const sources = pgTable(
+  "sources",
+  {
+    id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    type: sourceTypeEnum("type").notNull(),
+    // Set for competitor_web sources. One competitor can have several sources —
+    // a changelog and a blog are watched separately because they publish at
+    // different rhythms and carry different signal.
+    competitorId: uuid("competitor_id").references(() => competitors.id, { onDelete: "cascade" }),
+    // The page we poll. Null for topic-driven news sources (spec 4), which
+    // search rather than fetch a fixed URL.
+    url: text("url"),
+    // The feed discovered behind `url`, when the page advertises one. Preferred
+    // over scraping because feed entries carry real titles and dates.
+    feedUrl: text("feed_url"),
+    label: text("label").notNull(),
+    // Per-source cursor: last seen entry id and the content hash of the last
+    // fetched page. Shape varies by source type, which is why it is jsonb and
+    // not columns — a news source's cursor looks nothing like a feed's.
+    watermark: jsonb("watermark").$type<Record<string, unknown>>().notNull().default({}),
+    // Sources rot: sites redesign, feeds move. Surfaced in settings the way the
+    // Notion and Webflow connection statuses already are, rather than failing
+    // silently for weeks.
+    status: sourceStatusEnum("status").notNull().default("active"),
+    lastRunAt: timestamp("last_run_at", { withTimezone: true }),
+    lastSuccessAt: timestamp("last_success_at", { withTimezone: true }),
+    lastError: text("last_error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    // One row per watched URL per tenant, so re-running discovery tops up
+    // instead of duplicating.
+    uniqueIndex("sources_tenant_url_unique").on(table.tenantId, table.url),
+  ]
+);
+
+export type Source = typeof sources.$inferSelect;
+
+export const signals = pgTable(
+  "signals",
+  {
+    id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    sourceId: uuid("source_id").references(() => sources.id, { onDelete: "set null" }),
+    kind: signalKindEnum("kind").notNull(),
+    // Idempotency key, namespaced per kind. Shipped work uses the atomic
+    // update's id; feed entries use their guid; news uses the article URL.
+    externalId: text("external_id").notNull(),
+    url: text("url"),
+    title: text("title").notNull(),
+    excerpt: text("excerpt"),
+    // When the thing happened, as distinct from when we noticed it. Ranking in
+    // spec 5 decays on this, so a backfilled old post must not read as fresh.
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+    // Set on shipped_work signals. ON DELETE SET NULL rather than cascade: the
+    // signal is the durable record of what happened, and losing the atomic
+    // update should not erase the evidence a published piece was built from.
+    atomicUpdateId: uuid("atomic_update_id").references(() => atomicUpdates.id, { onDelete: "set null" }),
+    competitorId: uuid("competitor_id").references(() => competitors.id, { onDelete: "set null" }),
+    // Null means scoring failed, not "scored zero" — the rationale says which.
+    // A failed classifier writes the signal anyway: a missed competitor move is
+    // invisible, an unscored row in the browser announces itself.
+    relevanceScore: real("relevance_score"),
+    relevanceRationale: text("relevance_rationale"),
+    topics: text("topics").array().notNull().default([]),
+    // `used` is a reporting and pruning flag, NOT a consumption gate. Spec 5's
+    // ideation reads every signal in its window regardless of status, because a
+    // signal cited last week can join a new cluster this week.
+    status: signalStatusEnum("status").notNull().default("new"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("signals_tenant_kind_external_unique").on(table.tenantId, table.kind, table.externalId),
+    index("signals_tenant_occurred_idx").on(table.tenantId, table.occurredAt),
+    index("signals_tenant_kind_occurred_idx").on(table.tenantId, table.kind, table.occurredAt),
+  ]
+);
+
+export type Signal = typeof signals.$inferSelect;
+
 // Global, seeded catalog of built-in personas. Tenants reference these by `key`
 // from their company profile; the brief steers how updates are written for them.
 export const systemPersonas = pgTable("system_personas", {

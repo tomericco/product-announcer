@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { retryFailedDeliveries } from "@/lib/publishing/dispatch";
 import { sweepUnresolvedEvents } from "@/lib/change-events/resolve-sweep";
+import { syncShippedWorkSignals } from "@/lib/signals/shipped-work";
 
 export async function GET(request: NextRequest) {
   const authHeader = request.headers.get("authorization");
@@ -14,6 +15,9 @@ export async function GET(request: NextRequest) {
   // resolution are unrelated to cadence and keep running meanwhile.
   await retryFailedDeliveries();
   await sweepUnresolvedEvents();
+  // Must run after the sweep above: that sweep can create atomic updates on
+  // this same run, and the reconciler needs to see them.
+  await syncShippedWorkSignals();
 
   return NextResponse.json({ ok: true });
 }
