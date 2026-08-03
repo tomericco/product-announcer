@@ -302,6 +302,20 @@
       "when": 1785759654564,
       "tag": "0042_fat_valkyrie",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1785760409188,
+      "tag": "0043_wonderful_squadron_sinister",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1785760430749,
+      "tag": "0044_bored_loners",
+      "breakpoints": true
     }
   ]
 }

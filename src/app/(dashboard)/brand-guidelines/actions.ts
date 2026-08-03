@@ -3,9 +3,9 @@
 import { eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { db } from "@/db";
-import { brandProfiles } from "@/db/schema";
+import { companyProfiles } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
-import { getOrCreateBrandProfile } from "@/lib/workspace/brand-profile";
+import { getOrCreateCompanyProfile } from "@/lib/workspace/company-profile";
 import { importBrandStyleForTenant } from "@/lib/workspace/brand-import";
 import { sanitizePersonas } from "@/lib/workspace/persona-form";
 
@@ -17,15 +17,15 @@ import { sanitizePersonas } from "@/lib/workspace/persona-form";
  */
 export async function saveGuidelines(formData: FormData) {
   const session = await requireSession();
-  const profile = await getOrCreateBrandProfile(session.user.tenantId);
+  const profile = await getOrCreateCompanyProfile(session.user.tenantId);
 
   await db
-    .update(brandProfiles)
+    .update(companyProfiles)
     .set({
       guidelines: (formData.get("guidelines") as string)?.trim() || null,
       updatedAt: new Date(),
     })
-    .where(eq(brandProfiles.id, profile.id));
+    .where(eq(companyProfiles.id, profile.id));
 
   revalidatePath("/brand-guidelines");
 }
@@ -36,12 +36,12 @@ export async function saveGuidelines(formData: FormData) {
  */
 export async function saveIndustry(industry: string): Promise<void> {
   const session = await requireSession();
-  const profile = await getOrCreateBrandProfile(session.user.tenantId);
+  const profile = await getOrCreateCompanyProfile(session.user.tenantId);
 
   await db
-    .update(brandProfiles)
+    .update(companyProfiles)
     .set({ industry: industry.trim() || null, updatedAt: new Date() })
-    .where(eq(brandProfiles.id, profile.id));
+    .where(eq(companyProfiles.id, profile.id));
 
   revalidatePath("/brand-guidelines");
 }
@@ -57,12 +57,12 @@ export async function saveIndustry(industry: string): Promise<void> {
  */
 export async function savePersonas(personas: unknown): Promise<void> {
   const session = await requireSession();
-  const profile = await getOrCreateBrandProfile(session.user.tenantId);
+  const profile = await getOrCreateCompanyProfile(session.user.tenantId);
 
   await db
-    .update(brandProfiles)
+    .update(companyProfiles)
     .set({ userPersonas: sanitizePersonas(personas), updatedAt: new Date() })
-    .where(eq(brandProfiles.id, profile.id));
+    .where(eq(companyProfiles.id, profile.id));
 
   revalidatePath("/brand-guidelines");
 }

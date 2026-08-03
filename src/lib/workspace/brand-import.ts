@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
-import { brandProfiles } from "@/db/schema";
-import { getOrCreateBrandProfile } from "@/lib/workspace/brand-profile";
+import { companyProfiles } from "@/db/schema";
+import { getOrCreateCompanyProfile } from "@/lib/workspace/company-profile";
 import { fetchUpdatesPageText, type ScrapeResult } from "@/lib/workspace/scrape-updates-page";
 import { analyzeBrandStyle, type DerivedBrandProfile } from "@/lib/workspace/analyze-brand-style";
 
@@ -40,10 +40,10 @@ export async function importBrandStyleForTenant(
   const isEmptyDerivation = guidelines === null && industry === null;
   if (isEmptyDerivation) return { ok: false, reason: "analysis-empty" };
 
-  const profile = await getOrCreateBrandProfile(tenantId, database);
+  const profile = await getOrCreateCompanyProfile(tenantId, database);
 
   await database
-    .update(brandProfiles)
+    .update(companyProfiles)
     .set({
       // A null derived field means "the model couldn't infer this from a
       // sparse page" -- not "the user wants it cleared". Never let that
@@ -54,7 +54,7 @@ export async function importBrandStyleForTenant(
       updatesPageUrl: url,
       updatedAt: new Date(),
     })
-    .where(eq(brandProfiles.id, profile.id));
+    .where(eq(companyProfiles.id, profile.id));
 
   return { ok: true };
 }

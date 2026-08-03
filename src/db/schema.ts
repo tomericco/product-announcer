@@ -216,12 +216,22 @@ export const scheduleConfigs = pgTable("schedule_configs", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
-export const brandProfiles = pgTable("brand_profiles", {
+export const companyProfiles = pgTable("company_profiles", {
   id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
   tenantId: uuid("tenant_id")
     .notNull()
     .unique()
     .references(() => tenants.id, { onDelete: "cascade" }),
+  // The company's own site. The onboarding bootstrap agent (spec 2) reads it to
+  // draft everything below; the human then corrects it.
+  websiteUrl: text("website_url"),
+  oneLiner: text("one_liner"),
+  category: text("category"),
+  // Differentiators and the messages the company wants to own. Not a setting —
+  // this is the yardstick every incoming signal is scored for relevance against.
+  positioning: text("positioning"),
+  // The subjects in the company's lane. Drives the news agent's search (spec 4).
+  topics: text("topics").array().notNull().default([]),
   // The team's product-update communication guidelines, as Markdown. Null until
   // they save for the first time — the editor shows a starter template instead,
   // and the prompt builders omit the guidelines block entirely while it is null.
@@ -234,7 +244,7 @@ export const brandProfiles = pgTable("brand_profiles", {
 });
 
 // Global, seeded catalog of built-in personas. Tenants reference these by `key`
-// from their brand profile; the brief steers how updates are written for them.
+// from their company profile; the brief steers how updates are written for them.
 export const systemPersonas = pgTable("system_personas", {
   id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
   key: text("key").notNull().unique(),

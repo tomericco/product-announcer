@@ -4,7 +4,7 @@ import { atomicUpdates, contentPieces, systemPersonas, systemUpdateExamples } fr
 import type { AtomicUpdateForPrompt } from "@/lib/ai/compose-prompt";
 import { generateReleaseDraft, mergeReleaseDraft } from "@/lib/ai/generation";
 import { validateDraftLinks } from "@/lib/ai/validate-links";
-import { getOrCreateBrandProfile } from "@/lib/workspace/brand-profile";
+import { getOrCreateCompanyProfile } from "@/lib/workspace/company-profile";
 import { resolvePersonaRefs, systemPersonaKeys } from "@/lib/workspace/personas";
 import { selectExamples } from "@/lib/ai/select-examples";
 import { computeReleaseDelta } from "./release-deltas";
@@ -38,7 +38,7 @@ function distinctCategories(items: { category: string | null }[]): string[] {
 }
 
 async function loadPromptContext(tenantId: string) {
-  const brandProfile = await getOrCreateBrandProfile(tenantId, defaultDb);
+  const brandProfile = await getOrCreateCompanyProfile(tenantId, defaultDb);
   const catalog = await defaultDb.select().from(systemPersonas);
   const personas = resolvePersonaRefs(brandProfile.userPersonas, catalog);
   const allExamples = await defaultDb.select().from(systemUpdateExamples);

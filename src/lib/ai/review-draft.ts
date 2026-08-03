@@ -1,13 +1,13 @@
 import { generateObject } from "ai";
 import { z } from "zod";
-import type { brandProfiles } from "@/db/schema";
+import type { companyProfiles } from "@/db/schema";
 import type { UpdateDraft } from "./generation";
 import { resolveModel, modelId } from "./model";
 import { recordLlmUsage } from "./llm-usage";
 import type { OnDraftProgress } from "@/lib/scheduling/draft-progress";
 import { truncateGuidelines } from "./compose-prompt";
 
-type BrandProfileRow = typeof brandProfiles.$inferSelect;
+type BrandProfileRow = typeof companyProfiles.$inferSelect;
 
 export const ReviewCritiqueSchema = z.object({
   compliant: z.boolean(),

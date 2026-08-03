@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, brandProfiles, systemPersonas, systemUpdateExamples } from "../../../src/db/schema";
+import { tenants, companyProfiles, systemPersonas, systemUpdateExamples } from "../../../src/db/schema";
 import { prepareGenerationContext } from "../../../src/lib/ai/generation-context";
 
 const TENANT_NAME = "Generation Context Test Tenant";
@@ -27,7 +27,7 @@ describe("prepareGenerationContext", () => {
   afterEach(async () => {
     const [tenant] = await db.select().from(tenants).where(eq(tenants.name, TENANT_NAME));
     if (tenant) {
-      await db.delete(brandProfiles).where(eq(brandProfiles.tenantId, tenant.id));
+      await db.delete(companyProfiles).where(eq(companyProfiles.tenantId, tenant.id));
       await db.delete(tenants).where(eq(tenants.id, tenant.id));
     }
     // Safety net alongside each test's own try/finally: idempotent no-ops if
@@ -46,8 +46,8 @@ describe("prepareGenerationContext", () => {
     expect(Array.isArray(context.personas)).toBe(true);
     expect(Array.isArray(context.examples)).toBe(true);
 
-    // getOrCreateBrandProfile persisted it, so a second call reuses the row.
-    const rows = await db.select().from(brandProfiles).where(eq(brandProfiles.tenantId, tenant.id));
+    // getOrCreateCompanyProfile persisted it, so a second call reuses the row.
+    const rows = await db.select().from(companyProfiles).where(eq(companyProfiles.tenantId, tenant.id));
     expect(rows).toHaveLength(1);
   });
 
@@ -63,9 +63,9 @@ describe("prepareGenerationContext", () => {
       });
       await prepareGenerationContext(tenant.id, db);
       await db
-        .update(brandProfiles)
+        .update(companyProfiles)
         .set({ userPersonas: [{ type: "system", key: PERSONA_KEY }] })
-        .where(eq(brandProfiles.tenantId, tenant.id));
+        .where(eq(companyProfiles.tenantId, tenant.id));
 
       const context = await prepareGenerationContext(tenant.id, db);
 
@@ -112,13 +112,13 @@ describe("prepareGenerationContext", () => {
           sortOrder: 1,
         },
       ]);
-      // getOrCreateBrandProfile only creates the row on first use, and the
+      // getOrCreateCompanyProfile only creates the row on first use, and the
       // industry update below requires it to already exist.
       await prepareGenerationContext(tenant.id, db);
       await db
-        .update(brandProfiles)
+        .update(companyProfiles)
         .set({ industry: EXAMPLE_INDUSTRY })
-        .where(eq(brandProfiles.tenantId, tenant.id));
+        .where(eq(companyProfiles.tenantId, tenant.id));
 
       const withNone = await prepareGenerationContext(tenant.id, db);
       const withFix = await prepareGenerationContext(tenant.id, db, ["fix"]);

@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, brandProfiles } from "../../../src/db/schema";
+import { tenants, companyProfiles } from "../../../src/db/schema";
 import { importBrandStyleForTenant } from "../../../src/lib/workspace/brand-import";
 
 const NAME = "Brand Import Test Tenant";
@@ -23,7 +23,7 @@ describe("importBrandStyleForTenant", () => {
     });
 
     expect(result.ok).toBe(true);
-    const [profile] = await db.select().from(brandProfiles).where(eq(brandProfiles.tenantId, tenant.id));
+    const [profile] = await db.select().from(companyProfiles).where(eq(companyProfiles.tenantId, tenant.id));
     expect(profile.guidelines).toBe("## Voice and tone\n\nFriendly and plain.\n\n## Don't\n\n- No hype.");
     expect(profile.industry).toBe("SaaS");
     expect(profile.updatesPageUrl).toBe("https://acme.com/changelog");
@@ -31,7 +31,7 @@ describe("importBrandStyleForTenant", () => {
 
   it("keeps existing guidelines and only updates industry when the derivation partially fails", async () => {
     const [tenant] = await db.insert(tenants).values({ name: NAME }).returning();
-    await db.insert(brandProfiles).values({
+    await db.insert(companyProfiles).values({
       tenantId: tenant.id,
       guidelines: "## Voice and tone\n\nHand-written, do not overwrite.",
     });
@@ -42,7 +42,7 @@ describe("importBrandStyleForTenant", () => {
     });
 
     expect(result.ok).toBe(true);
-    const [profile] = await db.select().from(brandProfiles).where(eq(brandProfiles.tenantId, tenant.id));
+    const [profile] = await db.select().from(companyProfiles).where(eq(companyProfiles.tenantId, tenant.id));
     expect(profile.guidelines).toBe("## Voice and tone\n\nHand-written, do not overwrite.");
     expect(profile.industry).toBe("SaaS");
   });
@@ -56,7 +56,7 @@ describe("importBrandStyleForTenant", () => {
     });
 
     expect(result).toEqual({ ok: false, reason: "analysis-empty" });
-    const [profile] = await db.select().from(brandProfiles).where(eq(brandProfiles.tenantId, tenant.id));
+    const [profile] = await db.select().from(companyProfiles).where(eq(companyProfiles.tenantId, tenant.id));
     expect(profile).toBeUndefined();
   });
 
@@ -69,7 +69,7 @@ describe("importBrandStyleForTenant", () => {
     });
 
     expect(result).toEqual({ ok: false, reason: "analysis-empty" });
-    const [profile] = await db.select().from(brandProfiles).where(eq(brandProfiles.tenantId, tenant.id));
+    const [profile] = await db.select().from(companyProfiles).where(eq(companyProfiles.tenantId, tenant.id));
     expect(profile).toBeUndefined();
   });
 
@@ -82,7 +82,7 @@ describe("importBrandStyleForTenant", () => {
     });
 
     expect(result).toEqual({ ok: false, reason: "insufficient-content" });
-    const [profile] = await db.select().from(brandProfiles).where(eq(brandProfiles.tenantId, tenant.id));
+    const [profile] = await db.select().from(companyProfiles).where(eq(companyProfiles.tenantId, tenant.id));
     // no profile written (getOrCreate not invoked on the error path)
     expect(profile).toBeUndefined();
   });

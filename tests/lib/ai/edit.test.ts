@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import type { brandProfiles } from "../../../src/db/schema";
+import type { companyProfiles } from "../../../src/db/schema";
 
-type BrandProfileRow = typeof brandProfiles.$inferSelect;
+type BrandProfileRow = typeof companyProfiles.$inferSelect;
 
 const generateObject = vi.fn();
 vi.mock("ai", () => ({ generateObject: (...args: unknown[]) => generateObject(...args) }));

@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, contentPieces, users, brandProfiles } from "../../../src/db/schema";
+import { tenants, contentPieces, users, companyProfiles } from "../../../src/db/schema";
 import { runWholeEditForRelease } from "../../../src/lib/ai/edit-release";
 import type { DraftProgressEvent } from "../../../src/lib/scheduling/draft-progress";
 import type { ReviewOutcome } from "../../../src/lib/ai/review-draft";
@@ -26,7 +26,7 @@ describe("runWholeEditForRelease", () => {
     const [tenant] = await db.select().from(tenants).where(eq(tenants.name, TENANT_NAME));
     if (tenant) {
       await db.delete(contentPieces).where(eq(contentPieces.tenantId, tenant.id));
-      await db.delete(brandProfiles).where(eq(brandProfiles.tenantId, tenant.id));
+      await db.delete(companyProfiles).where(eq(companyProfiles.tenantId, tenant.id));
     }
     await db.delete(users).where(eq(users.email, USER_EMAIL));
     await db.delete(tenants).where(eq(tenants.name, TENANT_NAME));

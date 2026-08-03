@@ -1,7 +1,7 @@
 import { db } from "@/db";
 import { systemPersonas } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
-import { getOrCreateBrandProfile } from "@/lib/workspace/brand-profile";
+import { getOrCreateCompanyProfile } from "@/lib/workspace/company-profile";
 import { saveGuidelines } from "./actions";
 import { BrandStyleImport } from "./brand-style-import";
 import { IndustrySelect } from "./industry-select";
@@ -13,7 +13,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 
 export default async function BrandGuidelinesPage() {
   const session = await requireSession();
-  const brandProfile = await getOrCreateBrandProfile(session.user.tenantId);
+  const brandProfile = await getOrCreateCompanyProfile(session.user.tenantId);
   const personaCatalog = await db
     .select({
       key: systemPersonas.key,

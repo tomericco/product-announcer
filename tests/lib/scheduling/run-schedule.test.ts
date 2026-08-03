@@ -8,7 +8,7 @@ vi.mock("../../../src/lib/ai/review-draft", () => ({ reviewAndReconcile: vi.fn()
 import { generateObject } from "ai";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, atomicUpdates, contentPieces, scheduleConfigs, brandProfiles, llmUsage } from "../../../src/db/schema";
+import { tenants, atomicUpdates, contentPieces, scheduleConfigs, companyProfiles, llmUsage } from "../../../src/db/schema";
 import { runBatchForWorkspace, runSchedulerTick } from "../../../src/lib/scheduling/run-schedule";
 import { getOpenAtomicUpdates } from "../../../src/lib/change-events/release-claim";
 import { advanceNextScheduledAt } from "../../../src/lib/scheduling/scheduler-decision";
@@ -130,7 +130,7 @@ describe("run-schedule (workspace-level)", () => {
   it("selects matching seeded examples and injects them into the generation prompt", async () => {
     const { tenant } = await seed();
     // Brand profile whose industry + system persona match the seeded devtools/developer examples.
-    await db.insert(brandProfiles).values({
+    await db.insert(companyProfiles).values({
       tenantId: tenant.id,
       industry: "Developer Tools",
       userPersonas: [{ type: "system", key: "developer" }],

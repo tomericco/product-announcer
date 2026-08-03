@@ -1,6 +1,6 @@
 import { db as defaultDb } from "@/db";
-import { systemPersonas, systemUpdateExamples, type brandProfiles, type ResolvedPersona } from "@/db/schema";
-import { getOrCreateBrandProfile } from "@/lib/workspace/brand-profile";
+import { systemPersonas, systemUpdateExamples, type companyProfiles, type ResolvedPersona } from "@/db/schema";
+import { getOrCreateCompanyProfile } from "@/lib/workspace/company-profile";
 import { resolvePersonaRefs, systemPersonaKeys } from "@/lib/workspace/personas";
 import { selectExamples } from "@/lib/ai/select-examples";
 
@@ -21,11 +21,11 @@ export async function prepareGenerationContext(
   database: Database = defaultDb,
   categories: string[] = []
 ): Promise<{
-  brandProfile: typeof brandProfiles.$inferSelect;
+  brandProfile: typeof companyProfiles.$inferSelect;
   personas: ResolvedPersona[];
   examples: (typeof systemUpdateExamples.$inferSelect)[];
 }> {
-  const brandProfile = await getOrCreateBrandProfile(tenantId, database);
+  const brandProfile = await getOrCreateCompanyProfile(tenantId, database);
   const catalog = await database.select().from(systemPersonas);
   const personas = resolvePersonaRefs(brandProfile.userPersonas, catalog);
   const allExamples = await database.select().from(systemUpdateExamples);
