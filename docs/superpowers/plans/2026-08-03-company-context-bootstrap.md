@@ -972,7 +972,7 @@ export function parseTopics(raw: string): string[] {
 
 - [ ] **Step 2: Write the failing action test**
 
-Create `tests/app/company-actions.test.ts`. Read `tests/app/notion-actions.test.ts` first and copy its session-mocking setup verbatim — this repo mocks `requireSession` at the module level, and inventing a different approach here will not work.
+Create `tests/app/company-actions.test.ts`. This mirrors the setup in `tests/app/notion-actions.test.ts:11-14` — note two things that are easy to get wrong: the mock specifier is a **relative path**, not the `@/` alias, and `next/cache` must be mocked too because these actions call `revalidatePath`, which has no request context under test.
 
 ```ts
 import { describe, it, expect, afterEach, vi } from "vitest";
@@ -980,11 +980,17 @@ import { eq } from "drizzle-orm";
 import { db } from "../../src/db";
 import { tenants, companyProfiles, competitors } from "../../src/db/schema";
 
-// Mirror the session mock from tests/app/notion-actions.test.ts.
 let currentTenantId = "";
-vi.mock("@/lib/workspace/session", () => ({
-  requireSession: async () => ({ user: { id: "u1", tenantId: currentTenantId } }),
+vi.mock("../../src/lib/workspace/session", () => ({
+  requireSession: vi.fn(async () => ({ user: { tenantId: currentTenantId, id: "user-1" } })),
 }));
+vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
+
+import {
+  saveCompanyContext,
+  addCompetitorAction,
+  removeCompetitorAction,
+} from "../../src/app/(dashboard)/company/actions";
 
 const TENANT = "Company Actions Test Tenant";
 const OTHER = "Company Actions Other Tenant";
@@ -1004,7 +1010,6 @@ describe("saveCompanyContext", () => {
   it("persists the prose fields and parsed topics", async () => {
     const tenant = await seed(TENANT);
     currentTenantId = tenant.id;
-    const { saveCompanyContext } = await import("../../src/app/(dashboard)/company/actions");
 
     const form = new FormData();
     form.set("oneLiner", " Issue tracking for software teams. ");
@@ -1022,7 +1027,6 @@ describe("saveCompanyContext", () => {
   it("stores null rather than an empty string for a cleared prose field", async () => {
     const tenant = await seed(TENANT);
     currentTenantId = tenant.id;
-    const { saveCompanyContext } = await import("../../src/app/(dashboard)/company/actions");
 
     const form = new FormData();
     form.set("oneLiner", "   ");
@@ -1041,7 +1045,6 @@ describe("competitor actions", () => {
   it("refuses a blank name without inserting", async () => {
     const tenant = await seed(TENANT);
     currentTenantId = tenant.id;
-    const { addCompetitorAction } = await import("../../src/app/(dashboard)/company/actions");
 
     const form = new FormData();
     form.set("name", "   ");
@@ -1060,7 +1063,6 @@ describe("competitor actions", () => {
       .returning();
 
     currentTenantId = mine.id;
-    const { removeCompetitorAction } = await import("../../src/app/(dashboard)/company/actions");
     await removeCompetitorAction(victim.id);
 
     const [stillThere] = await db.select().from(competitors).where(eq(competitors.id, victim.id));
@@ -1225,12 +1227,12 @@ import { tenants } from "../../src/db/schema";
 vi.mock("next/navigation", () => ({ redirect: vi.fn() }));
 
 let currentTenantId = "";
-vi.mock("@/lib/workspace/session", () => ({
+vi.mock("../../src/lib/workspace/session", () => ({
   requireSession: async () => ({ user: { id: "u1", tenantId: currentTenantId } }),
 }));
 
 const bootstrap = vi.fn(async (..._args: unknown[]) => ({ ok: true }) as { ok: boolean; reason?: string });
-vi.mock("@/lib/workspace/company-bootstrap", () => ({
+vi.mock("../../src/lib/workspace/company-bootstrap", () => ({
   bootstrapCompanyContext: (...args: unknown[]) => bootstrap(...args),
 }));
 
