@@ -10,6 +10,7 @@ import { parseRepoSelections } from "@/lib/workspace/repo-selection-form";
 import { advanceOnboardingStep, isOnboardingComplete, markOnboardingComplete } from "@/lib/workspace/onboarding";
 import { listRepoBranches } from "@/lib/integrations/github/github";
 import { importBrandStyleForTenant } from "@/lib/workspace/brand-import";
+import { bootstrapCompanyContext } from "@/lib/workspace/company-bootstrap";
 import { parseHour } from "@/lib/workspace/parse-hour";
 
 export async function addOnboardingRepos(formData: FormData) {
@@ -88,6 +89,27 @@ export async function importBrandStyle(formData: FormData) {
 
   await advanceOnboardingStep(session.user.tenantId, 3);
   redirect("/onboarding/connect");
+}
+
+export async function bootstrapOnboardingCompany(formData: FormData) {
+  const session = await requireSession();
+  // Same gate as importBrandStyle, for the same reason: guardOnboardingStep(2)
+  // protects the PAGE, but a server action is a public endpoint that can be
+  // replayed directly — and bootstrapCompanyContext fetches up to four live
+  // pages and runs an LLM derivation, so an ungated replay burns real money on
+  // a tenant who is already done. The write is idempotent; the cost is not.
+  if (await isOnboardingComplete(session.user.tenantId)) return redirect("/atomic-updates");
+
+  const url = (formData.get("websiteUrl") as string)?.trim();
+  if (!url) return redirect("/onboarding/brand?error=empty");
+
+  const result = await bootstrapCompanyContext(session.user.tenantId, url);
+  // A failed crawl keeps the user on step 2 so they can try another URL or skip;
+  // only a success advances. A company whose site blocks us must never be trapped.
+  if (!result.ok) return redirect("/onboarding/brand?bootstrap=failed");
+
+  await advanceOnboardingStep(session.user.tenantId, 3);
+  return redirect("/onboarding/connect");
 }
 
 export async function skipBrandStep() {
