@@ -155,6 +155,20 @@ describe("fetchPageText", () => {
       expect(result.text.length).toBeGreaterThan(0);
     }
   });
+
+  it("clamps the returned html to MAX_SCAN_CHARS, not just the extracted text", async () => {
+    // Plenty of legitimate-looking markup, comfortably past the 200,000-char
+    // scan clamp -- proves PageResult.html itself is bounded, not just the
+    // MAX_TEXT_CHARS-sliced text derived from it.
+    const bigHtml = "<html><body>" + "<p>Filler paragraph text for the clamp test. </p>".repeat(6000) + "</body></html>";
+    expect(bigHtml.length).toBeGreaterThan(200_000);
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(bigHtml, { headers: { "content-type": "text/html" } }));
+    const result = await fetchPageText("https://acme.com/huge-page", { fetchImpl: fetchImpl as never, resolveHost: publicResolve });
+    expect(result).toHaveProperty("html");
+    if ("html" in result) {
+      expect(result.html.length).toBeLessThanOrEqual(200_000);
+    }
+  });
 });
 
 describe("extractSameOriginLinks", () => {
@@ -181,5 +195,23 @@ describe("extractSameOriginLinks", () => {
 
   it("returns an empty array for unparseable base or malformed html", () => {
     expect(extractSameOriginLinks("<a href=", "not a url")).toEqual([]);
+  });
+
+  it("clamps scanning at the 200,000-char mark so a hostile page can't force an unbounded scan", () => {
+    // Regression test for quadratic regex backtracking on HTML with many
+    // unclosed "<a" runs. Deliberately deterministic: this asserts on the
+    // RESULT (a link placed past the clamp boundary is never seen), not on
+    // elapsed time -- the point is that the function completes promptly at
+    // all here, which it would not without the clamp.
+    const before = '<a href="/before">e</a>';
+    const spam = "<a ".repeat(1000); // unclosed "<a" runs -- the historical O(n^2) trigger
+    const maxScan = 200_000;
+    const pad = "z".repeat(maxScan - before.length - spam.length + 5_000); // pushes `after` past the clamp
+    const after = '<a href="/after">l</a>';
+    const extra = "w".repeat(2_000_000); // a much bigger attacker payload; must not matter
+    const html = before + spam + pad + after + extra;
+    expect(html.length).toBeGreaterThan(2_000_000);
+
+    expect(extractSameOriginLinks(html, base)).toEqual(["https://example.com/before"]);
   });
 });

@@ -11,6 +11,17 @@ const MAX_BYTES = 2_000_000;
 const MAX_TEXT_CHARS = 12_000;
 const MIN_TEXT_CHARS = 200;
 const MAX_REDIRECTS = 3;
+// Both htmlToText's tag-stripping regex and extractSameOriginLinks's href regex
+// degrade to quadratic-ish backtracking on hostile HTML that has many "<a" (or
+// "<") runs with no following ">" (measured: 841ms for 32KB of such input) --
+// and MAX_BYTES above allows up to 2MB through. Clamping to this many
+// characters before either regex ever sees the HTML bounds the worst case
+// regardless of how large an attacker's page grows. 200KB of markup still
+// yields far more than MAX_TEXT_CHARS of extracted text, so this doesn't
+// affect real pages. Don't remove this thinking it's redundant with MAX_BYTES
+// -- MAX_BYTES bounds the read, this bounds the regex scan, and the scan is
+// the expensive part.
+const MAX_SCAN_CHARS = 200_000;
 
 const defaultResolveHost: ResolveHost = async (hostname) => {
   const results = await lookup(hostname, { all: true });
@@ -176,9 +187,14 @@ export async function fetchPageText(
       // it escapes fetchPageText instead of yielding a clean result.
       try {
         const html = await readBodyCapped(res, MAX_BYTES);
-        const text = htmlToText(html).slice(0, MAX_TEXT_CHARS);
+        // Clamp before the HTML reaches either regex-based consumer below --
+        // htmlToText's tag stripper and (for callers that then run
+        // extractSameOriginLinks on this same PageResult.html) the link
+        // extractor. See MAX_SCAN_CHARS above for why.
+        const scanned = html.slice(0, MAX_SCAN_CHARS);
+        const text = htmlToText(scanned).slice(0, MAX_TEXT_CHARS);
         if (text.length < MIN_TEXT_CHARS) return { error: "insufficient-content" };
-        return { text, html };
+        return { text, html: scanned };
       } catch {
         return { error: "fetch-failed" };
       }
@@ -206,8 +222,16 @@ export function extractSameOriginLinks(html: string, baseUrl: string): string[] 
     return [];
   }
 
+  // Defensive clamp: this function is exported, so a future caller (e.g. a
+  // spec-3 competitor crawler) may pass raw, unclamped HTML rather than the
+  // already-clamped `html` fetchPageText returns. Without this, that caller
+  // inherits the same quadratic-backtracking exposure documented at
+  // MAX_SCAN_CHARS above. Don't remove this as redundant with the caller's own
+  // clamp -- it isn't, for callers that aren't fetchPageText.
+  const scanned = html.slice(0, MAX_SCAN_CHARS);
+
   const seen = new Set<string>();
-  for (const match of html.matchAll(/<a\b[^>]*\bhref\s*=\s*["']([^"']+)["']/gi)) {
+  for (const match of scanned.matchAll(/<a\b[^>]*\bhref\s*=\s*["']([^"']+)["']/gi)) {
     let candidate: URL;
     try {
       candidate = new URL(match[1], base);
