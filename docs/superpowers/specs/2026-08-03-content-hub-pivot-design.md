@@ -300,3 +300,51 @@ Outcomes:
   signal; spec 2 must capture more before spec 5 can work.
 - Generic everywhere → the ideation design is wrong, found before a migration was
   written.
+
+### Result — run 2026-08-03
+
+**Outcome: sharp across all three companies. The premise holds; proceed.**
+
+Run against Linear, Vercel and Frontitude with hand-written profiles and real
+signals scraped from actual changelogs, competitor changelogs and industry press.
+6 briefs each, on Opus 5.
+
+| | multi-signal | cross-kind | signals cited | hallucinated IDs |
+| --- | --- | --- | --- | --- |
+| Linear | 6/6 | 4/6 | 14/17 | 0 |
+| Vercel | 5/6 | 3/6 | 13/18 | 0 |
+| Frontitude | 5/6 | 3/6 | 11/13 | 0 |
+
+Findings that change the specs:
+
+1. **Quantity is not self-limiting.** "Up to 6" produced exactly 6 every time.
+   Left as-is this manufactures content on quiet weeks — the exact failure mode
+   the human-gated model exists to avoid. Spec 5 must instruct the agent that
+   returning zero or two briefs is a correct outcome, and should be evaluated on
+   a deliberately thin signal week before shipping.
+2. **Noise rejection works.** Planted low-value signals — Cloudflare V8 version
+   bumps, a "platform improvements and fixes" maintenance release, market-size
+   forecasts — were left uncited in every run. The ignore-noise rule earns its
+   place in the prompt.
+3. **Low ship velocity is not a blocker.** Frontitude had only 2 shipped-work
+   signals and still produced 6 strong briefs off competitor and market signals.
+   The product works for companies that do not ship often, which is most
+   marketing-led companies — and it means the competitor agent (spec 3), not the
+   shipped-work adapter, is the load-bearing source.
+4. **Competitor signals are not only good for comparison content.** The
+   highest-value Vercel brief was a response to a *competitor's* security
+   advisory about Next.js — Vercel's own framework. Do not narrow the competitor
+   agent to "what they shipped versus what we shipped".
+5. **Scores cluster narrowly** (0.66–0.92). Absolute scores will rank poorly once
+   a backlog accumulates. Spec 5 should rank relatively within a run rather than
+   trusting the absolute number.
+6. **Brief generation is output-heavy** — 6 briefs is 6–9k output tokens and
+   overflows a 4096 default. Set `maxOutputTokens` explicitly and budget for it.
+7. **Excerpt quality drives brief quality.** The tier-2 relevance pass in spec 3
+   must preserve a meaningful excerpt, not just a score — the briefs lean on
+   excerpt detail heavily.
+
+Four prompt rules earned their place and should carry into spec 5 close to
+verbatim: favour clusters, the swap test ("if it reads the same with a
+competitor's name swapped in, do not propose it"), ignore noise, and why-now must
+point at something dated.
