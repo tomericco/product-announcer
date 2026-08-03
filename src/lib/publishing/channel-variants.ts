@@ -22,6 +22,10 @@ export async function readVariant(
  * Upserts the body for one channel. `edited` stamps `editedAt`, which marks the
  * body as hand-written so regeneration can warn before overwriting it — the
  * per-channel analogue of `contentPieces.bodyEditedAt`.
+ *
+ * Takes no tenant parameter, so it cannot verify that `contentPieceId` belongs
+ * to the caller's tenant — callers MUST confirm that ownership themselves
+ * before calling this.
  */
 export async function writeVariant(
   database: DbClient,

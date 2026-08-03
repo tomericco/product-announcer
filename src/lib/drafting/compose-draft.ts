@@ -41,8 +41,8 @@ export async function runBatchForWorkspace(
     try {
       draft = await generateReleaseDraft(items, brandProfile, personas, examples);
     } catch (err) {
-      // Both attempts failed. Leave the atomic updates open — they roll into
-      // the next scheduled/threshold/manual run automatically.
+      // Both attempts failed. Leave the atomic updates open — they remain
+      // available to the next manual compose run.
       onProgress?.({ type: "error", message: err instanceof Error ? err.message : String(err) });
       return false;
     }

@@ -42,6 +42,16 @@ describe("buildSystemPrompt", () => {
     );
     expect(system.indexOf("</brand-guidelines>")).toBeLessThan(system.indexOf("Dark mode"));
   });
+
+  it("omits the category parenthetical for an example with a null category", () => {
+    const system = buildSystemPrompt(
+      baseBrand as never,
+      [],
+      [{ category: null, title: "New blog post", body: "Some body." } as never]
+    );
+    expect(system).toContain("Example:\nTitle: New blog post");
+    expect(system).not.toContain("Example (null)");
+  });
 });
 
 const AUS = [

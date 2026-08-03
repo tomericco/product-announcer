@@ -15,7 +15,7 @@ import { reviewAndReconcile } from "../../../src/lib/ai/review-draft";
 
 const TENANT = "Run Batch Test Tenant";
 
-describe("run-schedule (workspace-level)", () => {
+describe("runBatchForWorkspace (compose-draft)", () => {
   beforeEach(() => {
     vi.mocked(reviewAndReconcile).mockImplementation(async (draft) => ({ finalDraft: draft, status: "passed", issues: [] }));
   });

@@ -7,7 +7,8 @@ const DEFAULT_MAX_PROMPT_CHARS = 24000;
 const MAX_GUIDELINES_CHARS = 6000;
 
 function renderExample(example: ExampleRow): string {
-  return `Example (${example.category}):\nTitle: ${example.title}\nBody:\n${example.body}`;
+  const label = example.category ? `Example (${example.category}):` : "Example:";
+  return `${label}\nTitle: ${example.title}\nBody:\n${example.body}`;
 }
 
 function renderPersona(persona: ResolvedPersona): string {
