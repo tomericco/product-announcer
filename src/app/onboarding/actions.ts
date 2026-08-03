@@ -3,7 +3,7 @@
 import { eq } from "drizzle-orm";
 import { redirect } from "next/navigation";
 import { db } from "@/db";
-import { scheduleConfigs, tenants } from "@/db/schema";
+import { companyProfiles, scheduleConfigs, tenants } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { addSelectedRepos } from "@/lib/workspace/repo-sync";
 import { parseRepoSelections } from "@/lib/workspace/repo-selection-form";
@@ -11,6 +11,8 @@ import { advanceOnboardingStep, isOnboardingComplete, markOnboardingComplete } f
 import { listRepoBranches } from "@/lib/integrations/github/github";
 import { importBrandStyleForTenant } from "@/lib/workspace/brand-import";
 import { bootstrapCompanyContext } from "@/lib/workspace/company-bootstrap";
+import { getOrCreateCompanyProfile } from "@/lib/workspace/company-profile";
+import { parseTopics } from "@/lib/workspace/parse-topics";
 import { parseHour } from "@/lib/workspace/parse-hour";
 
 export async function addOnboardingRepos(formData: FormData) {
@@ -107,6 +109,40 @@ export async function bootstrapOnboardingCompany(formData: FormData) {
   // A failed crawl keeps the user on step 2 so they can try another URL or skip;
   // only a success advances. A company whose site blocks us must never be trapped.
   if (!result.ok) return redirect("/onboarding/brand?bootstrap=failed");
+
+  // Deliberately does NOT advance the step or leave the page. The profile is
+  // the ranking function every later agent scores signals against, so a wrong
+  // draft silently degrades every brief the product ever proposes — the human
+  // reviews it on THIS page (drafted=1 tells the page to render that review)
+  // before saveOnboardingCompany below is the thing that actually advances.
+  return redirect("/onboarding/brand?drafted=1");
+}
+
+/**
+ * Persists the reviewed (and possibly corrected) draft, then leaves step 2 for
+ * good. Split from bootstrapOnboardingCompany above on purpose: that action
+ * re-runs the crawl every time it's called, so it cannot also be "the save" —
+ * calling it a second time to persist edits would re-derive from the site and
+ * silently discard whatever the human just corrected.
+ */
+export async function saveOnboardingCompany(formData: FormData) {
+  const session = await requireSession();
+  // Same gate as its neighbours: this still writes (and advances), so a
+  // replayed POST after onboarding is done must not mutate the profile.
+  if (await isOnboardingComplete(session.user.tenantId)) return redirect("/atomic-updates");
+
+  const profile = await getOrCreateCompanyProfile(session.user.tenantId);
+
+  await db
+    .update(companyProfiles)
+    .set({
+      oneLiner: (formData.get("oneLiner") as string)?.trim() || null,
+      category: (formData.get("category") as string)?.trim() || null,
+      positioning: (formData.get("positioning") as string)?.trim() || null,
+      topics: parseTopics((formData.get("topics") as string) ?? ""),
+      updatedAt: new Date(),
+    })
+    .where(eq(companyProfiles.id, profile.id));
 
   await advanceOnboardingStep(session.user.tenantId, 3);
   return redirect("/onboarding/connect");

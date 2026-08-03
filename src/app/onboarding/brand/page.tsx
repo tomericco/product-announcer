@@ -1,17 +1,31 @@
+import Link from "next/link";
 import { guardOnboardingStep } from "../guard";
 import { StepHeader } from "../steps";
-import { bootstrapOnboardingCompany, importBrandStyle, skipBrandStep } from "../actions";
+import { bootstrapOnboardingCompany, importBrandStyle, saveOnboardingCompany, skipBrandStep } from "../actions";
 import { SubmitButton, SecondaryFormAction } from "../submit-button";
+import { getOrCreateCompanyProfile } from "@/lib/workspace/company-profile";
+import { listCompetitors } from "@/lib/workspace/competitors";
+import { removeCompetitorAction } from "@/app/(dashboard)/company/actions";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Button } from "@/components/ui/button";
 
 export default async function BrandStepPage({
   searchParams,
 }: {
-  searchParams: Promise<{ bootstrap?: string; brandImport?: string; error?: string }>;
+  searchParams: Promise<{ bootstrap?: string; brandImport?: string; error?: string; drafted?: string }>;
 }) {
-  await guardOnboardingStep(2);
-  const { bootstrap, brandImport, error } = await searchParams;
+  const session = await guardOnboardingStep(2);
+  const { bootstrap, brandImport, error, drafted } = await searchParams;
+
+  // Detected from the profile itself, not trusted from `?drafted=1` alone: a
+  // reload of this URL (or coming back via Back) must still show the review,
+  // not drop the user back to a blank form. bootstrapCompanyContext always
+  // sets websiteUrl on a successful crawl, so its presence IS "drafted."
+  const profile = await getOrCreateCompanyProfile(session.user.tenantId);
+  const showReview = Boolean(profile.websiteUrl);
+  const proposedCompetitors = showReview ? await listCompetitors(session.user.tenantId) : [];
 
   return (
     <div className="space-y-8">
@@ -30,6 +44,7 @@ export default async function BrandStepPage({
             id="websiteUrl"
             name="websiteUrl"
             type="url"
+            defaultValue={profile.websiteUrl ?? ""}
             placeholder="https://yourproduct.com"
             autoFocus
             required
@@ -57,6 +72,114 @@ export default async function BrandStepPage({
           </SecondaryFormAction>
         </div>
       </form>
+
+      {/* Phase 2: only once bootstrapCompanyContext has actually drafted
+          something. This is a review, not a formality -- the company profile is
+          the ranking function every later agent scores incoming signals
+          against, and the people least likely to ever open Company are exactly
+          the ones whose site crawled poorly, so this is their only real chance
+          to catch a bad draft. saveOnboardingCompany (not
+          bootstrapOnboardingCompany) is what advances from here, because
+          re-running the bootstrap to "save" would re-crawl and silently
+          overwrite whatever gets corrected below. */}
+      {showReview && (
+        <div className="space-y-4 border-t pt-6">
+          <div className="space-y-1">
+            {drafted === "1" && <p className="text-sm font-medium">Here&apos;s what we drafted from your site.</p>}
+            <p className="text-muted-foreground text-xs">
+              Check this over before continuing — it&apos;s what every future update gets scored against.
+            </p>
+          </div>
+          <form action={saveOnboardingCompany} className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="oneLiner">One-liner</Label>
+              <Input
+                id="oneLiner"
+                name="oneLiner"
+                defaultValue={profile.oneLiner ?? ""}
+                placeholder="Issue tracking for software teams."
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="category">Market category</Label>
+              <Input
+                id="category"
+                name="category"
+                defaultValue={profile.category ?? ""}
+                placeholder="Project management software"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="positioning">Positioning</Label>
+              <Textarea
+                id="positioning"
+                name="positioning"
+                rows={3}
+                defaultValue={profile.positioning ?? ""}
+                placeholder="Differentiators and the messages you want to own."
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="topics">Topics</Label>
+              <Textarea
+                id="topics"
+                name="topics"
+                rows={3}
+                defaultValue={profile.topics.join(", ")}
+                placeholder={"ai agents, developer tools\nobservability"}
+              />
+              <p className="text-muted-foreground text-xs">Comma- or newline-separated.</p>
+            </div>
+
+            {proposedCompetitors.length > 0 && (
+              <div className="space-y-2">
+                <Label>Competitors</Label>
+                <ul className="space-y-2">
+                  {proposedCompetitors.map((competitor) => (
+                    <li
+                      key={competitor.id}
+                      className="flex items-center justify-between gap-2 rounded-md border p-3"
+                    >
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-medium">{competitor.name}</p>
+                        {competitor.websiteUrl && (
+                          <p className="truncate text-xs text-muted-foreground">{competitor.websiteUrl}</p>
+                        )}
+                      </div>
+                      {/* formAction overrides just this button's submission to a
+                          DIFFERENT action than the form's own (saveOnboardingCompany)
+                          — the same mechanism SecondaryFormAction uses above, so
+                          removing one doesn't submit (and doesn't need) the rest of
+                          this form's fields. formNoValidate for the same reason: the
+                          required fields above must not block a removal. */}
+                      <Button
+                        type="submit"
+                        formAction={removeCompetitorAction.bind(null, competitor.id)}
+                        formNoValidate
+                        variant="ghost"
+                        size="sm"
+                      >
+                        Remove
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+                <p className="text-muted-foreground text-xs">
+                  Only removal happens here — add more competitors later under{" "}
+                  <Link href="/company" className="underline">
+                    Company
+                  </Link>
+                  .
+                </p>
+              </div>
+            )}
+
+            <SubmitButton className="w-full" pendingLabel="Saving…">
+              Continue
+            </SubmitButton>
+          </form>
+        </div>
+      )}
 
       {/* Kept as a secondary, separately-scoped action: importBrandStyle reads the
           updates page for voice, while the form above reads the company site for
