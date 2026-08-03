@@ -20,4 +20,10 @@ describe("schedule_configs after the scheduler retirement", () => {
     expect(config).not.toHaveProperty("dayOfWeek");
     expect(config).not.toHaveProperty("dayOfMonth");
   });
+
+  it("allows only one schedule config per tenant", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    await db.insert(scheduleConfigs).values({ tenantId: tenant.id });
+    await expect(db.insert(scheduleConfigs).values({ tenantId: tenant.id })).rejects.toThrow();
+  });
 });
