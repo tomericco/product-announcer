@@ -4,9 +4,9 @@ import { GuardedLink } from "./unsaved-changes";
 import { usePathname } from "next/navigation";
 import {
   Activity,
+  Building2,
   FilePen,
   History,
-  Palette,
   Plug,
   ToyBrick,
 } from "lucide-react";
@@ -20,7 +20,7 @@ const NAV = [
   { href: "/drafts", label: "Drafts", icon: FilePen },
   { href: "/history", label: "Release history", icon: History },
   { href: "/integrations", label: "Integrations", icon: Plug },
-  { href: "/company", label: "Company", icon: Palette },
+  { href: "/company", label: "Company", icon: Building2 },
 ];
 
 export function NavLinks({ draftCount }: { draftCount: number }) {
