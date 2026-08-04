@@ -267,25 +267,33 @@ describe("probeAgentPage", () => {
 
 describe("extractBlocks", () => {
   it("splits on blank lines and titles each block from its first line", () => {
-    const blocks = extractBlocks("## v2.4.0\nAdded SSO for all plans.\n\n## v2.3.0\nFixed a crash.");
+    const blocks = extractBlocks(
+      "## v2.4.0\nAdded SAML SSO for every plan, including free.\n\n## v2.3.0\nFixed a crash when loading large workspaces."
+    );
     expect(blocks).toHaveLength(2);
     expect(blocks[0].title).toBe("## v2.4.0");
-    expect(blocks[0].text).toContain("Added SSO");
+    expect(blocks[0].text).toContain("SAML SSO");
     expect(blocks[1].title).toBe("## v2.3.0");
   });
 
   it("starts a new block at a markdown heading even without a blank line", () => {
-    const blocks = extractBlocks("## First\nbody one\n## Second\nbody two");
+    const blocks = extractBlocks(
+      "## First\nA first section with enough text to clear the floor.\n## Second\nA second section with enough text as well."
+    );
     expect(blocks.map((b) => b.title)).toEqual(["## First", "## Second"]);
   });
 
   it("hashes block content, so identical text in two places collapses to one hash", () => {
-    const [a, b] = extractBlocks("Same text here.\n\nSame text here.");
+    const [a, b] = extractBlocks(
+      "An identical changelog entry appears twice here.\n\nAn identical changelog entry appears twice here."
+    );
     expect(a.hash).toBe(b.hash);
   });
 
   it("gives different hashes to different content", () => {
-    const [a, b] = extractBlocks("One thing.\n\nAnother thing.");
+    const [a, b] = extractBlocks(
+      "One changelog entry with plenty of text in it.\n\nA different changelog entry entirely, also long."
+    );
     expect(a.hash).not.toBe(b.hash);
   });
 
