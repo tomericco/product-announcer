@@ -1044,3 +1044,30 @@ The dashboard sits behind an OAuth wall, so state in your report that the UI is 
 - **Spec 5** must reuse `signalWindowCondition()` from `window.ts` rather than re-deriving the window, and must extend the deferred deletion with the accepted-brief exemption before `brief_signals` can cascade.
 - **`occurredAt` on `competitor_move` signals is first-seen, not published.** Spec 5's ranking decays on it, which is correct here because diffing only observes forward changes — but any UI that labels it "published on" would be lying.
 - The **quiet-week spike result** in the design doc is the brief agent's requirement, not a suggestion: the prompt must license returning zero briefs, and `weekAssessment` should reach the UI as the empty state.
+
+## Known gap, parked (2026-08-04)
+
+**Truncation is inferred from length equality, not reported.**
+`competitor-agent.ts` detects a truncated fetch as `page.text.length === MAX_TEXT_CHARS`,
+but `fetch-page.ts` slices unconditionally, so "sliced because it was longer"
+and "landed at exactly 12,000 characters on its own" are indistinguishable.
+A page whose genuine extracted text is exactly at the cap would have its final
+block silently dropped on every run.
+
+Judged real but not load-bearing: the probability of a page landing exactly on
+the cap is negligible, the consequence is one missed block on one page, and
+nothing downstream depends on it. The shifted-tail-fragment bug this detection
+was added for **is** fixed and tested — this is only the false-positive edge.
+
+**The correct fix is small and known:** have `fetchPageText` capture whether the
+pre-slice length exceeded `MAX_TEXT_CHARS` and return it as `truncated: boolean`
+on `PageResult`, then have the agent read that instead of comparing lengths.
+Left undone only because the whole-plan review allows one fix wave and one
+scoped re-review, and this surfaced in the re-review.
+
+Related, from the same re-review and also parked: `written++` counts an
+`onConflictDoNothing` that matched zero rows. Harmless today because the only
+production caller discards the result — but keying `externalId` on the fetched
+URL means two sources sharing an `llms.txt` now hit that no-op branch routinely,
+so the miscount fires far more often than before. Do not start trusting
+`CompetitorRunResult.written` without fixing it.
