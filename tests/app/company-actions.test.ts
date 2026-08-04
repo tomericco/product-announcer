@@ -14,11 +14,17 @@ vi.mock("../../src/lib/workspace/company-bootstrap", () => ({
   bootstrapCompanyContext: (...args: unknown[]) => bootstrapMock(...args),
 }));
 
+const discoverMock = vi.fn(async (..._args: unknown[]) => [] as unknown[]);
+vi.mock("../../src/lib/signals/discover-sources", () => ({
+  discoverCompetitorSources: (...args: unknown[]) => discoverMock(...args),
+}));
+
 import {
   saveCompanyContext,
   addCompetitorAction,
   removeCompetitorAction,
   bootstrapFromWebsite,
+  discoverSourcesAction,
 } from "../../src/app/(dashboard)/company/actions";
 
 const TENANT = "Company Actions Test Tenant";
@@ -179,5 +185,66 @@ describe("bootstrapFromWebsite", () => {
     const result = await bootstrapFromWebsite("https://acme.com");
 
     expect(result).toEqual({ ok: false, reason: "blocked" });
+  });
+});
+
+describe("discoverSourcesAction", () => {
+  afterEach(() => {
+    discoverMock.mockClear();
+    discoverMock.mockResolvedValue([]);
+  });
+
+  it("cannot discover sources for a competitor belonging to another tenant", async () => {
+    const mine = await seed(TENANT);
+    const theirs = await seed(OTHER);
+    const [victim] = await db
+      .insert(competitors)
+      .values({ tenantId: theirs.id, name: "Jira", websiteUrl: "https://jira.example.com" })
+      .returning();
+
+    currentTenantId = mine.id;
+    const result = await discoverSourcesAction(victim.id);
+
+    expect(result).toEqual({ ok: false, reason: "not-found" });
+    expect(discoverMock).not.toHaveBeenCalled();
+  });
+
+  it("ignores a non-string id rather than throwing", async () => {
+    const tenant = await seed(TENANT);
+    currentTenantId = tenant.id;
+
+    const result = await discoverSourcesAction(42 as unknown as string);
+
+    expect(result).toEqual({ ok: false, reason: "invalid-id" });
+    expect(discoverMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses a competitor with no website rather than crawling nothing", async () => {
+    const tenant = await seed(TENANT);
+    currentTenantId = tenant.id;
+    const [competitor] = await db
+      .insert(competitors)
+      .values({ tenantId: tenant.id, name: "Jira" })
+      .returning();
+
+    const result = await discoverSourcesAction(competitor.id);
+
+    expect(result).toEqual({ ok: false, reason: "no-website" });
+    expect(discoverMock).not.toHaveBeenCalled();
+  });
+
+  it("delegates to discoverCompetitorSources with the tenant, competitor, and website", async () => {
+    const tenant = await seed(TENANT);
+    currentTenantId = tenant.id;
+    const [competitor] = await db
+      .insert(competitors)
+      .values({ tenantId: tenant.id, name: "Jira", websiteUrl: "https://jira.example.com" })
+      .returning();
+    discoverMock.mockResolvedValue([{ id: "s1" }, { id: "s2" }]);
+
+    const result = await discoverSourcesAction(competitor.id);
+
+    expect(discoverMock).toHaveBeenCalledWith(tenant.id, competitor.id, "https://jira.example.com");
+    expect(result).toEqual({ ok: true, count: 2 });
   });
 });

@@ -1,9 +1,9 @@
 "use server";
 
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { db } from "@/db";
-import { companyProfiles } from "@/db/schema";
+import { companyProfiles, competitors } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { getOrCreateCompanyProfile } from "@/lib/workspace/company-profile";
 import { importBrandStyleForTenant } from "@/lib/workspace/brand-import";
@@ -11,6 +11,7 @@ import { sanitizePersonas } from "@/lib/workspace/persona-form";
 import { parseTopics } from "@/lib/workspace/parse-topics";
 import { addCompetitor, listCompetitors, removeCompetitor } from "@/lib/workspace/competitors";
 import { bootstrapCompanyContext } from "@/lib/workspace/company-bootstrap";
+import { discoverCompetitorSources } from "@/lib/signals/discover-sources";
 
 /**
  * Persists the guidelines document. Scoped to that one column on purpose: every
@@ -146,6 +147,33 @@ export async function removeCompetitorAction(id: unknown): Promise<void> {
   if (typeof id !== "string" || !id) return;
   await removeCompetitor(session.user.tenantId, id);
   revalidatePath("/company");
+}
+
+/**
+ * Finds the changelog/blog/release-notes pages worth watching on a
+ * competitor's site and resolves each one's agent-facing variant. Takes
+ * `unknown`, like `removeCompetitorAction`: a Server Action argument is
+ * client input. The competitor lookup is scoped to `session.user.tenantId`,
+ * the same guard `removeCompetitorAction` uses, so an id from another
+ * workspace matches nothing rather than leaking that workspace's competitor.
+ */
+export async function discoverSourcesAction(
+  competitorId: unknown
+): Promise<{ ok: boolean; reason?: string; count?: number }> {
+  const session = await requireSession();
+  if (typeof competitorId !== "string" || !competitorId) return { ok: false, reason: "invalid-id" };
+
+  const [competitor] = await db
+    .select()
+    .from(competitors)
+    .where(and(eq(competitors.tenantId, session.user.tenantId), eq(competitors.id, competitorId)))
+    .limit(1);
+  if (!competitor) return { ok: false, reason: "not-found" };
+  if (!competitor.websiteUrl) return { ok: false, reason: "no-website" };
+
+  const created = await discoverCompetitorSources(session.user.tenantId, competitor.id, competitor.websiteUrl);
+  revalidatePath("/company");
+  return { ok: true, count: created.length };
 }
 
 /**

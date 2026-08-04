@@ -2,9 +2,9 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Plus } from "lucide-react";
+import { Plus, Search } from "lucide-react";
 import { toast } from "sonner";
-import { addCompetitorAction, removeCompetitorAction } from "./actions";
+import { addCompetitorAction, discoverSourcesAction, removeCompetitorAction } from "./actions";
 import type { Competitor } from "@/db/schema";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,6 +20,7 @@ export function CompetitorsEditor({ competitors }: { competitors: Competitor[] }
   const [websiteUrl, setWebsiteUrl] = useState("");
   const [adding, setAdding] = useState(false);
   const [removingId, setRemovingId] = useState<string | null>(null);
+  const [discoveringId, setDiscoveringId] = useState<string | null>(null);
   const router = useRouter();
 
   async function add() {
@@ -58,6 +59,27 @@ export function CompetitorsEditor({ competitors }: { competitors: Competitor[] }
     }
   }
 
+  async function discover(id: string) {
+    setDiscoveringId(id);
+    try {
+      const result = await discoverSourcesAction(id);
+      if (result.ok) {
+        router.refresh();
+        toast.success(
+          result.count
+            ? `Found ${result.count} page${result.count === 1 ? "" : "s"} to watch`
+            : "No changelog, blog, or release-notes pages found"
+        );
+      } else {
+        toast.error("Add a website first");
+      }
+    } catch {
+      toast.error("Couldn't search that site — try again");
+    } finally {
+      setDiscoveringId(null);
+    }
+  }
+
   return (
     <div className="space-y-3">
       {competitors.length === 0 ? (
@@ -70,15 +92,29 @@ export function CompetitorsEditor({ competitors }: { competitors: Competitor[] }
                 <p className="truncate text-sm font-medium">{c.name}</p>
                 {c.websiteUrl && <p className="truncate text-xs text-muted-foreground">{c.websiteUrl}</p>}
               </div>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                disabled={removingId === c.id}
-                onClick={() => remove(c.id)}
-              >
-                Remove
-              </Button>
+              <div className="flex shrink-0 items-center gap-1">
+                {c.websiteUrl && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    disabled={discoveringId === c.id}
+                    onClick={() => discover(c.id)}
+                  >
+                    <Search className="size-4" />
+                    {discoveringId === c.id ? "Searching…" : "Find pages to watch"}
+                  </Button>
+                )}
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  disabled={removingId === c.id}
+                  onClick={() => remove(c.id)}
+                >
+                  Remove
+                </Button>
+              </div>
             </li>
           ))}
         </ul>

@@ -296,9 +296,13 @@ export const sources = pgTable(
     // The page we poll. Null for topic-driven news sources (spec 4), which
     // search rather than fetch a fixed URL.
     url: text("url"),
-    // The feed discovered behind `url`, when the page advertises one. Preferred
-    // over scraping because feed entries carry real titles and dates.
-    feedUrl: text("feed_url"),
+    // The agent-facing representation of `url` when the competitor publishes
+    // one — a `.md` variant, or the site's llms.txt. Preferred at fetch time
+    // because those pages are written for machines: no nav, no cookie banner,
+    // no marketing chrome, so both block extraction and relevance scoring get
+    // cleaner input. Resolved once at discovery rather than probed every run;
+    // re-running discovery is what picks up a competitor who adds one later.
+    agentUrl: text("agent_url"),
     label: text("label").notNull(),
     // Per-source cursor: last seen entry id and the content hash of the last
     // fetched page. Shape varies by source type, which is why it is jsonb and
