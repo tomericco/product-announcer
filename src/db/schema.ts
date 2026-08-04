@@ -304,9 +304,13 @@ export const sources = pgTable(
     // re-running discovery is what picks up a competitor who adds one later.
     agentUrl: text("agent_url"),
     label: text("label").notNull(),
-    // Per-source cursor: last seen entry id and the content hash of the last
-    // fetched page. Shape varies by source type, which is why it is jsonb and
-    // not columns — a news source's cursor looks nothing like a feed's.
+    // Per-source cursor. For competitor_web sources (competitor-agent.ts):
+    // `{ seenHashes: string[] }`, the block hashes confirmed present as of the
+    // last run, in last-seen order (oldest-still-present first, capped at
+    // MAX_WATERMARK_HASHES) — there are no feeds and therefore no entry ids
+    // or dates to track, only "was this block here before." jsonb rather than
+    // columns because shape is expected to vary by source type — spec 4's
+    // news sources will need their own cursor shape here.
     watermark: jsonb("watermark").$type<Record<string, unknown>>().notNull().default({}),
     // Sources rot: sites redesign, feeds move. Surfaced in settings the way the
     // Notion and Webflow connection statuses already are, rather than failing

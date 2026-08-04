@@ -10,7 +10,7 @@
 
 Acquisition prefers **agent-facing pages** — `llms.txt`, `llms-full.txt`, and `.md` variants — and falls back to rendered HTML. Those pages are written to be read by machines: clean prose with no nav, cookie banners, or marketing chrome, which makes both extraction and relevance scoring materially better than scraping.
 
-Because there are no feeds, the unit of change is not an entry but a **block of text that was not there last time.** Each run extracts blocks, compares their hashes against a per-source watermark, and turns genuinely new blocks into signals. Every external fetch goes through spec 2's SSRF-guarded `fetchPageText`. The sweep copies `resolve-sweep.ts`: per-tenant isolation, log and continue, never throw out of the cron.
+Because there are no feeds, the unit of change is not an entry but a **block of text that was not there last time.** Each run extracts blocks, compares their hashes against a per-source watermark, and turns genuinely new blocks into signals. Every external fetch goes through spec 2's SSRF-guarded `fetchPageText`. The sweep follows `resolve-sweep.ts`'s log-and-continue, never-throw-out-of-the-cron posture, but isolates per **source**, not per tenant — see Task 6.
 
 **Tech Stack:** Next.js 16 (App Router), Drizzle ORM + drizzle-kit, Postgres (Supabase), AI SDK v7 + `@ai-sdk/anthropic`, Vitest against a real `_test` database, TypeScript strict. **No new runtime dependencies.**
 
@@ -56,7 +56,7 @@ Because there are no feeds, the unit of change is not an entry but a **block of 
 | `src/lib/signals/discover-sources.ts` | Propose watchable URLs, resolve their agent-facing variants | 3 |
 | `src/lib/signals/relevance.ts` | Batched tier-2 relevance scoring | 4 |
 | `src/lib/signals/competitor-agent.ts` | One source: fetch → diff → tier-2 → write | 5 |
-| `src/lib/signals/sweep.ts` | All sources, per-tenant isolation | 6 |
+| `src/lib/signals/sweep.ts` | All sources, per-source isolation | 6 |
 | `src/app/api/cron/scheduler/route.ts` | Runs the sweep | 6 |
 | `src/app/(dashboard)/company/*` | Discovery and source health | 3, 6 |
 
@@ -898,7 +898,7 @@ Each signal: `kind: "competitor_move"`, `externalId: ${source.id}:${blockHash}`,
 
 **But the retry must be visible.** Count the writes that threw, and when any did, set `lastError` on the source naming the count — while keeping `status: "active"` and still setting `lastSuccessAt`. The source genuinely is working: it fetched, extracted and scored. Flipping it to `failing` would conflate "we cannot reach this competitor at all" with "most of this run landed", and make the settings surface cry wolf. A recent `lastSuccessAt` alongside a populated `lastError` is the honest representation. Without this, a block that fails deterministically rather than transiently retries forever with no operator-visible trace at all.
 
-Finally merge the successfully-written hashes into the watermark, **capped** (keep the most recent ~1000, oldest dropped), and set `lastRunAt`, `lastSuccessAt`, `status: "active"`, `lastError: null`.
+Finally merge the successfully-written hashes into the watermark, **capped** (keep the most recent ~1000, oldest dropped), and set `lastRunAt`, `lastSuccessAt`, `status: "active"`, and `lastError` — `null` unless writes failed this run, in which case the failure-count message from the paragraph above, per the contract test at the top of this task.
 
 - [ ] **Step 3: Verify and commit**
 
@@ -916,11 +916,13 @@ Finally merge the successfully-written hashes into the watermark, **capped** (ke
 
 - [ ] **Step 1: Write the failing sweep test**
 
+**The candidate select is unscoped by design (that's what makes it a sweep), so every test here sees every `competitor_web` source live in the shared test database while other files run in parallel and insert their own.** Per the amended Global Constraints above, assert on which of *this test's own* rows `runSource` was called with — never on `toHaveBeenCalledTimes`/`not.toHaveBeenCalled()`, which are racy against that traffic:
+
 ```ts
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, competitors, sources } from "../../../src/db/schema";
+import { tenants, competitors, sources, type Source } from "../../../src/db/schema";
 import { sweepCompetitorSources } from "../../../src/lib/signals/sweep";
 
 const A = "Sweep Test Tenant A";
@@ -949,38 +951,64 @@ describe("sweepCompetitorSources", () => {
     const tenantA = await seedTenantWithSource(A, "https://a.com/changelog");
     await seedTenantWithSource(B, "https://b.com/changelog");
 
-    const run = vi.fn(async (source: { tenantId: string }) => {
+    const run = vi.fn(async (source: Source) => {
       if (source.tenantId === tenantA.id) throw new Error("boom");
       return { written: 1, dropped: 0, baseline: false };
     });
 
     await expect(sweepCompetitorSources({ runSource: run })).resolves.toBeUndefined();
-    expect(run).toHaveBeenCalledTimes(2);
+    const urlsCalled = run.mock.calls.map(([source]) => source.url);
+    expect(urlsCalled).toContain("https://a.com/changelog");
+    expect(urlsCalled).toContain("https://b.com/changelog");
   });
 
   it("skips disabled sources", async () => {
     const tenant = await seedTenantWithSource(A, "https://a.com/changelog");
     await db.update(sources).set({ status: "disabled" }).where(eq(sources.tenantId, tenant.id));
 
-    const run = vi.fn(async () => ({ written: 0, dropped: 0, baseline: false }));
+    const run = vi.fn(async (_source: Source) => ({ written: 0, dropped: 0, baseline: false }));
     await sweepCompetitorSources({ runSource: run });
-    expect(run).not.toHaveBeenCalled();
+    const tenantsCalled = run.mock.calls.map(([source]) => source.tenantId);
+    expect(tenantsCalled).not.toContain(tenant.id);
   });
 
   it("still runs sources previously marked failing, so they can recover", async () => {
     const tenant = await seedTenantWithSource(A, "https://a.com/changelog");
     await db.update(sources).set({ status: "failing" }).where(eq(sources.tenantId, tenant.id));
 
-    const run = vi.fn(async () => ({ written: 0, dropped: 0, baseline: false }));
+    const run = vi.fn(async (_source: Source) => ({ written: 0, dropped: 0, baseline: false }));
     await sweepCompetitorSources({ runSource: run });
-    expect(run).toHaveBeenCalledTimes(1);
+    const tenantsCalled = run.mock.calls.map(([source]) => source.tenantId);
+    expect(tenantsCalled).toContain(tenant.id);
+  });
+
+  it("one source's failure does not stop the same tenant's other sources", async () => {
+    const tenant = await seedTenantWithSource(A, "https://a.com/changelog");
+    const [rival] = await db.select().from(competitors).where(eq(competitors.tenantId, tenant.id));
+    await db.insert(sources).values({
+      tenantId: tenant.id,
+      type: "competitor_web",
+      competitorId: rival.id,
+      url: "https://a.com/blog",
+      label: "Blog",
+    });
+
+    const run = vi.fn(async (source: Source) => {
+      if (source.url === "https://a.com/changelog") throw new Error("boom");
+      return { written: 1, dropped: 0, baseline: false };
+    });
+
+    await expect(sweepCompetitorSources({ runSource: run })).resolves.toBeUndefined();
+    const urlsCalled = run.mock.calls.map(([source]) => source.url);
+    expect(urlsCalled).toContain("https://a.com/changelog");
+    expect(urlsCalled).toContain("https://a.com/blog");
   });
 });
 ```
 
 - [ ] **Step 2: Implement the sweep**
 
-Select `competitor_web` sources whose status is not `disabled`. The candidate select gets its own try/catch that logs and returns — a sweep that throws would reject the cron handler and undo the steps that already succeeded.
+Select `competitor_web` sources whose status is not `disabled`, ordered by `last_run_at ASC NULLS FIRST` — never-run sources first, then least-recently-run, so a select with no `ORDER BY` doesn't leave candidate order (and therefore which rows a cut-short sweep never reaches) to chance. The candidate select gets its own try/catch that logs and returns — a sweep that throws would reject the cron handler and undo the steps that already succeeded.
 
 **Then wrap each individual `runSource` call in its own try/catch that logs and continues — per source, not per tenant.** `resolve-sweep.ts` isolates per tenant only because it makes exactly one call per tenant; there is no finer granularity available in that file. Here each tenant has N sources and N calls, so the choice is real, and one competitor's broken site must not stop the same tenant's other competitors from being polled for a whole day. The shipped-work reconciler hit this identical question and was corrected the same way.
 
