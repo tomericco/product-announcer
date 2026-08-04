@@ -298,9 +298,18 @@ describe("extractBlocks", () => {
   });
 
   it("is insensitive to trailing whitespace changes, so reformatting is not a new block", () => {
-    const [a] = extractBlocks("A changelog line with enough text to count.   \n\nnext");
-    const [b] = extractBlocks("A changelog line with enough text to count.\n\nnext");
-    expect(a.hash).toBe(b.hash);
+    // Two lines on purpose, with the padding on the FIRST one. A single-line
+    // fixture cannot fail: the outer trim strips it regardless, so the test
+    // would pass even with the per-line normalization deleted — which is the
+    // regression this test exists to catch.
+    const [padded] = extractBlocks("Line one with padding.   \nLine two of the same block.\n\nnext");
+    const [plain] = extractBlocks("Line one with padding.\nLine two of the same block.\n\nnext");
+    expect(padded.hash).toBe(plain.hash);
+  });
+
+  it("drops a heading with no body, and keeps the one that has content", () => {
+    const blocks = extractBlocks("## First\n## Second\nA section with enough body text to count.");
+    expect(blocks.map((b) => b.title)).toEqual(["## Second"]);
   });
 
   it("drops nav-sized fragments while keeping a real changelog line", () => {
