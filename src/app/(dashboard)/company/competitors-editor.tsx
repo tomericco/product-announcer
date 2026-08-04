@@ -5,17 +5,95 @@ import { useRouter } from "next/navigation";
 import { Plus, Search } from "lucide-react";
 import { toast } from "sonner";
 import { addCompetitorAction, discoverSourcesAction, removeCompetitorAction } from "./actions";
-import type { Competitor } from "@/db/schema";
+import type { Competitor, Source } from "@/db/schema";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
+import { ConnectedIndicator } from "../integrations/connected-indicator";
+
+// Pinned locale + UTC, matching signal-row.tsx's DATE_FORMAT: an unpinned
+// toLocaleString() renders differently on the server and the client and
+// breaks hydration.
+const DATE_FORMAT = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  day: "numeric",
+  year: "numeric",
+  timeZone: "UTC",
+});
+
+const STATUS_LABEL: Record<Source["status"], string> = {
+  active: "Active",
+  failing: "Failing",
+  disabled: "Disabled",
+};
+
+function SourceStatusBadge({ status }: { status: Source["status"] }) {
+  if (status === "active") return <ConnectedIndicator label="Active" />;
+  return <Badge variant={status === "failing" ? "destructive" : "outline"}>{STATUS_LABEL[status]}</Badge>;
+}
+
+/**
+ * One watched page's health: status, when it last ran successfully, whether
+ * an agent-facing variant was found (the daily agent prefers it when
+ * present), and its error when the last run failed. Follows the Notion/
+ * Webflow integration cards' tone -- a status badge in the header slot, the
+ * error surfaced as text rather than only logged -- rather than inventing a
+ * new treatment for source health specifically.
+ *
+ * A source with no `lastRunAt` hasn't been swept yet (it was just
+ * discovered); the card-level note above the competitors list is what
+ * explains that its first run, once it happens, is a silent baseline.
+ */
+function SourceHealth({ source }: { source: Source }) {
+  return (
+    <li className="rounded-md border border-dashed p-2 text-xs">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
+          {source.url ? (
+            <a
+              href={source.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="truncate font-medium hover:underline"
+            >
+              {source.label}
+            </a>
+          ) : (
+            <span className="truncate font-medium">{source.label}</span>
+          )}
+          <p className="text-muted-foreground">
+            {source.agentUrl ? "Agent-facing page found" : "No agent-facing page found — reading the regular page"}
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <span className="text-muted-foreground">
+            {source.lastSuccessAt ? `Last ran ${DATE_FORMAT.format(source.lastSuccessAt)}` : "Not run yet"}
+          </span>
+          <SourceStatusBadge status={source.status} />
+        </div>
+      </div>
+      {source.lastError && <p className="mt-1 text-destructive">{source.lastError}</p>}
+    </li>
+  );
+}
 
 /**
  * Renders straight off the `competitors` prop with no local copy of the list,
  * unlike PersonasEditor next door -- add and remove both revalidate `/company`
  * and call router.refresh(), which re-renders this component with the fresh
  * list from the server. Only the add-form's own inputs are local state.
+ *
+ * `sourcesByCompetitor` is likewise server-derived and indexed by competitor
+ * id -- see the grouping comment in page.tsx for why the grouping happens
+ * there rather than here.
  */
-export function CompetitorsEditor({ competitors }: { competitors: Competitor[] }) {
+export function CompetitorsEditor({
+  competitors,
+  sourcesByCompetitor,
+}: {
+  competitors: Competitor[];
+  sourcesByCompetitor: Record<string, Source[]>;
+}) {
   const [name, setName] = useState("");
   const [websiteUrl, setWebsiteUrl] = useState("");
   const [adding, setAdding] = useState(false);
@@ -86,37 +164,49 @@ export function CompetitorsEditor({ competitors }: { competitors: Competitor[] }
         <p className="text-xs text-muted-foreground">No competitors yet.</p>
       ) : (
         <ul className="space-y-2">
-          {competitors.map((c) => (
-            <li key={c.id} className="flex items-center justify-between gap-2 rounded-md border p-3">
-              <div className="min-w-0">
-                <p className="truncate text-sm font-medium">{c.name}</p>
-                {c.websiteUrl && <p className="truncate text-xs text-muted-foreground">{c.websiteUrl}</p>}
-              </div>
-              <div className="flex shrink-0 items-center gap-1">
-                {c.websiteUrl && (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    disabled={discoveringId === c.id}
-                    onClick={() => discover(c.id)}
-                  >
-                    <Search className="size-4" />
-                    {discoveringId === c.id ? "Searching…" : "Find pages to watch"}
-                  </Button>
+          {competitors.map((c) => {
+            const sources = sourcesByCompetitor[c.id] ?? [];
+            return (
+              <li key={c.id} className="flex flex-col gap-2 rounded-md border p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium">{c.name}</p>
+                    {c.websiteUrl && <p className="truncate text-xs text-muted-foreground">{c.websiteUrl}</p>}
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1">
+                    {c.websiteUrl && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        disabled={discoveringId === c.id}
+                        onClick={() => discover(c.id)}
+                      >
+                        <Search className="size-4" />
+                        {discoveringId === c.id ? "Searching…" : "Find pages to watch"}
+                      </Button>
+                    )}
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      disabled={removingId === c.id}
+                      onClick={() => remove(c.id)}
+                    >
+                      Remove
+                    </Button>
+                  </div>
+                </div>
+                {sources.length > 0 && (
+                  <ul className="space-y-1.5 pl-1">
+                    {sources.map((source) => (
+                      <SourceHealth key={source.id} source={source} />
+                    ))}
+                  </ul>
                 )}
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  disabled={removingId === c.id}
-                  onClick={() => remove(c.id)}
-                >
-                  Remove
-                </Button>
-              </div>
-            </li>
-          ))}
+              </li>
+            );
+          })}
         </ul>
       )}
 

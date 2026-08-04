@@ -1,8 +1,9 @@
 import { db } from "@/db";
-import { systemPersonas } from "@/db/schema";
+import { systemPersonas, type Source } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { getOrCreateCompanyProfile } from "@/lib/workspace/company-profile";
 import { listCompetitors } from "@/lib/workspace/competitors";
+import { listCompetitorSources } from "@/lib/signals/sources";
 import { saveGuidelines } from "./actions";
 import { BrandStyleImport } from "./brand-style-import";
 import { CompanyContextForm } from "./company-context-form";
@@ -18,6 +19,15 @@ export default async function CompanyPage() {
   const session = await requireSession();
   const brandProfile = await getOrCreateCompanyProfile(session.user.tenantId);
   const competitors = await listCompetitors(session.user.tenantId);
+  const competitorSources = await listCompetitorSources(session.user.tenantId);
+  // Grouped here rather than in the client component so CompetitorsEditor
+  // never needs to know how sources relate to competitors -- it just indexes
+  // by the id it already has.
+  const sourcesByCompetitor: Record<string, Source[]> = {};
+  for (const source of competitorSources) {
+    if (!source.competitorId) continue;
+    (sourcesByCompetitor[source.competitorId] ??= []).push(source);
+  }
   const personaCatalog = await db
     .select({
       key: systemPersonas.key,
@@ -78,10 +88,14 @@ export default async function CompanyPage() {
       <Card>
         <CardHeader>
           <CardTitle>Competitors</CardTitle>
-          <CardDescription>Who you&apos;re up against. The bootstrap above proposes some; add more by hand.</CardDescription>
+          <CardDescription>
+            Who you&apos;re up against. The bootstrap above proposes some; add more by hand. A newly discovered
+            source&apos;s first run only records a baseline of what&apos;s already published — it produces nothing
+            until the competitor posts something new.
+          </CardDescription>
         </CardHeader>
         <CardContent>
-          <CompetitorsEditor competitors={competitors} />
+          <CompetitorsEditor competitors={competitors} sourcesByCompetitor={sourcesByCompetitor} />
         </CardContent>
       </Card>
 

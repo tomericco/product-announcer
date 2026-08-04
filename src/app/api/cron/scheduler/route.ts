@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { retryFailedDeliveries } from "@/lib/publishing/dispatch";
 import { sweepUnresolvedEvents } from "@/lib/change-events/resolve-sweep";
 import { syncShippedWorkSignals } from "@/lib/signals/shipped-work";
+import { sweepCompetitorSources } from "@/lib/signals/sweep";
 
 export async function GET(request: NextRequest) {
   const authHeader = request.headers.get("authorization");
@@ -10,14 +11,17 @@ export async function GET(request: NextRequest) {
   }
 
   // The cadence scheduler was retired with the content hub pivot — auto-composing
-  // drafts is autopilot, and the model is human-gated. Spec 3 adds the source-agent
-  // sweep here and spec 5 adds the ideation run. Delivery retries and event
-  // resolution are unrelated to cadence and keep running meanwhile.
+  // drafts is autopilot, and the model is human-gated. Spec 5 adds the ideation
+  // run. Delivery retries and event resolution are unrelated to cadence and keep
+  // running meanwhile.
   await retryFailedDeliveries();
   await sweepUnresolvedEvents();
   // Must run after the sweep above: that sweep can create atomic updates on
   // this same run, and the reconciler needs to see them.
   await syncShippedWorkSignals();
+  // Runs after the shipped-work reconcile so a single cron run leaves the
+  // signals table consistent before the competitor agent adds to it.
+  await sweepCompetitorSources();
 
   return NextResponse.json({ ok: true });
 }

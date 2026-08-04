@@ -10,10 +10,16 @@ vi.mock("../../../../../src/lib/change-events/resolve-sweep", () => ({ sweepUnre
 // window, it could race that assertion. Nothing here should ever exercise the
 // real reconciler; that's what `tests/lib/signals/shipped-work.test.ts` is for.
 vi.mock("../../../../../src/lib/signals/shipped-work", () => ({ syncShippedWorkSignals: vi.fn() }));
+// Must be mocked for the same reason: the real `sweepCompetitorSources` is an
+// unscoped, cross-tenant sweep against the shared test database. Its own
+// isolation is covered by `tests/lib/signals/sweep.test.ts`; nothing here
+// should ever exercise the real sweep.
+vi.mock("../../../../../src/lib/signals/sweep", () => ({ sweepCompetitorSources: vi.fn() }));
 
 import { retryFailedDeliveries } from "../../../../../src/lib/publishing/dispatch";
 import { sweepUnresolvedEvents } from "../../../../../src/lib/change-events/resolve-sweep";
 import { syncShippedWorkSignals } from "../../../../../src/lib/signals/shipped-work";
+import { sweepCompetitorSources } from "../../../../../src/lib/signals/sweep";
 import { GET } from "../../../../../src/app/api/cron/scheduler/route";
 
 function request(authorization?: string) {
@@ -33,6 +39,7 @@ describe("GET /api/cron/scheduler", () => {
     vi.mocked(retryFailedDeliveries).mockReset().mockResolvedValue(undefined);
     vi.mocked(sweepUnresolvedEvents).mockReset().mockResolvedValue(undefined);
     vi.mocked(syncShippedWorkSignals).mockReset().mockResolvedValue(undefined);
+    vi.mocked(sweepCompetitorSources).mockReset().mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -45,6 +52,7 @@ describe("GET /api/cron/scheduler", () => {
     expect(retryFailedDeliveries).not.toHaveBeenCalled();
     expect(sweepUnresolvedEvents).not.toHaveBeenCalled();
     expect(syncShippedWorkSignals).not.toHaveBeenCalled();
+    expect(sweepCompetitorSources).not.toHaveBeenCalled();
   });
 
   it("returns 401 and runs nothing when the bearer token is wrong", async () => {
@@ -53,18 +61,20 @@ describe("GET /api/cron/scheduler", () => {
     expect(retryFailedDeliveries).not.toHaveBeenCalled();
     expect(sweepUnresolvedEvents).not.toHaveBeenCalled();
     expect(syncShippedWorkSignals).not.toHaveBeenCalled();
+    expect(sweepCompetitorSources).not.toHaveBeenCalled();
   });
 
-  it("returns 200 and runs the delivery retry, event sweep, and shipped-work sync when the bearer token matches CRON_SECRET", async () => {
+  it("returns 200 and runs the delivery retry, event sweep, shipped-work sync, and competitor sweep when the bearer token matches CRON_SECRET", async () => {
     const res = await GET(request("Bearer test-cron-secret") as never);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
     expect(retryFailedDeliveries).toHaveBeenCalledTimes(1);
     expect(sweepUnresolvedEvents).toHaveBeenCalledTimes(1);
     expect(syncShippedWorkSignals).toHaveBeenCalledTimes(1);
+    expect(sweepCompetitorSources).toHaveBeenCalledTimes(1);
   });
 
-  it("runs the shipped-work sync after the event sweep, since the sweep can create atomic updates the reconciler must see", async () => {
+  it("runs the shipped-work sync after the event sweep, and the competitor sweep after the shipped-work sync, since each step depends on the previous one having landed", async () => {
     const order: string[] = [];
     vi.mocked(sweepUnresolvedEvents).mockImplementation(async () => {
       order.push("sweepUnresolvedEvents");
@@ -72,9 +82,12 @@ describe("GET /api/cron/scheduler", () => {
     vi.mocked(syncShippedWorkSignals).mockImplementation(async () => {
       order.push("syncShippedWorkSignals");
     });
+    vi.mocked(sweepCompetitorSources).mockImplementation(async () => {
+      order.push("sweepCompetitorSources");
+    });
 
     await GET(request("Bearer test-cron-secret") as never);
 
-    expect(order).toEqual(["sweepUnresolvedEvents", "syncShippedWorkSignals"]);
+    expect(order).toEqual(["sweepUnresolvedEvents", "syncShippedWorkSignals", "sweepCompetitorSources"]);
   });
 });
