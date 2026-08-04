@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { sql } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
 import { sources, type Source } from "@/db/schema";
 import { fetchPageText, extractSameOriginLinks, type PageResult } from "@/lib/workspace/fetch-page";
@@ -45,12 +45,27 @@ function labelFor(keyword: string): string {
  * variant (a `.md` page, or the site's llms.txt) so the daily agent can
  * prefer it at fetch time instead of re-probing every run.
  *
- * Idempotent: re-running tops up rather than duplicating, via the same
- * onConflictDoNothing-then-reselect shape `addCompetitor` uses against
- * `competitors_tenant_name_unique`. A candidate page that fails to fetch is
- * skipped, matching `crawlCompanySite`'s "one broken link isn't fatal"
- * precedent -- and skipped candidates are not replaced from further down the
- * ranking, so a competitor can end up with fewer than three sources.
+ * Idempotent: re-running tops up rather than duplicating, an
+ * onConflictDoUpdate against `sources_tenant_url_unique` rather than a plain
+ * insert. It backfills `agentUrl` on conflict -- the same precedent
+ * `addCompetitor` set for backfilling `websiteUrl` -- but only in the
+ * direction that can't lose information: a fresh non-null probe replaces
+ * whatever was there (a competitor moving their llms.txt is followed), while
+ * a fresh null (this run's probe found nothing) leaves the existing value
+ * alone rather than clearing it. Without that asymmetry, a single transient
+ * probe failure on a re-run would silently downgrade an already-working
+ * agent-facing source back to HTML scraping. Nothing else -- `label`,
+ * `watermark`, `status`, and the run-history columns -- is touched on
+ * conflict; those belong to the agent's run history, and a re-discovery
+ * must not reset them and make an existing source look freshly added.
+ *
+ * A candidate page that fails to fetch is skipped, matching
+ * `crawlCompanySite`'s "one broken link isn't fatal" precedent -- and
+ * skipped candidates are not replaced from further down the ranking, so a
+ * competitor can end up with fewer than three sources. Deliberate: chasing
+ * a replacement means more requests against a third party for a page they
+ * may not have, and discovery is re-runnable, so under-delivering quietly
+ * beats hammering a competitor's site.
  *
  * Every fetch -- the homepage, each candidate page, and every probe
  * `probeAgentPage` makes -- goes through the injected `fetchPage`. A
@@ -83,28 +98,25 @@ export async function discoverCompetitorSources(
     const agentUrl = await probeAgentPage(href, { fetchPage });
     const label = labelFor(PAGE_KEYWORDS[matchedRank]);
 
-    const [inserted] = await database
+    const [source] = await database
       .insert(sources)
       .values({ tenantId, competitorId, type: "competitor_web", url: href, agentUrl, label })
-      .onConflictDoNothing({
+      .onConflictDoUpdate({
         target: [sources.tenantId, sources.url],
         // Mirrors the partial index's predicate (sources_tenant_url_unique is
         // only defined where url IS NOT NULL) -- Postgres won't infer a
         // partial index as the ON CONFLICT arbiter unless the predicate is
         // restated here.
-        where: sql`${sources.url} IS NOT NULL`,
+        targetWhere: sql`${sources.url} IS NOT NULL`,
+        set: {
+          // `excluded.agent_url` is this run's freshly-probed value. Keep the
+          // existing column when this run found nothing (null) -- see the
+          // function doc for why a transient probe failure must not clear a
+          // working mapping.
+          agentUrl: sql`COALESCE(excluded.agent_url, ${sources.agentUrl})`,
+        },
       })
       .returning();
-
-    const source =
-      inserted ??
-      (
-        await database
-          .select()
-          .from(sources)
-          .where(and(eq(sources.tenantId, tenantId), eq(sources.url, href)))
-          .limit(1)
-      )[0];
 
     if (source) created.push(source);
   }

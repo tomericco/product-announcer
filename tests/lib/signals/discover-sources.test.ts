@@ -91,6 +91,43 @@ describe("discoverCompetitorSources", () => {
     expect(source.agentUrl).toBeNull();
   });
 
+  it("backfills agentUrl on re-discovery, and does not clear it when a later probe finds nothing", async () => {
+    const { tenant, rival } = await seed();
+    const withMd = {
+      "https://rival.com": page(`<a href="/changelog">Changelog</a>`, "https://rival.com"),
+      "https://rival.com/changelog": page("<html></html>", "https://rival.com/changelog"),
+      "https://rival.com/changelog.md": {
+        text: `# Changelog ${LONG}`,
+        html: `# Changelog ${LONG}`,
+        finalUrl: "https://rival.com/changelog.md",
+        contentType: "text/markdown",
+      } as PageResult,
+    };
+    const withoutMd = {
+      "https://rival.com": page(`<a href="/changelog">Changelog</a>`, "https://rival.com"),
+      "https://rival.com/changelog": page("<html></html>", "https://rival.com/changelog"),
+    };
+
+    // First discovery finds no agent page.
+    await discoverCompetitorSources(tenant.id, rival.id, "https://rival.com", {
+      fetchPage: fakeFetcher(withoutMd).fetchPage,
+    });
+    // The competitor publishes one; re-discovery picks it up.
+    await discoverCompetitorSources(tenant.id, rival.id, "https://rival.com", {
+      fetchPage: fakeFetcher(withMd).fetchPage,
+    });
+    let rows = await db.select().from(sources).where(eq(sources.tenantId, tenant.id));
+    expect(rows).toHaveLength(1);
+    expect(rows[0].agentUrl).toBe("https://rival.com/changelog.md");
+
+    // A later probe failing must not throw the mapping away.
+    await discoverCompetitorSources(tenant.id, rival.id, "https://rival.com", {
+      fetchPage: fakeFetcher(withoutMd).fetchPage,
+    });
+    rows = await db.select().from(sources).where(eq(sources.tenantId, tenant.id));
+    expect(rows[0].agentUrl).toBe("https://rival.com/changelog.md");
+  });
+
   it("matches path SEGMENTS, so an article under /blog is not mistaken for the blog index", async () => {
     const { tenant, rival } = await seed();
     const { fetchPage, calls } = fakeFetcher({
