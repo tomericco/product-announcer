@@ -31,9 +31,9 @@ export type SweepCompetitorSourcesDeps = {
  * the sweep. So the try/catch is per *source*: one call's failure is logged
  * and the loop moves on, both within a tenant and across tenants. This is
  * the same isolation argument the shipped-work reconciler's per-row rewrite
- * made earlier in this series. Grouping by tenant is kept anyway, purely to
- * make the log line legible (which tenant a failing source belongs to) --
- * it carries no isolation behavior of its own.
+ * made earlier in this series. No per-tenant grouping is needed to get a
+ * tenant-labeled log line -- every `Source` already carries its own
+ * `tenantId` -- so this is a single flat loop over the candidates.
  *
  * `runCompetitorSource` itself doesn't throw for the failures it expects
  * (an unreachable page, a failed write) -- those are caught internally and
@@ -55,28 +55,14 @@ export async function sweepCompetitorSources(deps: SweepCompetitorSourcesDeps = 
     return;
   }
 
-  if (candidates.length === 0) return;
-
-  const byTenant = new Map<string, Source[]>();
   for (const source of candidates) {
-    const list = byTenant.get(source.tenantId);
-    if (list) {
-      list.push(source);
-    } else {
-      byTenant.set(source.tenantId, [source]);
-    }
-  }
-
-  for (const [tenantId, tenantSources] of byTenant) {
-    for (const source of tenantSources) {
-      try {
-        await runSource(source, { database });
-      } catch (error) {
-        // One source's failure must not stop this tenant's other sources,
-        // or any other tenant's -- see the function doc for why this is
-        // per-source rather than per-tenant.
-        console.error(`[sweep] failed for source ${source.id} (tenant ${tenantId}):`, error);
-      }
+    try {
+      await runSource(source, { database });
+    } catch (error) {
+      // One source's failure must not stop this tenant's other sources, or
+      // any other tenant's -- see the function doc for why this is
+      // per-source rather than per-tenant.
+      console.error(`[sweep] failed for source ${source.id} (tenant ${source.tenantId}):`, error);
     }
   }
 }

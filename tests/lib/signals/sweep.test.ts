@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, competitors, sources } from "../../../src/db/schema";
+import { tenants, competitors, sources, type Source } from "../../../src/db/schema";
 import { sweepCompetitorSources } from "../../../src/lib/signals/sweep";
 
 const A = "Sweep Test Tenant A";
@@ -26,35 +26,49 @@ afterEach(async () => {
 });
 
 describe("sweepCompetitorSources", () => {
+  // The candidate select is unscoped by design (that's what makes it a
+  // sweep), so `run` sees every competitor_web source live in the shared
+  // test database while these tests run in parallel with other files that
+  // seed their own -- `discover-sources.test.ts` and
+  // `competitor-agent.test.ts` both insert real active sources with no
+  // rollback wrapper. Asserting raw call counts or "never called" would be
+  // racy against that traffic. Every assertion below is instead scoped to
+  // the rows this test itself seeded, by inspecting the arguments `run`
+  // received rather than how many times it fired.
+
   it("one tenant's failure does not stop another tenant's sources", async () => {
     const tenantA = await seedTenantWithSource(A, "https://a.com/changelog");
     await seedTenantWithSource(B, "https://b.com/changelog");
 
-    const run = vi.fn(async (source: { tenantId: string }) => {
+    const run = vi.fn(async (source: Source) => {
       if (source.tenantId === tenantA.id) throw new Error("boom");
       return { written: 1, dropped: 0, baseline: false };
     });
 
     await expect(sweepCompetitorSources({ runSource: run })).resolves.toBeUndefined();
-    expect(run).toHaveBeenCalledTimes(2);
+    const urlsCalled = run.mock.calls.map(([source]) => source.url);
+    expect(urlsCalled).toContain("https://a.com/changelog");
+    expect(urlsCalled).toContain("https://b.com/changelog");
   });
 
   it("skips disabled sources", async () => {
     const tenant = await seedTenantWithSource(A, "https://a.com/changelog");
     await db.update(sources).set({ status: "disabled" }).where(eq(sources.tenantId, tenant.id));
 
-    const run = vi.fn(async () => ({ written: 0, dropped: 0, baseline: false }));
+    const run = vi.fn(async (_source: Source) => ({ written: 0, dropped: 0, baseline: false }));
     await sweepCompetitorSources({ runSource: run });
-    expect(run).not.toHaveBeenCalled();
+    const tenantsCalled = run.mock.calls.map(([source]) => source.tenantId);
+    expect(tenantsCalled).not.toContain(tenant.id);
   });
 
   it("still runs sources previously marked failing, so they can recover", async () => {
     const tenant = await seedTenantWithSource(A, "https://a.com/changelog");
     await db.update(sources).set({ status: "failing" }).where(eq(sources.tenantId, tenant.id));
 
-    const run = vi.fn(async () => ({ written: 0, dropped: 0, baseline: false }));
+    const run = vi.fn(async (_source: Source) => ({ written: 0, dropped: 0, baseline: false }));
     await sweepCompetitorSources({ runSource: run });
-    expect(run).toHaveBeenCalledTimes(1);
+    const tenantsCalled = run.mock.calls.map(([source]) => source.tenantId);
+    expect(tenantsCalled).toContain(tenant.id);
   });
 
   it("one source's failure does not stop the same tenant's other sources", async () => {
@@ -68,12 +82,14 @@ describe("sweepCompetitorSources", () => {
       label: "Blog",
     });
 
-    const run = vi.fn(async (source: { url: string | null }) => {
+    const run = vi.fn(async (source: Source) => {
       if (source.url === "https://a.com/changelog") throw new Error("boom");
       return { written: 1, dropped: 0, baseline: false };
     });
 
     await expect(sweepCompetitorSources({ runSource: run })).resolves.toBeUndefined();
-    expect(run).toHaveBeenCalledTimes(2);
+    const urlsCalled = run.mock.calls.map(([source]) => source.url);
+    expect(urlsCalled).toContain("https://a.com/changelog");
+    expect(urlsCalled).toContain("https://a.com/blog");
   });
 });
