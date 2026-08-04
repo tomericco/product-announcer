@@ -148,8 +148,15 @@ export function CompetitorsEditor({
             ? `Found ${result.count} page${result.count === 1 ? "" : "s"} to watch`
             : "No changelog, blog, or release-notes pages found"
         );
-      } else {
+      } else if (result.reason === "no-website") {
         toast.error("Add a website first");
+      } else if (result.reason === "not-found") {
+        toast.error("Couldn't find that competitor — try refreshing the page");
+      } else {
+        // "invalid-id" or any other unrecognized reason: not something the
+        // shown competitor list can produce through normal use, so it's
+        // treated the same as the discovery request itself failing below.
+        toast.error("Couldn't search that site — try again");
       }
     } catch {
       toast.error("Couldn't search that site — try again");
