@@ -2,7 +2,19 @@ import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 
 export type PageError = "invalid-url" | "blocked" | "fetch-failed" | "insufficient-content";
-export type PageResult = { text: string; html: string } | { error: PageError };
+export type PageResult =
+  | {
+      text: string;
+      html: string;
+      // Where the fetch actually landed after following redirects. For
+      // recording and relative-link resolution only -- the same-origin check
+      // in crawlCompanySite must keep anchoring on the requested URL, not
+      // this, so a homepage redirecting to a hostile host can't steer the
+      // crawl onto that host's links.
+      finalUrl: string;
+      contentType: string;
+    }
+  | { error: PageError };
 
 export type ResolveHost = (hostname: string) => Promise<string[]>;
 
@@ -111,19 +123,47 @@ async function readBodyCapped(res: Response, maxBytes: number): Promise<string> 
 }
 
 export function htmlToText(html: string): string {
-  return html
+  // Collapse all source whitespace (including real newlines) to single spaces
+  // *before* block boundaries are turned into structural newlines below, so a
+  // literal line break inside a single block (e.g. a <p> wrapped mid-tag in
+  // the source) isn't mistaken for a paragraph break.
+  const withoutScripts = html
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
     .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
     .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, " ")
+    .replace(/\s+/g, " ");
+
+  // Only these closing tags (and <br>) become line breaks -- they are the
+  // block-level boundaries later per-item extraction splits on. Everything
+  // else (inline tags, opening tags) still strips to a plain space.
+  const withBlockBreaks = withoutScripts
+    .replace(/<\/(p|div|li|h[1-6]|tr)>/gi, "\n")
+    .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<[^>]+>/g, " ")
     .replace(/&nbsp;/gi, " ")
     .replace(/&amp;/gi, "&")
     .replace(/&lt;/gi, "<")
     .replace(/&gt;/gi, ">")
     .replace(/&#39;|&apos;/gi, "'")
-    .replace(/&quot;/gi, '"')
-    .replace(/\s+/g, " ")
-    .trim();
+    .replace(/&quot;/gi, '"');
+
+  // Collapse inline whitespace within each line, trim each line, and squeeze
+  // runs of blank lines (including leading/trailing) down to none.
+  const lines: string[] = [];
+  let prevBlank = true;
+  for (const raw of withBlockBreaks.split("\n")) {
+    const line = raw.replace(/[ \t]+/g, " ").trim();
+    if (line === "") {
+      if (!prevBlank) lines.push("");
+      prevBlank = true;
+    } else {
+      lines.push(line);
+      prevBlank = false;
+    }
+  }
+  while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+
+  return lines.join("\n");
 }
 
 /**
@@ -175,7 +215,12 @@ export async function fetchPageText(
       if (!res.ok) return { error: "fetch-failed" };
 
       const contentType = res.headers.get("content-type") ?? "";
-      if (!contentType.includes("text/html") && !contentType.includes("text/plain")) return { error: "fetch-failed" };
+      if (
+        !contentType.includes("text/html") &&
+        !contentType.includes("text/plain") &&
+        !contentType.includes("text/markdown")
+      )
+        return { error: "fetch-failed" };
       if (Number(res.headers.get("content-length") ?? "0") > MAX_BYTES) return { error: "fetch-failed" };
 
       // Hard cap the body read itself (not just this fast-path check above),
@@ -192,9 +237,13 @@ export async function fetchPageText(
         // extractSameOriginLinks on this same PageResult.html) the link
         // extractor. See MAX_SCAN_CHARS above for why.
         const scanned = html.slice(0, MAX_SCAN_CHARS);
-        const text = htmlToText(scanned).slice(0, MAX_TEXT_CHARS);
+        // Only HTML goes through the tag stripper. A markdown or plain-text
+        // body is already text, and running htmlToText over it would destroy
+        // exactly the line structure the block splitter needs.
+        const isHtml = contentType.includes("text/html");
+        const text = (isHtml ? htmlToText(scanned) : scanned).slice(0, MAX_TEXT_CHARS);
         if (text.length < MIN_TEXT_CHARS) return { error: "insufficient-content" };
-        return { text, html: scanned };
+        return { text, html: scanned, finalUrl: current.toString(), contentType };
       } catch {
         return { error: "fetch-failed" };
       }

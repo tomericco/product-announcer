@@ -4,12 +4,37 @@ import { fetchPageText, htmlToText, extractSameOriginLinks } from "../../../src/
 function htmlResponse(body: string, headers: Record<string, string> = {}) {
   return new Response(body, { status: 200, headers: { "content-type": "text/html", ...headers } });
 }
+function textResponse(body: string, contentType: string) {
+  return new Response(body, { status: 200, headers: { "content-type": contentType } });
+}
 const publicResolve = async () => ["93.184.216.34"]; // example.com, public
 
 describe("htmlToText", () => {
   it("strips scripts/styles/tags and collapses whitespace", () => {
     const out = htmlToText("<style>a{}</style><h1>Hi</h1><script>x()</script><p>We&nbsp;shipped &amp; fixed.</p>");
-    expect(out).toBe("Hi We shipped & fixed.");
+    expect(out).toBe("Hi\nWe shipped & fixed.");
+  });
+});
+
+describe("htmlToText — block structure", () => {
+  it("turns block-level boundaries into newlines instead of spaces", () => {
+    const html = `<h2>v2.4.0</h2><p>Added SSO.</p><ul><li>One</li><li>Two</li></ul>`;
+    const text = htmlToText(html);
+    expect(text.split("\n").map((l) => l.trim()).filter(Boolean)).toEqual([
+      "v2.4.0",
+      "Added SSO.",
+      "One",
+      "Two",
+    ]);
+  });
+
+  it("still collapses runs of inline whitespace within a block", () => {
+    expect(htmlToText("<p>a   \n  b</p>")).toBe("a b");
+  });
+
+  it("does not emit blank-line runs for nested block tags", () => {
+    const text = htmlToText("<div><div><p>only</p></div></div>");
+    expect(text).toBe("only");
   });
 });
 
@@ -49,6 +74,20 @@ describe("fetchPageText", () => {
     expect(result).toEqual({ error: "blocked" });
   });
 
+  it("follows a redirect to a public host and reports finalUrl as where the fetch landed", async () => {
+    const body = "<html><body><h1>Changelog</h1>" + "<p>We shipped a great new dashboard and fixed export bugs.</p>".repeat(6) + "</body></html>";
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: "https://www.acme.com/changelog" } }))
+      .mockResolvedValueOnce(htmlResponse(body));
+    const result = await fetchPageText("https://acme.com/changelog", {
+      fetchImpl: fetchImpl as never,
+      resolveHost: publicResolve,
+    });
+    if ("error" in result) throw new Error("expected success");
+    expect(result.finalUrl).toBe("https://www.acme.com/changelog");
+  });
+
   it("returns insufficient-content when too little text is extracted", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(htmlResponse("<html><body>hi</body></html>"));
     const result = await fetchPageText("https://acme.com/changelog", { fetchImpl: fetchImpl as never, resolveHost: publicResolve });
@@ -58,6 +97,32 @@ describe("fetchPageText", () => {
   it("rejects a non-HTML content-type", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(new Response("{}", { status: 200, headers: { "content-type": "application/json" } }));
     const result = await fetchPageText("https://acme.com/api", { fetchImpl: fetchImpl as never, resolveHost: publicResolve });
+    expect(result).toEqual({ error: "fetch-failed" });
+  });
+
+  it("accepts text/markdown and returns the body unflattened", async () => {
+    // llms.txt and .md variants are usually served as text/markdown. The old
+    // allowlist rejected them outright, and htmlToText would have flattened
+    // the newlines that block-splitting depends on.
+    const body = "# Changelog\n\n## v2.4.0\n\n- SSO for all plans\n" + "- Filler line to clear MIN_TEXT_CHARS.\n".repeat(6);
+    const fetchImpl = vi.fn().mockResolvedValue(textResponse(body, "text/markdown"));
+    const result = await fetchPageText("https://acme.com/llms.txt", {
+      fetchImpl: fetchImpl as never,
+      resolveHost: publicResolve,
+    });
+
+    if ("error" in result) throw new Error("expected success");
+    expect(result.contentType).toContain("text/markdown");
+    expect(result.text).toContain("## v2.4.0");
+    expect(result.text.split("\n").length).toBeGreaterThan(1);
+  });
+
+  it("still rejects a content type that is neither html, plain, nor markdown", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(textResponse("%PDF-1.4", "application/pdf"));
+    const result = await fetchPageText("https://acme.com/x.pdf", {
+      fetchImpl: fetchImpl as never,
+      resolveHost: publicResolve,
+    });
     expect(result).toEqual({ error: "fetch-failed" });
   });
 

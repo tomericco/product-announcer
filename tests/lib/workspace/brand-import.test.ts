@@ -15,7 +15,12 @@ describe("importBrandStyleForTenant", () => {
     const [tenant] = await db.insert(tenants).values({ name: NAME }).returning();
 
     const result = await importBrandStyleForTenant(tenant.id, "https://acme.com/changelog", {
-      scrape: async () => ({ text: "changelog text", html: "<html><body>changelog text</body></html>" }),
+      scrape: async () => ({
+        text: "changelog text",
+        html: "<html><body>changelog text</body></html>",
+        finalUrl: "https://acme.com/changelog",
+        contentType: "text/html",
+      }),
       analyze: async () => ({
         guidelines: "## Voice and tone\n\nFriendly and plain.\n\n## Don't\n\n- No hype.",
         industry: "SaaS",
@@ -37,7 +42,12 @@ describe("importBrandStyleForTenant", () => {
     });
 
     const result = await importBrandStyleForTenant(tenant.id, "https://acme.com/changelog", {
-      scrape: async () => ({ text: "changelog text", html: "<html><body>changelog text</body></html>" }),
+      scrape: async () => ({
+        text: "changelog text",
+        html: "<html><body>changelog text</body></html>",
+        finalUrl: "https://acme.com/changelog",
+        contentType: "text/html",
+      }),
       analyze: async () => ({ guidelines: null, industry: "SaaS" }),
     });
 
@@ -51,7 +61,12 @@ describe("importBrandStyleForTenant", () => {
     const [tenant] = await db.insert(tenants).values({ name: NAME }).returning();
 
     const result = await importBrandStyleForTenant(tenant.id, "https://acme.com/changelog", {
-      scrape: async () => ({ text: "changelog text", html: "<html><body>changelog text</body></html>" }),
+      scrape: async () => ({
+        text: "changelog text",
+        html: "<html><body>changelog text</body></html>",
+        finalUrl: "https://acme.com/changelog",
+        contentType: "text/html",
+      }),
       analyze: async () => ({ guidelines: null, industry: null }),
     });
 
@@ -64,7 +79,12 @@ describe("importBrandStyleForTenant", () => {
     const [tenant] = await db.insert(tenants).values({ name: NAME }).returning();
 
     const result = await importBrandStyleForTenant(tenant.id, "https://acme.com/changelog", {
-      scrape: async () => ({ text: "changelog text", html: "<html><body>changelog text</body></html>" }),
+      scrape: async () => ({
+        text: "changelog text",
+        html: "<html><body>changelog text</body></html>",
+        finalUrl: "https://acme.com/changelog",
+        contentType: "text/html",
+      }),
       analyze: async () => ({ guidelines: "   ", industry: "" }),
     });
 
