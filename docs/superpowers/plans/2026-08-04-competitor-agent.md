@@ -979,7 +979,9 @@ describe("sweepCompetitorSources", () => {
 
 - [ ] **Step 2: Implement the sweep**
 
-Select `competitor_web` sources whose status is not `disabled`, group per tenant, run each tenant's sources inside its own try/catch that logs and continues. **Read `src/lib/change-events/resolve-sweep.ts` and match it** — the candidate select gets its own try/catch that logs and returns, because a sweep that throws would reject the cron handler and undo the steps that already succeeded.
+Select `competitor_web` sources whose status is not `disabled`. The candidate select gets its own try/catch that logs and returns — a sweep that throws would reject the cron handler and undo the steps that already succeeded.
+
+**Then wrap each individual `runSource` call in its own try/catch that logs and continues — per source, not per tenant.** `resolve-sweep.ts` isolates per tenant only because it makes exactly one call per tenant; there is no finer granularity available in that file. Here each tenant has N sources and N calls, so the choice is real, and one competitor's broken site must not stop the same tenant's other competitors from being polled for a whole day. The shipped-work reconciler hit this identical question and was corrected the same way.
 
 - [ ] **Step 3: Wire the cron and update its test**
 
