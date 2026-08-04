@@ -56,4 +56,24 @@ describe("sweepCompetitorSources", () => {
     await sweepCompetitorSources({ runSource: run });
     expect(run).toHaveBeenCalledTimes(1);
   });
+
+  it("one source's failure does not stop the same tenant's other sources", async () => {
+    const tenant = await seedTenantWithSource(A, "https://a.com/changelog");
+    const [rival] = await db.select().from(competitors).where(eq(competitors.tenantId, tenant.id));
+    await db.insert(sources).values({
+      tenantId: tenant.id,
+      type: "competitor_web",
+      competitorId: rival.id,
+      url: "https://a.com/blog",
+      label: "Blog",
+    });
+
+    const run = vi.fn(async (source: { url: string | null }) => {
+      if (source.url === "https://a.com/changelog") throw new Error("boom");
+      return { written: 1, dropped: 0, baseline: false };
+    });
+
+    await expect(sweepCompetitorSources({ runSource: run })).resolves.toBeUndefined();
+    expect(run).toHaveBeenCalledTimes(2);
+  });
 });

@@ -16,13 +16,24 @@ export type SweepCompetitorSourcesDeps = {
  * instead of sitting red forever. Only a human setting `disabled` retires a
  * source for good.
  *
- * Structured like `resolve-sweep.ts`'s `sweepUnresolvedEvents`, which this
- * mirrors deliberately: the candidate select gets its own try/catch that
- * logs and returns, because a thrown error here would reject the whole cron
- * handler and undo the steps that ran before it. Candidates are then grouped
- * by tenant, and each tenant's sources run inside their own try/catch that
- * logs and continues -- one tenant's broken competitor site (or any other
- * unexpected failure) must not stop every other tenant's ingestion.
+ * The candidate select gets its own try/catch that logs and returns,
+ * matching `resolve-sweep.ts`'s `sweepUnresolvedEvents` -- a thrown error
+ * here would reject the whole cron handler and undo the steps that ran
+ * before it, and there's nothing to sweep if the select itself fails.
+ *
+ * Past that, this sweep's shape differs from `resolve-sweep.ts` on purpose:
+ * that sweep makes exactly one (internally-batched) call per tenant, so a
+ * single per-tenant try/catch is the finest granularity available. Here,
+ * a tenant can have several sources -- one competitor's changelog and
+ * another's blog -- and each gets its own `runSource` call. Wrapping a whole
+ * tenant's sources in one try/catch would let one broken competitor site
+ * stop every other competitor that same tenant is watching for the rest of
+ * the sweep. So the try/catch is per *source*: one call's failure is logged
+ * and the loop moves on, both within a tenant and across tenants. This is
+ * the same isolation argument the shipped-work reconciler's per-row rewrite
+ * made earlier in this series. Grouping by tenant is kept anyway, purely to
+ * make the log line legible (which tenant a failing source belongs to) --
+ * it carries no isolation behavior of its own.
  *
  * `runCompetitorSource` itself doesn't throw for the failures it expects
  * (an unreachable page, a failed write) -- those are caught internally and
@@ -57,13 +68,15 @@ export async function sweepCompetitorSources(deps: SweepCompetitorSourcesDeps = 
   }
 
   for (const [tenantId, tenantSources] of byTenant) {
-    try {
-      for (const source of tenantSources) {
+    for (const source of tenantSources) {
+      try {
         await runSource(source, { database });
+      } catch (error) {
+        // One source's failure must not stop this tenant's other sources,
+        // or any other tenant's -- see the function doc for why this is
+        // per-source rather than per-tenant.
+        console.error(`[sweep] failed for source ${source.id} (tenant ${tenantId}):`, error);
       }
-    } catch (error) {
-      // One tenant's failure must not starve the others in this sweep.
-      console.error(`[sweep] sweep failed for tenant ${tenantId}:`, error);
     }
   }
 }
