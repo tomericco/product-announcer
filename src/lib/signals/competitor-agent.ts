@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
 import { signals, sources, companyProfiles, tenants, type Source } from "@/db/schema";
-import { fetchPageText, type PageResult } from "@/lib/workspace/fetch-page";
+import { fetchPageText, MAX_TEXT_CHARS, type PageResult } from "@/lib/workspace/fetch-page";
 import { extractBlocks } from "@/lib/signals/agent-page";
 import { scoreRelevance, type RelevanceProfile, type ScorableItem, type ScoredItem, type RelevanceDeps } from "@/lib/signals/relevance";
 
@@ -29,17 +29,16 @@ const RELEVANCE_FLOOR = 0.3;
 
 // Caps how many hashes a source's watermark carries. Without a cap, a
 // long-running source's watermark grows without bound and every run reads and
-// rewrites an ever-larger JSON blob. Hashes are appended in block order as
-// they're confirmed seen, so slicing from the end keeps the most recent ~1000
-// and drops the oldest first.
+// rewrites an ever-larger JSON blob.
 //
-// Safe against FIFO-evicting a still-live hash only because `extractBlocks`'s
-// own `MAX_BLOCKS` (agent-page.ts) caps any single run to 500
-// concurrently-relevant hashes -- a 2x margin under this cap. Raise
-// `MAX_BLOCKS` without raising this in step and a long-lived source can start
-// seeing unchanged, still-present blocks look "new" again after eviction,
-// which is exactly the block-flood failure mode the baseline/watermark design
-// exists to avoid.
+// Ordering is last-seen, not insertion-order: every run, hashes still present
+// on the page (whether carried over from a prior run or newly confirmed this
+// run) are moved to the end of the list; hashes for content no longer on the
+// page keep their existing, older position. A block that keeps reappearing on
+// every run -- an intro paragraph, a subscribe blurb -- can therefore never be
+// evicted no matter how many other hashes accumulate after it. Only hashes
+// whose content has actually dropped off the page age toward the front and
+// get trimmed first once the cap is hit.
 const MAX_WATERMARK_HASHES = 1000;
 
 type Watermark = { seenHashes?: unknown };
@@ -117,7 +116,15 @@ export async function runCompetitorSource(source: Source, deps: CompetitorAgentD
     return { written: 0, dropped: 0, baseline: false };
   }
 
-  const blocks = extractBlocks(page.text);
+  const rawBlocks = extractBlocks(page.text);
+  // When the fetched text was truncated at MAX_TEXT_CHARS, the last block may
+  // be a fragment cut mid-sentence by the slice -- its hash is an artifact of
+  // where the cutoff landed, not a genuine change, and would otherwise be
+  // reported as a spurious signal (or watermarked and then look "new" again
+  // the moment the cutoff shifts). Drop it here rather than in extractBlocks,
+  // which is pure and has no idea its input was cut.
+  const wasTruncated = page.text.length === MAX_TEXT_CHARS;
+  const blocks = wasTruncated ? rawBlocks.slice(0, -1) : rawBlocks;
   const seenHashes = readSeenHashes(source.watermark);
   const isBaseline = seenHashes.length === 0;
 
@@ -173,7 +180,21 @@ export async function runCompetitorSource(source: Source, deps: CompetitorAgentD
           tenantId: source.tenantId,
           sourceId: source.id,
           kind: "competitor_move",
-          externalId: `${source.id}:${block.hash}`,
+          // Keyed on the fetched page's finalUrl, not source.id. A competitor
+          // with no per-page .md variant commonly has several sources (a
+          // changelog source, a blog source) all falling back to the same
+          // site-wide llms.txt -- discovery has no way to know that ahead of
+          // time, since it probes each candidate page independently. Keying
+          // on source.id would give those sources' identical fetched content
+          // different externalIds and write the same change N times. Keying
+          // on finalUrl (where the fetch actually landed, not the URL each
+          // source happens to be configured with) means two sources that
+          // land on the same content produce the same externalId, so the
+          // second write hits onConflictDoNothing and one real change yields
+          // one signal. The surviving row's sourceId is whichever source ran
+          // first; that's fine, since competitorId is correct either way and
+          // it's genuinely the same event.
+          externalId: `${page.finalUrl}:${block.hash}`,
           url: source.url,
           title: block.title,
           excerpt: block.text,
@@ -198,7 +219,15 @@ export async function runCompetitorSource(source: Source, deps: CompetitorAgentD
     }
   }
 
-  const mergedHashes = [...seenHashes, ...keptHashes].slice(-MAX_WATERMARK_HASHES);
+  // Last-seen ordering (see MAX_WATERMARK_HASHES above): hashes carried over
+  // from the previous watermark that are still present on this run's page
+  // move to the end, alongside the newly-kept hashes (also present, by
+  // definition). Hashes for content that has actually dropped off the page
+  // keep their old, earlier position and are what the cap below trims first.
+  const presentThisRun = new Set(blocks.map((b) => b.hash));
+  const stillPresent = seenHashes.filter((h) => presentThisRun.has(h));
+  const noLongerPresent = seenHashes.filter((h) => !presentThisRun.has(h));
+  const mergedHashes = [...noLongerPresent, ...stillPresent, ...keptHashes].slice(-MAX_WATERMARK_HASHES);
 
   // The run itself succeeded -- it fetched, extracted, and scored -- so this
   // stays `status: "active"` with `lastSuccessAt` set even when some writes

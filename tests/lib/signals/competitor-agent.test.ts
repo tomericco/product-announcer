@@ -3,7 +3,8 @@ import { and, eq } from "drizzle-orm";
 import { db } from "../../../src/db";
 import { tenants, competitors, sources, signals, companyProfiles } from "../../../src/db/schema";
 import { runCompetitorSource } from "../../../src/lib/signals/competitor-agent";
-import type { PageResult } from "../../../src/lib/workspace/fetch-page";
+import { extractBlocks } from "../../../src/lib/signals/agent-page";
+import { MAX_TEXT_CHARS, type PageResult } from "../../../src/lib/workspace/fetch-page";
 
 /**
  * A `db`-shaped object whose `insert` throws for the Nth call against
@@ -258,5 +259,143 @@ describe("runCompetitorSource", () => {
     expect(after.status).toBe("active");
     expect(after.lastError).toBeNull();
     expect(after.lastSuccessAt).not.toBeNull();
+  });
+
+  it("dedupes across two sources that fetch the same agentUrl, so one page change yields one signal, not two", async () => {
+    // The common configuration today: a competitor has no per-page .md
+    // variant, so discovery resolves both a "Changelog" source and a "Blog"
+    // source to the same site-wide llms.txt. Both get swept independently,
+    // both fetch and diff the same text -- without keying externalId on the
+    // fetched page rather than the source, this would write the same block
+    // twice, once attributed to each source.
+    // Not `seed()` -- it already inserts a source at
+    // https://rival.com/changelog for this tenant, which would collide with
+    // the sources this test creates below.
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    await db.insert(companyProfiles).values({
+      tenantId: tenant.id,
+      positioning: "Fast where incumbents are configurable.",
+      topics: ["issue tracking"],
+    });
+    const [rival] = await db.insert(competitors).values({ tenantId: tenant.id, name: "Rival" }).returning();
+    const sharedAgentUrl = "https://rival.com/llms.txt";
+    const [changelogSource] = await db
+      .insert(sources)
+      .values({
+        tenantId: tenant.id,
+        type: "competitor_web",
+        competitorId: rival.id,
+        url: "https://rival.com/changelog",
+        agentUrl: sharedAgentUrl,
+        label: "Changelog",
+      })
+      .returning();
+    const [blogSource] = await db
+      .insert(sources)
+      .values({
+        tenantId: tenant.id,
+        type: "competitor_web",
+        competitorId: rival.id,
+        url: "https://rival.com/blog",
+        agentUrl: sharedAgentUrl,
+        label: "Blog",
+      })
+      .returning();
+
+    const deps = { score: scoreAll(0.9) };
+    // Both sources baseline independently on their own first run.
+    await runCompetitorSource(changelogSource, { ...deps, fetchPage: async () => body(V1) });
+    await runCompetitorSource(blogSource, { ...deps, fetchPage: async () => body(V1) });
+
+    // The page changes; both sources see the same new block on their next run.
+    await runCompetitorSource(await reload(changelogSource.id), { ...deps, fetchPage: async () => body(V2) });
+    await runCompetitorSource(await reload(blogSource.id), { ...deps, fetchPage: async () => body(V2) });
+
+    const rows = await competitorSignals(tenant.id);
+    expect(rows).toHaveLength(1);
+  });
+
+  describe("truncated pages (MAX_TEXT_CHARS)", () => {
+    // FILLER_ENTRY blocks are used to build page text that overruns
+    // MAX_TEXT_CHARS before being sliced down to exactly that length, the
+    // same way fetchPageText truncates a real page -- so the slice is
+    // guaranteed to land inside a block rather than neatly between two.
+    const fillerEntry = (n: number) =>
+      `## Entry ${n}\nPadding text for changelog entry number ${n} so it clears the block length floor with room to spare.`;
+
+    function buildTruncatedFixture(prependBlock?: string): Extract<PageResult, { text: string }> {
+      let raw = prependBlock ? `${prependBlock}\n\n` : "";
+      let n = 0;
+      while (raw.length < MAX_TEXT_CHARS + 1000) {
+        raw += `${fillerEntry(n)}\n\n`;
+        n++;
+      }
+      const text = raw.slice(0, MAX_TEXT_CHARS);
+      return { text, html: text, finalUrl: "https://rival.com/llms-full.txt", contentType: "text/markdown" };
+    }
+
+    it("drops the final block when the fetched text was truncated at MAX_TEXT_CHARS", async () => {
+      const { source } = await seed();
+      const page = buildTruncatedFixture();
+      expect(page.text.length).toBe(MAX_TEXT_CHARS);
+      const rawBlockCount = extractBlocks(page.text).length;
+
+      await runCompetitorSource(source, { fetchPage: async () => page, score: scoreAll(0.9) });
+
+      const after = await reload(source.id);
+      const seen = (after.watermark as { seenHashes: string[] }).seenHashes;
+      expect(seen).toHaveLength(rawBlockCount - 1);
+    });
+
+    it("does not produce a signal for the shifted tail fragment when a new entry is prepended before the next truncated fetch", async () => {
+      const { tenant, source } = await seed();
+      const page1 = buildTruncatedFixture();
+      await runCompetitorSource(source, { fetchPage: async () => page1, score: scoreAll(0.9) });
+
+      const page2 = buildTruncatedFixture("## New Entry\nA brand-new changelog entry that was just published.");
+      const second = await runCompetitorSource(await reload(source.id), {
+        fetchPage: async () => page2,
+        score: scoreAll(0.9),
+      });
+
+      // Exactly the genuinely new entry -- not that plus a spurious signal
+      // for the tail block whose fragment text shifted because the cutoff
+      // moved.
+      expect(second.written).toBe(1);
+      const rows = await competitorSignals(tenant.id);
+      expect(rows).toHaveLength(1);
+      expect(rows[0].title).toContain("New Entry");
+    });
+  });
+
+  it("keeps a block that appears on every run out of eviction, even though it was the oldest hash recorded (last-seen, not first-seen, ordering)", async () => {
+    const { source } = await seed();
+    const stickyBlockText = "## About\nWe ship changelog updates for this product regularly, every single week.";
+    const stickyHash = extractBlocks(stickyBlockText)[0].hash;
+
+    // Seed the watermark directly as if stickyHash was recorded on day one and
+    // MAX_WATERMARK_HASHES - 1 filler hashes piled up after it since -- under
+    // first-seen (insertion-order) eviction, stickyHash is the very first
+    // entry and therefore the first one dropped once the cap is exceeded.
+    const fillerHashes = Array.from({ length: 999 }, (_, i) => `filler-hash-${i}`);
+    await db
+      .update(sources)
+      .set({ watermark: { seenHashes: [stickyHash, ...fillerHashes] } })
+      .where(eq(sources.id, source.id));
+
+    // This run's page repeats the sticky block (it's still on the page) plus
+    // enough genuinely new blocks to push the watermark past its cap and
+    // force an eviction.
+    const newEntries = Array.from(
+      { length: 50 },
+      (_, i) => `## Entry ${i}\nA changelog entry padded out with enough text to clear the floor comfortably.`
+    ).join("\n\n");
+    const page = body(`${stickyBlockText}\n\n${newEntries}`);
+
+    await runCompetitorSource(await reload(source.id), { fetchPage: async () => page, score: scoreAll(0.9) });
+
+    const after = await reload(source.id);
+    const seen = (after.watermark as { seenHashes: string[] }).seenHashes;
+    expect(seen).toContain(stickyHash);
   });
 });
