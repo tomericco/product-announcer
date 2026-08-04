@@ -40,14 +40,32 @@ export async function probeAgentPage(
     return null;
   }
 
+  const mdCandidate = alreadyAgentFacing ? null : `${pageUrl}.md`;
   const candidates: string[] = [];
-  if (!alreadyAgentFacing) candidates.push(`${pageUrl}.md`);
+  if (mdCandidate) candidates.push(mdCandidate);
   candidates.push(`${origin}/llms.txt`);
   candidates.push(`${origin}/llms-full.txt`);
 
   for (const candidate of candidates) {
     const result = await fetchPage(candidate);
-    if (!("error" in result)) return candidate;
+    if ("error" in result) continue;
+
+    // Many sites answer an unknown path with 200 text/html (a soft 404)
+    // rather than a real 404, and MIN_TEXT_CHARS won't filter a typical one.
+    // Without this check that HTML page gets adopted as "agent-facing" and
+    // stays stuck there -- discovery's COALESCE never clears a non-null
+    // agentUrl, so a bad match here is effectively permanent.
+    if (!result.contentType.includes("text/markdown") && !result.contentType.includes("text/plain")) continue;
+
+    // A redirect to the homepage (or anywhere else) on the .md candidate is
+    // the same soft-404 shape wearing a plausible content type -- the site
+    // served *something* text-ish at the end of the chain, just not the
+    // markdown file that was actually requested. llms.txt/llms-full.txt need
+    // no equivalent check: their landing spot at the origin root already IS
+    // the requested path, so there's nothing further to verify.
+    if (candidate === mdCandidate && !result.finalUrl.endsWith(".md")) continue;
+
+    return candidate;
   }
   return null;
 }

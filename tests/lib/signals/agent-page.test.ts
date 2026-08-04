@@ -3,10 +3,10 @@ import { probeAgentPage, extractBlocks } from "../../../src/lib/signals/agent-pa
 import type { PageResult } from "../../../src/lib/workspace/fetch-page";
 
 const LONG = "x".repeat(300);
-const ok = (text: string): PageResult => ({
+const ok = (text: string, finalUrl = "https://rival.com/x"): PageResult => ({
   text,
   html: text,
-  finalUrl: "https://rival.com/x",
+  finalUrl,
   contentType: "text/markdown",
 });
 
@@ -24,7 +24,7 @@ function fakeFetcher(pages: Record<string, PageResult>) {
 describe("probeAgentPage", () => {
   it("prefers the page's own .md variant", async () => {
     const { fetchPage, calls } = fakeFetcher({
-      "https://rival.com/changelog.md": ok(`# Changelog ${LONG}`),
+      "https://rival.com/changelog.md": ok(`# Changelog ${LONG}`, "https://rival.com/changelog.md"),
     });
     expect(await probeAgentPage("https://rival.com/changelog", { fetchPage })).toBe(
       "https://rival.com/changelog.md"
@@ -56,6 +56,33 @@ describe("probeAgentPage", () => {
     const { fetchPage, calls } = fakeFetcher({});
     await probeAgentPage("https://rival.com/changelog", { fetchPage });
     expect(calls.length).toBeLessThanOrEqual(3);
+  });
+
+  it("rejects a soft 404 that serves ordinary text/html for the .md candidate", async () => {
+    // Many sites answer an unknown path with 200 text/html instead of a real
+    // 404. MIN_TEXT_CHARS won't filter a typical one of these, so without a
+    // contentType check the site's own 404 page gets adopted as "agent-facing".
+    const { fetchPage } = fakeFetcher({
+      "https://rival.com/changelog.md": {
+        text: `Page not found ${LONG}`,
+        html: `Page not found ${LONG}`,
+        finalUrl: "https://rival.com/changelog.md",
+        contentType: "text/html",
+      },
+    });
+    expect(await probeAgentPage("https://rival.com/changelog", { fetchPage })).toBeNull();
+  });
+
+  it("rejects the .md candidate when it redirects somewhere that no longer ends in .md, even with a markdown content type", async () => {
+    const { fetchPage } = fakeFetcher({
+      "https://rival.com/changelog.md": {
+        text: `# Rival ${LONG}`,
+        html: `# Rival ${LONG}`,
+        finalUrl: "https://rival.com/", // redirected to the homepage
+        contentType: "text/markdown",
+      },
+    });
+    expect(await probeAgentPage("https://rival.com/changelog", { fetchPage })).toBeNull();
   });
 });
 
