@@ -544,7 +544,11 @@ describe("discoverCompetitorSources", () => {
 
 Rank candidate links by matching **path segments exactly** against, in priority order: `changelog`, `release-notes`, `releases`, `whats-new`, `news`, `blog`, `updates`. Split the pathname on `/`, drop empties, require an exact segment match — that is what makes the `/blog/why-we-left-jira` test pass. **Write a new ranker here; leave `crawl-company-site.ts`'s substring `rank()` alone**, since changing it is out of scope and harmless for a one-shot bootstrap.
 
-Take the top three, fetch each through the injected `fetchPage`, call `probeAgentPage` for each, and insert a `sources` row with `type: "competitor_web"`, the competitor id, the page URL, the resolved `agentUrl` (nullable), and a `label` from the matched segment. Use `onConflictDoNothing` against `sources_tenant_url_unique` then re-select — mirror `addCompetitor` in `src/lib/workspace/competitors.ts`, which already solves this exact shape.
+Take the top three, fetch each through the injected `fetchPage`, call `probeAgentPage` for each, and insert a `sources` row with `type: "competitor_web"`, the competitor id, the page URL, the resolved `agentUrl` (nullable), and a `label` from the matched segment. Use `onConflictDoUpdate` against `sources_tenant_url_unique` — mirror `addCompetitor` in `src/lib/workspace/competitors.ts`, which was amended in an earlier spec to backfill on conflict for exactly this reason.
+
+**On conflict, set `agentUrl` only when the newly-discovered value is non-null**, and touch nothing else. A competitor who moves their `llms.txt` should be followed; a transient probe failure must not discard a working mapping and silently downgrade the source to HTML scraping. `label`, `watermark`, `status`, `lastRunAt`, `lastSuccessAt` and `lastError` belong to the agent's run history — resetting them on a re-discovery would make the source look freshly added and re-baseline it, losing a run's worth of change detection.
+
+This is what makes the `agentUrl` schema comment true: without it, "re-running discovery is what picks up a competitor who adds one later" describes a mechanism that does not exist.
 
 - [ ] **Step 4: Surface it in settings**
 
