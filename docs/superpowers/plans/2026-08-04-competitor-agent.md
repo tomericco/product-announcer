@@ -2,13 +2,17 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Give the signals layer its first external producer — a daily agent that watches each competitor's changelog and blog and writes `competitor_move` signals.
+**Goal:** Give the signals layer its first external producer — a daily agent that watches each competitor's changelog and blog, preferring agent-facing pages over rendered HTML, and writes `competitor_move` signals.
 
 **Scope:** This is the second half of the design doc's spec 3. The signals layer (schema, shipped-work reconciler, browser) is already built and on the branch.
 
-**Architecture:** Five stages, matching the contract the design doc sets for every source agent — **fetch → extract → tier-1 drop → tier-2 relevance → write signal**. Acquisition prefers RSS/Atom over scraping because feed entries carry real ids and dates. Every external fetch goes through spec 2's SSRF-guarded `fetchPageText`. The sweep copies `resolve-sweep.ts`'s posture: per-tenant isolation, log and continue, never throw out of the cron.
+**Architecture:** Five stages, matching the contract the design doc sets for every source agent — **fetch → extract → tier-1 drop → tier-2 relevance → write signal**.
 
-**Tech Stack:** Next.js 16 (App Router), Drizzle ORM + drizzle-kit, Postgres (Supabase), AI SDK v7 + `@ai-sdk/anthropic`, `fast-xml-parser`, Vitest against a real `_test` database, TypeScript strict.
+Acquisition prefers **agent-facing pages** — `llms.txt`, `llms-full.txt`, and `.md` variants — and falls back to rendered HTML. Those pages are written to be read by machines: clean prose with no nav, cookie banners, or marketing chrome, which makes both extraction and relevance scoring materially better than scraping.
+
+Because there are no feeds, the unit of change is not an entry but a **block of text that was not there last time.** Each run extracts blocks, compares their hashes against a per-source watermark, and turns genuinely new blocks into signals. Every external fetch goes through spec 2's SSRF-guarded `fetchPageText`. The sweep copies `resolve-sweep.ts`: per-tenant isolation, log and continue, never throw out of the cron.
+
+**Tech Stack:** Next.js 16 (App Router), Drizzle ORM + drizzle-kit, Postgres (Supabase), AI SDK v7 + `@ai-sdk/anthropic`, Vitest against a real `_test` database, TypeScript strict. **No new runtime dependencies.**
 
 ## Global Constraints
 
@@ -17,354 +21,324 @@
 - The LLM provider is **Anthropic directly** via `@ai-sdk/anthropic`, not the Vercel AI Gateway. Do not "fix" this.
 - Every LLM call records usage via `recordLlmUsage`. **`operation` is typed as `LlmOperation`, a closed string-literal union in `src/lib/ai/llm-usage.ts`** — a new operation must be added there or the call will not type-check. The database column is free text, so this is invisible until `tsc` runs.
 - **Every external fetch goes through `fetchPageText`.** It carries redirect re-validation, private-IP rejection, a hard byte cap, a timeout, and a `MAX_SCAN_CHARS` clamp against quadratic regex backtracking. A competitor URL is attacker-influenced input by definition. There is no exception anywhere in this plan.
-- **No test may execute a real unscoped sweep against the shared test database** unless that sweep is what it is testing. Vitest runs 140 files in parallel against one database, and the sweeps here operate across all tenants. Mock them everywhere else.
+- **No test may execute a real unscoped sweep against the shared test database** unless that sweep is what it is testing. Vitest runs 140 files in parallel against one database and the sweeps here operate across all tenants. Mock them everywhere else.
 - Follow the existing schema conventions in `src/db/schema.ts`: comments explain *why*, not what.
 - Never edit the Vercel `DATABASE_URL` env var.
-- **Deletion lists come from exports and importers, never from a module's name.** Before deleting or wholesale-replacing any file, `grep -n "^export"` it and grep its importers.
 - **Where this plan gives both prose and a code sample, the code sample is authoritative — and if they contradict each other, stop and report it rather than picking one.** A previous plan's prose said "match this file's error-handling posture" while its code sample did something coarser; the implementer transcribed the sample faithfully and shipped a cross-tenant failure blast radius. Disagreement between the two is a plan bug, and catching it is worth more than guessing right.
-- **The tests in this plan are the contract; several implementation steps are prose rather than full code, deliberately.** Earlier plans in this series gave complete implementations, and implementers transcribed them faithfully — including the bugs in them. Where the behaviour is fully pinned by the test code above it, the prose says what to build and leaves *how* to you. If a test and its prose ever disagree, the test wins, and tell me. If you find yourself unable to satisfy a test from the prose, that is a plan gap worth reporting rather than improvising around.
+- **The tests in this plan are the contract; several implementation steps are prose rather than full code, deliberately.** Earlier plans in this series gave complete implementations and implementers transcribed them faithfully — including the bugs in them. Where behaviour is fully pinned by the test code above it, the prose says what to build and leaves *how* to you. If a test and its prose disagree, the test wins and you tell me. If you cannot satisfy a test from the prose, that is a plan gap worth reporting rather than improvising around.
 
 ## Decisions this plan locks in
 
-**One new runtime dependency: `fast-xml-parser`.** Most changelogs and blogs publish RSS or Atom, which gives structured entries with real ids, titles and dates — far better signal quality than scraping list pages, where entry boundaries and dates have to be guessed. Hand-rolling XML with regexes is how spec 2's ReDoS got introduced, so this is not a place to economise. `fast-xml-parser` is small, pure JS, and has no native dependencies.
+**No RSS or Atom, and no new dependency.** An earlier draft parsed feeds with `fast-xml-parser`. Agent-facing pages are the better acquisition surface: they exist precisely so machines can read them, they carry no nav or boilerplate to filter, and they are plain text rather than a second markup dialect to parse. Dropping feeds removes the dependency question entirely.
 
-*If you would rather not add it:* only Task 2 changes. Drop feed parsing entirely and treat every source as the HTML-plus-content-hash case from Task 5. The cost is one coarse "this page changed" signal per source per run instead of one signal per actual entry, with no real dates — which materially degrades spec 5's ranking, since it decays on `occurredAt`.
+**Acquisition order, per watched page:** the page's `.md` variant, then the site's `llms.txt` / `llms-full.txt`, then the rendered HTML. Resolved once at discovery and stored on the source, not re-probed every run — re-discovery is what picks up a competitor who adds `llms.txt` later.
 
-**Never invent a date.** An unparseable or absent feed date becomes `null`, and the agent falls back to the fetch time only when writing the signal, recording that it did. Spec 5's ranking decays on `occurredAt`; a fabricated "now" makes every old entry look fresh, which is the exact failure the `occurredAt` column comment forbids and which the shipped-work reconciler was already fixed for once.
+**The unit of change is a text block, not an entry.** Without feeds there are no entry boundaries or publication dates. Each run splits the fetched document into blocks, hashes each, and treats blocks whose hash is not in the source's watermark as new. That gives per-item granularity — one signal for a new changelog section, not one coarse "the page changed".
 
-**Path matching is by segment, not substring.** `crawl-company-site.ts`'s `rank()` uses `path.includes()`, which its own review flagged: `/blog/why-we-left-jira` scores as a blog index. Source discovery needs segment-exact matching. Write a new ranker here and **leave `crawl-company-site.ts` alone** — its substring matching is harmless for a one-shot bootstrap, and changing it is out of scope.
+**The first run of a source is a baseline and emits nothing.** An empty watermark means every block looks new; emitting them would dump a competitor's entire back catalogue as today-dated signals. The first run records hashes and writes no signals. **Consequence worth stating plainly: a newly added competitor produces nothing until they next publish.** That is the correct behaviour — the product watches for changes, not for history — but it will look like a broken integration to anyone who does not know, so the settings UI must say so.
 
-**Relevance scoring is batched, fails open, and gets its own model variable.** One `generateObject` call scores a whole run's surviving items. Results are matched back by an explicit `index` field, never by array position. A classifier error writes every item unscored rather than dropping any — a missed competitor move is invisible, an unscored row in the browser announces itself, and `listSignals` already keeps null-scored rows through a minimum-score filter. It uses `RELEVANCE_MODEL`, not `ONBOARDING_ANALYSIS_MODEL`, which already drives two operations.
+**`occurredAt` is first-seen time, and that is honest here.** Diffing only ever observes *forward* changes, so there is no backfill problem: a block first seen today genuinely appeared since yesterday's run. This is different from the shipped-work reconciler, where `occurredAt` had to be derived from change events precisely because a year of history could be imported at once. Record the reasoning on the write, and never present first-seen as a publication date in the UI.
 
-**Source health flips on a single failure.** `status` goes to `failing` on any failed run and back to `active` on the next success. No consecutive-failure counter — that would need state in `watermark` for little gain at a daily cadence. The tradeoff, stated so nobody treats it as a bug: one transient blip shows as `failing` in settings until the next day's run clears it. That is the right direction to err for a surface whose whole job is making silent rot visible.
+**`htmlToText` gains newline preservation.** It currently collapses all whitespace to single spaces, which destroys the line structure block-splitting depends on and applies even to `text/plain`. Block-level tags become newlines before stripping, so HTML and markdown paths produce comparably splittable text. This changes input to two existing LLM callers (`analyze-brand-style`, `analyze-company-context`) — for the better, since paragraph structure survives — but their tests must be checked.
+
+**Relevance scoring is batched, fails open, and gets its own model variable.** One `generateObject` call scores a run's surviving blocks, matched back by an explicit `index` field, never by array position. A classifier error writes every item unscored rather than dropping any: a missed competitor move is invisible, an unscored row announces itself, and `listSignals` already keeps null-scored rows through a minimum-score filter. Uses `RELEVANCE_MODEL`, not `ONBOARDING_ANALYSIS_MODEL`, which already drives two operations.
+
+**Source health flips on a single failure.** `status` goes to `failing` on any failed run and back to `active` on the next success. No consecutive-failure counter — that would need state in `watermark` for little gain at daily cadence. One transient blip shows as `failing` until the next day's run clears it, which is the right direction to err for a surface whose job is making silent rot visible.
 
 ## File Structure
 
 | File | Responsibility | Task |
 | --- | --- | --- |
-| `src/lib/workspace/fetch-page.ts` | Gains `finalUrl` and `discoverFeedUrl` | 1 |
-| `src/lib/signals/feed.ts` | RSS/Atom → normalized `FeedEntry[]` | 2 |
-| `src/lib/signals/discover-sources.ts` | Propose watchable URLs for a competitor | 3 |
+| `src/lib/workspace/fetch-page.ts` | `finalUrl`, `contentType`, markdown support, newline-preserving `htmlToText` | 1 |
+| `src/lib/signals/agent-page.ts` | Probe for `.md` / `llms.txt`; split text into hashed blocks | 2 |
+| `src/db/schema.ts` | `sources.feedUrl` → `agentUrl` | 3 |
+| `src/lib/signals/discover-sources.ts` | Propose watchable URLs, resolve their agent-facing variants | 3 |
 | `src/lib/signals/relevance.ts` | Batched tier-2 relevance scoring | 4 |
-| `src/lib/signals/competitor-agent.ts` | One source: fetch → tier-1 → tier-2 → write | 5 |
+| `src/lib/signals/competitor-agent.ts` | One source: fetch → diff → tier-2 → write | 5 |
 | `src/lib/signals/sweep.ts` | All sources, per-tenant isolation | 6 |
 | `src/app/api/cron/scheduler/route.ts` | Runs the sweep | 6 |
-| `src/app/(dashboard)/company/*` | Source discovery and health | 3, 6 |
+| `src/app/(dashboard)/company/*` | Discovery and source health | 3, 6 |
 
 ---
 
-### Task 1: `finalUrl` and feed autodiscovery
+### Task 1: Teach the fetcher about agent-facing pages
+
+Three changes, all of which the rest of the plan depends on and two of which fail silently if missed.
 
 **Files:**
-- Modify: `src/lib/workspace/fetch-page.ts`, `src/lib/workspace/brand-import.ts`, `src/lib/signals/crawl-company-site.ts` (import path only if needed)
-- Test: `tests/lib/workspace/fetch-page.test.ts`, and update `tests/lib/workspace/brand-import.test.ts` and `tests/lib/workspace/crawl-company-site.test.ts` where they construct `PageResult` literals
+- Modify: `src/lib/workspace/fetch-page.ts`
+- Modify: `src/lib/workspace/brand-import.ts`, `src/lib/signals/crawl-company-site.ts` (only where `PageResult` literals are built)
+- Test: `tests/lib/workspace/fetch-page.test.ts`; update `PageResult` literals in `tests/lib/workspace/brand-import.test.ts` and `tests/lib/workspace/crawl-company-site.test.ts`
 
 **Interfaces:**
-- Consumes: nothing
-- Produces: `PageResult` success shape becomes `{ text: string; html: string; finalUrl: string }`; `discoverFeedUrl(html: string, baseUrl: string): string | null`
+- Produces: `PageResult` success shape becomes `{ text: string; html: string; finalUrl: string; contentType: string }`; `htmlToText` preserves block boundaries as newlines
 
 - [ ] **Step 1: Write the failing tests**
 
 Append to `tests/lib/workspace/fetch-page.test.ts`:
 
 ```ts
-import { discoverFeedUrl } from "../../../src/lib/workspace/fetch-page";
-
-describe("discoverFeedUrl", () => {
-  const base = "https://acme.com/blog";
-
-  it("finds an advertised RSS feed and resolves it against the base", () => {
-    const html = `<link rel="alternate" type="application/rss+xml" href="/blog/feed.xml">`;
-    expect(discoverFeedUrl(html, base)).toBe("https://acme.com/blog/feed.xml");
+describe("htmlToText — block structure", () => {
+  it("turns block-level boundaries into newlines instead of spaces", () => {
+    const html = `<h2>v2.4.0</h2><p>Added SSO.</p><ul><li>One</li><li>Two</li></ul>`;
+    const text = htmlToText(html);
+    expect(text.split("\n").map((l) => l.trim()).filter(Boolean)).toEqual([
+      "v2.4.0",
+      "Added SSO.",
+      "One",
+      "Two",
+    ]);
   });
 
-  it("finds an advertised Atom feed", () => {
-    const html = `<link rel="alternate" type="application/atom+xml" href="https://acme.com/atom.xml">`;
-    expect(discoverFeedUrl(html, base)).toBe("https://acme.com/atom.xml");
+  it("still collapses runs of inline whitespace within a block", () => {
+    expect(htmlToText("<p>a   \n  b</p>")).toBe("a b");
   });
 
-  it("tolerates attributes in any order and single quotes", () => {
-    const html = `<link type='application/rss+xml' title='Feed' rel='alternate' href='/f.xml'>`;
-    expect(discoverFeedUrl(html, base)).toBe("https://acme.com/f.xml");
-  });
-
-  it("returns the first when a page advertises both", () => {
-    const html = `
-      <link rel="alternate" type="application/rss+xml" href="/rss.xml">
-      <link rel="alternate" type="application/atom+xml" href="/atom.xml">`;
-    expect(discoverFeedUrl(html, base)).toBe("https://acme.com/rss.xml");
-  });
-
-  it("ignores alternate links that are not feeds", () => {
-    const html = `<link rel="alternate" hreflang="de" href="/de/blog">`;
-    expect(discoverFeedUrl(html, base)).toBeNull();
-  });
-
-  it("ignores a feed type on a link that is not rel=alternate", () => {
-    const html = `<link rel="preload" type="application/rss+xml" href="/rss.xml">`;
-    expect(discoverFeedUrl(html, base)).toBeNull();
-  });
-
-  it("returns null for no feed, malformed html, or an unparseable base", () => {
-    expect(discoverFeedUrl("<p>nothing</p>", base)).toBeNull();
-    expect(discoverFeedUrl("<link rel=", base)).toBeNull();
-    expect(discoverFeedUrl(`<link rel="alternate" type="application/rss+xml" href="/f.xml">`, "not a url")).toBeNull();
+  it("does not emit blank-line runs for nested block tags", () => {
+    const text = htmlToText("<div><div><p>only</p></div></div>");
+    expect(text).toBe("only");
   });
 });
 ```
 
-For `finalUrl`, extend the existing redirect test in `fetch-page.test.ts` — find it with `grep -n "redirect" tests/lib/workspace/fetch-page.test.ts` — so that after following a redirect it also asserts:
+For the fetcher itself, add tests asserting that:
 
 ```ts
+  it("accepts text/markdown and returns the body unchanged, preserving line structure", async () => {
+    // llms.txt and .md variants are usually served as text/markdown; the old
+    // allowlist rejected them outright, and htmlToText would have flattened
+    // the newlines that block-splitting depends on.
+    const body = "# Changelog\n\n## v2\n\n- SSO\n";
+    const result = await fetchPageText("https://acme.com/llms.txt", {
+      fetchImpl: fakeFetch({ body, contentType: "text/markdown" }),
+      resolveHost: async () => ["93.184.216.34"],
+    });
     if ("error" in result) throw new Error("expected success");
-    expect(result.finalUrl).toBe("https://example.com/final");
+    expect(result.contentType).toContain("text/markdown");
+    expect(result.text).toContain("## v2");
+    expect(result.text.split("\n").length).toBeGreaterThan(1);
+  });
+
+  it("still rejects a content type that is neither html, plain, nor markdown", async () => {
+    const result = await fetchPageText("https://acme.com/x.pdf", {
+      fetchImpl: fakeFetch({ body: "%PDF", contentType: "application/pdf" }),
+      resolveHost: async () => ["93.184.216.34"],
+    });
+    expect(result).toEqual({ error: "fetch-failed" });
+  });
 ```
 
-using whatever destination that test's redirect chain actually ends at. The point is that `finalUrl` is where the fetch **landed**, not what was requested — if it equals the requested URL after a redirect, the field is wired to the wrong variable.
+Write `fakeFetch` to match how the existing tests in this file stub `fetchImpl` — read them first and reuse their helper if one exists rather than adding a second.
+
+Also extend the existing redirect test — find it with `grep -n "redirect" tests/lib/workspace/fetch-page.test.ts` — to assert `finalUrl` is where the fetch **landed**, not what was requested. If it equals the requested URL after a redirect, the field is wired to the wrong variable.
 
 - [ ] **Step 2: Run to confirm failure**
 
 Run: `npx vitest run tests/lib/workspace/fetch-page.test.ts`
-Expected: FAIL — `discoverFeedUrl` is not exported.
+Expected: FAIL on all four — `contentType` missing, markdown rejected, newlines collapsed.
 
-- [ ] **Step 3: Add `finalUrl`**
+- [ ] **Step 3: Implement**
 
-Change the type and the success return:
+Make `htmlToText` insert `\n` at block boundaries — closing `</p>`, `</div>`, `</li>`, `</h1>`–`</h6>`, `</tr>`, and `<br>` — **before** the tag stripper runs, then collapse only horizontal whitespace within lines and squeeze runs of blank lines to one. The existing entity decoding stays.
 
-```ts
-export type PageResult = { text: string; html: string; finalUrl: string } | { error: PageError };
-```
+Extend the content-type allowlist with `text/markdown`. Return `contentType` on the success shape, and:
 
 ```ts
-        return { text, html, finalUrl: current.toString() };
+        const scanned = html.slice(0, MAX_SCAN_CHARS);
+        // Only HTML goes through the tag stripper. A markdown or plain-text
+        // body is already text, and running htmlToText over it would destroy
+        // exactly the line structure the block splitter needs.
+        const isHtml = contentType.includes("text/html");
+        const text = (isHtml ? htmlToText(scanned) : scanned).slice(0, MAX_TEXT_CHARS);
+        if (text.length < MIN_TEXT_CHARS) return { error: "insufficient-content" };
+        return { text, html: scanned, finalUrl: current.toString(), contentType };
 ```
 
-**Do not change the origin check in `crawlCompanySite`.** It anchors on the *requested* URL, and spec 2's review confirmed that is what stops a homepage redirecting to a hostile host from steering the crawl onto that host's links. `finalUrl` is for recording and relative resolution only, never for the origin decision. Add a one-line comment on the field saying so.
+Add a comment on `finalUrl` noting it is for recording and relative resolution only — **the same-origin check in `crawlCompanySite` must keep anchoring on the requested URL**, which is what stops a homepage redirecting to a hostile host from steering the crawl onto that host's links.
 
-Then update every `PageResult` literal in the test suite — `tests/lib/workspace/brand-import.test.ts` has four mocks and `tests/lib/workspace/crawl-company-site.test.ts` has several. Find them with `grep -rn "html:" tests/lib/workspace/`. These are mechanical additions; if any *assertion* needs changing, stop and report, because the fetch behaviour did not change.
+- [ ] **Step 4: Update the affected callers and their tests**
 
-- [ ] **Step 4: Add `discoverFeedUrl`**
+`grep -rn "html:" tests/lib/workspace/` to find `PageResult` literals needing `finalUrl` and `contentType`. These are mechanical.
 
-```ts
-// Bounded quantifier plus the MAX_SCAN_CHARS clamp below: this regex runs over
-// attacker-influenced third-party HTML, and an unbounded `[^>]*` on input full
-// of unclosed tags is exactly the quadratic backtracking that had to be fixed
-// in extractSameOriginLinks. Two stages — find bounded <link> tags, then test
-// each one — is also clearer than one regex trying to handle attribute order.
-const LINK_TAG = /<link\b[^>]{0,500}>/gi;
-const REL_ALTERNATE = /\brel\s*=\s*["']?alternate\b/i;
-const FEED_TYPE = /\btype\s*=\s*["']application\/(?:rss|atom)\+xml/i;
-const HREF = /\bhref\s*=\s*["']([^"']+)["']/i;
-
-/**
- * The feed a page advertises, if any. Preferred over scraping the page itself
- * because feed entries carry real ids and dates; a changelog list page gives
- * neither reliably, and spec 5's ranking decays on the date.
- */
-export function discoverFeedUrl(html: string, baseUrl: string): string | null {
-  let base: URL;
-  try {
-    base = new URL(baseUrl);
-  } catch {
-    return null;
-  }
-
-  const scanned = html.slice(0, MAX_SCAN_CHARS);
-  for (const [tag] of scanned.matchAll(LINK_TAG)) {
-    if (!REL_ALTERNATE.test(tag) || !FEED_TYPE.test(tag)) continue;
-    const href = tag.match(HREF)?.[1];
-    if (!href) continue;
-    try {
-      return new URL(href, base).toString();
-    } catch {
-      continue;
-    }
-  }
-  return null;
-}
-```
+Then check `analyze-brand-style` and `analyze-company-context`'s tests: their prompts now receive newline-structured text. **If a test asserts on flattened text, that assertion encodes the old bug — update it. If a test fails for any other reason, stop and report.**
 
 - [ ] **Step 5: Verify and commit**
 
 ```bash
 npm run typecheck && npm run test && npm run lint
 git add -A
-git commit -m "feat: finalUrl and feed autodiscovery on the page fetcher
+git commit -m "feat: agent-facing page support in the fetcher
 
-Signals need canonical post-redirect URLs, and feeds beat scraping
-because their entries carry real ids and dates."
+Accepts text/markdown, returns the body unflattened for non-HTML, and
+preserves block boundaries as newlines so extracted text can be split
+into units. Adds finalUrl and contentType."
 ```
 
 ---
 
-### Task 2: RSS and Atom parsing
+### Task 2: Agent-page probing and block extraction
 
 **Files:**
-- Modify: `package.json` (adds `fast-xml-parser`)
-- Create: `src/lib/signals/feed.ts`
-- Test: `tests/lib/signals/feed.test.ts`
+- Create: `src/lib/signals/agent-page.ts`
+- Test: `tests/lib/signals/agent-page.test.ts`
 
 **Interfaces:**
-- Consumes: `htmlToText` from `fetch-page.ts`
-- Produces: `type FeedEntry = { id: string; title: string; url: string | null; publishedAt: Date | null; excerpt: string | null }`; `parseFeed(xml: string, baseUrl: string): FeedEntry[]`
+- Consumes: `fetchPageText`, `PageResult`
+- Produces: `probeAgentPage(pageUrl, deps?): Promise<string | null>`; `type Block = { hash: string; text: string; title: string }`; `extractBlocks(text: string): Block[]`
 
 - [ ] **Step 1: Write the failing test**
 
-Create `tests/lib/signals/feed.test.ts`:
+Create `tests/lib/signals/agent-page.test.ts`:
 
 ```ts
 import { describe, it, expect } from "vitest";
-import { parseFeed } from "../../../src/lib/signals/feed";
+import { probeAgentPage, extractBlocks } from "../../../src/lib/signals/agent-page";
+import type { PageResult } from "../../../src/lib/workspace/fetch-page";
 
-const BASE = "https://rival.com/changelog";
+const LONG = "x".repeat(300);
+const ok = (text: string): PageResult => ({
+  text,
+  html: text,
+  finalUrl: "https://rival.com/x",
+  contentType: "text/markdown",
+});
 
-const RSS = `<?xml version="1.0"?>
-<rss version="2.0"><channel>
-  <title>Rival changelog</title>
-  <item>
-    <title>SSO for all plans</title>
-    <link>https://rival.com/changelog/sso</link>
-    <guid>https://rival.com/changelog/sso</guid>
-    <pubDate>Wed, 15 Jul 2026 10:00:00 GMT</pubDate>
-    <description>&lt;p&gt;Every plan now includes &lt;b&gt;SAML&lt;/b&gt; SSO.&lt;/p&gt;</description>
-  </item>
-  <item>
-    <title>Dark mode</title>
-    <link>/changelog/dark-mode</link>
-    <pubDate>not a date</pubDate>
-  </item>
-</channel></rss>`;
+function fakeFetcher(pages: Record<string, PageResult>) {
+  const calls: string[] = [];
+  return {
+    calls,
+    fetchPage: async (url: string): Promise<PageResult> => {
+      calls.push(url);
+      return pages[url] ?? { error: "fetch-failed" };
+    },
+  };
+}
 
-const ATOM = `<?xml version="1.0"?>
-<feed xmlns="http://www.w3.org/2005/Atom">
-  <entry>
-    <title>Ambiguity prediction</title>
-    <link href="https://rival.com/blog/ambiguity"/>
-    <id>tag:rival.com,2026:blog/ambiguity</id>
-    <updated>2026-06-15T09:30:00Z</updated>
-    <summary>Flags strings that would be ambiguous without context.</summary>
-  </entry>
-</feed>`;
-
-const SINGLE_ITEM_RSS = `<?xml version="1.0"?>
-<rss version="2.0"><channel>
-  <item><title>Only one</title><link>https://rival.com/one</link><guid>g1</guid></item>
-</channel></rss>`;
-
-describe("parseFeed — RSS", () => {
-  it("normalizes entries, decoding and stripping HTML from the description", () => {
-    const [first] = parseFeed(RSS, BASE);
-    expect(first.id).toBe("https://rival.com/changelog/sso");
-    expect(first.title).toBe("SSO for all plans");
-    expect(first.url).toBe("https://rival.com/changelog/sso");
-    expect(first.publishedAt?.toISOString()).toBe("2026-07-15T10:00:00.000Z");
-    expect(first.excerpt).toBe("Every plan now includes SAML SSO.");
+describe("probeAgentPage", () => {
+  it("prefers the page's own .md variant", async () => {
+    const { fetchPage, calls } = fakeFetcher({
+      "https://rival.com/changelog.md": ok(`# Changelog ${LONG}`),
+    });
+    expect(await probeAgentPage("https://rival.com/changelog", { fetchPage })).toBe(
+      "https://rival.com/changelog.md"
+    );
+    expect(calls[0]).toBe("https://rival.com/changelog.md");
   });
 
-  it("falls back to the link as id when guid is absent, and resolves relative links", () => {
-    const [, second] = parseFeed(RSS, BASE);
-    expect(second.url).toBe("https://rival.com/changelog/dark-mode");
-    expect(second.id).toBe("https://rival.com/changelog/dark-mode");
+  it("falls back to the site's llms.txt when no .md variant exists", async () => {
+    const { fetchPage } = fakeFetcher({
+      "https://rival.com/llms.txt": ok(`# Rival ${LONG}`),
+    });
+    expect(await probeAgentPage("https://rival.com/changelog", { fetchPage })).toBe(
+      "https://rival.com/llms.txt"
+    );
   });
 
-  it("returns null for an unparseable date rather than inventing one", () => {
-    const [, second] = parseFeed(RSS, BASE);
-    expect(second.publishedAt).toBeNull();
+  it("returns null when nothing agent-facing is published", async () => {
+    const { fetchPage } = fakeFetcher({});
+    expect(await probeAgentPage("https://rival.com/changelog", { fetchPage })).toBeNull();
   });
 
-  it("handles a feed with exactly one item", () => {
-    // fast-xml-parser returns an object rather than an array for a single
-    // child unless told otherwise — the classic way this breaks in production
-    // on a competitor who has published once.
-    const entries = parseFeed(SINGLE_ITEM_RSS, BASE);
-    expect(entries).toHaveLength(1);
-    expect(entries[0].title).toBe("Only one");
+  it("does not probe a .md variant for a url that already ends in .md or .txt", async () => {
+    const { fetchPage, calls } = fakeFetcher({});
+    await probeAgentPage("https://rival.com/llms.txt", { fetchPage });
+    expect(calls).not.toContain("https://rival.com/llms.txt.md");
+  });
+
+  it("bounds itself — at most three probes for one page", async () => {
+    const { fetchPage, calls } = fakeFetcher({});
+    await probeAgentPage("https://rival.com/changelog", { fetchPage });
+    expect(calls.length).toBeLessThanOrEqual(3);
   });
 });
 
-describe("parseFeed — Atom", () => {
-  it("normalizes entries using id, link href, and updated", () => {
-    const [entry] = parseFeed(ATOM, BASE);
-    expect(entry.id).toBe("tag:rival.com,2026:blog/ambiguity");
-    expect(entry.title).toBe("Ambiguity prediction");
-    expect(entry.url).toBe("https://rival.com/blog/ambiguity");
-    expect(entry.publishedAt?.toISOString()).toBe("2026-06-15T09:30:00.000Z");
-    expect(entry.excerpt).toBe("Flags strings that would be ambiguous without context.");
-  });
-});
-
-describe("parseFeed — resilience", () => {
-  it("returns an empty array for malformed XML rather than throwing", () => {
-    expect(parseFeed("<rss><channel><item>", BASE)).toEqual([]);
-    expect(parseFeed("not xml at all", BASE)).toEqual([]);
-    expect(parseFeed("", BASE)).toEqual([]);
+describe("extractBlocks", () => {
+  it("splits on blank lines and titles each block from its first line", () => {
+    const blocks = extractBlocks("## v2.4.0\nAdded SSO for all plans.\n\n## v2.3.0\nFixed a crash.");
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0].title).toBe("## v2.4.0");
+    expect(blocks[0].text).toContain("Added SSO");
+    expect(blocks[1].title).toBe("## v2.3.0");
   });
 
-  it("skips entries with no usable id and no link", () => {
-    const xml = `<rss><channel><item><title>Orphan</title></item></channel></rss>`;
-    expect(parseFeed(xml, BASE)).toEqual([]);
+  it("starts a new block at a markdown heading even without a blank line", () => {
+    const blocks = extractBlocks("## First\nbody one\n## Second\nbody two");
+    expect(blocks.map((b) => b.title)).toEqual(["## First", "## Second"]);
   });
 
-  it("skips entries with no title", () => {
-    const xml = `<rss><channel><item><guid>g</guid><link>https://rival.com/x</link></item></channel></rss>`;
-    expect(parseFeed(xml, BASE)).toEqual([]);
+  it("hashes block content, so identical text in two places collapses to one hash", () => {
+    const [a, b] = extractBlocks("Same text here.\n\nSame text here.");
+    expect(a.hash).toBe(b.hash);
   });
-});
-```
 
-- [ ] **Step 2: Run to confirm failure**
+  it("gives different hashes to different content", () => {
+    const [a, b] = extractBlocks("One thing.\n\nAnother thing.");
+    expect(a.hash).not.toBe(b.hash);
+  });
 
-Run: `npx vitest run tests/lib/signals/feed.test.ts`
-Expected: FAIL — module not found.
+  it("is insensitive to trailing whitespace changes, so reformatting is not a new block", () => {
+    const [a] = extractBlocks("A line.   \n\nnext");
+    const [b] = extractBlocks("A line.\n\nnext");
+    expect(a.hash).toBe(b.hash);
+  });
 
-- [ ] **Step 3: Install and implement**
+  it("drops blocks too short to carry meaning", () => {
+    expect(extractBlocks("ok\n\nA genuinely substantial block of changelog text.")).toHaveLength(1);
+  });
 
-```bash
-npm install fast-xml-parser
-```
+  it("returns an empty array for empty or whitespace-only input", () => {
+    expect(extractBlocks("")).toEqual([]);
+    expect(extractBlocks("   \n\n  \n")).toEqual([]);
+  });
 
-Create `src/lib/signals/feed.ts`. The parser configuration is the one part given as code, because getting it wrong fails silently on real feeds rather than loudly:
-
-```ts
-import { XMLParser } from "fast-xml-parser";
-
-// isArray: fast-xml-parser collapses a single child to an object rather than a
-// one-element array, so a competitor who has published exactly once would
-// otherwise parse to something the entry loop skips entirely — silently, and
-// only for the sources with the least content. ignoreAttributes: false is what
-// makes Atom's <link href="..."> readable at all.
-const parser = new XMLParser({
-  ignoreAttributes: false,
-  attributeNamePrefix: "@_",
-  isArray: (name) => name === "item" || name === "entry" || name === "link",
+  it("caps the number of blocks it returns", () => {
+    const huge = Array.from({ length: 5000 }, (_, i) => `Block number ${i} with enough text.`).join("\n\n");
+    expect(extractBlocks(huge).length).toBeLessThanOrEqual(500);
+  });
 });
 ```
 
-Normalize per entry:
-- **id**: RSS `guid` (text or `#text`) → else the resolved link → else skip the entry
-- **title**: required; skip the entry without one
-- **url**: RSS `link` text, or Atom `link@href`; resolved against `baseUrl`; null if unusable
-- **publishedAt**: RSS `pubDate`, Atom `updated` then `published`. Parse with `new Date(...)` and **return null when `Number.isNaN(date.getTime())`** — never substitute the current time
-- **excerpt**: RSS `description`, Atom `summary` then `content`, run through `htmlToText` and capped at ~500 chars
+- [ ] **Step 2: Run to confirm failure, then implement**
 
-Wrap the whole parse in try/catch returning `[]`. A competitor serving broken XML must not throw into the agent.
+`probeAgentPage` tries, in order and stopping at the first success: the page's `.md` variant (skipped when the URL already ends `.md` or `.txt`), then `{origin}/llms.txt`, then `{origin}/llms-full.txt`. Each probe goes through the injected `fetchPage`. Return the URL that worked, or null.
 
-- [ ] **Step 4: Verify and commit**
+`extractBlocks` normalizes line endings, splits on blank lines, further splits any chunk at markdown headings (`#`–`######`), trims trailing whitespace per line, drops blocks under a minimum length, caps the count, and hashes each block's normalized text with `node:crypto` `sha256`. `title` is the block's first line, truncated.
+
+The trailing-whitespace test matters: without per-line trimming before hashing, a competitor reformatting their page produces a full page of "new" blocks and a flood of junk signals.
+
+- [ ] **Step 3: Verify and commit**
 
 ---
 
-### Task 3: Source discovery for competitors
+### Task 3: Source discovery, agent-page aware
 
 **Files:**
+- Modify: `src/db/schema.ts` (`sources.feedUrl` → `agentUrl`)
 - Create: `src/lib/signals/discover-sources.ts`
-- Modify: `src/app/(dashboard)/company/actions.ts`, `src/app/(dashboard)/company/competitors-editor.tsx`
+- Modify: `src/app/(dashboard)/company/actions.ts`, `competitors-editor.tsx`
 - Test: `tests/lib/signals/discover-sources.test.ts`
 
 **Interfaces:**
-- Consumes: `fetchPageText`, `extractSameOriginLinks`, `discoverFeedUrl`
+- Consumes: `fetchPageText`, `extractSameOriginLinks`, `probeAgentPage`
 - Produces: `discoverCompetitorSources(tenantId, competitorId, websiteUrl, deps?): Promise<Source[]>`; server action `discoverSourcesAction(competitorId)`
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Rename the column**
+
+`sources.feedUrl` → `agentUrl`, with the comment rewritten:
+
+```ts
+    // The agent-facing representation of `url` when the competitor publishes
+    // one — a `.md` variant, or the site's llms.txt. Preferred at fetch time
+    // because those pages are written for machines: no nav, no cookie banner,
+    // no marketing chrome, so both block extraction and relevance scoring get
+    // cleaner input. Resolved once at discovery rather than probed every run;
+    // re-running discovery is what picks up a competitor who adds one later.
+    agentUrl: text("agent_url"),
+```
+
+Generate and apply. No production data, and nothing reads the old column yet.
+
+- [ ] **Step 2: Write the failing test**
 
 Create `tests/lib/signals/discover-sources.test.ts`:
 
@@ -379,9 +353,12 @@ import type { PageResult } from "../../../src/lib/workspace/fetch-page";
 const TENANT = "Discover Sources Test Tenant";
 const LONG = "x".repeat(300);
 
-function page(html: string, finalUrl: string): PageResult {
-  return { text: `content ${LONG}`, html, finalUrl };
-}
+const page = (html: string, finalUrl: string): PageResult => ({
+  text: `content ${LONG}`,
+  html,
+  finalUrl,
+  contentType: "text/html",
+});
 
 function fakeFetcher(pages: Record<string, PageResult>) {
   const calls: string[] = [];
@@ -429,19 +406,34 @@ describe("discoverCompetitorSources", () => {
     expect(created.every((s) => s.competitorId === rival.id)).toBe(true);
   });
 
-  it("stores a discovered feed url alongside the page url", async () => {
+  it("stores the agent-facing variant when the competitor publishes one", async () => {
     const { tenant, rival } = await seed();
+    const md: PageResult = {
+      text: `# Changelog ${LONG}`,
+      html: `# Changelog ${LONG}`,
+      finalUrl: "https://rival.com/changelog.md",
+      contentType: "text/markdown",
+    };
     const { fetchPage } = fakeFetcher({
       "https://rival.com": page(`<a href="/changelog">Changelog</a>`, "https://rival.com"),
-      "https://rival.com/changelog": page(
-        `<link rel="alternate" type="application/rss+xml" href="/changelog/feed.xml">`,
-        "https://rival.com/changelog"
-      ),
+      "https://rival.com/changelog": page("<html></html>", "https://rival.com/changelog"),
+      "https://rival.com/changelog.md": md,
     });
 
     const [source] = await discoverCompetitorSources(tenant.id, rival.id, "https://rival.com", { fetchPage });
     expect(source.url).toBe("https://rival.com/changelog");
-    expect(source.feedUrl).toBe("https://rival.com/changelog/feed.xml");
+    expect(source.agentUrl).toBe("https://rival.com/changelog.md");
+  });
+
+  it("leaves agentUrl null when nothing agent-facing is published", async () => {
+    const { tenant, rival } = await seed();
+    const { fetchPage } = fakeFetcher({
+      "https://rival.com": page(`<a href="/changelog">Changelog</a>`, "https://rival.com"),
+      "https://rival.com/changelog": page("<html></html>", "https://rival.com/changelog"),
+    });
+
+    const [source] = await discoverCompetitorSources(tenant.id, rival.id, "https://rival.com", { fetchPage });
+    expect(source.agentUrl).toBeNull();
   });
 
   it("matches path SEGMENTS, so an article under /blog is not mistaken for the blog index", async () => {
@@ -451,7 +443,6 @@ describe("discoverCompetitorSources", () => {
     });
 
     const created = await discoverCompetitorSources(tenant.id, rival.id, "https://rival.com", { fetchPage });
-
     expect(created).toEqual([]);
     expect(calls).toEqual(["https://rival.com"]);
   });
@@ -492,8 +483,7 @@ describe("discoverCompetitorSources", () => {
     });
 
     expect(created).toEqual([]);
-    const rows = await db.select().from(sources).where(eq(sources.tenantId, tenant.id));
-    expect(rows).toHaveLength(0);
+    expect(await db.select().from(sources).where(eq(sources.tenantId, tenant.id))).toHaveLength(0);
   });
 
   it("routes every request through the injected fetcher — no bare fetch", async () => {
@@ -504,22 +494,23 @@ describe("discoverCompetitorSources", () => {
     });
 
     await discoverCompetitorSources(tenant.id, rival.id, "https://rival.com", { fetchPage });
-    expect(calls).toEqual(["https://rival.com", "https://rival.com/changelog"]);
+    expect(calls.every((c) => c.startsWith("https://rival.com"))).toBe(true);
+    expect(calls[0]).toBe("https://rival.com");
   });
 });
 ```
 
-- [ ] **Step 2: Run to confirm failure, then implement**
+- [ ] **Step 3: Run to confirm failure, then implement**
 
-Rank candidates by matching **path segments exactly** against, in priority order: `changelog`, `release-notes`, `releases`, `whats-new`, `news`, `blog`, `updates`. Split the pathname on `/`, drop empties, and require an exact segment match — that is what makes the `/blog/why-we-left-jira` test pass.
+Rank candidate links by matching **path segments exactly** against, in priority order: `changelog`, `release-notes`, `releases`, `whats-new`, `news`, `blog`, `updates`. Split the pathname on `/`, drop empties, require an exact segment match — that is what makes the `/blog/why-we-left-jira` test pass. **Write a new ranker here; leave `crawl-company-site.ts`'s substring `rank()` alone**, since changing it is out of scope and harmless for a one-shot bootstrap.
 
-Take the top three, fetch each **through the injected `fetchPage`**, call `discoverFeedUrl` on the result, and insert a `sources` row with `type: "competitor_web"`, the competitor id, the page URL, the feed URL (nullable) and a human `label` derived from the matched segment. Use `onConflictDoNothing` against `sources_tenant_url_unique` and re-select, mirroring `addCompetitor` in `src/lib/workspace/competitors.ts` — read that first and match its shape.
+Take the top three, fetch each through the injected `fetchPage`, call `probeAgentPage` for each, and insert a `sources` row with `type: "competitor_web"`, the competitor id, the page URL, the resolved `agentUrl` (nullable), and a `label` from the matched segment. Use `onConflictDoNothing` against `sources_tenant_url_unique` then re-select — mirror `addCompetitor` in `src/lib/workspace/competitors.ts`, which already solves this exact shape.
 
-- [ ] **Step 3: Surface it in settings**
+- [ ] **Step 4: Surface it in settings**
 
-Add a "Find pages to watch" control per competitor in `competitors-editor.tsx`, backed by a `discoverSourcesAction(competitorId)` server action in `company/actions.ts`. Follow the existing actions in that file for the session and tenant pattern, and scope the competitor lookup by `session.user.tenantId` so an id from another workspace finds nothing — the same guard `removeCompetitorAction` uses.
+Add a "Find pages to watch" control per competitor, backed by `discoverSourcesAction(competitorId)` in `company/actions.ts`. Follow the existing actions there for the session pattern, and scope the competitor lookup by `session.user.tenantId` so an id from another workspace finds nothing — the guard `removeCompetitorAction` already uses.
 
-- [ ] **Step 4: Verify and commit**
+- [ ] **Step 5: Verify and commit**
 
 ---
 
@@ -531,12 +522,11 @@ Add a "Find pages to watch" control per competitor in `competitors-editor.tsx`, 
 - Test: `tests/lib/signals/relevance.test.ts`
 
 **Interfaces:**
-- Consumes: `resolveModel`, `modelId`, `recordLlmUsage`, `companyProfiles`
-- Produces: `type ScorableItem = { title: string; excerpt: string | null; url: string | null }`; `type ScoredItem = { score: number | null; rationale: string; topics: string[] }`; `scoreRelevance(items, profile, tenantId, deps?): Promise<ScoredItem[]>`
+- Produces: `type ScorableItem = { title: string; text: string; url: string | null }`; `type ScoredItem = { score: number | null; rationale: string; topics: string[] }`; `scoreRelevance(items, profile, tenantId, deps?): Promise<ScoredItem[]>`
 
 - [ ] **Step 1: Write the failing test**
 
-The model call is injected so the mapping logic — which is where this can silently corrupt data — is tested without the network. Create `tests/lib/signals/relevance.test.ts`:
+The model call is injected so the mapping logic — where this can silently corrupt data — is tested without the network. Create `tests/lib/signals/relevance.test.ts`:
 
 ```ts
 import { describe, it, expect, vi } from "vitest";
@@ -550,9 +540,9 @@ const PROFILE = {
 };
 
 const ITEMS: ScorableItem[] = [
-  { title: "They shipped SSO", excerpt: "Now on all plans.", url: "https://rival.com/a" },
-  { title: "Dark mode", excerpt: null, url: "https://rival.com/b" },
-  { title: "Patch release", excerpt: "Bug fixes.", url: "https://rival.com/c" },
+  { title: "SSO everywhere", text: "Now on all plans.", url: "https://rival.com/a" },
+  { title: "Dark mode", text: "Theme support.", url: "https://rival.com/b" },
+  { title: "Patch release", text: "Bug fixes.", url: "https://rival.com/c" },
 ];
 
 describe("scoreRelevance", () => {
@@ -583,7 +573,6 @@ describe("scoreRelevance", () => {
     }));
 
     const scored = await scoreRelevance(ITEMS, PROFILE, "t1", { generate });
-
     expect(scored[0].score).toBe(0.9);
     expect(scored[1].score).toBeNull();
     expect(scored[2].score).toBeNull();
@@ -612,7 +601,6 @@ describe("scoreRelevance", () => {
     });
 
     const scored = await scoreRelevance(ITEMS, PROFILE, "t1", { generate });
-
     expect(scored).toHaveLength(3);
     expect(scored.every((s) => s.score === null)).toBe(true);
     expect(scored[0].rationale).toMatch(/fail/i);
@@ -641,11 +629,9 @@ export const RelevanceSchema = z.object({
 });
 ```
 
-Number the items in the prompt and require the model to echo each `index`. Build the result by starting from an all-unscored array and filling in the indices the model returned that are in range — that construction is what makes the omitted-index and phantom-index tests pass without extra branching.
+Number the items in the prompt and require the model to echo each `index`. Build the result by starting from an all-unscored array and filling in the in-range indices the model returned — that construction is what makes the omitted-index and phantom-index tests pass without extra branching.
 
-Scoring is against `positioning` and `topics`. Add `"signal_relevance"` to `LlmOperation`. Use `process.env.RELEVANCE_MODEL ?? "anthropic/claude-haiku-4-5"`.
-
-The unscored rationale must contain the word "failed" so the browser shows something honest rather than a blank — the tests assert on it.
+Score against `positioning` and `topics`. Add `"signal_relevance"` to `LlmOperation`. Use `process.env.RELEVANCE_MODEL ?? "anthropic/claude-haiku-4-5"`. The unscored rationale must contain "failed" — the tests assert on it, and the browser shows it instead of a blank.
 
 - [ ] **Step 3: Verify and commit**
 
@@ -658,12 +644,10 @@ The unscored rationale must contain the word "failed" so the browser shows somet
 - Test: `tests/lib/signals/competitor-agent.test.ts`
 
 **Interfaces:**
-- Consumes: `fetchPageText`, `parseFeed`, `scoreRelevance`, `signalWindowStart`, `sources`, `signals`, `companyProfiles`
-- Produces: `runCompetitorSource(source, deps?): Promise<{ written: number; dropped: number; skipped: number }>`
+- Consumes: `fetchPageText`, `probeAgentPage`, `extractBlocks`, `scoreRelevance`, `sources`, `signals`, `companyProfiles`
+- Produces: `runCompetitorSource(source, deps?): Promise<{ written: number; dropped: number; baseline: boolean }>`
 
 - [ ] **Step 1: Write the failing test**
-
-Create `tests/lib/signals/competitor-agent.test.ts`. Inject `fetchPage` and `score` so nothing touches the network or a model:
 
 ```ts
 import { describe, it, expect, afterEach } from "vitest";
@@ -675,11 +659,24 @@ import type { PageResult } from "../../../src/lib/workspace/fetch-page";
 
 const TENANT = "Competitor Agent Test Tenant";
 
-const FEED = (items: string) => `<?xml version="1.0"?><rss version="2.0"><channel>${items}</channel></rss>`;
-const ITEM = (id: string, title: string, date: string) =>
-  `<item><guid>${id}</guid><title>${title}</title><link>https://rival.com/${id}</link><pubDate>${date}</pubDate></item>`;
+const V1 = "## v2.3.0\nFixed a crash on load for large workspaces.";
+const V2 = `## v2.4.0\nAdded SAML SSO for every plan.\n\n${V1}`;
 
-async function seed(feedUrl: string | null = "https://rival.com/feed.xml") {
+const body = (text: string): PageResult => ({
+  text,
+  html: text,
+  finalUrl: "https://rival.com/changelog.md",
+  contentType: "text/markdown",
+});
+
+const scoreAll = (score: number | null) => async (items: unknown[]) =>
+  (items as unknown[]).map(() => ({
+    score,
+    rationale: score === null ? "scoring failed" : "relevant",
+    topics: [],
+  }));
+
+async function seed(agentUrl: string | null = "https://rival.com/changelog.md") {
   const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
   await db.insert(companyProfiles).values({
     tenantId: tenant.id,
@@ -694,25 +691,17 @@ async function seed(feedUrl: string | null = "https://rival.com/feed.xml") {
       type: "competitor_web",
       competitorId: rival.id,
       url: "https://rival.com/changelog",
-      feedUrl,
+      agentUrl,
       label: "Rival changelog",
     })
     .returning();
   return { tenant, rival, source };
 }
 
-function fetcherReturning(body: string): (url: string) => Promise<PageResult> {
-  return async () => ({ text: body, html: body, finalUrl: "https://rival.com/feed.xml" });
-}
-
-const scoreAll = (score: number | null) => async (items: unknown[]) =>
-  items.map(() => ({ score, rationale: score === null ? "scoring failed" : "relevant", topics: [] }));
+const reload = async (id: string) => (await db.select().from(sources).where(eq(sources.id, id)))[0];
 
 async function competitorSignals(tenantId: string) {
-  return db
-    .select()
-    .from(signals)
-    .where(and(eq(signals.tenantId, tenantId), eq(signals.kind, "competitor_move")));
+  return db.select().from(signals).where(and(eq(signals.tenantId, tenantId), eq(signals.kind, "competitor_move")));
 }
 
 describe("runCompetitorSource", () => {
@@ -720,71 +709,100 @@ describe("runCompetitorSource", () => {
     await db.delete(tenants).where(eq(tenants.name, TENANT));
   });
 
-  it("writes a signal per new feed entry, carrying the entry's real date", async () => {
+  it("first run is a baseline: records blocks, writes no signals", async () => {
     const { tenant, source } = await seed();
     const result = await runCompetitorSource(source, {
-      fetchPage: fetcherReturning(FEED(ITEM("a", "SSO everywhere", "Wed, 15 Jul 2026 10:00:00 GMT"))),
-      score: scoreAll(0.8),
+      fetchPage: async () => body(V1),
+      score: scoreAll(0.9),
     });
 
-    expect(result.written).toBe(1);
+    expect(result.baseline).toBe(true);
+    expect(result.written).toBe(0);
+    expect(await competitorSignals(tenant.id)).toHaveLength(0);
+    expect(await reload(source.id)).toHaveProperty("lastSuccessAt");
+  });
+
+  it("writes a signal only for the block that is new on the second run", async () => {
+    const { tenant, source } = await seed();
+    const deps = { score: scoreAll(0.9) };
+
+    await runCompetitorSource(source, { ...deps, fetchPage: async () => body(V1) });
+    const second = await runCompetitorSource(await reload(source.id), {
+      ...deps,
+      fetchPage: async () => body(V2),
+    });
+
+    expect(second.baseline).toBe(false);
+    expect(second.written).toBe(1);
+
     const rows = await competitorSignals(tenant.id);
     expect(rows).toHaveLength(1);
-    expect(rows[0].title).toBe("SSO everywhere");
-    expect(rows[0].externalId).toBe("a");
+    expect(rows[0].title).toContain("v2.4.0");
+    expect(rows[0].excerpt).toContain("SAML SSO");
     expect(rows[0].competitorId).toBe(source.competitorId);
     expect(rows[0].sourceId).toBe(source.id);
-    expect(rows[0].relevanceScore).toBeCloseTo(0.8);
-    expect(rows[0].occurredAt.toISOString()).toBe("2026-07-15T10:00:00.000Z");
+    expect(rows[0].url).toBe("https://rival.com/changelog");
   });
 
-  it("skips entries already seen, so a re-run writes nothing new", async () => {
+  it("writes nothing when the document has not changed", async () => {
     const { tenant, source } = await seed();
-    const deps = {
-      fetchPage: fetcherReturning(FEED(ITEM("a", "SSO everywhere", "Wed, 15 Jul 2026 10:00:00 GMT"))),
-      score: scoreAll(0.8),
-    };
+    const deps = { fetchPage: async () => body(V1), score: scoreAll(0.9) };
+
     await runCompetitorSource(source, deps);
-    const second = await runCompetitorSource(source, deps);
+    const second = await runCompetitorSource(await reload(source.id), deps);
 
     expect(second.written).toBe(0);
-    expect(await competitorSignals(tenant.id)).toHaveLength(1);
-  });
-
-  it("drops entries below the relevance floor without writing them", async () => {
-    const { tenant, source } = await seed();
-    const result = await runCompetitorSource(source, {
-      fetchPage: fetcherReturning(FEED(ITEM("a", "Patch release", "Wed, 15 Jul 2026 10:00:00 GMT"))),
-      score: scoreAll(0.05),
-    });
-
-    expect(result.written).toBe(0);
-    expect(result.dropped).toBe(1);
     expect(await competitorSignals(tenant.id)).toHaveLength(0);
   });
 
-  it("WRITES unscored entries — a scoring failure must stay visible, not vanish", async () => {
+  it("drops new blocks below the relevance floor without writing them", async () => {
     const { tenant, source } = await seed();
-    const result = await runCompetitorSource(source, {
-      fetchPage: fetcherReturning(FEED(ITEM("a", "Something", "Wed, 15 Jul 2026 10:00:00 GMT"))),
+    await runCompetitorSource(source, { fetchPage: async () => body(V1), score: scoreAll(0.9) });
+    const second = await runCompetitorSource(await reload(source.id), {
+      fetchPage: async () => body(V2),
+      score: scoreAll(0.05),
+    });
+
+    expect(second.written).toBe(0);
+    expect(second.dropped).toBe(1);
+    expect(await competitorSignals(tenant.id)).toHaveLength(0);
+  });
+
+  it("WRITES unscored blocks — a scoring failure must stay visible, not vanish", async () => {
+    const { tenant, source } = await seed();
+    await runCompetitorSource(source, { fetchPage: async () => body(V1), score: scoreAll(0.9) });
+    await runCompetitorSource(await reload(source.id), {
+      fetchPage: async () => body(V2),
       score: scoreAll(null),
     });
 
-    expect(result.written).toBe(1);
     const [row] = await competitorSignals(tenant.id);
     expect(row.relevanceScore).toBeNull();
     expect(row.relevanceRationale).toMatch(/fail/i);
   });
 
-  it("skips entries older than the signal window", async () => {
-    const { tenant, source } = await seed();
-    const result = await runCompetitorSource(source, {
-      fetchPage: fetcherReturning(FEED(ITEM("old", "Ancient news", "Mon, 01 Jan 2024 10:00:00 GMT"))),
+  it("fetches agentUrl when present, and url when it is not", async () => {
+    const { source } = await seed();
+    const withAgent: string[] = [];
+    await runCompetitorSource(source, {
+      fetchPage: async (u: string) => {
+        withAgent.push(u);
+        return body(V1);
+      },
       score: scoreAll(0.9),
     });
+    expect(withAgent).toEqual(["https://rival.com/changelog.md"]);
 
-    expect(result.written).toBe(0);
-    expect(await competitorSignals(tenant.id)).toHaveLength(0);
+    const { source: plain } = await seed(null);
+    const withoutAgent: string[] = [];
+    await runCompetitorSource(plain, {
+      fetchPage: async (u: string) => {
+        withoutAgent.push(u);
+        return body(V1);
+      },
+      score: scoreAll(0.9),
+    });
+    expect(withoutAgent).toEqual(["https://rival.com/changelog"]);
   });
 
   it("marks the source failing and records the error when the fetch fails", async () => {
@@ -794,7 +812,7 @@ describe("runCompetitorSource", () => {
       score: scoreAll(0.9),
     });
 
-    const [after] = await db.select().from(sources).where(eq(sources.id, source.id));
+    const after = await reload(source.id);
     expect(after.status).toBe("failing");
     expect(after.lastError).toMatch(/blocked/);
     expect(after.lastRunAt).not.toBeNull();
@@ -804,48 +822,34 @@ describe("runCompetitorSource", () => {
 
   it("clears failing status and lastError on the next successful run", async () => {
     const { source } = await seed();
-    await runCompetitorSource(source, { fetchPage: async () => ({ error: "blocked" as const }), score: scoreAll(0.9) });
-    const [failed] = await db.select().from(sources).where(eq(sources.id, source.id));
-
-    await runCompetitorSource(failed, {
-      fetchPage: fetcherReturning(FEED(ITEM("a", "Back up", "Wed, 15 Jul 2026 10:00:00 GMT"))),
+    await runCompetitorSource(source, {
+      fetchPage: async () => ({ error: "blocked" as const }),
+      score: scoreAll(0.9),
+    });
+    await runCompetitorSource(await reload(source.id), {
+      fetchPage: async () => body(V1),
       score: scoreAll(0.9),
     });
 
-    const [after] = await db.select().from(sources).where(eq(sources.id, source.id));
+    const after = await reload(source.id);
     expect(after.status).toBe("active");
     expect(after.lastError).toBeNull();
     expect(after.lastSuccessAt).not.toBeNull();
-  });
-
-  it("falls back to the page URL when the source has no feed, writing one signal per content change", async () => {
-    const { tenant, source } = await seed(null);
-    const deps = { fetchPage: fetcherReturning("<html><body>Changelog v2</body></html>"), score: scoreAll(0.8) };
-
-    const first = await runCompetitorSource(source, deps);
-    expect(first.written).toBe(1);
-
-    const [reloaded] = await db.select().from(sources).where(eq(sources.id, source.id));
-    const second = await runCompetitorSource(reloaded, deps);
-    expect(second.written).toBe(0);
-    expect(await competitorSignals(tenant.id)).toHaveLength(1);
   });
 });
 ```
 
 - [ ] **Step 2: Run to confirm failure, then implement**
 
-Fetch `source.feedUrl ?? source.url` through `fetchPage`. On error: set `lastRunAt`, `status: "failing"`, `lastError`, return zeros — **write no signals**.
+Fetch `source.agentUrl ?? source.url` through `fetchPage`. On error: set `lastRunAt`, `status: "failing"`, `lastError`, return zeros and write nothing.
 
-With a feed, `parseFeed`. Without one, treat the page as a single entry whose `externalId` is `${source.id}:${sha256(text)}`, title from the source label, excerpt from the page text — and skip entirely when that hash matches the stored watermark.
+`extractBlocks` the text. Read `seenHashes` from `source.watermark`. **If it is empty, this is the baseline run:** store every hash, set the success fields, return `{ written: 0, dropped: 0, baseline: true }` without scoring or writing. Scoring on a baseline would also burn a model call on a competitor's entire archive.
 
-Tier 1 drops, before any model call:
-- an `externalId` that already exists for this `(tenantId, kind: "competitor_move")`
-- an entry whose `publishedAt` is older than `signalWindowStart(new Date())`
+Otherwise the new blocks are those whose hash is not in `seenHashes`. If none, update the timestamps and return. Score the new blocks in one `scoreRelevance` call, then write those at or above `RELEVANCE_FLOOR = 0.3` **plus every unscored one**; count the rest as dropped.
 
-An entry with a null `publishedAt` is **not** dropped — use the fetch time as `occurredAt` and say so in `relevanceRationale`, because a feed without dates is common and losing those entries is worse than a slightly wrong recency.
+Each signal: `kind: "competitor_move"`, `externalId: ${source.id}:${blockHash}`, `title` from the block title, `excerpt` from the block text, `url: source.url` (the human-readable page, not the agent variant), `occurredAt` = now, `sourceId`, `competitorId`. Note in `relevanceRationale` — or a comment at the write — that `occurredAt` is first-seen rather than published, since diffing only observes forward changes.
 
-Score the survivors in one `scoreRelevance` call. Write those at or above `RELEVANCE_FLOOR = 0.3` **plus every unscored one**; count the rest as dropped. Then set `lastRunAt`, `lastSuccessAt`, `status: "active"`, `lastError: null`, and the watermark.
+Finally merge the new hashes into the watermark, **capped** (keep the most recent ~1000, oldest dropped), and set `lastRunAt`, `lastSuccessAt`, `status: "active"`, `lastError: null`.
 
 - [ ] **Step 3: Verify and commit**
 
@@ -855,11 +859,10 @@ Score the survivors in one `scoreRelevance` call. Write those at or above `RELEV
 
 **Files:**
 - Create: `src/lib/signals/sweep.ts`
-- Modify: `src/app/api/cron/scheduler/route.ts`, `src/app/(dashboard)/company/page.tsx`, `competitors-editor.tsx`
+- Modify: `src/app/api/cron/scheduler/route.ts`, `src/app/(dashboard)/company/*`
 - Test: `tests/lib/signals/sweep.test.ts`, `tests/app/api/cron/scheduler/route.test.ts`
 
 **Interfaces:**
-- Consumes: `runCompetitorSource`, `sources`
 - Produces: `sweepCompetitorSources(deps?): Promise<void>`
 
 - [ ] **Step 1: Write the failing sweep test**
@@ -899,7 +902,7 @@ describe("sweepCompetitorSources", () => {
 
     const run = vi.fn(async (source: { tenantId: string }) => {
       if (source.tenantId === tenantA.id) throw new Error("boom");
-      return { written: 1, dropped: 0, skipped: 0 };
+      return { written: 1, dropped: 0, baseline: false };
     });
 
     await expect(sweepCompetitorSources({ runSource: run })).resolves.toBeUndefined();
@@ -910,7 +913,7 @@ describe("sweepCompetitorSources", () => {
     const tenant = await seedTenantWithSource(A, "https://a.com/changelog");
     await db.update(sources).set({ status: "disabled" }).where(eq(sources.tenantId, tenant.id));
 
-    const run = vi.fn(async () => ({ written: 0, dropped: 0, skipped: 0 }));
+    const run = vi.fn(async () => ({ written: 0, dropped: 0, baseline: false }));
     await sweepCompetitorSources({ runSource: run });
     expect(run).not.toHaveBeenCalled();
   });
@@ -919,7 +922,7 @@ describe("sweepCompetitorSources", () => {
     const tenant = await seedTenantWithSource(A, "https://a.com/changelog");
     await db.update(sources).set({ status: "failing" }).where(eq(sources.tenantId, tenant.id));
 
-    const run = vi.fn(async () => ({ written: 0, dropped: 0, skipped: 0 }));
+    const run = vi.fn(async () => ({ written: 0, dropped: 0, baseline: false }));
     await sweepCompetitorSources({ runSource: run });
     expect(run).toHaveBeenCalledTimes(1);
   });
@@ -928,17 +931,17 @@ describe("sweepCompetitorSources", () => {
 
 - [ ] **Step 2: Implement the sweep**
 
-Select `competitor_web` sources whose status is not `disabled`, group per tenant, and run each tenant's sources inside its own try/catch that logs and continues. **Read `src/lib/change-events/resolve-sweep.ts` and match it** — the candidate select gets its own try/catch that logs and returns, because a sweep that throws would reject the cron handler and undo the steps that already succeeded.
+Select `competitor_web` sources whose status is not `disabled`, group per tenant, run each tenant's sources inside its own try/catch that logs and continues. **Read `src/lib/change-events/resolve-sweep.ts` and match it** — the candidate select gets its own try/catch that logs and returns, because a sweep that throws would reject the cron handler and undo the steps that already succeeded.
 
 - [ ] **Step 3: Wire the cron and update its test**
 
-Add `await sweepCompetitorSources();` to the cron route after `syncShippedWorkSignals()`. Signals from external sources should land after the shipped-work reconcile so a single run leaves the table consistent.
-
-**Update `tests/app/api/cron/scheduler/route.test.ts`:** mock `sweepCompetitorSources` and extend the existing ordering assertion to the full four-step sequence. That test already mocks the other three steps for a reason — an unmocked sweep would run for real against the shared test database across all tenants while other files are running.
+Add `await sweepCompetitorSources();` after `syncShippedWorkSignals()`. **Update `tests/app/api/cron/scheduler/route.test.ts`:** mock `sweepCompetitorSources` and extend the ordering assertion to the full four-step sequence. That test already mocks the other three steps for a reason — an unmocked sweep would run for real across all tenants against the shared test database while other files are running.
 
 - [ ] **Step 4: Surface source health**
 
-In the competitors section of `/company`, show each competitor's sources with status, last successful run, and last error. A silently dead source is the failure this whole layer is most exposed to, and the `status`/`lastError` columns exist precisely so it is visible. Follow the existing integration-status treatment for tone and layout rather than inventing one.
+In the competitors section of `/company`, show each competitor's sources with status, last successful run, last error, and whether an agent-facing page was found. Follow the existing integration-status treatment for tone.
+
+**Say plainly that a newly added source produces nothing until the competitor next publishes.** The first run is a baseline by design, and without that sentence a working integration looks broken on day one — which is the most likely support question this feature will generate.
 
 - [ ] **Step 5: Verify and commit**
 
@@ -949,15 +952,16 @@ The dashboard sits behind an OAuth wall, so state in your report that the UI is 
 ## Definition of done
 
 - `npm run typecheck`, `npm run test`, and `npm run lint` all pass.
-- "Find pages to watch" on a competitor discovers its changelog and blog, storing feed URLs where advertised, and running it twice creates no duplicates.
-- A cron run turns new feed entries into `competitor_move` signals with the entries' real dates, visible in the signals browser.
-- Entries below the relevance floor are not written; entries whose scoring failed **are** written, unscored.
-- A source that cannot be fetched shows as `failing` with its error in settings, and recovers to `active` on the next successful run.
+- "Find pages to watch" discovers a competitor's changelog and blog, storing an agent-facing variant where one is published, and running it twice creates no duplicates.
+- A source's first cron run records a baseline and writes no signals; the next run writes one signal per genuinely new block.
+- Blocks below the relevance floor are not written; blocks whose scoring failed **are** written, unscored.
+- A source that cannot be fetched shows as `failing` with its error in settings, and recovers on the next successful run.
 - No external URL is fetched by anything other than `fetchPageText`.
 - No test executes a real sweep against the shared test database.
 
 ## Notes for spec 4 and spec 5
 
-- **Spec 4 (news agent)** reuses `sources` with `type: "news"` and a null `url`, searching `companyProfiles.topics`. `scoreRelevance` is shared unchanged; only acquisition differs. It will need its own idempotency story, because `sources_tenant_url_unique` is partial (`WHERE url IS NOT NULL`) and gives null-url rows no uniqueness at all.
+- **Spec 4 (news agent)** reuses `sources` with `type: "news"` and a null `url`, searching `companyProfiles.topics`. `scoreRelevance` and `extractBlocks` are both reusable; only acquisition differs. It needs its own idempotency story, because `sources_tenant_url_unique` is partial (`WHERE url IS NOT NULL`) and gives null-url rows no uniqueness.
 - **Spec 5** must reuse `signalWindowCondition()` from `window.ts` rather than re-deriving the window, and must extend the deferred deletion with the accepted-brief exemption before `brief_signals` can cascade.
+- **`occurredAt` on `competitor_move` signals is first-seen, not published.** Spec 5's ranking decays on it, which is correct here because diffing only observes forward changes — but any UI that labels it "published on" would be lying.
 - The **quiet-week spike result** in the design doc is the brief agent's requirement, not a suggestion: the prompt must license returning zero briefs, and `weekAssessment` should reach the UI as the empty state.
