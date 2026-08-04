@@ -32,6 +32,14 @@ const RELEVANCE_FLOOR = 0.3;
 // rewrites an ever-larger JSON blob. Hashes are appended in block order as
 // they're confirmed seen, so slicing from the end keeps the most recent ~1000
 // and drops the oldest first.
+//
+// Safe against FIFO-evicting a still-live hash only because `extractBlocks`'s
+// own `MAX_BLOCKS` (agent-page.ts) caps any single run to 500
+// concurrently-relevant hashes -- a 2x margin under this cap. Raise
+// `MAX_BLOCKS` without raising this in step and a long-lived source can start
+// seeing unchanged, still-present blocks look "new" again after eviction,
+// which is exactly the block-flood failure mode the baseline/watermark design
+// exists to avoid.
 const MAX_WATERMARK_HASHES = 1000;
 
 type Watermark = { seenHashes?: unknown };
@@ -144,6 +152,7 @@ export async function runCompetitorSource(source: Source, deps: CompetitorAgentD
 
   let written = 0;
   let dropped = 0;
+  let failedWrites = 0;
   const keptHashes: string[] = [];
 
   for (let i = 0; i < newBlocks.length; i++) {
@@ -180,19 +189,37 @@ export async function runCompetitorSource(source: Source, deps: CompetitorAgentD
       written++;
       keptHashes.push(block.hash);
     } catch (error) {
+      failedWrites++;
       console.error(`[competitor-agent] failed to write signal for source ${source.id}, block ${block.hash}:`, error);
       // Not merged into the watermark -- an unwritten block must be retried
-      // on the next run rather than silently marked "seen".
+      // (re-scored, re-attempted) on the next run rather than silently
+      // marked "seen". See lastError below for why this must also be
+      // operator-visible, not just logged.
     }
   }
 
   const mergedHashes = [...seenHashes, ...keptHashes].slice(-MAX_WATERMARK_HASHES);
 
+  // The run itself succeeded -- it fetched, extracted, and scored -- so this
+  // stays `status: "active"` with `lastSuccessAt` set even when some writes
+  // failed. That's different from the fetch-failure branch above, which
+  // genuinely cannot reach the competitor at all. But a write failure must
+  // still surface *somewhere* an operator can see it: a block that fails to
+  // write deterministically (not just transiently) would otherwise be
+  // silently re-fetched, re-extracted, re-scored, and re-attempted forever,
+  // with nothing but a console.error nobody reads as evidence. `lastError`
+  // is that evidence, named with a count so it's actionable rather than
+  // just "something went wrong".
+  const lastError =
+    failedWrites > 0
+      ? `${failedWrites} of ${newBlocks.length} new blocks failed to write on "${source.label}"; they will be retried next run`
+      : null;
+
   await updateSourceRun(database, source.id, {
     lastRunAt: now,
     lastSuccessAt: now,
     status: "active",
-    lastError: null,
+    lastError,
     watermark: { seenHashes: mergedHashes },
   });
 
