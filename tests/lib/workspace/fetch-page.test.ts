@@ -126,6 +126,16 @@ describe("fetchPageText", () => {
     expect(result).toEqual({ error: "fetch-failed" });
   });
 
+  it("asks for markdown and plain text ahead of html, so a content-negotiating server doesn't hand back the html variant of a .md/llms.txt probe", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(textResponse("# ok\n\n" + "filler ".repeat(40), "text/markdown"));
+    await fetchPageText("https://acme.com/llms.txt", { fetchImpl: fetchImpl as never, resolveHost: publicResolve });
+
+    const [, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    const accept = (init.headers as Record<string, string>).accept;
+    expect(accept).toContain("text/markdown");
+    expect(accept.indexOf("text/markdown")).toBeLessThan(accept.indexOf("text/html"));
+  });
+
   it("extracts text on success", async () => {
     const body = "<html><body><h1>Changelog</h1>" + "<p>We shipped a great new dashboard and fixed export bugs.</p>".repeat(6) + "</body></html>";
     const fetchImpl = vi.fn().mockResolvedValue(htmlResponse(body));

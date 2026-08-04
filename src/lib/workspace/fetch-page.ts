@@ -20,7 +20,11 @@ export type ResolveHost = (hostname: string) => Promise<string[]>;
 
 const TIMEOUT_MS = 8000;
 const MAX_BYTES = 2_000_000;
-const MAX_TEXT_CHARS = 12_000;
+// Exported so callers that diff text across runs (the competitor agent) can
+// detect when a page was cut off at this boundary rather than genuinely
+// ending -- a slice can land mid-block, and the block it cuts in half must be
+// handled differently from one the competitor actually published in full.
+export const MAX_TEXT_CHARS = 12_000;
 const MIN_TEXT_CHARS = 200;
 const MAX_REDIRECTS = 3;
 // Both htmlToText's tag-stripping regex and extractSameOriginLinks's href regex
@@ -196,7 +200,16 @@ export async function fetchPageText(
     try {
       let res: Response;
       try {
-        res = await fetchImpl(current.toString(), { redirect: "manual", signal: controller.signal, headers: { accept: "text/html" } });
+        res = await fetchImpl(current.toString(), {
+          redirect: "manual",
+          signal: controller.signal,
+          // Markdown/plain-text first: `.md` and llms.txt probes are asking
+          // specifically for those, and a bare "text/html" accept header on
+          // those requests invites a content-negotiating server to hand back
+          // the HTML variant instead of 406ing -- which is how a soft-404
+          // HTML page gets mistaken for a real agent-facing one downstream.
+          headers: { accept: "text/markdown, text/plain, text/html" },
+        });
       } catch {
         return { error: "fetch-failed" };
       }
