@@ -290,9 +290,19 @@ describe("extractBlocks", () => {
   });
 
   it("is insensitive to trailing whitespace changes, so reformatting is not a new block", () => {
-    const [a] = extractBlocks("A line.   \n\nnext");
-    const [b] = extractBlocks("A line.\n\nnext");
+    const [a] = extractBlocks("A changelog line with enough text to count.   \n\nnext");
+    const [b] = extractBlocks("A changelog line with enough text to count.\n\nnext");
     expect(a.hash).toBe(b.hash);
+  });
+
+  it("drops nav-sized fragments while keeping a real changelog line", () => {
+    // The floor exists because HTML-extracted text carries nav and footer
+    // remnants. Each one that later changes would cost a slot in the relevance
+    // batch and a row in the browser, for text that can never be a competitor
+    // move. A genuine changelog line clears 30 characters; "Pricing" does not.
+    const blocks = extractBlocks("Pricing\n\nSign in\n\nAdded SAML SSO for every plan.");
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].text).toContain("SAML SSO");
   });
 
   it("drops blocks too short to carry meaning", () => {
@@ -315,7 +325,7 @@ describe("extractBlocks", () => {
 
 `probeAgentPage` tries, in order and stopping at the first success: the page's `.md` variant (skipped when the URL already ends `.md` or `.txt`), then `{origin}/llms.txt`, then `{origin}/llms-full.txt`. Each probe goes through the injected `fetchPage`. Return the URL that worked, or null.
 
-`extractBlocks` normalizes line endings, splits on blank lines, further splits any chunk at markdown headings (`#`–`######`), trims trailing whitespace per line, drops blocks under a minimum length, caps the count, and hashes each block's normalized text with `node:crypto` `sha256`. `title` is the block's first line, truncated.
+`extractBlocks` normalizes line endings, splits on blank lines, further splits any chunk at markdown headings (`#`–`######`), trims trailing whitespace per line, drops blocks under `MIN_BLOCK_LENGTH = 30`, caps the count, and hashes each block's normalized text with `node:crypto` `sha256`. `title` is the block's first line, truncated.
 
 The trailing-whitespace test matters: without per-line trimming before hashing, a competitor reformatting their page produces a full page of "new" blocks and a flood of junk signals.
 
