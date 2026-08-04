@@ -13,6 +13,7 @@ const page = (html: string, finalUrl: string): PageResult => ({
   html,
   finalUrl,
   contentType: "text/html",
+  truncated: false,
 });
 
 function fakeFetcher(pages: Record<string, PageResult>) {
@@ -68,6 +69,7 @@ describe("discoverCompetitorSources", () => {
       html: `# Changelog ${LONG}`,
       finalUrl: "https://rival.com/changelog.md",
       contentType: "text/markdown",
+      truncated: false,
     };
     const { fetchPage } = fakeFetcher({
       "https://rival.com": page(`<a href="/changelog">Changelog</a>`, "https://rival.com"),
@@ -101,6 +103,7 @@ describe("discoverCompetitorSources", () => {
         html: `# Changelog ${LONG}`,
         finalUrl: "https://rival.com/changelog.md",
         contentType: "text/markdown",
+        truncated: false,
       } as PageResult,
     };
     const withoutMd = {

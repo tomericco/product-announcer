@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { fetchPageText, htmlToText, extractSameOriginLinks } from "../../../src/lib/workspace/fetch-page";
+import { fetchPageText, htmlToText, extractSameOriginLinks, MAX_TEXT_CHARS } from "../../../src/lib/workspace/fetch-page";
 
 function htmlResponse(body: string, headers: Record<string, string> = {}) {
   return new Response(body, { status: 200, headers: { "content-type": "text/html", ...headers } });
@@ -228,6 +228,29 @@ describe("fetchPageText", () => {
     if ("text" in result) {
       expect(result.text.length).toBeLessThanOrEqual(12_000);
       expect(result.text.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("reports truncated: true when the extracted text exceeds MAX_TEXT_CHARS", async () => {
+    const overLength = "A".repeat(MAX_TEXT_CHARS + 500);
+    const html = `<html><body>${overLength}</body></html>`;
+    const fetchImpl = vi.fn().mockResolvedValue(htmlResponse(html));
+    const result = await fetchPageText("https://acme.com/long", { fetchImpl: fetchImpl as never, resolveHost: publicResolve });
+    expect(result).toHaveProperty("truncated");
+    if ("truncated" in result) {
+      expect(result.truncated).toBe(true);
+      expect(result.text.length).toBe(MAX_TEXT_CHARS);
+    }
+  });
+
+  it("reports truncated: false when the extracted text is under MAX_TEXT_CHARS", async () => {
+    const body = "<html><body><h1>Changelog</h1>" + "<p>We shipped a great new dashboard and fixed export bugs.</p>".repeat(6) + "</body></html>";
+    const fetchImpl = vi.fn().mockResolvedValue(htmlResponse(body));
+    const result = await fetchPageText("https://acme.com/short", { fetchImpl: fetchImpl as never, resolveHost: publicResolve });
+    expect(result).toHaveProperty("truncated");
+    if ("truncated" in result) {
+      expect(result.truncated).toBe(false);
+      expect(result.text.length).toBeLessThan(MAX_TEXT_CHARS);
     }
   });
 

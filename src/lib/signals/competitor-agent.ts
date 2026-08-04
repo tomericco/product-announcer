@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
 import { signals, sources, companyProfiles, tenants, type Source } from "@/db/schema";
-import { fetchPageText, MAX_TEXT_CHARS, type PageResult } from "@/lib/workspace/fetch-page";
+import { fetchPageText, type PageResult } from "@/lib/workspace/fetch-page";
 import { extractBlocks } from "@/lib/signals/agent-page";
 import { scoreRelevance, type RelevanceProfile, type ScorableItem, type ScoredItem, type RelevanceDeps } from "@/lib/signals/relevance";
 
@@ -123,8 +123,7 @@ export async function runCompetitorSource(source: Source, deps: CompetitorAgentD
   // reported as a spurious signal (or watermarked and then look "new" again
   // the moment the cutoff shifts). Drop it here rather than in extractBlocks,
   // which is pure and has no idea its input was cut.
-  const wasTruncated = page.text.length === MAX_TEXT_CHARS;
-  const blocks = wasTruncated ? rawBlocks.slice(0, -1) : rawBlocks;
+  const blocks = page.truncated ? rawBlocks.slice(0, -1) : rawBlocks;
   const seenHashes = readSeenHashes(source.watermark);
   const isBaseline = seenHashes.length === 0;
 

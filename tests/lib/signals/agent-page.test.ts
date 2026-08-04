@@ -8,6 +8,7 @@ const ok = (text: string, finalUrl = "https://rival.com/x"): PageResult => ({
   html: text,
   finalUrl,
   contentType: "text/markdown",
+  truncated: false,
 });
 
 function fakeFetcher(pages: Record<string, PageResult>) {
@@ -68,6 +69,7 @@ describe("probeAgentPage", () => {
         html: `Page not found ${LONG}`,
         finalUrl: "https://rival.com/changelog.md",
         contentType: "text/html",
+        truncated: false,
       },
     });
     expect(await probeAgentPage("https://rival.com/changelog", { fetchPage })).toBeNull();
@@ -80,6 +82,7 @@ describe("probeAgentPage", () => {
         html: `# Rival ${LONG}`,
         finalUrl: "https://rival.com/", // redirected to the homepage
         contentType: "text/markdown",
+        truncated: false,
       },
     });
     expect(await probeAgentPage("https://rival.com/changelog", { fetchPage })).toBeNull();

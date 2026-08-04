@@ -45,6 +45,7 @@ const body = (text: string): PageResult => ({
   html: text,
   finalUrl: "https://rival.com/changelog.md",
   contentType: "text/markdown",
+  truncated: false,
 });
 
 const scoreAll = (score: number | null) => async (items: unknown[]) =>
@@ -331,7 +332,10 @@ describe("runCompetitorSource", () => {
         n++;
       }
       const text = raw.slice(0, MAX_TEXT_CHARS);
-      return { text, html: text, finalUrl: "https://rival.com/llms-full.txt", contentType: "text/markdown" };
+      // These fixtures build text well past MAX_TEXT_CHARS before slicing it
+      // down, exactly mirroring how fetchPageText itself would have set
+      // `truncated: true` on a page like this.
+      return { text, html: text, finalUrl: "https://rival.com/llms-full.txt", contentType: "text/markdown", truncated: true };
     }
 
     it("drops the final block when the fetched text was truncated at MAX_TEXT_CHARS", async () => {
@@ -361,6 +365,67 @@ describe("runCompetitorSource", () => {
       // Exactly the genuinely new entry -- not that plus a spurious signal
       // for the tail block whose fragment text shifted because the cutoff
       // moved.
+      expect(second.written).toBe(1);
+      const rows = await competitorSignals(tenant.id);
+      expect(rows).toHaveLength(1);
+      expect(rows[0].title).toContain("New Entry");
+    });
+  });
+
+  describe("a page that lands at exactly MAX_TEXT_CHARS without being truncated", () => {
+    // Deliberately built so text.length === MAX_TEXT_CHARS by coincidence
+    // (like buildTruncatedFixture above) but truncated is explicitly false --
+    // this page's genuine extracted text just happens to be exactly that
+    // long. The old length === MAX_TEXT_CHARS check couldn't tell this apart
+    // from a real truncation and would drop its final block on every run.
+    const fillerEntry = (n: number) =>
+      `## Filler ${n}\nPadding text for filler entry number ${n} so it clears the block length floor comfortably.`;
+
+    function buildFillerRaw(): string {
+      let raw = "";
+      let n = 0;
+      while (raw.length < MAX_TEXT_CHARS - 500) {
+        raw += `${fillerEntry(n)}\n\n`;
+        n++;
+      }
+      return raw;
+    }
+
+    // `fillerRaw` is shared verbatim across both fixtures below so the filler
+    // blocks hash identically run to run -- only the final block's content
+    // (and therefore its hash) actually changes between page1 and page2.
+    function buildExactLengthFixture(fillerRaw: string, lastBlockText: string): Extract<PageResult, { text: string }> {
+      const padCount = MAX_TEXT_CHARS - fillerRaw.length - lastBlockText.length - 1;
+      const text = `${fillerRaw}${lastBlockText} ${"z".repeat(padCount)}`;
+      return {
+        text,
+        html: text,
+        finalUrl: "https://rival.com/llms-full.txt",
+        contentType: "text/markdown",
+        truncated: false,
+      };
+    }
+
+    it("keeps a genuinely new final block instead of dropping it as if it were a truncation artifact", async () => {
+      const { tenant, source } = await seed();
+      const fillerRaw = buildFillerRaw();
+
+      const page1 = buildExactLengthFixture(fillerRaw, "## Old Entry\nThe original last entry before anything changed.");
+      expect(page1.text.length).toBe(MAX_TEXT_CHARS);
+      await runCompetitorSource(source, { fetchPage: async () => page1, score: scoreAll(0.9) });
+
+      const page2 = buildExactLengthFixture(fillerRaw, "## New Entry\nA brand new final entry that just got published.");
+      expect(page2.text.length).toBe(MAX_TEXT_CHARS);
+      const second = await runCompetitorSource(await reload(source.id), {
+        fetchPage: async () => page2,
+        score: scoreAll(0.9),
+      });
+
+      // This is the false positive the length-based check produced: a page
+      // whose text coincidentally lands at exactly MAX_TEXT_CHARS, but whose
+      // fetch never actually truncated it (page.truncated is false), must not
+      // have its final block silently dropped. A genuinely new final block
+      // here must still produce a signal.
       expect(second.written).toBe(1);
       const rows = await competitorSignals(tenant.id);
       expect(rows).toHaveLength(1);

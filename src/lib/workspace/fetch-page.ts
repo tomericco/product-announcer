@@ -13,6 +13,14 @@ export type PageResult =
       // crawl onto that host's links.
       finalUrl: string;
       contentType: string;
+      // Whether the extracted text exceeded MAX_TEXT_CHARS and was cut off by
+      // the slice below. Must be captured here, not inferred by a caller from
+      // `text.length === MAX_TEXT_CHARS` -- a page whose genuine extracted
+      // text lands at exactly that length on its own is indistinguishable
+      // from a truncated one by length alone, and would have its real final
+      // block silently dropped every run. This flag is the only reliable
+      // signal, so don't "simplify" it back to a length comparison.
+      truncated: boolean;
     }
   | { error: PageError };
 
@@ -254,9 +262,14 @@ export async function fetchPageText(
         // body is already text, and running htmlToText over it would destroy
         // exactly the line structure the block splitter needs.
         const isHtml = contentType.includes("text/html");
-        const text = (isHtml ? htmlToText(scanned) : scanned).slice(0, MAX_TEXT_CHARS);
+        const extracted = isHtml ? htmlToText(scanned) : scanned;
+        // Capture truncation before slicing -- see the `truncated` field's
+        // doc comment on PageResult for why this can't be reconstructed from
+        // the sliced text's length afterward.
+        const truncated = extracted.length > MAX_TEXT_CHARS;
+        const text = extracted.slice(0, MAX_TEXT_CHARS);
         if (text.length < MIN_TEXT_CHARS) return { error: "insufficient-content" };
-        return { text, html: scanned, finalUrl: current.toString(), contentType };
+        return { text, html: scanned, finalUrl: current.toString(), contentType, truncated };
       } catch {
         return { error: "fetch-failed" };
       }

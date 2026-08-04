@@ -25,11 +25,12 @@ describe("crawlCompanySite", () => {
       html: `<a href="/product">p</a><a href="/about">a</a><a href="/careers">c</a>`,
       finalUrl: "https://acme.com/",
       contentType: "text/html",
+      truncated: false,
     };
     const { fetchPage, calls } = fakeFetcher({
       "https://acme.com/": home,
-      "https://acme.com/product": { text: `product ${LONG}`, html: "", finalUrl: "https://acme.com/product", contentType: "text/html" },
-      "https://acme.com/about": { text: `about ${LONG}`, html: "", finalUrl: "https://acme.com/about", contentType: "text/html" },
+      "https://acme.com/product": { text: `product ${LONG}`, html: "", finalUrl: "https://acme.com/product", contentType: "text/html", truncated: false },
+      "https://acme.com/about": { text: `about ${LONG}`, html: "", finalUrl: "https://acme.com/about", contentType: "text/html", truncated: false },
     });
 
     const result = await crawlCompanySite("https://acme.com/", { fetchPage });
@@ -50,6 +51,7 @@ describe("crawlCompanySite", () => {
         html: `<a href="/careers">c</a>`,
         finalUrl: "https://acme.com/",
         contentType: "text/html",
+        truncated: false,
       },
     });
     const result = await crawlCompanySite("https://acme.com/", { fetchPage });
@@ -62,7 +64,7 @@ describe("crawlCompanySite", () => {
       .map((p) => `<a href="${p}">${p}</a>`)
       .join("");
     const pages: Record<string, PageResult> = {
-      "https://acme.com/": { text: `home ${LONG}`, html, finalUrl: "https://acme.com/", contentType: "text/html" },
+      "https://acme.com/": { text: `home ${LONG}`, html, finalUrl: "https://acme.com/", contentType: "text/html", truncated: false },
     };
     for (const p of ["/product", "/about", "/pricing", "/platform", "/features"]) {
       pages[`https://acme.com${p}`] = {
@@ -70,6 +72,7 @@ describe("crawlCompanySite", () => {
         html: "",
         finalUrl: `https://acme.com${p}`,
         contentType: "text/html",
+        truncated: false,
       };
     }
     const { fetchPage, calls } = fakeFetcher(pages);
@@ -85,8 +88,9 @@ describe("crawlCompanySite", () => {
         html: `<a href="/product">p</a>`,
         finalUrl: "https://acme.com/",
         contentType: "text/html",
+        truncated: false,
       },
-      "https://acme.com/product": { text: huge, html: "", finalUrl: "https://acme.com/product", contentType: "text/html" },
+      "https://acme.com/product": { text: huge, html: "", finalUrl: "https://acme.com/product", contentType: "text/html", truncated: false },
     });
     const result = await crawlCompanySite("https://acme.com/", { fetchPage });
     if ("error" in result) throw new Error("expected success");
