@@ -92,4 +92,46 @@ describe("sweepCompetitorSources", () => {
     expect(urlsCalled).toContain("https://a.com/changelog");
     expect(urlsCalled).toContain("https://a.com/blog");
   });
+
+  it("visits never-run sources first, then least-recently-run, for fair rotation", async () => {
+    // The full candidate list is a total order (ORDER BY last_run_at ASC
+    // NULLS FIRST) shared with every other row live in the database while
+    // this test runs in parallel with the rest of the suite -- so this
+    // filters the observed call order down to just this test's own three
+    // URLs rather than asserting on the raw sequence or a call count.
+    // Filtering a totally-ordered sequence preserves the relative order of
+    // any subsequence, so this still catches an unordered (or wrongly
+    // ordered) select.
+    const tenant = await seedTenantWithSource(A, "https://a.com/never-run");
+    const [rival] = await db.select().from(competitors).where(eq(competitors.tenantId, tenant.id));
+    const older = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+    const newer = new Date(Date.now() - 1 * 24 * 60 * 60 * 1000);
+    await db.insert(sources).values({
+      tenantId: tenant.id,
+      type: "competitor_web",
+      competitorId: rival.id,
+      url: "https://a.com/older",
+      label: "Older",
+      lastRunAt: older,
+    });
+    await db.insert(sources).values({
+      tenantId: tenant.id,
+      type: "competitor_web",
+      competitorId: rival.id,
+      url: "https://a.com/newer",
+      label: "Newer",
+      lastRunAt: newer,
+    });
+
+    const ourUrls = new Set(["https://a.com/never-run", "https://a.com/older", "https://a.com/newer"]);
+    const order: string[] = [];
+    const run = vi.fn(async (source: Source) => {
+      if (source.url && ourUrls.has(source.url)) order.push(source.url);
+      return { written: 0, dropped: 0, baseline: false };
+    });
+
+    await sweepCompetitorSources({ runSource: run });
+
+    expect(order).toEqual(["https://a.com/never-run", "https://a.com/older", "https://a.com/newer"]);
+  });
 });

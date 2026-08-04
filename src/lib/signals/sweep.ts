@@ -1,4 +1,4 @@
-import { and, eq, ne } from "drizzle-orm";
+import { and, eq, ne, sql } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
 import { sources, type Source } from "@/db/schema";
 import { runCompetitorSource, type CompetitorAgentDeps } from "./competitor-agent";
@@ -49,7 +49,15 @@ export async function sweepCompetitorSources(deps: SweepCompetitorSourcesDeps = 
     candidates = await database
       .select()
       .from(sources)
-      .where(and(eq(sources.type, "competitor_web"), ne(sources.status, "disabled")));
+      .where(and(eq(sources.type, "competitor_web"), ne(sources.status, "disabled")))
+      // Never-run sources first, then least-recently-run -- an unordered
+      // select makes the candidate order (and therefore which rows a
+      // starved tail never reaches) an accident of Postgres's plan rather
+      // than a deliberate policy. With this order, starvation (if the sweep
+      // is ever cut short, or a future producer shares this same cron run)
+      // rotates fairly across sources instead of always favoring the same
+      // ones.
+      .orderBy(sql`${sources.lastRunAt} ASC NULLS FIRST`);
   } catch (error) {
     console.error("[sweep] failed to load candidate sources:", error);
     return;
