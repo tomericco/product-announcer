@@ -1047,27 +1047,17 @@ The dashboard sits behind an OAuth wall, so state in your report that the UI is 
 
 ## Known gap, parked (2026-08-04)
 
-**Truncation is inferred from length equality, not reported.**
-`competitor-agent.ts` detects a truncated fetch as `page.text.length === MAX_TEXT_CHARS`,
-but `fetch-page.ts` slices unconditionally, so "sliced because it was longer"
-and "landed at exactly 12,000 characters on its own" are indistinguishable.
-A page whose genuine extracted text is exactly at the cap would have its final
-block silently dropped on every run.
+**RESOLVED 2026-08-04 — truncation detection.** The agent inferred truncation
+from `page.text.length === MAX_TEXT_CHARS` while the fetcher sliced
+unconditionally, so a page landing exactly on the cap would have lost its final
+block every run. `fetchPageText` now captures `truncated` before slicing and
+returns it as a required field on `PageResult`; the agent reads that. Covered by
+a regression test that fails against the old length comparison by construction.
 
-Judged real but not load-bearing: the probability of a page landing exactly on
-the cap is negligible, the consequence is one missed block on one page, and
-nothing downstream depends on it. The shifted-tail-fragment bug this detection
-was added for **is** fixed and tested — this is only the false-positive edge.
-
-**The correct fix is small and known:** have `fetchPageText` capture whether the
-pre-slice length exceeded `MAX_TEXT_CHARS` and return it as `truncated: boolean`
-on `PageResult`, then have the agent read that instead of comparing lengths.
-Left undone only because the whole-plan review allows one fix wave and one
-scoped re-review, and this surfaced in the re-review.
-
-Related, from the same re-review and also parked: `written++` counts an
-`onConflictDoNothing` that matched zero rows. Harmless today because the only
-production caller discards the result — but keying `externalId` on the fetched
-URL means two sources sharing an `llms.txt` now hit that no-op branch routinely,
-so the miscount fires far more often than before. Do not start trusting
-`CompetitorRunResult.written` without fixing it.
+**Still parked: `written++` counts an `onConflictDoNothing` that matched zero
+rows.** Harmless today because the only production caller (`sweep.ts`) discards
+`CompetitorRunResult` — but keying `externalId` on the fetched URL means two
+sources sharing an `llms.txt` now hit that no-op conflict branch routinely, so
+the miscount fires far more often than it used to. **Do not start trusting
+`CompetitorRunResult.written` — for logging, health, or cost reporting — without
+fixing it first.**
