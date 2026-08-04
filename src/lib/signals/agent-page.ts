@@ -5,9 +5,11 @@ export type Block = { hash: string; text: string; title: string };
 
 type FetchPage = (url: string) => Promise<PageResult>;
 
-// A block needs enough text to be worth surfacing as a signal -- "ok" isn't a
-// changelog entry, it's a stray short line the splitter picked up.
-const MIN_BLOCK_LENGTH = 5;
+// A block needs enough text to be worth surfacing as a signal. HTML-extracted
+// text carries nav/footer remnants ("Pricing", "Sign in", "© 2026 Rival Inc")
+// that are well under this -- a genuine changelog line ("Added SAML SSO for
+// every plan.") clears it comfortably.
+const MIN_BLOCK_LENGTH = 30;
 // Bounds the work extractBlocks does (and the size of what a later task would
 // diff/store) against a pathological page that is one giant run of paragraphs.
 const MAX_BLOCKS = 500;

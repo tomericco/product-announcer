@@ -61,36 +61,50 @@ describe("probeAgentPage", () => {
 
 describe("extractBlocks", () => {
   it("splits on blank lines and titles each block from its first line", () => {
-    const blocks = extractBlocks("## v2.4.0\nAdded SSO for all plans.\n\n## v2.3.0\nFixed a crash.");
+    const blocks = extractBlocks(
+      "## v2.4.0\nAdded SAML SSO for every plan, including free.\n\n## v2.3.0\nFixed a crash when loading large workspaces."
+    );
     expect(blocks).toHaveLength(2);
     expect(blocks[0].title).toBe("## v2.4.0");
-    expect(blocks[0].text).toContain("Added SSO");
+    expect(blocks[0].text).toContain("SAML SSO");
     expect(blocks[1].title).toBe("## v2.3.0");
   });
 
   it("starts a new block at a markdown heading even without a blank line", () => {
-    const blocks = extractBlocks("## First\nbody one\n## Second\nbody two");
+    const blocks = extractBlocks(
+      "## First\nA first section with enough text to clear the floor.\n## Second\nA second section with enough text as well."
+    );
     expect(blocks.map((b) => b.title)).toEqual(["## First", "## Second"]);
   });
 
   it("hashes block content, so identical text in two places collapses to one hash", () => {
-    const [a, b] = extractBlocks("Same text here.\n\nSame text here.");
+    const [a, b] = extractBlocks(
+      "An identical changelog entry appears twice here.\n\nAn identical changelog entry appears twice here."
+    );
     expect(a.hash).toBe(b.hash);
   });
 
   it("gives different hashes to different content", () => {
-    const [a, b] = extractBlocks("One thing.\n\nAnother thing.");
+    const [a, b] = extractBlocks(
+      "One changelog entry with plenty of text in it.\n\nA different changelog entry entirely, also long."
+    );
     expect(a.hash).not.toBe(b.hash);
   });
 
   it("is insensitive to trailing whitespace changes, so reformatting is not a new block", () => {
-    const [a] = extractBlocks("A line.   \n\nnext");
-    const [b] = extractBlocks("A line.\n\nnext");
+    const [a] = extractBlocks("A changelog line with enough text to count.   \n\nnext");
+    const [b] = extractBlocks("A changelog line with enough text to count.\n\nnext");
     expect(a.hash).toBe(b.hash);
   });
 
   it("drops blocks too short to carry meaning", () => {
     expect(extractBlocks("ok\n\nA genuinely substantial block of changelog text.")).toHaveLength(1);
+  });
+
+  it("drops nav-sized fragments while keeping a real changelog line", () => {
+    const blocks = extractBlocks("Pricing\n\nSign in\n\nAdded SAML SSO for every plan.");
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].text).toContain("SAML SSO");
   });
 
   it("returns an empty array for empty or whitespace-only input", () => {
