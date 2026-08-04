@@ -893,7 +893,9 @@ Otherwise the new blocks are those whose hash is not in `seenHashes`. If none, u
 
 Each signal: `kind: "competitor_move"`, `externalId: ${source.id}:${blockHash}`, `title` from the block title, `excerpt` from the block text, `url: source.url` (the human-readable page, not the agent variant), `occurredAt` = now, `sourceId`, `competitorId`. Note in `relevanceRationale` — or a comment at the write — that `occurredAt` is first-seen rather than published, since diffing only observes forward changes.
 
-Finally merge the new hashes into the watermark, **capped** (keep the most recent ~1000, oldest dropped), and set `lastRunAt`, `lastSuccessAt`, `status: "active"`, `lastError: null`.
+**A block whose signal insert throws is left OUT of the watermark**, so the next run retries it rather than marking it seen and losing that competitor move forever. The unique index on `(tenantId, kind, externalId)` makes the retry safe — a block that partially succeeded cannot duplicate. Erring toward a repeated attempt beats erring toward silent loss for a layer whose whole job is not missing things.
+
+Finally merge the successfully-written hashes into the watermark, **capped** (keep the most recent ~1000, oldest dropped), and set `lastRunAt`, `lastSuccessAt`, `status: "active"`, `lastError: null`.
 
 - [ ] **Step 3: Verify and commit**
 
