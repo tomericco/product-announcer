@@ -101,36 +101,49 @@ describe("htmlToText — block structure", () => {
 });
 ```
 
-For the fetcher itself, add tests asserting that:
+**This file already has `htmlResponse(body, headers)` and `publicResolve` — use them.** `htmlResponse` hardcodes `content-type: text/html`, so add one sibling helper beside it rather than a second stubbing style:
 
 ```ts
-  it("accepts text/markdown and returns the body unchanged, preserving line structure", async () => {
-    // llms.txt and .md variants are usually served as text/markdown; the old
+function textResponse(body: string, contentType: string) {
+  return new Response(body, { status: 200, headers: { "content-type": contentType } });
+}
+```
+
+Then, in the `fetchPageText` describe block:
+
+```ts
+  it("accepts text/markdown and returns the body unflattened", async () => {
+    // llms.txt and .md variants are usually served as text/markdown. The old
     // allowlist rejected them outright, and htmlToText would have flattened
     // the newlines that block-splitting depends on.
-    const body = "# Changelog\n\n## v2\n\n- SSO\n";
+    const body = "# Changelog\n\n## v2.4.0\n\n- SSO for all plans\n";
+    const fetchImpl = vi.fn().mockResolvedValue(textResponse(body, "text/markdown"));
     const result = await fetchPageText("https://acme.com/llms.txt", {
-      fetchImpl: fakeFetch({ body, contentType: "text/markdown" }),
-      resolveHost: async () => ["93.184.216.34"],
+      fetchImpl: fetchImpl as never,
+      resolveHost: publicResolve,
     });
+
     if ("error" in result) throw new Error("expected success");
     expect(result.contentType).toContain("text/markdown");
-    expect(result.text).toContain("## v2");
+    expect(result.text).toContain("## v2.4.0");
     expect(result.text.split("\n").length).toBeGreaterThan(1);
   });
 
   it("still rejects a content type that is neither html, plain, nor markdown", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(textResponse("%PDF-1.4", "application/pdf"));
     const result = await fetchPageText("https://acme.com/x.pdf", {
-      fetchImpl: fakeFetch({ body: "%PDF", contentType: "application/pdf" }),
-      resolveHost: async () => ["93.184.216.34"],
+      fetchImpl: fetchImpl as never,
+      resolveHost: publicResolve,
     });
     expect(result).toEqual({ error: "fetch-failed" });
   });
 ```
 
-Write `fakeFetch` to match how the existing tests in this file stub `fetchImpl` — read them first and reuse their helper if one exists rather than adding a second.
+The markdown body must clear `MIN_TEXT_CHARS` — pad it if the constant is above its length, or the test fails with `insufficient-content` for the wrong reason.
 
-Also extend the existing redirect test — find it with `grep -n "redirect" tests/lib/workspace/fetch-page.test.ts` — to assert `finalUrl` is where the fetch **landed**, not what was requested. If it equals the requested URL after a redirect, the field is wired to the wrong variable.
+Also extend the redirect test at `tests/lib/workspace/fetch-page.test.ts:41` so a *successful* redirect chain asserts `finalUrl` is where the fetch **landed**, not what was requested. That existing test only covers a redirect to a private host being blocked, so you will need a second one following a redirect to a public host through to a 200. If `finalUrl` equals the requested URL after a redirect, the field is wired to the wrong variable.
+
+**One existing test will certainly fail, and that is correct.** `tests/lib/workspace/fetch-page.test.ts:10` asserts `htmlToText("<style>…</style><h1>Hi</h1><script>…</script><p>We&nbsp;shipped &amp; fixed.</p>")` equals `"Hi We shipped & fixed."`. With block boundaries preserved that becomes `"Hi\nWe shipped & fixed."`. Update the expectation — it encodes the flattening this task removes. It is the only direct `htmlToText` assertion in the suite.
 
 - [ ] **Step 2: Run to confirm failure**
 
