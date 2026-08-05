@@ -11,7 +11,8 @@ export type LlmOperation =
   | "atomic_summary"
   | "linkedin_copy"
   | "company_context_analysis"
-  | "signal_relevance";
+  | "signal_relevance"
+  | "news_selection";
 
 /** The subset of the SDK's usage object we persist. Every field is optional. */
 export type TokenUsage = {
