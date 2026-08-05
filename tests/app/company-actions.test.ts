@@ -273,6 +273,12 @@ describe("setNewsWatching", () => {
     currentTenantId = tenant.id;
     await setNewsWatching(true);
 
+    const ranAt = new Date("2026-08-01T00:00:00Z");
+    await db
+      .update(sources)
+      .set({ lastRunAt: ranAt, lastError: "Company profile has no topics to search on." })
+      .where(and(eq(sources.tenantId, tenant.id), eq(sources.type, "news")));
+
     await setNewsWatching(false);
 
     const [row] = await db
@@ -280,6 +286,8 @@ describe("setNewsWatching", () => {
       .from(sources)
       .where(and(eq(sources.tenantId, tenant.id), eq(sources.type, "news")));
     expect(row.status).toBe("disabled");
+    expect(row.lastRunAt?.toISOString()).toBe(ranAt.toISOString());
+    expect(row.lastError).toBe("Company profile has no topics to search on.");
   });
 
   it("re-enabling a disabled source reactivates the same row", async () => {
