@@ -3,6 +3,7 @@ import { retryFailedDeliveries } from "@/lib/publishing/dispatch";
 import { sweepUnresolvedEvents } from "@/lib/change-events/resolve-sweep";
 import { syncShippedWorkSignals } from "@/lib/signals/shipped-work";
 import { sweepCompetitorSources } from "@/lib/signals/sweep";
+import { sweepNewsSources } from "@/lib/signals/news-sweep";
 
 export async function GET(request: NextRequest) {
   const authHeader = request.headers.get("authorization");
@@ -22,6 +23,11 @@ export async function GET(request: NextRequest) {
   // Runs after the shipped-work reconcile so a single cron run leaves the
   // signals table consistent before the competitor agent adds to it.
   await sweepCompetitorSources();
+  // Runs after the competitor sweep for the same reason that one runs after
+  // the shipped-work reconcile: each producer sees a signals table the
+  // previous one has finished with. Both are per-source isolated, so a
+  // failure in either leaves the other's work intact.
+  await sweepNewsSources();
 
   return NextResponse.json({ ok: true });
 }
