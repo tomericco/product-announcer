@@ -18,3 +18,20 @@ export async function listCompetitorSources(
     .where(and(eq(sources.tenantId, tenantId), eq(sources.type, "competitor_web")))
     .orderBy(asc(sources.competitorId), asc(sources.label));
 }
+
+/**
+ * The tenant's one `news` source, if they've opted in via `setNewsWatching`.
+ * Unlike `listCompetitorSources`, there's at most one row: the null-url
+ * identity index from spec 4 (`sources_tenant_type_null_url_unique`)
+ * enforces that. Null before the first opt-in.
+ */
+export async function getNewsSource(
+  tenantId: string,
+  database: typeof defaultDb = defaultDb
+): Promise<Source | null> {
+  const [source] = await database
+    .select()
+    .from(sources)
+    .where(and(eq(sources.tenantId, tenantId), eq(sources.type, "news")));
+  return source ?? null;
+}

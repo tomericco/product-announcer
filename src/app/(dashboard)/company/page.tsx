@@ -3,12 +3,13 @@ import { systemPersonas, type Source } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { getOrCreateCompanyProfile } from "@/lib/workspace/company-profile";
 import { listCompetitors } from "@/lib/workspace/competitors";
-import { listCompetitorSources } from "@/lib/signals/sources";
+import { listCompetitorSources, getNewsSource } from "@/lib/signals/sources";
 import { saveGuidelines } from "./actions";
 import { BrandStyleImport } from "./brand-style-import";
 import { CompanyContextForm } from "./company-context-form";
 import { CompetitorsEditor } from "./competitors-editor";
 import { IndustrySelect } from "./industry-select";
+import { NewsToggle } from "./news-toggle";
 import { PersonasEditor } from "./personas-editor";
 import { GuidelinesEditor } from "./guidelines-editor";
 import { ToastForm } from "../settings/toast-form";
@@ -20,6 +21,7 @@ export default async function CompanyPage() {
   const brandProfile = await getOrCreateCompanyProfile(session.user.tenantId);
   const competitors = await listCompetitors(session.user.tenantId);
   const competitorSources = await listCompetitorSources(session.user.tenantId);
+  const newsSource = await getNewsSource(session.user.tenantId);
   // Grouped here rather than in the client component so CompetitorsEditor
   // never needs to know how sources relate to competitors -- it just indexes
   // by the id it already has.
@@ -96,6 +98,19 @@ export default async function CompanyPage() {
         </CardHeader>
         <CardContent>
           <CompetitorsEditor competitors={competitors} sourcesByCompetitor={sourcesByCompetitor} />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Industry news</CardTitle>
+          <CardDescription>
+            Opt in to a daily search of news coverage in your space. Costs a small amount of search budget per
+            topic per day, so it&apos;s off until you turn it on.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <NewsToggle source={newsSource} />
         </CardContent>
       </Card>
 

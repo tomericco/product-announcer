@@ -5,32 +5,10 @@ import { useRouter } from "next/navigation";
 import { Plus, Search } from "lucide-react";
 import { toast } from "sonner";
 import { addCompetitorAction, discoverSourcesAction, removeCompetitorAction } from "./actions";
+import { DATE_FORMAT, SourceStatusBadge } from "./source-status";
 import type { Competitor, Source } from "@/db/schema";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
-import { ConnectedIndicator } from "../integrations/connected-indicator";
-
-// Pinned locale + UTC, matching signal-row.tsx's DATE_FORMAT: an unpinned
-// toLocaleString() renders differently on the server and the client and
-// breaks hydration.
-const DATE_FORMAT = new Intl.DateTimeFormat("en-US", {
-  month: "short",
-  day: "numeric",
-  year: "numeric",
-  timeZone: "UTC",
-});
-
-const STATUS_LABEL: Record<Source["status"], string> = {
-  active: "Active",
-  failing: "Failing",
-  disabled: "Disabled",
-};
-
-function SourceStatusBadge({ status }: { status: Source["status"] }) {
-  if (status === "active") return <ConnectedIndicator label="Active" />;
-  return <Badge variant={status === "failing" ? "destructive" : "outline"}>{STATUS_LABEL[status]}</Badge>;
-}
 
 /**
  * One watched page's health: status, when it last ran successfully, whether

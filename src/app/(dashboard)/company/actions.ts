@@ -1,9 +1,9 @@
 "use server";
 
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { db } from "@/db";
-import { companyProfiles, competitors } from "@/db/schema";
+import { companyProfiles, competitors, sources } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { getOrCreateCompanyProfile } from "@/lib/workspace/company-profile";
 import { importBrandStyleForTenant } from "@/lib/workspace/brand-import";
@@ -188,4 +188,40 @@ export async function bootstrapFromWebsite(url: string): Promise<{ ok: boolean; 
   const result = await bootstrapCompanyContext(session.user.tenantId, trimmed);
   if (result.ok) revalidatePath("/company");
   return result;
+}
+
+/**
+ * Opts a tenant in or out of daily news watching. News costs a Tavily credit
+ * per topic per run, so unlike competitor sources (created by discovery) this
+ * one is only ever created by a human flipping this toggle on.
+ *
+ * Upserts against the null-url identity index from spec 4
+ * (`sources_tenant_type_null_url_unique`) rather than insert-then-update, so
+ * enabling twice tops up the same row instead of racing a duplicate, and
+ * disabling flips `status` rather than deleting -- `lastRunAt`, `lastSuccessAt`,
+ * and `lastError` survive for the health display to keep reading after the
+ * tenant turns it back on.
+ */
+export async function setNewsWatching(enabled: boolean) {
+  const session = await requireSession();
+
+  await db
+    .insert(sources)
+    .values({
+      tenantId: session.user.tenantId,
+      type: "news",
+      url: null,
+      label: "Industry news",
+      status: enabled ? "active" : "disabled",
+    })
+    .onConflictDoUpdate({
+      // The null-url identity index from task 2. Enabling twice must top up,
+      // not duplicate; disabling must not delete, so lastError and lastRunAt
+      // survive for the operator to read.
+      target: [sources.tenantId, sources.type],
+      targetWhere: sql`${sources.url} IS NULL`,
+      set: { status: enabled ? "active" : "disabled" },
+    });
+
+  revalidatePath("/company");
 }

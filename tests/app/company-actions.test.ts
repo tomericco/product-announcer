@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "../../src/db";
-import { tenants, companyProfiles, competitors } from "../../src/db/schema";
+import { tenants, companyProfiles, competitors, sources } from "../../src/db/schema";
 
 let currentTenantId = "";
 vi.mock("../../src/lib/workspace/session", () => ({
@@ -25,6 +25,7 @@ import {
   removeCompetitorAction,
   bootstrapFromWebsite,
   discoverSourcesAction,
+  setNewsWatching,
 } from "../../src/app/(dashboard)/company/actions";
 
 const TENANT = "Company Actions Test Tenant";
@@ -246,5 +247,77 @@ describe("discoverSourcesAction", () => {
 
     expect(discoverMock).toHaveBeenCalledWith(tenant.id, competitor.id, "https://jira.example.com");
     expect(result).toEqual({ ok: true, count: 2 });
+  });
+});
+
+describe("setNewsWatching", () => {
+  it("creates exactly one news source when enabled twice", async () => {
+    const tenant = await seed(TENANT);
+    currentTenantId = tenant.id;
+
+    await setNewsWatching(true);
+    await setNewsWatching(true);
+
+    const rows = await db
+      .select()
+      .from(sources)
+      .where(and(eq(sources.tenantId, tenant.id), eq(sources.type, "news")));
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe("active");
+    expect(rows[0].url).toBeNull();
+  });
+
+  it("disables rather than deletes, so lastRunAt and lastError survive", async () => {
+    const tenant = await seed(TENANT);
+    currentTenantId = tenant.id;
+    await setNewsWatching(true);
+
+    await setNewsWatching(false);
+
+    const [row] = await db
+      .select()
+      .from(sources)
+      .where(and(eq(sources.tenantId, tenant.id), eq(sources.type, "news")));
+    expect(row.status).toBe("disabled");
+  });
+
+  it("re-enabling a disabled source reactivates the same row", async () => {
+    const tenant = await seed(TENANT);
+    currentTenantId = tenant.id;
+    await setNewsWatching(true);
+    const [before] = await db
+      .select()
+      .from(sources)
+      .where(and(eq(sources.tenantId, tenant.id), eq(sources.type, "news")));
+
+    await setNewsWatching(false);
+    await setNewsWatching(true);
+
+    const rows = await db
+      .select()
+      .from(sources)
+      .where(and(eq(sources.tenantId, tenant.id), eq(sources.type, "news")));
+    expect(rows).toHaveLength(1);
+    expect(rows[0].id).toBe(before.id);
+    expect(rows[0].status).toBe("active");
+  });
+
+  it("does not touch another tenant's news source", async () => {
+    const mine = await seed(TENANT);
+    const theirs = await seed(OTHER);
+
+    currentTenantId = theirs.id;
+    await setNewsWatching(true);
+
+    currentTenantId = mine.id;
+    await setNewsWatching(true);
+    await setNewsWatching(false);
+
+    const [theirRow] = await db
+      .select()
+      .from(sources)
+      .where(and(eq(sources.tenantId, theirs.id), eq(sources.type, "news")));
+    expect(theirRow.status).toBe("active");
   });
 });
