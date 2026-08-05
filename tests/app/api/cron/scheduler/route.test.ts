@@ -15,11 +15,22 @@ vi.mock("../../../../../src/lib/signals/shipped-work", () => ({ syncShippedWorkS
 // isolation is covered by `tests/lib/signals/sweep.test.ts`; nothing here
 // should ever exercise the real sweep.
 vi.mock("../../../../../src/lib/signals/sweep", () => ({ sweepCompetitorSources: vi.fn() }));
+// Must be mocked for the same reason, and one more: the real
+// `sweepNewsSources` is an unscoped, cross-tenant sweep that *writes* —
+// it UPDATEs status/lastRunAt/lastError on every tenant's news source, so it
+// would clobber rows `news-agent.test.ts`, `news-sweep.test.ts` and
+// `company-actions.test.ts` create in parallel. It also reaches the network:
+// with a TAVILY_API_KEY present (as `.env.example` invites) `npm test` would
+// make real paid Tavily searches, real outbound article fetches, and real
+// model calls. Its own isolation is covered by
+// `tests/lib/signals/news-sweep.test.ts`.
+vi.mock("../../../../../src/lib/signals/news-sweep", () => ({ sweepNewsSources: vi.fn() }));
 
 import { retryFailedDeliveries } from "../../../../../src/lib/publishing/dispatch";
 import { sweepUnresolvedEvents } from "../../../../../src/lib/change-events/resolve-sweep";
 import { syncShippedWorkSignals } from "../../../../../src/lib/signals/shipped-work";
 import { sweepCompetitorSources } from "../../../../../src/lib/signals/sweep";
+import { sweepNewsSources } from "../../../../../src/lib/signals/news-sweep";
 import { GET } from "../../../../../src/app/api/cron/scheduler/route";
 
 function request(authorization?: string) {
@@ -40,6 +51,7 @@ describe("GET /api/cron/scheduler", () => {
     vi.mocked(sweepUnresolvedEvents).mockReset().mockResolvedValue(undefined);
     vi.mocked(syncShippedWorkSignals).mockReset().mockResolvedValue(undefined);
     vi.mocked(sweepCompetitorSources).mockReset().mockResolvedValue(undefined);
+    vi.mocked(sweepNewsSources).mockReset().mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -53,6 +65,7 @@ describe("GET /api/cron/scheduler", () => {
     expect(sweepUnresolvedEvents).not.toHaveBeenCalled();
     expect(syncShippedWorkSignals).not.toHaveBeenCalled();
     expect(sweepCompetitorSources).not.toHaveBeenCalled();
+    expect(sweepNewsSources).not.toHaveBeenCalled();
   });
 
   it("returns 401 and runs nothing when the bearer token is wrong", async () => {
@@ -62,9 +75,10 @@ describe("GET /api/cron/scheduler", () => {
     expect(sweepUnresolvedEvents).not.toHaveBeenCalled();
     expect(syncShippedWorkSignals).not.toHaveBeenCalled();
     expect(sweepCompetitorSources).not.toHaveBeenCalled();
+    expect(sweepNewsSources).not.toHaveBeenCalled();
   });
 
-  it("returns 200 and runs the delivery retry, event sweep, shipped-work sync, and competitor sweep when the bearer token matches CRON_SECRET", async () => {
+  it("returns 200 and runs the delivery retry, event sweep, shipped-work sync, competitor sweep, and news sweep when the bearer token matches CRON_SECRET", async () => {
     const res = await GET(request("Bearer test-cron-secret") as never);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
@@ -72,9 +86,10 @@ describe("GET /api/cron/scheduler", () => {
     expect(sweepUnresolvedEvents).toHaveBeenCalledTimes(1);
     expect(syncShippedWorkSignals).toHaveBeenCalledTimes(1);
     expect(sweepCompetitorSources).toHaveBeenCalledTimes(1);
+    expect(sweepNewsSources).toHaveBeenCalledTimes(1);
   });
 
-  it("runs the shipped-work sync after the event sweep, and the competitor sweep after the shipped-work sync, since each step depends on the previous one having landed", async () => {
+  it("runs the shipped-work sync after the event sweep, the competitor sweep after the shipped-work sync, and the news sweep last, since each step depends on the previous one having landed", async () => {
     const order: string[] = [];
     vi.mocked(sweepUnresolvedEvents).mockImplementation(async () => {
       order.push("sweepUnresolvedEvents");
@@ -85,9 +100,17 @@ describe("GET /api/cron/scheduler", () => {
     vi.mocked(sweepCompetitorSources).mockImplementation(async () => {
       order.push("sweepCompetitorSources");
     });
+    vi.mocked(sweepNewsSources).mockImplementation(async () => {
+      order.push("sweepNewsSources");
+    });
 
     await GET(request("Bearer test-cron-secret") as never);
 
-    expect(order).toEqual(["sweepUnresolvedEvents", "syncShippedWorkSignals", "sweepCompetitorSources"]);
+    expect(order).toEqual([
+      "sweepUnresolvedEvents",
+      "syncShippedWorkSignals",
+      "sweepCompetitorSources",
+      "sweepNewsSources",
+    ]);
   });
 });
