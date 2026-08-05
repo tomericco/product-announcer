@@ -187,7 +187,11 @@ function buildPrompt(
     "",
     open,
     "",
-    "## Already covered — do not propose these again",
+    // Carries two kinds of item: work already published, and briefs that were
+    // proposed and expired undecided (labelled as such by the caller). The
+    // instruction is the same for both — do not serve this up again — but the
+    // label matters, because an expired brief is not published work.
+    "## Already covered or already proposed — do not repeat these",
     "",
     covered,
     "",

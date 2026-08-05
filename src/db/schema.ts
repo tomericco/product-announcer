@@ -386,9 +386,13 @@ export const signals = pgTable(
     relevanceScore: real("relevance_score"),
     relevanceRationale: text("relevance_rationale"),
     topics: text("topics").array().notNull().default([]),
-    // `used` is a reporting and pruning flag, NOT a consumption gate. Spec 5's
-    // ideation reads every signal in its window regardless of status, because a
-    // signal cited last week can join a new cluster this week.
+    // `used` is a reporting and pruning flag, NOT a consumption gate: spec 5's
+    // ideation happily re-reads a signal it cited last week, because that
+    // signal can join a new cluster this week.
+    // `stale` IS a gate, and deliberately so. Ideation omits `includeStale`, so
+    // `listSignals` filters stale rows out: a stale `shipped_work` signal is
+    // work that was withdrawn, and commissioning a brief about something that
+    // no longer ships is worse than saying nothing.
     status: signalStatusEnum("status").notNull().default("new"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -463,7 +467,11 @@ export const briefs = pgTable(
     // edit freezes regeneration.
     editedAt: timestamp("edited_at", { withTimezone: true }),
     // Bumped whenever a later run attaches fresh evidence, so a brief that
-    // keeps gathering support stays near the top instead of ageing out.
+    // keeps gathering support stays near the top instead of ageing out. The
+    // ageing-out half is `expiresAt`'s doing, not this column's: the extend
+    // path in `briefs/run.ts` moves both, because expiry filters on
+    // `expiresAt` alone and bumping only this one would leave the promise
+    // above a lie.
     lastEvidenceAt: timestamp("last_evidence_at", { withTimezone: true }).notNull(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

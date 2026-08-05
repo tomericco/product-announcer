@@ -32,6 +32,26 @@ export const BRIEF_TTL_DAYS = 14;
 /** Caps how much covered/rejected history reaches the prompt. */
 export const MAX_CONTEXT_ITEMS = 20;
 
+/**
+ * Ceiling on how many signals reach the one model call.
+ *
+ * This is the only model input in the codebase that would otherwise be
+ * unbounded; every sibling caps its own deliberately (`MAX_CANDIDATES_PER_RUN`
+ * 20, `MAX_TOPICS_PER_RUN` 5, `MAX_SIGNALS_PER_RUN` 5). Thirty days of an
+ * active tenant is up to 5 news signals a day plus every changed competitor
+ * block plus every shipped update — the low hundreds. Competitor signals make
+ * that worse than the count suggests: `competitor-agent.ts` writes
+ * `excerpt: block.text` with no length cap, while news excerpts are capped at
+ * 500 characters. Left unbounded the request eventually overflows the context
+ * window, `generateObject` throws, and `ideate` turns that into a silent
+ * `{ error }`.
+ *
+ * 120 is generous for a real fortnight of activity while keeping the worst
+ * case far short of the window. The rows arrive `desc(occurredAt)`, so
+ * slicing keeps the freshest — the ones a why-now can actually point at.
+ */
+export const MAX_IDEATION_SIGNALS = 120;
+
 type IdeateFn = typeof ideate;
 
 export type IdeationRunDeps = { ideateFn?: IdeateFn; database?: typeof defaultDb };
@@ -70,8 +90,11 @@ export async function runIdeation(tenantId: string, deps: IdeationRunDeps = {}):
   const profile = await loadProfile(tenantId, database);
 
   const from = new Date(Date.now() - IDEATION_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+  // `includeStale` is deliberately omitted, so `listSignals` excludes stale
+  // rows: a stale `shipped_work` signal is work that was withdrawn, and
+  // briefing about something that no longer ships is worse than saying nothing.
   const rows = await listSignals(tenantId, { minScore: IDEATION_MIN_SCORE, from }, database);
-  const ideationSignals: IdeationSignal[] = rows.map((s) => ({
+  const ideationSignals: IdeationSignal[] = rows.slice(0, MAX_IDEATION_SIGNALS).map((s) => ({
     id: s.id,
     kind: s.kind,
     occurredAt: s.occurredAt,
@@ -103,11 +126,36 @@ export async function runIdeation(tenantId: string, deps: IdeationRunDeps = {}):
     .orderBy(desc(briefs.dismissedAt))
     .limit(MAX_CONTEXT_ITEMS);
 
+  // Expired briefs would otherwise fall out of every dedupe channel: `open`
+  // takes `new`, `covered` takes `accepted`, `rejected` takes `dismissed`. With
+  // a 14-day TTL and a 30-day window, an expired brief's evidence stays in the
+  // window for a fortnight after it expires — with nothing to remember it was
+  // ever proposed, so the model proposes it again. They ride the covered
+  // channel, labelled, because "do not repeat this" is the same instruction;
+  // the label is what stops the model reading an undecided brief as published
+  // work.
+  const expiredRows = await database
+    .select({ title: briefs.title })
+    .from(briefs)
+    .where(and(eq(briefs.tenantId, tenantId), eq(briefs.status, "expired")))
+    .orderBy(desc(briefs.expiresAt))
+    .limit(MAX_CONTEXT_ITEMS);
+
+  // The two share one budget, and neither may starve the other: each is
+  // guaranteed half, and whatever the other leaves unused is handed back.
+  const acceptedTitles = acceptedRows.map((r) => r.title);
+  const expiredTitles = expiredRows.map((r) => `${r.title} (proposed before and expired without a decision)`);
+  const expiredKept = expiredTitles.slice(
+    0,
+    Math.max(Math.floor(MAX_CONTEXT_ITEMS / 2), MAX_CONTEXT_ITEMS - acceptedTitles.length)
+  );
+  const acceptedKept = acceptedTitles.slice(0, MAX_CONTEXT_ITEMS - expiredKept.length);
+
   // Dismissal is training data: the reason and the note are what teach the next
   // run what this team does not want, which is what makes the tool feel like a
   // copilot rather than a generator.
   const context: IdeationContext = {
-    covered: acceptedRows.map((r) => r.title),
+    covered: [...acceptedKept, ...expiredKept],
     rejected: dismissedRows.map((r) =>
       [r.title, r.reason ? `(${r.reason})` : null, r.note].filter(Boolean).join(" ")
     ),
@@ -121,7 +169,17 @@ export async function runIdeation(tenantId: string, deps: IdeationRunDeps = {}):
     tenantId,
   });
 
-  if ("error" in outcome) return empty;
+  if ("error" in outcome) {
+    // Without this line a permanently broken ideation — a bad API key, a schema
+    // validation failure, a context overflow — is indistinguishable from a
+    // genuinely quiet company: the cron reports ok, no brief appears, and
+    // nothing is written anywhere. The whole product promise is that an empty
+    // inbox means "nothing was worth saying", so a failure that looks like
+    // silence is the worst failure this system has. Every sibling producer logs
+    // its swallowed errors the same way.
+    console.error(`[ideation] failed for tenant ${tenantId}:`, outcome.error);
+    return empty;
+  }
 
   const now = new Date();
   const expiresAt = new Date(now.getTime() + BRIEF_TTL_DAYS * 24 * 60 * 60 * 1000);
@@ -132,7 +190,12 @@ export async function runIdeation(tenantId: string, deps: IdeationRunDeps = {}):
     if (action.type === "extend") {
       await database
         .update(briefs)
-        .set({ lastEvidenceAt: now, updatedAt: now })
+        // `expiresAt` moves with `lastEvidenceAt`, or extension would be
+        // cosmetic: `expireStaleBriefs` filters on `expiresAt` alone, so a
+        // brief extended on day 13 would still expire on day 14 while it was
+        // visibly still gathering support. A brief the world keeps supplying
+        // evidence for has earned another full TTL.
+        .set({ lastEvidenceAt: now, expiresAt, updatedAt: now })
         .where(and(eq(briefs.id, action.briefId), eq(briefs.tenantId, tenantId)));
       await database
         .insert(briefSignals)

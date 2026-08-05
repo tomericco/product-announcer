@@ -1,8 +1,8 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
 import { tenants, companyProfiles, signals, briefs, briefSignals } from "../../../src/db/schema";
-import { runIdeation, BRIEF_TTL_DAYS } from "../../../src/lib/briefs/run";
+import { runIdeation, BRIEF_TTL_DAYS, MAX_IDEATION_SIGNALS } from "../../../src/lib/briefs/run";
 
 const TENANT = "Ideation Run Test Tenant";
 
@@ -130,8 +130,45 @@ describe("runIdeation", () => {
     expect(joins).toHaveLength(2);
 
     const [after] = all;
-    // A brief that keeps gathering support must not age out.
     expect(after.lastEvidenceAt.getTime()).toBeGreaterThan(existing.lastEvidenceAt.getTime());
+  });
+
+  it("pushes an extended brief's expiry back, so support keeps it alive", async () => {
+    const tenant = await seedTenant();
+    const s = await seedSignal(tenant.id, "https://n.example.com/a");
+    // A day from expiry: without the bump this brief is gone tomorrow, however
+    // much evidence arrives today.
+    const nearlyExpired = new Date(Date.now() + 86_400_000);
+    const [existing] = await db
+      .insert(briefs)
+      .values({
+        tenantId: tenant.id,
+        origin: "agent",
+        contentType: "blog_post",
+        title: "Existing",
+        angle: "A",
+        whyNow: "W",
+        suggestedChannel: "blog",
+        keyPoints: ["One.", "Two.", "Three."],
+        score: 0.5,
+        lastEvidenceAt: new Date("2026-01-01T00:00:00Z"),
+        expiresAt: nearlyExpired,
+      })
+      .returning();
+
+    const before = Date.now();
+    await runIdeation(tenant.id, {
+      database: db,
+      ideateFn: vi.fn().mockResolvedValue({
+        assessment: "x",
+        actions: [{ type: "extend", briefId: existing.id, evidenceSignalIds: [s.id] }],
+      }),
+    });
+
+    const [after] = await db.select().from(briefs).where(eq(briefs.id, existing.id));
+    expect(after.expiresAt.getTime()).toBeGreaterThan(nearlyExpired.getTime());
+    // A full fresh TTL, not a nudge.
+    expect(after.expiresAt.getTime()).toBeGreaterThan(before + (BRIEF_TTL_DAYS - 1) * 24 * 60 * 60 * 1000);
   });
 
   it("re-attaching the same signal to the same brief is idempotent", async () => {
@@ -208,6 +245,7 @@ describe("runIdeation", () => {
   it("writes nothing when ideation fails", async () => {
     const tenant = await seedTenant();
     await seedSignal(tenant.id, "https://n.example.com/a");
+    vi.spyOn(console, "error").mockImplementation(() => {});
 
     const result = await runIdeation(tenant.id, {
       database: db,
@@ -217,6 +255,83 @@ describe("runIdeation", () => {
     expect(result).toMatchObject({ proposed: 0, extended: 0, assessment: null });
     const all = await db.select().from(briefs).where(eq(briefs.tenantId, tenant.id));
     expect(all).toHaveLength(0);
+  });
+
+  it("logs a failed ideation, so it cannot pass for a quiet company", async () => {
+    const tenant = await seedTenant();
+    await seedSignal(tenant.id, "https://n.example.com/a");
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await runIdeation(tenant.id, {
+      database: db,
+      ideateFn: vi.fn().mockResolvedValue({ error: "Error: overloaded" }),
+    });
+
+    // An empty inbox is supposed to mean "nothing was worth saying". A broken
+    // model call that logs nothing makes that promise unfalsifiable.
+    const logged = spy.mock.calls.map((c) => c.join(" ")).join("\n");
+    expect(logged).toContain("[ideation]");
+    expect(logged).toContain(tenant.id);
+    expect(logged).toContain("overloaded");
+  });
+
+  it("caps how many signals reach the model", async () => {
+    const tenant = await seedTenant();
+    // One over the cap, each a minute older than the last so the ordering the
+    // slice relies on is real rather than incidental.
+    const total = MAX_IDEATION_SIGNALS + 1;
+    const newest = Date.now();
+    await db.insert(signals).values(
+      Array.from({ length: total }, (_, i) => ({
+        tenantId: tenant.id,
+        kind: "market_news" as const,
+        externalId: `https://n.example.com/${i}`,
+        title: `Title https://n.example.com/${i}`,
+        excerpt: null,
+        occurredAt: new Date(newest - i * 60_000),
+        relevanceScore: 0.8,
+      }))
+    );
+
+    const ideateFn = vi.fn().mockResolvedValue({ assessment: "x", actions: [] });
+    await runIdeation(tenant.id, { database: db, ideateFn });
+
+    const passed = ideateFn.mock.calls[0][0].signals as { title: string }[];
+    expect(passed).toHaveLength(MAX_IDEATION_SIGNALS);
+    // The freshest survive the slice; the oldest is what gets dropped.
+    expect(passed[0].title).toBe("Title https://n.example.com/0");
+    expect(passed.map((s) => s.title)).not.toContain(`Title https://n.example.com/${total - 1}`);
+  });
+
+  it("puts expired briefs in the covered context, labelled as undecided", async () => {
+    const tenant = await seedTenant();
+    await seedSignal(tenant.id, "https://n.example.com/a");
+    await db.insert(briefs).values({
+      tenantId: tenant.id,
+      origin: "agent",
+      contentType: "blog_post",
+      title: "Nobody decided on this",
+      angle: "A",
+      whyNow: "W",
+      suggestedChannel: "blog",
+      keyPoints: ["One.", "Two.", "Three."],
+      score: 0.5,
+      status: "expired",
+      lastEvidenceAt: new Date(),
+      expiresAt: new Date(Date.now() - 86_400_000),
+    });
+
+    const ideateFn = vi.fn().mockResolvedValue({ assessment: "x", actions: [] });
+    await runIdeation(tenant.id, { database: db, ideateFn });
+
+    const covered = ideateFn.mock.calls[0][0].context.covered as string[];
+    // Expired briefs are in no other channel: their evidence stays in the
+    // 30-day window for a fortnight after the 14-day TTL runs out, so without
+    // this the inbox re-proposes them.
+    const entry = covered.find((c) => c.startsWith("Nobody decided on this"));
+    expect(entry).toBeDefined();
+    // Labelled, so the model does not read an undecided brief as published work.
+    expect(entry).toContain("expired without a decision");
   });
 
   it("passes only signals inside the ideation window", async () => {

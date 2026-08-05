@@ -887,14 +887,18 @@ Read → ideate → persist. One tenant in, briefs out.
   - `type IdeationRunDeps = { ideateFn?: IdeateFn; database?: typeof defaultDb }`
   - `type IdeationRunResult = { proposed: number; extended: number; assessment: string | null }`
   - `async function runIdeation(tenantId: string, deps?: IdeationRunDeps): Promise<IdeationRunResult>`
-  - `const IDEATION_WINDOW_DAYS = 30`, `const IDEATION_MIN_SCORE = 0.3`, `const BRIEF_TTL_DAYS = 14`, `const MAX_CONTEXT_ITEMS = 20`
+  - `const IDEATION_WINDOW_DAYS = 30`, `const IDEATION_MIN_SCORE = 0.3`, `const BRIEF_TTL_DAYS = 14`, `const MAX_CONTEXT_ITEMS = 20`, `const MAX_IDEATION_SIGNALS = 120`
 
 **Design notes the implementer must not re-derive:**
 
 - **Signals come from `listSignals`, not a hand-rolled query.** That function applies the 60-day retention window unconditionally and passes **null** relevance scores through its `minScore` filter, because null means scoring *failed*, not "scored zero". Re-deriving the query would lose both.
 - **Ideation reads a 30-day window on `occurredAt`** (via `filters.from`), narrower than the 60-day retention window. Two different questions: what is recent enough to write about, versus how long a row is kept.
 - **Only `new` briefs are offered for extension.** Accepted and dismissed ones go into the prompt as covered/rejected *context* instead. Offering them for extension would let a dismissed brief come back.
-- **On `{ error }` the run writes nothing** and returns `assessment: null`.
+- **Expired briefs ride the `covered` channel, labelled.** They are in no other one — `open` takes `new`, `covered` takes `accepted`, `rejected` takes `dismissed` — and with a 14-day TTL inside a 30-day window their evidence outlives them by a fortnight, so without this the inbox re-proposes them. The label (`… (proposed before and expired without a decision)`) is what stops the model reading an undecided brief as published work. The two share the `MAX_CONTEXT_ITEMS` budget, each guaranteed half, with unused half handed back.
+- **Extension bumps `expiresAt` as well as `lastEvidenceAt`,** to a fresh `now + BRIEF_TTL_DAYS`. `expireStaleBriefs` filters on `expiresAt` alone, so bumping only `lastEvidenceAt` would let a brief extended on day 13 expire on day 14 while it was visibly still gathering support.
+- **Signals reaching the model are capped at `MAX_IDEATION_SIGNALS`,** sliced after `listSignals` (whose rows arrive `desc(occurredAt)`, so the freshest survive).
+- **Ideation excludes `stale` signals**, by omitting `includeStale`. A stale `shipped_work` signal is work that was withdrawn; briefing about it would be wrong.
+- **On `{ error }` the run writes nothing**, returns `assessment: null`, and `console.error`s `[ideation] failed for tenant …`. Without the log a permanently broken model call is indistinguishable from a genuinely quiet company, which is the one failure this product cannot afford.
 - **Ranking is the model's `score`, stored as given.** The spike found scores cluster at 0.66–0.92, so this ranks poorly alone; the inbox will order by score *and* `lastEvidenceAt`. The design doc's fuller four-factor rank is an accepted gap, recorded at the bottom of this plan — do not invent one here.
 
 - [ ] **Step 1: Write the failing tests**
@@ -1628,6 +1632,7 @@ What to look for: does the assessment read like judgement or like filler; do bri
 | `IDEATION_MIN_SCORE` | 0.3 | How much signal noise reaches the strategist |
 | `BRIEF_TTL_DAYS` | 14 | How long the inbox holds undecided work |
 | `MAX_CONTEXT_ITEMS` | 20 | How much covered/rejected history the prompt carries |
+| `MAX_IDEATION_SIGNALS` | 120 | Ceiling on the run's model input. The only otherwise-unbounded model input in the codebase: 30 days of an active tenant is up to 5 news signals a day plus every changed competitor block (whose excerpt has no length cap) plus every shipped update, which reaches the low hundreds. Rows arrive `desc(occurredAt)`, so the slice keeps the freshest |
 | `MAX_IDEATION_OUTPUT_TOKENS` | 8,000 | Ceiling on one run's proposals |
 | `IDEATION_MODEL` | `anthropic/claude-sonnet-4-5` | The spikes ran on Opus 5; Sonnet is the cost default and is worth A/B-ing on real signals |
 
