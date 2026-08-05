@@ -97,30 +97,34 @@ describe("sweepIdeation", () => {
   });
 
   it("one tenant's failure does not stop the other's", async () => {
-    await seedTenant(TENANT);
-    await seedTenant(OTHER);
+    const angry = await seedTenant(TENANT);
+    const calm = await seedTenant(OTHER);
+    const mine = new Set([angry.id, calm.id]);
     const seen: string[] = [];
-    let calls = 0;
+    let thrownForMine = false;
 
     await expect(
       sweepIdeation({
         database: db,
         runFn: async (tenantId) => {
-          calls++;
-          // Throw on the FIRST tenant this sweep reaches, whichever it is.
-          // Keying on call order rather than on a specific id makes the test
-          // independent of how two random UUIDs happen to sort — otherwise it
-          // is a coin flip that passes against the very defect it guards.
-          if (calls === 1) throw new Error("boom");
+          // Throw for the FIRST of OUR OWN two tenants the sweep reaches,
+          // whichever it is. Keying on call order alone breaks when other test
+          // files' tenants are swept first; keying on a specific id makes the
+          // test a coin flip on how two random UUIDs happen to sort. This does
+          // neither.
+          if (mine.has(tenantId) && !thrownForMine) {
+            thrownForMine = true;
+            throw new Error("boom");
+          }
           seen.push(tenantId);
           return { proposed: 0, extended: 0, assessment: null };
         },
       })
     ).resolves.toBeUndefined();
 
-    // With the per-tenant catch: the first throws, the second is recorded.
-    // With a single catch around the whole loop: the throw aborts the loop and
-    // `seen` stays empty, whichever order the tenants came back in.
-    expect(seen).toHaveLength(1);
+    // With the per-tenant catch: one of ours throws, the other is recorded.
+    // With a single catch around the whole loop: the throw aborts the loop
+    // before the second of ours is reached, whichever order they came back in.
+    expect(seen.filter((id) => mine.has(id))).toHaveLength(1);
   });
 });

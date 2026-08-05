@@ -101,20 +101,33 @@ describe("sweepNewsSources", () => {
     const angry = await seedTenant(TENANT);
     const calm = await seedTenant(OTHER);
     const angrySource = await seedNews(angry.id);
-    await seedNews(calm.id);
+    const calmSource = await seedNews(calm.id);
+    const mySources = new Set([angrySource.id, calmSource.id]);
+    const myTenants = new Set([angry.id, calm.id]);
     const seen: string[] = [];
+    let thrownForMine = false;
 
     await expect(
       sweepNewsSources({
         database: db,
         runSource: async (source) => {
-          if (source.id === angrySource.id) throw new Error("boom");
+          // Throw for the FIRST of OUR OWN two sources the sweep reaches,
+          // whichever it is. Keying on a specific id makes the test a coin
+          // flip on ordering — if the healthy source happens to be swept
+          // first it passes even with a single catch around the whole loop.
+          if (mySources.has(source.id) && !thrownForMine) {
+            thrownForMine = true;
+            throw new Error("boom");
+          }
           seen.push(source.tenantId);
           return { written: 0, dropped: 0, skipped: 0, credits: 0, selected: 0 };
         },
       })
     ).resolves.toBeUndefined();
 
-    expect(seen).toContain(calm.id);
+    // With the per-source catch: one of ours throws, the other is recorded.
+    // With a single catch around the whole loop: the throw aborts the loop
+    // before the second of ours is reached, in either order.
+    expect(seen.filter((id) => myTenants.has(id))).toHaveLength(1);
   });
 });
