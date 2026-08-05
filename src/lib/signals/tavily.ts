@@ -27,11 +27,15 @@ export type NewsHit = {
   /**
    * Tavily's own 0–1 relevance for the query that found this hit. Free — it
    * arrives with every result — and it is the only filter available before we
-   * spend a fetch or a model call on an article. Absent scores become 0 rather
-   * than dropping the hit: a scoreless result is unranked, not irrelevant, and
-   * the caller's floor decides what to do with it.
+   * spend a fetch or a model call on an article.
+   *
+   * `null` means Tavily gave us no score, which is deliberately NOT the same as
+   * a score of 0: a scoreless result is unranked, not irrelevant. Callers must
+   * keep nulls past their relevance floor and rank them last, so that if Tavily
+   * ever drops or renames the field the news agent degrades to "unranked" and
+   * keeps working, rather than silently filtering every hit away.
    */
-  score: number;
+  score: number | null;
 };
 
 export type TavilyError = "no-api-key" | "request-failed" | "bad-response";
@@ -47,7 +51,7 @@ const ResponseSchema = z.object({
       url: z.string(),
       content: z.string().default(""),
       published_date: z.string().optional(),
-      score: z.number().default(0),
+      score: z.number().optional(),
     })
   ),
   usage: z.object({ credits: z.number() }).optional(),
@@ -128,7 +132,7 @@ export async function searchNews(
       url: r.url.trim(),
       content: r.content,
       publishedAt: parseDate(r.published_date),
-      score: r.score,
+      score: r.score ?? null,
     }));
 
   return { hits, credits: parsed.data.usage?.credits ?? 0 };

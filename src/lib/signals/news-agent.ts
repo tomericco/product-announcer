@@ -56,7 +56,7 @@ export const TAVILY_SCORE_FLOOR = 0.2;
 export const MAX_CANDIDATES_PER_RUN = 20;
 
 /** How many recent headlines the selector sees when judging novelty. */
-const RECENT_TITLES_FOR_NOVELTY = 40;
+export const RECENT_TITLES_FOR_NOVELTY = 40;
 
 /**
  * Caps searches per run. Each is one Tavily credit, so this is the cost dial:
@@ -69,15 +69,17 @@ export const MAX_TOPICS_PER_RUN = 5;
 /**
  * How much of each article body the selector sees.
  *
- * A safety bound, not just a prompt-size tidy-up. `MAX_CANDIDATES_PER_RUN`
- * caps a run at 20 articles, and `fetchPageText` returns up to
- * `MAX_TEXT_CHARS` (12,000) chars each, so an unbounded prompt could still
- * reach ~240k chars — past Haiku's context window. `selectNewsSignals` *fails
- * closed*: on overflow (or a rate limit) it returns `{ error }` and the run
- * writes nothing rather than guessing. Capping the text each item contributes
- * keeps the batch comfortably inside the window, so that failure path stays
- * rare. Also bounds the per-run model spend, which the plan's Tavily credit
- * budget does not otherwise account for.
+ * Cost and signal density, not context overflow. `MAX_CANDIDATES_PER_RUN` (20)
+ * articles at `fetchPageText`'s `MAX_TEXT_CHARS` (12,000) each is ~240k chars,
+ * roughly 60k tokens — comfortably inside Haiku's 200k window, so overflow is
+ * not the concern it would be at a larger cap.
+ *
+ * What the cap buys is a per-run model spend the plan's Tavily credit budget
+ * does not otherwise account for, paid daily per tenant, and a better prompt:
+ * a news article puts its substance in the opening paragraphs, and the tail is
+ * boilerplate, navigation and related-story chrome that dilutes the judgement
+ * rather than informing it. 2,000 chars is where the marginal token stops
+ * telling the model anything new about whether the story matters.
  *
  * Only the selection input is capped. The stored `excerpt` still slices its
  * 500 chars out of the full fetched body.
@@ -275,13 +277,25 @@ export async function runNewsSource(source: Source, deps: NewsAgentDeps = {}): P
   // Tavily's own score is free and already in hand. Applying it here removes
   // most of a run's cost before a single HTTP request, and the sort means the
   // cap below drops the weakest candidates rather than an arbitrary slice.
+  //
+  // A `null` score means Tavily gave us none, which is not the same as zero —
+  // it is unranked, not irrelevant. Nulls therefore survive the floor and sort
+  // as if 0, so they are truncated first rather than dropped outright. That is
+  // what keeps a benign upstream rename of Tavily's `score` field from emptying
+  // this agent permanently.
+  const beforeFilter = byUrl.size;
   const fresh = [...byUrl.values()]
-    .filter((article) => article.score >= TAVILY_SCORE_FLOOR)
-    .sort((a, b) => b.score - a.score)
+    .filter((article) => article.score === null || article.score >= TAVILY_SCORE_FLOOR)
+    .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
     .slice(0, MAX_CANDIDATES_PER_RUN);
 
   if (fresh.length === 0) {
-    await finish(database, source.id, errors.length > 0 ? errors.join("; ") : null, productive);
+    // A run that discarded every candidate must not report clean. Without this
+    // the source sits `active` with a null error while producing nothing — the
+    // exact shape a dead upstream field would take, and invisible to anyone
+    // reading the health block.
+    errors.push(`All ${beforeFilter} candidates were below the relevance floor.`);
+    await finish(database, source.id, errors.join("; "), productive);
     return { ...empty, skipped, credits };
   }
 
@@ -343,6 +357,14 @@ export async function runNewsSource(source: Source, deps: NewsAgentDeps = {}): P
   for (const selection of outcome.selections) {
     const article = fresh[selection.index];
     const body = bodies[selection.index];
+
+    // Unreachable: `selectNewsSignals` already drops out-of-range indices. It
+    // is here because the cost of being wrong is out of proportion to the
+    // check — an undefined `article` would throw a TypeError straight out of
+    // `runNewsSource`, breaking its "does not throw for the failures it
+    // expects" contract and skipping `finish` entirely, which leaves the source
+    // row stale with no lastRunAt and no error to explain it.
+    if (!article) continue;
 
     try {
       const inserted = await database

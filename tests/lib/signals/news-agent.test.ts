@@ -141,7 +141,8 @@ describe("runNewsSource", () => {
     });
 
     expect(result.written).toBe(1);
-    // The saving that matters: the article is fetched and scored once, not twice.
+    // The saving that matters: the article is fetched once and reaches the
+    // selector once, not twice.
     expect(fetchPage).toHaveBeenCalledTimes(1);
     expect(select.mock.calls[0][0]).toHaveLength(1);
   });
@@ -172,12 +173,14 @@ describe("runNewsSource", () => {
     expect(row.occurredAt.toISOString()).toBe("2026-08-04T09:00:00.000Z");
   });
 
-  it("caps how much article text reaches the scorer while the excerpt keeps using the full body", async () => {
+  it("caps how much article text reaches the selector while the excerpt keeps using the full body", async () => {
     const tenant = await seedTenant();
     const source = await seedNewsSource(tenant.id, ["localization"]);
-    // Longer than SCORING_EXCERPT_CHARS: 50 of these unbounded would overflow
-    // the model's context, and scoreRelevance fails *open*, so the overflow
-    // would write every attacker-influenced article unscored.
+    // Longer than SCORING_EXCERPT_CHARS. Uncapped, a full run's worth —
+    // MAX_CANDIDATES_PER_RUN (20) bodies — is paid for on every tenant every
+    // day, and the tail is boilerplate that dilutes the judgement. The
+    // selection pass also fails *closed*, so anything that makes the call more
+    // likely to fail costs the whole day's news.
     const body = "x".repeat(SCORING_EXCERPT_CHARS + 5_000);
     const select = vi.fn().mockResolvedValue({ selections: [{ index: 0, score: 0.8, rationale: "r", topics: [] }] });
 
@@ -464,6 +467,108 @@ describe("runNewsSource", () => {
 
     const recentTitles = select.mock.calls[0][2] as string[];
     expect(recentTitles).toContain("A story we already covered");
+  });
+
+  it("maps a selection index to the candidate at that RANK, not its arrival order", async () => {
+    const tenant = await seedTenant();
+    const source = await seedNewsSource(tenant.id, ["localization"]);
+
+    // `fresh` is sorted by score before `candidates` is built, so
+    // `selection.index` is rank order, not arrival order. Arrival here is
+    // [low, high, mid]; rank is [high, mid, low], so index 1 is "mid" only if
+    // the mapping follows the sort. Every other test in this file uses one
+    // uniform score, so a refactor that built `candidates` from
+    // `byUrl.values()`, or that sorted after mapping, would pass all of them
+    // while writing every row's url, title, rationale and excerpt against the
+    // wrong article.
+    const hits = [
+      hit("https://news.example.com/low", "Low", 0.3),
+      hit("https://news.example.com/high", "High", 0.95),
+      hit("https://news.example.com/mid", "Mid", 0.6),
+    ];
+
+    const select = vi.fn().mockResolvedValue({
+      selections: [{ index: 1, score: 0.8, rationale: "the middle-ranked one", topics: ["localization"] }],
+    });
+
+    const result = await runNewsSource(source, {
+      database: db,
+      search: vi.fn().mockResolvedValue({ hits, credits: 1 }),
+      fetchPage: vi.fn().mockImplementation(async (url: string) => page(`Body of ${url}`)),
+      select,
+    });
+
+    expect(select.mock.calls[0][0].map((c: { url: string }) => c.url)).toEqual([
+      "https://news.example.com/high",
+      "https://news.example.com/mid",
+      "https://news.example.com/low",
+    ]);
+
+    expect(result.written).toBe(1);
+    const rows = await db
+      .select()
+      .from(signals)
+      .where(and(eq(signals.tenantId, tenant.id), eq(signals.kind, "market_news")));
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].url).toBe("https://news.example.com/mid");
+    expect(rows[0].title).toBe("Mid");
+    expect(rows[0].relevanceRationale).toBe("the middle-ranked one");
+    // The body comes from a parallel array indexed the same way, so it catches
+    // the same class of mistake independently.
+    expect(rows[0].excerpt).toContain("https://news.example.com/mid");
+  });
+
+  it("keeps a scoreless hit past the floor but ranks it last", async () => {
+    const tenant = await seedTenant();
+    const source = await seedNewsSource(tenant.id, ["localization"]);
+    const select = vi.fn().mockResolvedValue({ selections: [] });
+
+    await runNewsSource(source, {
+      database: db,
+      search: vi.fn().mockResolvedValue({
+        hits: [
+          // Tavily gave no score at all. Treating that as 0 would put it below
+          // TAVILY_SCORE_FLOOR and drop it — so a benign upstream rename of
+          // `score` would empty this agent permanently behind a green badge.
+          { ...hit("https://news.example.com/unscored", "Unscored"), score: null },
+          hit("https://news.example.com/scored", "Scored", 0.5),
+        ],
+        credits: 1,
+      }),
+      fetchPage: vi.fn().mockResolvedValue(page("body")),
+      select,
+    });
+
+    expect(select.mock.calls[0][0].map((c: { url: string }) => c.url)).toEqual([
+      "https://news.example.com/scored",
+      "https://news.example.com/unscored",
+    ]);
+  });
+
+  it("records that every candidate was filtered out rather than reporting a clean run", async () => {
+    const tenant = await seedTenant();
+    const source = await seedNewsSource(tenant.id, ["localization"]);
+    const select = vi.fn();
+
+    await runNewsSource(source, {
+      database: db,
+      search: vi.fn().mockResolvedValue({
+        hits: [
+          hit("https://news.example.com/w1", "Weak one", 0.05),
+          hit("https://news.example.com/w2", "Weak two", 0.01),
+        ],
+        credits: 1,
+      }),
+      fetchPage: vi.fn(),
+      select,
+    });
+
+    expect(select).not.toHaveBeenCalled();
+    const [row] = await db.select().from(sources).where(eq(sources.id, source.id));
+    // A null lastError here is indistinguishable from a genuinely quiet day,
+    // which is how a permanently-dead agent stays invisible.
+    expect(row.lastError).toContain("2 candidates were below the relevance floor");
   });
 });
 

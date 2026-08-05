@@ -193,7 +193,7 @@ describe("searchNews", () => {
     expect(result.hits[0].score).toBe(0.91);
   });
 
-  it("treats a missing score as zero rather than dropping the hit", async () => {
+  it("reports an absent score as null rather than dropping the hit or faking a zero", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(
       okResponse({
         ...SAMPLE,
@@ -206,6 +206,9 @@ describe("searchNews", () => {
     expect("hits" in result).toBe(true);
     if (!("hits" in result)) return;
     expect(result.hits).toHaveLength(1);
-    expect(result.hits[0].score).toBe(0);
+    // Null, not 0: the caller's floor keeps nulls and ranks them last. Zero
+    // here would put every scoreless hit below TAVILY_SCORE_FLOOR, so an
+    // upstream rename of `score` would silently empty the news agent.
+    expect(result.hits[0].score).toBeNull();
   });
 });
