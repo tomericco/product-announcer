@@ -1,43 +1,62 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
 import { signals, sources, companyProfiles, tenants, type Source } from "@/db/schema";
 import { fetchPageText, type PageResult } from "@/lib/workspace/fetch-page";
 import { searchNews, type NewsHit, type TavilyResult } from "@/lib/signals/tavily";
+import type { RelevanceProfile } from "@/lib/signals/relevance";
 import {
-  scoreRelevance,
-  type RelevanceProfile,
-  type ScorableItem,
-  type ScoredItem,
-  type RelevanceDeps,
-} from "@/lib/signals/relevance";
+  selectNewsSignals,
+  type NewsCandidate,
+  type NewsSelectionDeps,
+  type SelectionResult,
+} from "@/lib/signals/news-selection";
 
 type SearchFn = (query: string, deps?: { fetchImpl?: typeof fetch }) => Promise<TavilyResult>;
 type FetchPage = (url: string) => Promise<PageResult>;
-type ScoreFn = (
-  items: ScorableItem[],
+type SelectFn = (
+  candidates: NewsCandidate[],
   profile: RelevanceProfile,
+  recentTitles: string[],
   tenantId: string,
-  deps?: RelevanceDeps
-) => Promise<ScoredItem[]>;
+  deps?: NewsSelectionDeps
+) => Promise<SelectionResult>;
 
 export type NewsAgentDeps = {
   search?: SearchFn;
   fetchPage?: FetchPage;
-  score?: ScoreFn;
+  select?: SelectFn;
   database?: typeof defaultDb;
 };
 
 export type NewsRunResult = {
   written: number;
-  /** Scored below the floor. */
+  /** Candidates that reached the selector but were not selected. */
   dropped: number;
-  /** Already held as signals — not fetched, not scored, not billed. */
+  /** Already held as signals — not fetched, not selected, not billed. */
   skipped: number;
   credits: number;
+  /** How many of this run's candidates the selector chose. Capped by MAX_SIGNALS_PER_RUN. */
+  selected: number;
 };
 
-/** Matches the competitor agent. A null score is a failure, not a low score, and bypasses this. */
-const RELEVANCE_FLOOR = 0.3;
+/**
+ * Tavily's own relevance below which a hit is not worth a fetch, let alone a
+ * model call. The cheapest filter in the pipeline: it arrives free with every
+ * search result and costs nothing to apply.
+ */
+export const TAVILY_SCORE_FLOOR = 0.2;
+
+/**
+ * Hard ceiling on how many articles reach the fetch and selection stages.
+ * `MAX_TOPICS_PER_RUN × TAVILY_MAX_RESULTS` is 50; this bounds the run's real
+ * cost — 50 fetches and a 50-item prompt — to something predictable regardless
+ * of how many topics a tenant configures. Candidates are sorted by Tavily
+ * score first, so truncation drops the weakest, not an arbitrary slice.
+ */
+export const MAX_CANDIDATES_PER_RUN = 20;
+
+/** How many recent headlines the selector sees when judging novelty. */
+const RECENT_TITLES_FOR_NOVELTY = 40;
 
 /**
  * Caps searches per run. Each is one Tavily credit, so this is the cost dial:
@@ -48,30 +67,30 @@ const RELEVANCE_FLOOR = 0.3;
 export const MAX_TOPICS_PER_RUN = 5;
 
 /**
- * How much of each article body the scorer sees.
+ * How much of each article body the selector sees.
  *
- * This is a safety bound, not just a prompt-size tidy-up. A run can carry
- * MAX_TOPICS_PER_RUN × TAVILY_MAX_RESULTS = 50 articles, and `fetchPageText`
- * returns up to MAX_TEXT_CHARS (12,000) each, so the unbounded prompt was
- * ~600k chars — past Haiku's context window. `scoreRelevance` *fails open*:
- * on overflow (or a rate limit) it returns all-null scores, and a null score
- * bypasses RELEVANCE_FLOOR by design, so the whole batch of 50
- * attacker-influenced articles would be written unscored. Capping the text
- * each item contributes keeps the batch comfortably inside the window, so the
- * floor keeps doing its job. Also bounds the per-run model spend, which the
- * plan's Tavily credit budget does not otherwise account for.
+ * A safety bound, not just a prompt-size tidy-up. `MAX_CANDIDATES_PER_RUN`
+ * caps a run at 20 articles, and `fetchPageText` returns up to
+ * `MAX_TEXT_CHARS` (12,000) chars each, so an unbounded prompt could still
+ * reach ~240k chars — past Haiku's context window. `selectNewsSignals` *fails
+ * closed*: on overflow (or a rate limit) it returns `{ error }` and the run
+ * writes nothing rather than guessing. Capping the text each item contributes
+ * keeps the batch comfortably inside the window, so that failure path stays
+ * rare. Also bounds the per-run model spend, which the plan's Tavily credit
+ * budget does not otherwise account for.
  *
- * Only the scoring input is capped. The stored `excerpt` still slices its 500
- * chars out of the full fetched body.
+ * Only the selection input is capped. The stored `excerpt` still slices its
+ * 500 chars out of the full fetched body.
  */
 export const SCORING_EXCERPT_CHARS = 2_000;
 
 /**
  * How many articles are fetched at once.
  *
- * A bare `Promise.all` over a full run opens up to 50 outbound connections
- * simultaneously, each buffering up to `fetchPageText`'s 2MB cap. Batching
- * keeps peak memory and socket use flat without pulling in a pool dependency.
+ * A bare `Promise.all` over a full run opens up to MAX_CANDIDATES_PER_RUN (20)
+ * outbound connections simultaneously, each buffering up to `fetchPageText`'s
+ * 2MB cap. Batching keeps peak memory and socket use flat without pulling in
+ * a pool dependency.
  */
 const FETCH_CONCURRENCY = 8;
 
@@ -181,9 +200,9 @@ export async function runNewsSource(source: Source, deps: NewsAgentDeps = {}): P
   const database = deps.database ?? defaultDb;
   const search = deps.search ?? searchNews;
   const fetchPage = deps.fetchPage ?? fetchPageText;
-  const score = deps.score ?? scoreRelevance;
+  const select = deps.select ?? selectNewsSignals;
 
-  const empty: NewsRunResult = { written: 0, dropped: 0, skipped: 0, credits: 0 };
+  const empty: NewsRunResult = { written: 0, dropped: 0, skipped: 0, credits: 0, selected: 0 };
 
   const profile = await loadProfile(source.tenantId, database);
   const topics = profile.topics.slice(0, MAX_TOPICS_PER_RUN);
@@ -252,12 +271,25 @@ export async function runNewsSource(source: Source, deps: NewsAgentDeps = {}): P
     return { ...empty, skipped, credits };
   }
 
+  // ── Cheap filtering, before anything expensive ────────────────────────
+  // Tavily's own score is free and already in hand. Applying it here removes
+  // most of a run's cost before a single HTTP request, and the sort means the
+  // cap below drops the weakest candidates rather than an arbitrary slice.
+  const fresh = [...byUrl.values()]
+    .filter((article) => article.score >= TAVILY_SCORE_FLOOR)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, MAX_CANDIDATES_PER_RUN);
+
+  if (fresh.length === 0) {
+    await finish(database, source.id, errors.length > 0 ? errors.join("; ") : null, productive);
+    return { ...empty, skipped, credits };
+  }
+
   // ── Fetch each article through the guarded fetcher ─────────────────────
   // These URLs came from a search engine and are attacker-influenced: a
   // hostile page can rank for a topic. `fetchPageText` is what makes that safe.
   // Fetched in bounded batches rather than one big `Promise.all` — see
   // FETCH_CONCURRENCY.
-  const fresh = [...byUrl.values()];
   const bodies: string[] = [];
   for (let i = 0; i < fresh.length; i += FETCH_CONCURRENCY) {
     const batch = await Promise.all(
@@ -272,29 +304,45 @@ export async function runNewsSource(source: Source, deps: NewsAgentDeps = {}): P
     bodies.push(...batch);
   }
 
-  // ── Score ─────────────────────────────────────────────────────────────
-  const items: ScorableItem[] = fresh.map((article, i) => ({
+  // ── Recent titles, so novelty can be judged ───────────────────────────
+  const recent = await database
+    .select({ title: signals.title })
+    .from(signals)
+    .where(and(eq(signals.tenantId, source.tenantId), eq(signals.kind, "market_news")))
+    .orderBy(desc(signals.occurredAt))
+    .limit(RECENT_TITLES_FOR_NOVELTY);
+  const recentTitles = recent.map((r) => r.title);
+
+  // ── Select ────────────────────────────────────────────────────────────
+  const candidates: NewsCandidate[] = fresh.map((article, i) => ({
     title: article.title,
-    // Capped: one run can carry 50 full article bodies into a single prompt.
-    // See SCORING_EXCERPT_CHARS for why overflow here is a correctness
-    // problem, not just a cost one.
+    // Capped: one run can carry MAX_CANDIDATES_PER_RUN full article bodies
+    // into a single prompt. See SCORING_EXCERPT_CHARS for why overflow here is
+    // a correctness problem, not just a cost one.
     text: bodies[i].slice(0, SCORING_EXCERPT_CHARS),
     url: article.url,
   }));
-  const scores = await score(items, profile, source.tenantId);
+  const outcome = await select(candidates, profile, recentTitles, source.tenantId);
+
+  if ("error" in outcome) {
+    // Fail CLOSED. An article nobody judged cannot have passed the bar, and
+    // writing the batch anyway is exactly what the cap exists to prevent. The
+    // settings health block surfaces `lastError`, so this is visible rather
+    // than a silent gap.
+    errors.push(`selection failed: ${outcome.error}`);
+    await finish(database, source.id, errors.join("; "), false);
+    return { ...empty, skipped, credits };
+  }
+
+  const dropped = fresh.length - outcome.selections.length;
 
   // ── Write ─────────────────────────────────────────────────────────────
   const now = new Date();
   let written = 0;
-  let dropped = 0;
 
-  for (const [i, article] of fresh.entries()) {
-    const scored = scores[i] ?? { score: null, rationale: "Relevance scoring failed for this item.", topics: [] };
-
-    if (scored.score !== null && scored.score < RELEVANCE_FLOOR) {
-      dropped++;
-      continue;
-    }
+  for (const selection of outcome.selections) {
+    const article = fresh[selection.index];
+    const body = bodies[selection.index];
 
     try {
       const inserted = await database
@@ -307,8 +355,8 @@ export async function runNewsSource(source: Source, deps: NewsAgentDeps = {}): P
           url: article.url,
           title: article.title,
           // Sliced from the full fetched body, not from the capped copy the
-          // scorer saw.
-          excerpt: bodies[i].slice(0, 500),
+          // selector saw.
+          excerpt: body.slice(0, 500),
           // The article's own date when it has one; an undated article is
           // recorded as "seen now". That biases undated articles *fresh* —
           // `now` is the freshest value there is, so spec 5's decay ranking
@@ -317,9 +365,9 @@ export async function runNewsSource(source: Source, deps: NewsAgentDeps = {}): P
           // undated hit is at most a day old anyway. Widening that window
           // widens this skew with it.
           occurredAt: article.publishedAt ?? now,
-          relevanceScore: scored.score,
-          relevanceRationale: scored.rationale,
-          topics: scored.topics,
+          relevanceScore: selection.score,
+          relevanceRationale: selection.rationale,
+          topics: selection.topics,
         })
         .onConflictDoNothing()
         .returning({ id: signals.id });
@@ -333,5 +381,5 @@ export async function runNewsSource(source: Source, deps: NewsAgentDeps = {}): P
   }
 
   await finish(database, source.id, errors.length > 0 ? errors.join("; ") : null, productive);
-  return { written, dropped, skipped, credits };
+  return { written, dropped, skipped, credits, selected: outcome.selections.length };
 }

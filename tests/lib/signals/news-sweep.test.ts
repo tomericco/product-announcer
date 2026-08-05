@@ -39,7 +39,7 @@ describe("sweepNewsSources", () => {
       database: db,
       runSource: async (source) => {
         seen.push(source.tenantId);
-        return { written: 0, dropped: 0, skipped: 0, credits: 0 };
+        return { written: 0, dropped: 0, skipped: 0, credits: 0, selected: 0 };
       },
     });
 
@@ -55,7 +55,7 @@ describe("sweepNewsSources", () => {
       database: db,
       runSource: async (source) => {
         seen.push(source.tenantId);
-        return { written: 0, dropped: 0, skipped: 0, credits: 0 };
+        return { written: 0, dropped: 0, skipped: 0, credits: 0, selected: 0 };
       },
     });
 
@@ -71,7 +71,7 @@ describe("sweepNewsSources", () => {
       database: db,
       runSource: async (source) => {
         seen.push(source.tenantId);
-        return { written: 0, dropped: 0, skipped: 0, credits: 0 };
+        return { written: 0, dropped: 0, skipped: 0, credits: 0, selected: 0 };
       },
     });
 
@@ -90,7 +90,7 @@ describe("sweepNewsSources", () => {
       database: db,
       runSource: async (source) => {
         seen.push(source.id);
-        return { written: 0, dropped: 0, skipped: 0, credits: 0 };
+        return { written: 0, dropped: 0, skipped: 0, credits: 0, selected: 0 };
       },
     });
 
@@ -110,7 +110,7 @@ describe("sweepNewsSources", () => {
         runSource: async (source) => {
           if (source.id === angrySource.id) throw new Error("boom");
           seen.push(source.tenantId);
-          return { written: 0, dropped: 0, skipped: 0, credits: 0 };
+          return { written: 0, dropped: 0, skipped: 0, credits: 0, selected: 0 };
         },
       })
     ).resolves.toBeUndefined();
