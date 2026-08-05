@@ -410,7 +410,7 @@ describe("runNewsSource", () => {
       search: vi.fn().mockResolvedValue({
         hits: [
           hit("https://news.example.com/strong", "Strong", 0.9),
-          hit("https://news.example.com/weak", "Weak", 0.05),
+          hit("https://news.example.com/weak", "Weak", 0.001),
         ],
         credits: 1,
       }),
@@ -555,8 +555,8 @@ describe("runNewsSource", () => {
       database: db,
       search: vi.fn().mockResolvedValue({
         hits: [
-          hit("https://news.example.com/w1", "Weak one", 0.05),
-          hit("https://news.example.com/w2", "Weak two", 0.01),
+          hit("https://news.example.com/w1", "Weak one", 0.001),
+          hit("https://news.example.com/w2", "Weak two", 0.002),
         ],
         credits: 1,
       }),
@@ -607,4 +607,35 @@ describe("normalizeArticleUrl", () => {
   it("returns an unparseable url unchanged rather than throwing", () => {
     expect(normalizeArticleUrl("not a url")).toBe("not a url");
   });
+
+  it("searches the bare topic, without a literal 'news' suffix", async () => {
+    const tenant = await seedTenant();
+    const source = await seedNewsSource(tenant.id, ["developer cli"]);
+    const search = vi.fn().mockResolvedValue({ hits: [], credits: 1 });
+
+    await runNewsSource(source, { database: db, search, fetchPage: vi.fn(), select: vi.fn() });
+
+    // `searchNews` already sends `topic: "news"`, which scopes the index.
+    // Appending the word biased results toward wire copy: on the first live run
+    // "developer cli news" returned a crypto-brokerage press release.
+    expect(search).toHaveBeenCalledWith("developer cli");
+  });
+
+  it("keeps hits Tavily scored below the old 0.2 floor", async () => {
+    const tenant = await seedTenant();
+    const source = await seedNewsSource(tenant.id, ["localization"]);
+    const fetchPage = vi.fn().mockResolvedValue(page("body"));
+
+    await runNewsSource(source, {
+      database: db,
+      // 0.12 is a real observed score from the first live run. Under the
+      // original floor of 0.2 it was discarded before anything looked at it.
+      search: vi.fn().mockResolvedValue({ hits: [hit("https://news.example.com/mid", "Mid", 0.12)], credits: 1 }),
+      fetchPage,
+      select: vi.fn().mockResolvedValue({ selections: [] }),
+    });
+
+    expect(fetchPage.mock.calls.map((c) => c[0])).toContain("https://news.example.com/mid");
+  });
+
 });

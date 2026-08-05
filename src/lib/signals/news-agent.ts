@@ -43,8 +43,23 @@ export type NewsRunResult = {
  * Tavily's own relevance below which a hit is not worth a fetch, let alone a
  * model call. The cheapest filter in the pipeline: it arrives free with every
  * search result and costs nothing to apply.
+ *
+ * Calibrated against real traffic, not guessed. The first live run returned
+ * these scores across three successful searches:
+ *
+ *   0.42  0.25  0.12  0.09  0.06  0.04  0.04  0.04  0.03  0.03  0.02
+ *
+ * The original 0.2 was off by roughly an order of magnitude — it admitted 2 of
+ * 11 hits and silently discarded the rest before anything looked at them. At
+ * 0.05 the same sample keeps the top 5 and drops the tail, which is the job
+ * this filter is actually for: skip obvious junk, not do the selecting.
+ *
+ * The real bounding is done by MAX_CANDIDATES_PER_RUN and by the selector.
+ * Tavily's score is a better ordering signal than a gate, so keep this low —
+ * raising it means dropping articles no human or model ever assessed. Eleven
+ * data points from one run is thin; revisit once there are more.
  */
-export const TAVILY_SCORE_FLOOR = 0.2;
+export const TAVILY_SCORE_FLOOR = 0.05;
 
 /**
  * Hard ceiling on how many articles reach the fetch and selection stages.
@@ -224,7 +239,11 @@ export async function runNewsSource(source: Source, deps: NewsAgentDeps = {}): P
   let searched = 0;
 
   for (const topic of topics) {
-    const result = await search(`${topic} news`);
+    // The bare topic, deliberately. `searchNews` already sends `topic: "news"`,
+    // which scopes the index; appending the word as well biased results toward
+    // wire copy and press releases. On the first live run "developer cli news"
+    // returned a crypto-brokerage press release as its top hit.
+    const result = await search(topic);
     if ("error" in result) {
       errors.push(`${topic}: ${result.error}`);
       continue;

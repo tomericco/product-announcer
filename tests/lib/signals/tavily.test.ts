@@ -211,4 +211,81 @@ describe("searchNews", () => {
     // upstream rename of `score` would silently empty the news agent.
     expect(result.hits[0].score).toBeNull();
   });
+
+  it("survives a null published_date instead of failing the whole search", async () => {
+    // Observed on live traffic: Tavily returns published_date: null for an
+    // article whose date it could not determine. `z.string().optional()` allows
+    // absent but NOT null, so one such result used to fail the entire parse —
+    // 2 of 5 real searches came back bad-response because of this.
+    const fetchImpl = vi.fn().mockResolvedValue(
+      okResponse({
+        ...SAMPLE,
+        results: [
+          { title: "Dated", url: "https://news.example.com/a", content: "x", score: 0.4, published_date: "2026-08-04T09:00:00Z" },
+          { title: "Undated", url: "https://news.example.com/b", content: "y", score: 0.3, published_date: null },
+        ],
+      })
+    );
+
+    const result = await searchNews("q", { fetchImpl });
+
+    expect("hits" in result).toBe(true);
+    if (!("hits" in result)) return;
+    expect(result.hits).toHaveLength(2);
+    expect(result.hits[1].publishedAt).toBeNull();
+  });
+
+  it("drops a single malformed result rather than losing the whole batch", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      okResponse({
+        ...SAMPLE,
+        results: [
+          { title: "Good one", url: "https://news.example.com/a", content: "x", score: 0.4 },
+          { title: 12345, url: "https://news.example.com/b", content: "y", score: 0.3 },
+          { title: "Good two", url: "https://news.example.com/c", content: "z", score: 0.2 },
+        ],
+      })
+    );
+
+    const result = await searchNews("q", { fetchImpl });
+
+    expect("hits" in result).toBe(true);
+    if (!("hits" in result)) return;
+    expect(result.hits.map((h) => h.title)).toEqual(["Good one", "Good two"]);
+  });
+
+  it("tolerates a null content and a null score without dropping the hit", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      okResponse({
+        ...SAMPLE,
+        results: [{ title: "Sparse", url: "https://news.example.com/a", content: null, score: null }],
+      })
+    );
+
+    const result = await searchNews("q", { fetchImpl });
+
+    expect("hits" in result).toBe(true);
+    if (!("hits" in result)) return;
+    expect(result.hits).toHaveLength(1);
+    expect(result.hits[0].content).toBe("");
+    expect(result.hits[0].score).toBeNull();
+  });
+
+  it("counts one credit per successful search, since Tavily reports no usage", async () => {
+    // Live responses carry no `usage` object at all — the documented top-level
+    // keys are query/follow_up_questions/answer/images/results/response_time/
+    // request_id. Credits are therefore derived from Tavily's published
+    // pricing for the search_depth we send, not read from the response.
+    const fetchImpl = vi.fn().mockResolvedValue(
+      okResponse({ results: [{ title: "A", url: "https://news.example.com/a", content: "x", score: 0.5 }] })
+    );
+
+    const result = await searchNews("q", { fetchImpl });
+
+    expect("hits" in result).toBe(true);
+    if (!("hits" in result)) return;
+    expect(result.credits).toBe(1);
+  });
+
+
 });

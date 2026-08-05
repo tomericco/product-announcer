@@ -44,20 +44,44 @@ export type TavilyResult = { hits: NewsHit[]; credits: number } | { error: Tavil
 
 export type TavilyFetch = typeof fetch;
 
-const ResponseSchema = z.object({
-  results: z.array(
-    z.object({
-      title: z.string(),
-      url: z.string(),
-      content: z.string().default(""),
-      published_date: z.string().optional(),
-      score: z.number().optional(),
-    })
-  ),
-  usage: z.object({ credits: z.number() }).optional(),
+/**
+ * The envelope only. Individual results are parsed one at a time below, on
+ * purpose: validating the whole array at once means a single malformed result
+ * fails the entire search.
+ *
+ * That is not hypothetical. The first live run lost 2 of 5 searches to
+ * `bad-response` because some results carry `published_date: null` and the
+ * field was typed `.optional()`, which permits *absent* but not *null*. Nine
+ * good articles were discarded to reject one undated one.
+ */
+const EnvelopeSchema = z.object({ results: z.array(z.unknown()) });
+
+/**
+ * One result. Every field Tavily may omit or null is `.nullish()`, because the
+ * response shape is not a contract we control and the failure mode for
+ * guessing wrong is silent and total.
+ */
+const ResultSchema = z.object({
+  title: z.string(),
+  url: z.string(),
+  content: z.string().nullish(),
+  published_date: z.string().nullish(),
+  score: z.number().nullish(),
 });
 
-function parseDate(raw: string | undefined): Date | null {
+/**
+ * Tavily does not report usage. The live response's top-level keys are
+ * `query`, `follow_up_questions`, `answer`, `images`, `results`,
+ * `response_time` and `request_id` — there is no `usage` object, so the
+ * previous `usage.credits ?? 0` reported zero on every successful search and
+ * all credit accounting was fiction.
+ *
+ * Derived from Tavily's published pricing for the `search_depth` we send:
+ * `basic` is one credit. Changing `search_depth` means changing this.
+ */
+const CREDITS_PER_SEARCH = 1;
+
+function parseDate(raw: string | null | undefined): Date | null {
   if (!raw) return null;
   const parsed = new Date(raw);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
@@ -114,26 +138,35 @@ export async function searchNews(
     return { error: "bad-response" };
   }
 
-  const parsed = ResponseSchema.safeParse(payload);
-  if (!parsed.success) return { error: "bad-response" };
+  const envelope = EnvelopeSchema.safeParse(payload);
+  // Only a missing or non-array `results` is a bad response now. Anything
+  // wrong with an individual result costs that result, not the search.
+  if (!envelope.success) return { error: "bad-response" };
 
-  const hits: NewsHit[] = parsed.data.results
+  const hits: NewsHit[] = [];
+  for (const raw of envelope.data.results) {
+    const parsed = ResultSchema.safeParse(raw);
+    if (!parsed.success) continue;
+    const r = parsed.data;
+
     // A result without a title or URL cannot become a signal: the title is
     // NOT NULL and the URL is the idempotency key. The scheme check is a
     // safety filter, not a tidy-up: `signals.url` is rendered straight into an
     // `<a href>`, so a `javascript:` or `data:` URL arriving from a search
     // result would be a stored XSS vector. It is also what `fetchPageText`
     // expects — anything else could not be fetched anyway.
-    .filter(
-      (r) => r.title.trim().length > 0 && r.url.trim().length > 0 && /^https?:/i.test(r.url.trim())
-    )
-    .map((r) => ({
-      title: r.title.trim(),
-      url: r.url.trim(),
-      content: r.content,
+    const title = r.title.trim();
+    const url = r.url.trim();
+    if (title.length === 0 || url.length === 0 || !/^https?:/i.test(url)) continue;
+
+    hits.push({
+      title,
+      url,
+      content: r.content ?? "",
       publishedAt: parseDate(r.published_date),
       score: r.score ?? null,
-    }));
+    });
+  }
 
-  return { hits, credits: parsed.data.usage?.credits ?? 0 };
+  return { hits, credits: CREDITS_PER_SEARCH };
 }
