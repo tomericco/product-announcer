@@ -347,7 +347,11 @@ export async function searchNews(
         // One credit per search. `advanced` costs two and buys deeper page
         // extraction we do not use — we fetch the article ourselves.
         search_depth: "basic",
-        time_range: "week",
+        // Shipped as "day", not "week": review found that a window wider than
+        // the daily cron cadence re-fetches and re-scores every sub-floor
+        // article once a day for the window's whole length, because a
+        // rejected article is recorded nowhere and so can never be skipped.
+        time_range: "day",
         max_results: TAVILY_MAX_RESULTS,
       }),
     });

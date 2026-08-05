@@ -76,7 +76,15 @@ export async function searchNews(
         // One credit per search. `advanced` costs two and buys deeper page
         // extraction we do not use — we fetch the article ourselves.
         search_depth: "basic",
-        time_range: "week",
+        // Tied to the cron cadence: the sweep runs daily, so a day's window
+        // covers everything published since the last run with no overlap.
+        // A wider window would keep re-surfacing articles the previous runs
+        // already judged — an article scored below the floor is dropped
+        // without a record, so nothing can skip it, and a week's window means
+        // re-fetching and re-scoring it on seven consecutive days. Do not
+        // widen this without either changing the cron cadence to match or
+        // giving rejected articles somewhere to be remembered.
+        time_range: "day",
         max_results: TAVILY_MAX_RESULTS,
       }),
     });
@@ -98,8 +106,14 @@ export async function searchNews(
 
   const hits: NewsHit[] = parsed.data.results
     // A result without a title or URL cannot become a signal: the title is
-    // NOT NULL and the URL is the idempotency key.
-    .filter((r) => r.title.trim().length > 0 && r.url.trim().length > 0)
+    // NOT NULL and the URL is the idempotency key. The scheme check is a
+    // safety filter, not a tidy-up: `signals.url` is rendered straight into an
+    // `<a href>`, so a `javascript:` or `data:` URL arriving from a search
+    // result would be a stored XSS vector. It is also what `fetchPageText`
+    // expects — anything else could not be fetched anyway.
+    .filter(
+      (r) => r.title.trim().length > 0 && r.url.trim().length > 0 && /^https?:/i.test(r.url.trim())
+    )
     .map((r) => ({
       title: r.title.trim(),
       url: r.url.trim(),

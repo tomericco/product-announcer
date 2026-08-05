@@ -50,7 +50,7 @@ describe("searchNews", () => {
     expect(result.credits).toBe(1);
   });
 
-  it("sends the news topic, a bounded result count, and the bearer key", async () => {
+  it("sends the news topic, a day window, a bounded result count, and the bearer key", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(okResponse(SAMPLE));
 
     await searchNews("localization tooling", { fetchImpl });
@@ -64,6 +64,10 @@ describe("searchNews", () => {
     // search would leave every signal's occurredAt guessed.
     expect(body.topic).toBe("news");
     expect(body.search_depth).toBe("basic");
+    // Load-bearing, not cosmetic: the sweep is daily and a rejected article is
+    // recorded nowhere, so any window wider than the cadence re-fetches and
+    // re-scores the same sub-floor articles once per day for its whole length.
+    expect(body.time_range).toBe("day");
     expect(body.max_results).toBe(TAVILY_MAX_RESULTS);
   });
 
@@ -109,6 +113,30 @@ describe("searchNews", () => {
     expect("hits" in result).toBe(true);
     if (!("hits" in result)) return;
     expect(result.hits.map((h) => h.url)).toEqual(["https://news.example.com/c"]);
+  });
+
+  it("drops results whose url is not http(s), since signals.url is rendered into an href", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      okResponse({
+        ...SAMPLE,
+        results: [
+          { title: "Hostile", url: "javascript:alert(1)", content: "x", score: 0.9 },
+          { title: "Also hostile", url: "data:text/html,<script>alert(1)</script>", content: "y", score: 0.9 },
+          { title: "Not fetchable", url: "ftp://files.example.com/a", content: "z", score: 0.9 },
+          { title: "Fine", url: "http://news.example.com/plain", content: "w", score: 0.5 },
+          { title: "Also fine", url: "https://news.example.com/secure", content: "v", score: 0.5 },
+        ],
+      })
+    );
+
+    const result = await searchNews("q", { fetchImpl });
+
+    expect("hits" in result).toBe(true);
+    if (!("hits" in result)) return;
+    expect(result.hits.map((h) => h.url)).toEqual([
+      "http://news.example.com/plain",
+      "https://news.example.com/secure",
+    ]);
   });
 
   it("reports a missing api key without calling the network", async () => {
