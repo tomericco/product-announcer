@@ -290,6 +290,27 @@ describe("setNewsWatching", () => {
     expect(row.lastError).toBe("Company profile has no topics to search on.");
   });
 
+  it("clears a stale lastError when enabling, so a fixed problem stops being reported", async () => {
+    const tenant = await seed(TENANT);
+    currentTenantId = tenant.id;
+    await setNewsWatching(true);
+
+    // The common path: the tenant reads "no topics", adds topics, re-toggles.
+    await db
+      .update(sources)
+      .set({ lastError: "Company profile has no topics to search on.", status: "failing" })
+      .where(and(eq(sources.tenantId, tenant.id), eq(sources.type, "news")));
+
+    await setNewsWatching(true);
+
+    const [row] = await db
+      .select()
+      .from(sources)
+      .where(and(eq(sources.tenantId, tenant.id), eq(sources.type, "news")));
+    expect(row.lastError).toBeNull();
+    expect(row.status).toBe("active");
+  });
+
   it("re-enabling a disabled source reactivates the same row", async () => {
     const tenant = await seed(TENANT);
     currentTenantId = tenant.id;

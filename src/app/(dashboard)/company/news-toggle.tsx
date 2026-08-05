@@ -51,7 +51,10 @@ export function NewsToggle({ source }: { source: Source | null }) {
         Searches news each day against the topics in your company profile. Add topics above to change what it looks
         for.
       </p>
-      {enabled && source && (
+      {/* Shown whenever a source row exists, including while it's switched
+          off: turning the toggle off after a failure must not hide the reason
+          it failed — that's the one moment an operator most wants to read it. */}
+      {source && (
         <ul className="space-y-1.5 pl-1">
           <li className="rounded-md border border-dashed p-2 text-xs">
             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -63,10 +66,15 @@ export function NewsToggle({ source }: { source: Source | null }) {
                 <SourceStatusBadge status={source.status} />
               </div>
             </div>
+            {/* `lastSuccessAt` means "last error-free run" — it is set even
+                when the run wrote zero signals — so it is worded exactly as
+                competitors-editor.tsx words the same field. Calling it "last
+                found something" told a tenant whose agent has never produced
+                a signal that it had. */}
             <p className="text-muted-foreground">
               {source.lastSuccessAt
-                ? `Last found something ${DATE_FORMAT.format(source.lastSuccessAt)}`
-                : "Hasn't found anything yet"}
+                ? `Last ran without errors ${DATE_FORMAT.format(source.lastSuccessAt)}`
+                : "Hasn't completed a clean run yet"}
             </p>
             {source.lastError && <p className="mt-1 text-destructive">{source.lastError}</p>}
           </li>

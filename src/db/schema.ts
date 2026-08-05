@@ -328,9 +328,9 @@ export const sources = pgTable(
     // One row per watched (non-null) URL per tenant, so re-running discovery
     // tops up instead of duplicating. Partial (`url IS NOT NULL`): Postgres
     // treats NULLs as distinct from one another, so this gives no uniqueness
-    // to null-url sources — spec 4's topic-driven news sources are the
-    // null-url case *by design*, and need their own idempotency story
-    // (e.g. a tenant+type uniqueness rule) when that spec lands.
+    // to null-url sources — topic-driven news sources are the null-url case
+    // *by design*. Their idempotency comes from the tenant+type index nine
+    // lines below, not from this one.
     uniqueIndex("sources_tenant_url_unique")
       .on(table.tenantId, table.url)
       .where(sql`${table.url} IS NOT NULL`),

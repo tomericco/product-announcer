@@ -220,7 +220,16 @@ export async function setNewsWatching(enabled: boolean) {
       // survive for the operator to read.
       target: [sources.tenantId, sources.type],
       targetWhere: sql`${sources.url} IS NULL`,
-      set: { status: enabled ? "active" : "disabled" },
+      set: {
+        status: enabled ? "active" : "disabled",
+        // Enabling clears the stale error. The common path here is a tenant
+        // reading "Company profile has no topics to search on.", adding
+        // topics, and re-toggling -- without this they keep reading the
+        // complaint they just fixed until the next nightly run overwrites it.
+        // Disabling leaves it alone: that is exactly when the operator needs
+        // the last failure still on screen.
+        ...(enabled ? { lastError: null } : {}),
+      },
     });
 
   revalidatePath("/company");
