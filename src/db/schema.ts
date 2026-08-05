@@ -309,8 +309,11 @@ export const sources = pgTable(
     // last run, in last-seen order (oldest-still-present first, capped at
     // MAX_WATERMARK_HASHES) — there are no feeds and therefore no entry ids
     // or dates to track, only "was this block here before." jsonb rather than
-    // columns because shape is expected to vary by source type — spec 4's
-    // news sources will need their own cursor shape here.
+    // columns because shape is expected to vary by source type.
+    // News sources (news-agent.ts) deliberately leave this empty: an article
+    // has its own durable identity (its URL) and its own date, so dedupe is
+    // the `signals_tenant_kind_external_unique` index rather than a cursor.
+    // Nothing here needs to be remembered between runs.
     watermark: jsonb("watermark").$type<Record<string, unknown>>().notNull().default({}),
     // Sources rot: sites redesign, feeds move. Surfaced in settings the way the
     // Notion and Webflow connection statuses already are, rather than failing
@@ -331,6 +334,15 @@ export const sources = pgTable(
     uniqueIndex("sources_tenant_url_unique")
       .on(table.tenantId, table.url)
       .where(sql`${table.url} IS NOT NULL`),
+    // The mirror of the index above, for the null-url half of the table.
+    // Postgres treats NULLs as distinct from one another, so the partial
+    // unique index above gives null-url rows no uniqueness whatsoever — a
+    // tenant could accumulate unlimited identical news sources. A topic-driven
+    // news source has no URL to be identified by; its identity is simply
+    // "this tenant's news source", so that is what this enforces.
+    uniqueIndex("sources_tenant_type_null_url_unique")
+      .on(table.tenantId, table.type)
+      .where(sql`${table.url} IS NULL`),
   ]
 );
 

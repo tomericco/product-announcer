@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "sources_tenant_type_null_url_unique" ON "sources" USING btree ("tenant_id","type") WHERE "sources"."url" IS NULL;
