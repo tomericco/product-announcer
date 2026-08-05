@@ -378,8 +378,11 @@ export const signals = pgTable(
     atomicUpdateId: uuid("atomic_update_id").references(() => atomicUpdates.id, { onDelete: "set null" }),
     competitorId: uuid("competitor_id").references(() => competitors.id, { onDelete: "set null" }),
     // Null means scoring failed, not "scored zero" — the rationale says which.
-    // A failed classifier writes the signal anyway: a missed competitor move is
-    // invisible, an unscored row in the browser announces itself.
+    // On competitor_move signals a failed classifier writes the signal anyway:
+    // a missed competitor move is invisible, an unscored row in the browser
+    // announces itself. market_news does NOT work that way — its selection pass
+    // fails closed, so a failed judgement writes no row at all and the source is
+    // marked failing instead.
     relevanceScore: real("relevance_score"),
     relevanceRationale: text("relevance_rationale"),
     topics: text("topics").array().notNull().default([]),
