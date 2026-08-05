@@ -96,22 +96,31 @@ describe("sweepIdeation", () => {
     expect(seen).toContain(tenant.id);
   });
 
-  it("one tenant's failure does not stop another's", async () => {
-    const angry = await seedTenant(TENANT);
-    const calm = await seedTenant(OTHER);
+  it("one tenant's failure does not stop the other's", async () => {
+    await seedTenant(TENANT);
+    await seedTenant(OTHER);
     const seen: string[] = [];
+    let calls = 0;
 
     await expect(
       sweepIdeation({
         database: db,
         runFn: async (tenantId) => {
-          if (tenantId === angry.id) throw new Error("boom");
+          calls++;
+          // Throw on the FIRST tenant this sweep reaches, whichever it is.
+          // Keying on call order rather than on a specific id makes the test
+          // independent of how two random UUIDs happen to sort — otherwise it
+          // is a coin flip that passes against the very defect it guards.
+          if (calls === 1) throw new Error("boom");
           seen.push(tenantId);
           return { proposed: 0, extended: 0, assessment: null };
         },
       })
     ).resolves.toBeUndefined();
 
-    expect(seen).toContain(calm.id);
+    // With the per-tenant catch: the first throws, the second is recorded.
+    // With a single catch around the whole loop: the throw aborts the loop and
+    // `seen` stays empty, whichever order the tenants came back in.
+    expect(seen).toHaveLength(1);
   });
 });
