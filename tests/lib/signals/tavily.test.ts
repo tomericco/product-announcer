@@ -144,4 +144,14 @@ describe("searchNews", () => {
 
     expect(result).toEqual({ error: "bad-response" });
   });
+
+  it("reports an unparseable body as bad-response", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response("not json at all", { status: 200, headers: { "content-type": "application/json" } })
+    );
+
+    const result = await searchNews("q", { fetchImpl });
+
+    expect(result).toEqual({ error: "bad-response" });
+  });
 });
