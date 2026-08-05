@@ -504,7 +504,15 @@ export const briefSignals = pgTable(
     addedBy: uuid("added_by").references(() => users.id, { onDelete: "set null" }),
     addedAt: timestamp("added_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (table) => [primaryKey({ columns: [table.briefId, table.signalId] })]
+  (table) => [
+    primaryKey({ columns: [table.briefId, table.signalId] }),
+    // Postgres indexes the PK, which leads with briefId — it does NOT index
+    // the referencing side of the signalId FK. Without this, every signal
+    // delete scans this table to enforce the cascade, and the accepted-brief
+    // exemption that `signals/window.ts` instructs a future author to build is
+    // exactly a `signal_id →` lookup.
+    index("brief_signals_signal_idx").on(table.signalId),
+  ]
 );
 
 export type BriefSignal = typeof briefSignals.$inferSelect;

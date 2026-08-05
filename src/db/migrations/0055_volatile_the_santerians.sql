@@ -1,0 +1,1 @@
+CREATE INDEX "brief_signals_signal_idx" ON "brief_signals" USING btree ("signal_id");

@@ -4,6 +4,10 @@ import { db } from "../../src/db";
 import { tenants, signals, briefs, briefSignals } from "../../src/db/schema";
 
 const TENANT = "Briefs Schema Test Tenant";
+// Deliberately in the future. A brief with a past expiry and the default `new`
+// status is live prey for a concurrent `expireStaleBriefs` in another test
+// file, which would flip its status out from under these assertions.
+const FUTURE = () => new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
 
 afterEach(async () => {
   await db.delete(tenants).where(eq(tenants.name, TENANT));
@@ -66,7 +70,7 @@ describe("briefs schema", () => {
         keyPoints: ["One.", "Two.", "Three."],
         score: 0.5,
         lastEvidenceAt: new Date(),
-        expiresAt: new Date(),
+        expiresAt: FUTURE(),
       })
       .returning();
 
@@ -92,7 +96,7 @@ describe("briefs schema", () => {
       keyPoints: ["One.", "Two.", "Three."],
       score: 0.5,
       lastEvidenceAt: new Date(),
-      expiresAt: new Date(),
+      expiresAt: FUTURE(),
     };
     const pieceId = crypto.randomUUID();
 
@@ -117,7 +121,7 @@ describe("briefs schema", () => {
       keyPoints: ["One.", "Two.", "Three."],
       score: 0.5,
       lastEvidenceAt: new Date(),
-      expiresAt: new Date(),
+      expiresAt: FUTURE(),
     };
 
     await db.insert(briefs).values(base);
