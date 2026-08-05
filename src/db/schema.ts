@@ -407,6 +407,100 @@ export const signals = pgTable(
 
 export type Signal = typeof signals.$inferSelect;
 
+export const briefOriginEnum = pgEnum("brief_origin", ["agent", "manual"]);
+export const briefStatusEnum = pgEnum("brief_status", ["new", "accepted", "dismissed", "expired"]);
+export const briefDismissReasonEnum = pgEnum("brief_dismiss_reason", [
+  "off_topic",
+  "wrong_angle",
+  "already_covered",
+  "not_our_voice",
+  "other",
+]);
+
+export const briefs = pgTable(
+  "briefs",
+  {
+    id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    origin: briefOriginEnum("origin").notNull(),
+    // Null for agent-proposed briefs. Set when a human creates one by hand
+    // (the manual-creation spec).
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    contentType: contentTypeEnum("content_type").notNull(),
+    title: text("title").notNull(),
+    angle: text("angle").notNull(),
+    whyNow: text("why_now").notNull(),
+    // Text, not an enum: destinations will grow and Postgres has no DROP VALUE.
+    suggestedChannel: text("suggested_channel").notNull(),
+    audience: text("audience"),
+    // 3-5 entries, one sentence each. The cap is enforced in the ideation
+    // schema (zod) rather than here — a brief is a commission, not a first
+    // draft, and the spike measured 6.5 points averaging 27 words when
+    // uncapped. There is deliberately no `outline` column: ordered key points
+    // ARE the outline, and keeping both guarantees they drift apart the first
+    // time a human edits one.
+    keyPoints: text("key_points").array().notNull().default([]),
+    targetLength: integer("target_length"),
+    // The model's own recommendation strength. The spike found these cluster
+    // narrowly (0.66-0.92), so this ranks poorly on its own once a backlog
+    // exists — the inbox orders by score AND recency, and see the accepted
+    // gaps at the bottom of this plan.
+    score: real("score").notNull(),
+    scoreRationale: text("score_rationale"),
+    status: briefStatusEnum("status").notNull().default("new"),
+    acceptedBy: uuid("accepted_by").references(() => users.id, { onDelete: "set null" }),
+    acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+    // No FK: the accept flow lands in the inbox plan, and adding the reference
+    // before anything writes it would be schema written ahead of its consumer.
+    contentPieceId: uuid("content_piece_id"),
+    dismissReason: briefDismissReasonEnum("dismiss_reason"),
+    dismissNote: text("dismiss_note"),
+    dismissedBy: uuid("dismissed_by").references(() => users.id, { onDelete: "set null" }),
+    dismissedAt: timestamp("dismissed_at", { withTimezone: true }),
+    // Follows the existing summaryEditedAt/bodyEditedAt convention: a human
+    // edit freezes regeneration.
+    editedAt: timestamp("edited_at", { withTimezone: true }),
+    // Bumped whenever a later run attaches fresh evidence, so a brief that
+    // keeps gathering support stays near the top instead of ageing out.
+    lastEvidenceAt: timestamp("last_evidence_at", { withTimezone: true }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("briefs_tenant_status_score_idx").on(table.tenantId, table.status, table.score),
+    index("briefs_tenant_status_expires_idx").on(table.tenantId, table.status, table.expiresAt),
+    // Two briefs must never claim the same piece. Partial because
+    // contentPieceId is null for everything that has not been accepted, and
+    // Postgres treats NULLs as distinct from one another.
+    uniqueIndex("briefs_content_piece_unique")
+      .on(table.contentPieceId)
+      .where(sql`${table.contentPieceId} IS NOT NULL`),
+  ]
+);
+
+export type Brief = typeof briefs.$inferSelect;
+
+export const briefSignals = pgTable(
+  "brief_signals",
+  {
+    briefId: uuid("brief_id")
+      .notNull()
+      .references(() => briefs.id, { onDelete: "cascade" }),
+    signalId: uuid("signal_id")
+      .notNull()
+      .references(() => signals.id, { onDelete: "cascade" }),
+    // Null when the agent attached it; set when a human did.
+    addedBy: uuid("added_by").references(() => users.id, { onDelete: "set null" }),
+    addedAt: timestamp("added_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.briefId, table.signalId] })]
+);
+
+export type BriefSignal = typeof briefSignals.$inferSelect;
+
 // Global, seeded catalog of built-in personas. Tenants reference these by `key`
 // from their company profile; the brief steers how updates are written for them.
 export const systemPersonas = pgTable("system_personas", {

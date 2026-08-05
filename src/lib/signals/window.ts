@@ -27,6 +27,10 @@ import { signals } from "@/db/schema";
  * accepted brief — those are the evidence trail behind published content, and
  * deleting them would silently break that join. Nothing enforces this yet
  * because nothing deletes yet; this is the note for whoever adds the delete.
+ *
+ * As of the brief agent, that join is `brief_signals`, which cascades on
+ * signal delete — so a purge that ignores this exemption will not fail
+ * loudly, it will quietly empty the evidence behind published content.
  */
 export const SIGNAL_WINDOW_DAYS = 60;
 
