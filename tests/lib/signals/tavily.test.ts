@@ -182,4 +182,30 @@ describe("searchNews", () => {
 
     expect(result).toEqual({ error: "bad-response" });
   });
+
+  it("keeps Tavily's own relevance score for each hit", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(okResponse(SAMPLE));
+
+    const result = await searchNews("localization tooling", { fetchImpl });
+
+    expect("hits" in result).toBe(true);
+    if (!("hits" in result)) return;
+    expect(result.hits[0].score).toBe(0.91);
+  });
+
+  it("treats a missing score as zero rather than dropping the hit", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      okResponse({
+        ...SAMPLE,
+        results: [{ title: "No score", url: "https://news.example.com/a", content: "x" }],
+      })
+    );
+
+    const result = await searchNews("q", { fetchImpl });
+
+    expect("hits" in result).toBe(true);
+    if (!("hits" in result)) return;
+    expect(result.hits).toHaveLength(1);
+    expect(result.hits[0].score).toBe(0);
+  });
 });

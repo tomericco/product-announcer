@@ -24,6 +24,14 @@ export type NewsHit = {
   content: string;
   /** Null when absent or unparseable. Never defaulted to "now" — see `occurredAt` in news-agent.ts. */
   publishedAt: Date | null;
+  /**
+   * Tavily's own 0–1 relevance for the query that found this hit. Free — it
+   * arrives with every result — and it is the only filter available before we
+   * spend a fetch or a model call on an article. Absent scores become 0 rather
+   * than dropping the hit: a scoreless result is unranked, not irrelevant, and
+   * the caller's floor decides what to do with it.
+   */
+  score: number;
 };
 
 export type TavilyError = "no-api-key" | "request-failed" | "bad-response";
@@ -39,6 +47,7 @@ const ResponseSchema = z.object({
       url: z.string(),
       content: z.string().default(""),
       published_date: z.string().optional(),
+      score: z.number().default(0),
     })
   ),
   usage: z.object({ credits: z.number() }).optional(),
@@ -119,6 +128,7 @@ export async function searchNews(
       url: r.url.trim(),
       content: r.content,
       publishedAt: parseDate(r.published_date),
+      score: r.score,
     }));
 
   return { hits, credits: parsed.data.usage?.credits ?? 0 };
