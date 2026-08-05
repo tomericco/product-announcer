@@ -4,6 +4,7 @@ import { sweepUnresolvedEvents } from "@/lib/change-events/resolve-sweep";
 import { syncShippedWorkSignals } from "@/lib/signals/shipped-work";
 import { sweepCompetitorSources } from "@/lib/signals/sweep";
 import { sweepNewsSources } from "@/lib/signals/news-sweep";
+import { expireStaleBriefs, sweepIdeation } from "@/lib/briefs/sweep";
 
 export async function GET(request: NextRequest) {
   const authHeader = request.headers.get("authorization");
@@ -28,6 +29,12 @@ export async function GET(request: NextRequest) {
   // previous one has finished with. Both are per-source isolated, so a
   // failure in either leaves the other's work intact.
   await sweepNewsSources();
+  // Runs last: ideation reads the signals every producer above it has just
+  // finished writing, so a single cron run proposes briefs from that run's
+  // material rather than yesterday's. Expiry runs first so a brief that aged
+  // out this morning is not offered to the model as still-open.
+  await expireStaleBriefs();
+  await sweepIdeation();
 
   return NextResponse.json({ ok: true });
 }
