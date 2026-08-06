@@ -13,7 +13,8 @@
 
 /**
  * Article HTML arrives from a search result and is attacker-influenced, so every
- * pattern below is bounded and the input is clamped before any of them run.
+ * pattern below bounds its spans to prevent backtracking at each anchor, and the
+ * input is clamped before any of them run.
  * This branch has already shipped one ReDoS in attribute-scanning code
  * (`extractSameOriginLinks`, measured at 841ms on 32KB) — do not relax this.
  */
@@ -28,15 +29,17 @@ const EARLIEST_PLAUSIBLE_YEAR = 2000;
  * why it outranks the rest even when they disagree.
  *
  * Each accepts either quote style and either attribute order — publishers emit
- * both — using negated character classes so there is no backtracking.
+ * both. Spans between anchors are length-bounded with {0,400} to prevent
+ * quadratic backtracking when HTML contains repeated anchor literals with no
+ * closing bracket.
  */
 const PATTERNS: RegExp[] = [
-  /<meta[^>]+property=["']article:published_time["'][^>]+content=["']([^"']{4,64})["']/i,
-  /<meta[^>]+content=["']([^"']{4,64})["'][^>]+property=["']article:published_time["']/i,
-  /<meta[^>]+property=["']og:published_time["'][^>]+content=["']([^"']{4,64})["']/i,
-  /<meta[^>]+content=["']([^"']{4,64})["'][^>]+property=["']og:published_time["']/i,
+  /<meta[^>]{0,400}property=["']article:published_time["'][^>]{0,400}content=["']([^"']{4,64})["']/i,
+  /<meta[^>]{0,400}content=["']([^"']{4,64})["'][^>]{0,400}property=["']article:published_time["']/i,
+  /<meta[^>]{0,400}property=["']og:published_time["'][^>]{0,400}content=["']([^"']{4,64})["']/i,
+  /<meta[^>]{0,400}content=["']([^"']{4,64})["'][^>]{0,400}property=["']og:published_time["']/i,
   /"datePublished"\s*:\s*"([^"]{4,64})"/i,
-  /<time[^>]+datetime=["']([^"']{4,64})["']/i,
+  /<time[^>]{0,400}datetime=["']([^"']{4,64})["']/i,
 ];
 
 export function extractPublishedDate(html: string): Date | null {

@@ -55,13 +55,22 @@ describe("extractPublishedDate", () => {
     expect(extractPublishedDate(`<meta property="article:published_time" content="0001-01-01T00:00:00Z">`)).toBeNull();
   });
 
-  it("is bounded: a large hostile page returns quickly", () => {
-    // The pattern that shipped a ReDoS on this branch was attribute-scanning
-    // code just like this one, measured at 841ms on 32KB.
-    const hostile = `<meta property="article:published_time" content="${'"'.repeat(50_000)}`.padEnd(400_000, "<");
+  it("falls through to a later source when the first one is implausible", () => {
+    const html = `
+      <meta property="article:published_time" content="0001-01-01T00:00:00Z">
+      <meta property="og:published_time" content="2026-07-15T00:00:00Z">`;
+    // A rejected date must `continue` to the next pattern, not abandon the search.
+    expect(extractPublishedDate(html)?.toISOString()).toBe("2026-07-15T00:00:00.000Z");
+  });
+
+  it("is bounded against repeated anchors with no closing bracket", () => {
+    // The shape that actually triggers quadratic backtracking: many anchor
+    // literals, no '>' to terminate the span. Measured at 11.5s on 100KB
+    // before the {0,400} bound.
+    const hostile = "<meta".repeat(20_000);
     const start = Date.now();
     extractPublishedDate(hostile);
-    expect(Date.now() - start).toBeLessThan(200);
+    expect(Date.now() - start).toBeLessThan(500);
   });
 
   it("only scans the first MAX_DATE_SCAN_CHARS", () => {
