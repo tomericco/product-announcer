@@ -104,6 +104,8 @@ export const filterReasonEnum = pgEnum("filter_reason", [
   "empty_task",
 ]);
 
+export const rejectedArticleReasonEnum = pgEnum("rejected_article_reason", ["not_selected", "stale"]);
+
 export const repos = pgTable("repos", {
   id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
   tenantId: uuid("tenant_id")
@@ -773,3 +775,53 @@ export const linkedinConnections = pgTable("linkedin_connections", {
   lastValidatedAt: timestamp("last_validated_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+/**
+ * Articles the news agent has already judged and will not reconsider.
+ *
+ * Deliberately NOT a status on `signals`. A rejected article is not a signal,
+ * and putting it there would make every reader — `listSignals`, the signals
+ * browser, `runIdeation` — responsible for excluding it. A miss in any one of
+ * them puts junk in front of the brief agent. A separate table cannot leak.
+ *
+ * Written for two different reasons, distinguished by `reason`: the selector
+ * turned it down (`not_selected`), or the article's own page dated it outside
+ * RECENCY_WINDOW_DAYS (`stale`). Both are permanent — re-judging reaches the
+ * same answer, and at ~15 rejections per tenant per day this table grows by
+ * roughly 5k rows a year.
+ *
+ * `url` is stored NORMALIZED, via `normalizeArticleUrl`. That makes this the
+ * second persisted consumer of that function alongside `signals.externalId`,
+ * so it is doubly a data contract: changing normalization makes both the skip
+ * query and this one miss, and re-admits every already-handled article.
+ *
+ * A rejection survives a company-profile edit. An article turned down under
+ * old topics is not reconsidered under new ones — accepted deliberately,
+ * because clearing on every edit re-opens the re-fetch flood this table exists
+ * to close.
+ */
+export const rejectedArticles = pgTable(
+  "rejected_articles",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    url: text("url").notNull(),
+    // Already in hand when the rejection is recorded. Without it the table is
+    // a list of opaque URLs and nobody can tell a bad article from an old one.
+    title: text("title").notNull(),
+    reason: rejectedArticleReasonEnum("reason").notNull(),
+    // No expiry is enforced. Stored so a purge can be added later without a
+    // migration — NOT read by any query today.
+    rejectedAt: timestamp("rejected_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    // Tenant-scoped: the same article rejected by two tenants is two rows.
+    // Keying on url alone would let one tenant's judgement hide an article
+    // from every other tenant.
+    uniqueIndex("rejected_articles_tenant_url_unique").on(table.tenantId, table.url),
+  ]
+);
