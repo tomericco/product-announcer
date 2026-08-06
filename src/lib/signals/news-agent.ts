@@ -12,7 +12,10 @@ import {
   type SelectionResult,
 } from "@/lib/signals/news-selection";
 
-type SearchFn = (query: string, deps?: { fetchImpl?: typeof fetch }) => Promise<TavilyResult>;
+type SearchFn = (
+  query: string,
+  options?: { excludeDomains?: string[]; fetchImpl?: typeof fetch }
+) => Promise<TavilyResult>;
 type FetchPage = (url: string) => Promise<PageResult>;
 type SelectFn = (
   candidates: NewsCandidate[],
@@ -236,15 +239,68 @@ export function normalizeArticleUrl(raw: string): string {
   return parsed.toString().replace(/\?$/, "");
 }
 
-async function loadProfile(tenantId: string, database: typeof defaultDb): Promise<RelevanceProfile> {
+/**
+ * The company's own bare host, or null if it has none we can use.
+ *
+ * Returns null — never `""` — for anything unusable. An empty host would make
+ * `isOwnContent` match every article and silently empty every run behind a
+ * green badge, which is the worst failure this module can have.
+ */
+export function companyHost(websiteUrl: string | null): string | null {
+  if (!websiteUrl || websiteUrl.trim().length === 0) return null;
+  const raw = websiteUrl.trim();
+  // Profiles are hand-editable and are sometimes stored without a scheme,
+  // which `new URL` rejects outright.
+  const candidate = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+  try {
+    const host = new URL(candidate).hostname.toLowerCase();
+    if (host.length === 0) return null;
+    return host.startsWith("www.") ? host.slice(4) : host;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether an article belongs to the searching company itself.
+ *
+ * The agent searches `companyProfiles.topics` — by construction the subjects
+ * the company publishes about — so its own blog ranks highly for its own
+ * topics. Without this, the company's posts consume result, fetch and scoring
+ * slots, and one could become a `market_news` signal telling the brief agent
+ * that the company's own writing is an industry development.
+ *
+ * Matches subdomains via a dot-anchored suffix. `endsWith(ownHost)` alone would
+ * match `notfrontitude.com`; the leading dot is what makes it a boundary.
+ */
+export function isOwnContent(url: string, ownHost: string | null): boolean {
+  if (!ownHost) return false;
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    const bare = host.startsWith("www.") ? host.slice(4) : host;
+    return bare === ownHost || bare.endsWith(`.${ownHost}`);
+  } catch {
+    return false;
+  }
+}
+
+async function loadProfile(
+  tenantId: string,
+  database: typeof defaultDb
+): Promise<{ profile: RelevanceProfile; ownHost: string | null }> {
   const [tenant] = await database.select({ name: tenants.name }).from(tenants).where(eq(tenants.id, tenantId));
   const [profile] = await database.select().from(companyProfiles).where(eq(companyProfiles.tenantId, tenantId));
 
   return {
-    name: tenant?.name ?? "",
-    oneLiner: profile?.oneLiner ?? null,
-    positioning: profile?.positioning ?? null,
-    topics: profile?.topics ?? [],
+    // `RelevanceProfile` is shared with the competitor relevance pass and must
+    // not grow a news-only field, so the host rides alongside it.
+    profile: {
+      name: tenant?.name ?? "",
+      oneLiner: profile?.oneLiner ?? null,
+      positioning: profile?.positioning ?? null,
+      topics: profile?.topics ?? [],
+    },
+    ownHost: companyHost(profile?.websiteUrl ?? null),
   };
 }
 
@@ -332,8 +388,9 @@ export async function runNewsSource(source: Source, deps: NewsAgentDeps = {}): P
     alreadyRejected: 0,
   };
 
-  const profile = await loadProfile(source.tenantId, database);
+  const { profile, ownHost } = await loadProfile(source.tenantId, database);
   const topics = profile.topics.slice(0, MAX_TOPICS_PER_RUN);
+  const excludeDomains = ownHost ? [ownHost] : [];
 
   if (topics.length === 0) {
     // Not a failure of ours, but the operator has to be able to see why this
@@ -356,7 +413,7 @@ export async function runNewsSource(source: Source, deps: NewsAgentDeps = {}): P
     // of the general index, which is the professional and opinion writing that
     // never appears on a wire. On the first live run "developer cli news"
     // returned a crypto-brokerage press release as its top hit.
-    const result = await search(topic);
+    const result = await search(topic, { excludeDomains });
     if ("error" in result) {
       errors.push(`${topic}: ${result.error}`);
       continue;
@@ -365,6 +422,11 @@ export async function runNewsSource(source: Source, deps: NewsAgentDeps = {}): P
     credits += result.credits;
     for (const raw of result.hits) {
       const url = normalizeArticleUrl(raw.url);
+      // Belt and braces with the `excludeDomains` sent above. Tavily's matching
+      // is not a contract we control and its subdomain behaviour is unverified,
+      // so this is the guarantee: no `market_news` signal is ever created from
+      // the company's own writing.
+      if (isOwnContent(url, ownHost)) continue;
       // First topic to surface an article wins — later duplicates are dropped
       // before they cost a fetch or a scoring slot — with one exception: a
       // hit that carries a publication date beats one that does not, whatever

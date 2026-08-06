@@ -5,6 +5,8 @@ import { tenants, signals, sources, companyProfiles, rejectedArticles, type Sour
 import {
   runNewsSource,
   normalizeArticleUrl,
+  companyHost,
+  isOwnContent,
   SCORING_EXCERPT_CHARS,
   MAX_CANDIDATES_PER_RUN,
   MAX_TOPICS_PER_RUN,
@@ -29,11 +31,11 @@ function page(text: string, html = `<p>${text}</p>`): PageResult {
   return { text, html, finalUrl: "https://news.example.com/a", contentType: "text/html", truncated: false };
 }
 
-async function seedNewsSource(tenantId: string, topics: string[]): Promise<Source> {
+async function seedNewsSource(tenantId: string, topics: string[], websiteUrl?: string): Promise<Source> {
   await db
     .insert(companyProfiles)
-    .values({ tenantId, topics })
-    .onConflictDoUpdate({ target: companyProfiles.tenantId, set: { topics } });
+    .values({ tenantId, topics, websiteUrl })
+    .onConflictDoUpdate({ target: companyProfiles.tenantId, set: { topics, websiteUrl } });
 
   const [source] = await db
     .insert(sources)
@@ -978,6 +980,56 @@ describe("runNewsSource", () => {
     const rows = await db.select().from(rejectedArticles).where(eq(rejectedArticles.tenantId, tenant.id));
     expect(rows).toHaveLength(MAX_CANDIDATES_PER_RUN);
   });
+
+  it("asks Tavily to exclude the company's own domain", async () => {
+    const tenant = await seedTenant();
+    const source = await seedNewsSource(tenant.id, ["ux writing"], "https://www.frontitude.com");
+    const search = vi.fn().mockResolvedValue({ hits: [], credits: 1 });
+
+    await runNewsSource(source, { database: db, search, fetchPage: vi.fn(), select: vi.fn() });
+
+    expect(search.mock.calls[0][1]).toEqual({ excludeDomains: ["frontitude.com"] });
+  });
+
+  it("drops the company's own article even when the search returns it", async () => {
+    const tenant = await seedTenant();
+    const source = await seedNewsSource(tenant.id, ["ux writing"], "https://frontitude.com");
+    const fetchPage = vi.fn().mockResolvedValue(page("body"));
+
+    await runNewsSource(source, {
+      database: db,
+      // Tavily's exclude_domains is not a contract we control, and its
+      // subdomain semantics are unverified. This is the belt-and-braces case.
+      search: vi.fn().mockResolvedValue({
+        hits: [
+          hit("https://blog.frontitude.com/our-post", "Our own post"),
+          hit("https://other.example.com/theirs", "Someone else's"),
+        ],
+        credits: 1,
+      }),
+      fetchPage,
+      select: vi.fn().mockResolvedValue({ selections: [] }),
+    });
+
+    expect(fetchPage.mock.calls.map((c) => c[0])).toEqual(["https://other.example.com/theirs"]);
+  });
+
+  it("excludes nothing when the profile has no website url", async () => {
+    const tenant = await seedTenant();
+    const source = await seedNewsSource(tenant.id, ["ux writing"]);
+    const search = vi.fn().mockResolvedValue({ hits: [hit("https://a.example.com/x")], credits: 1 });
+    const fetchPage = vi.fn().mockResolvedValue(page("body"));
+
+    await runNewsSource(source, {
+      database: db,
+      search,
+      fetchPage,
+      select: vi.fn().mockResolvedValue({ selections: [] }),
+    });
+
+    expect(search.mock.calls[0][1]).toEqual({ excludeDomains: [] });
+    expect(fetchPage).toHaveBeenCalledWith("https://a.example.com/x");
+  });
 });
 
 describe("normalizeArticleUrl", () => {
@@ -1028,7 +1080,7 @@ describe("normalizeArticleUrl", () => {
     // "developer cli news" returned a crypto-brokerage press release — and
     // fights the general index's whole purpose, which is the professional
     // writing that never appears on a wire.
-    expect(search).toHaveBeenCalledWith("developer cli");
+    expect(search.mock.calls[0][0]).toBe("developer cli");
   });
 
   it("keeps hits Tavily scored below the old 0.2 floor", async () => {
@@ -1048,4 +1100,41 @@ describe("normalizeArticleUrl", () => {
     expect(fetchPage.mock.calls.map((c) => c[0])).toContain("https://news.example.com/mid");
   });
 
+});
+
+describe("companyHost", () => {
+  it("reduces a website url to a bare lowercase host", () => {
+    expect(companyHost("https://www.Frontitude.com/blog")).toBe("frontitude.com");
+    expect(companyHost("https://frontitude.com")).toBe("frontitude.com");
+  });
+
+  it("accepts a bare domain with no scheme, as stored profiles sometimes are", () => {
+    expect(companyHost("frontitude.com")).toBe("frontitude.com");
+  });
+
+  it("returns null rather than throwing on absent or unusable input", () => {
+    // Must never throw and must never yield "" — an empty host would make
+    // isOwnContent match everything and silently empty every run.
+    expect(companyHost(null)).toBeNull();
+    expect(companyHost("")).toBeNull();
+    expect(companyHost("   ")).toBeNull();
+  });
+});
+
+describe("isOwnContent", () => {
+  it("matches the host and its subdomains", () => {
+    expect(isOwnContent("https://frontitude.com/blog/x", "frontitude.com")).toBe(true);
+    expect(isOwnContent("https://blog.frontitude.com/x", "frontitude.com")).toBe(true);
+    expect(isOwnContent("https://www.frontitude.com/x", "frontitude.com")).toBe(true);
+  });
+
+  it("does not match a host that merely contains the name", () => {
+    // Guards against a substring or endsWith check without the dot separator.
+    expect(isOwnContent("https://notfrontitude.com/x", "frontitude.com")).toBe(false);
+    expect(isOwnContent("https://frontitude.com.evil.example/x", "frontitude.com")).toBe(false);
+  });
+
+  it("matches nothing when the company has no known host", () => {
+    expect(isOwnContent("https://anything.example.com/x", null)).toBe(false);
+  });
 });
