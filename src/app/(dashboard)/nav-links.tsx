@@ -7,6 +7,7 @@ import {
   Building2,
   FilePen,
   History,
+  Inbox,
   Plug,
   Radar,
   ToyBrick,
@@ -18,6 +19,7 @@ import { cn } from "@/lib/utils";
 const NAV = [
   { href: "/change-events", label: "Change events", icon: Activity },
   { href: "/signals", label: "Signals", icon: Radar },
+  { href: "/briefs", label: "Briefs", icon: Inbox },
   { href: "/atomic-updates", label: "Atomic updates", icon: ToyBrick },
   { href: "/drafts", label: "Drafts", icon: FilePen },
   { href: "/history", label: "Release history", icon: History },
