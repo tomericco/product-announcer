@@ -616,6 +616,26 @@ describe("runNewsSource", () => {
     expect(select.mock.calls[0][0]).toHaveLength(0);
   });
 
+  it("records why a run that found only stale articles produced nothing", async () => {
+    const tenant = await seedTenant();
+    const source = await seedNewsSource(tenant.id, ["localization"]);
+
+    await runNewsSource(source, {
+      database: db,
+      search: vi.fn().mockResolvedValue({
+        hits: [{ ...hit("https://example.com/old", "Old", 0.9), publishedAt: null }],
+        credits: 1,
+      }),
+      fetchPage: vi.fn().mockResolvedValue(
+        page("body", `<meta property="article:published_time" content="2024-01-01T00:00:00Z">`)
+      ),
+      select: vi.fn().mockResolvedValue({ selections: [] }),
+    });
+
+    const [row] = await db.select().from(sources).where(eq(sources.id, source.id));
+    expect(row.lastError).toContain("older than");
+  });
+
   it("keeps an undated article rather than dropping it", async () => {
     const tenant = await seedTenant();
     const source = await seedNewsSource(tenant.id, ["localization"]);

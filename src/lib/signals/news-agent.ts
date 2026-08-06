@@ -377,6 +377,16 @@ export async function runNewsSource(source: Source, deps: NewsAgentDeps = {}): P
     kept.push({ article, body: bodies[i], date });
   }
 
+  if (kept.length === 0) {
+    // No early return: the brief's test requires `select` to be called with an
+    // empty list, and `selectNewsSignals` short-circuits on that without a
+    // model call, so letting it through costs nothing. What must NOT be lost is
+    // the reason — a source that fetches fine but finds only stale articles
+    // would otherwise report `lastError: null`, `status: "active"` and produce
+    // nothing, every day, indistinguishable from a quiet week.
+    errors.push(`All ${fresh.length} fetched articles were older than ${RECENCY_WINDOW_DAYS} days.`);
+  }
+
   // Dated articles first, each group by Tavily score. An undated article is not
   // rejected, just outranked — the model reads in order, so this is how "we know
   // when this was written" earns its place without becoming a filter.
