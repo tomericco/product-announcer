@@ -45,9 +45,12 @@ consumer." This spec is that consumer.
 - `references(() => contentPieces.id, { onDelete: "set null" })` — **not**
   cascade. The brief is the durable record that a human accepted something;
   deleting the resulting piece must not erase that decision.
-- A **partial unique index** on `contentPieceId` where it is not null. One
-  brief maps to one piece. Partial because the overwhelming majority of rows
-  are null and a plain unique index would permit only one of them.
+
+**The partial unique index already exists** and must NOT be re-added:
+`briefs_content_piece_unique` at `schema.ts:487-490`, on `contentPieceId`
+where not null. Only the foreign key is missing. `briefs_tenant_status_score_idx`
+on `(tenantId, status, score)` also already exists and is exactly the index the
+inbox's default query wants — no new index is needed for the read path either.
 
 The link is kept on `briefs` only. `contentPieces` does **not** gain a
 `briefId`: two directions would drift, and the partial unique index is only
@@ -92,13 +95,26 @@ current code: `run.ts:213-222` catches a failed ideation call, logs it with
 function**, so a caller cannot record it. `IdeationRunResult` has no `error`
 field and does not need one — the row is written where the error is in scope.
 
-Exit points that must each write a row:
+`runIdeation` has exactly **two** exits after its setup — verified by reading
+the function, not assumed. There is no early return for an empty signal list:
+`ideate` returns `{ assessment: "No signals in the window.", actions: [] }` and
+that flows through the normal path.
 
-| Exit | assessment | created | extended | error |
-|---|---|---|---|---|
-| No signals in window | the model's "No signals in the window." | 0 | 0 | null |
-| Ideation call failed | null | 0 | 0 | the error string |
-| Normal completion | the model's | actual | actual | null |
+| Exit | line | assessment | created | extended | error |
+|---|---|---|---|---|---|
+| Ideation call failed | `run.ts:222` | null | 0 | 0 | the error string |
+| Normal completion | `run.ts:281` | the model's | actual | actual | null |
+
+The failure exit's existing comment already makes this spec's argument:
+
+> "a permanently broken ideation … is indistinguishable from a genuinely quiet
+> company: the cron reports ok, no brief appears, **and nothing is written
+> anywhere**. The whole product promise is that an empty inbox means 'nothing
+> was worth saying', so a failure that looks like silence is the worst failure
+> this system has."
+
+`brief_runs` is what makes that written somewhere. The `console.error` on that
+line stays — the table is a record, not a replacement for logging.
 
 A failure to write the row must not throw and cost the run its briefs — wrap
 it, exactly as `rememberRejections`'s call sites do in the news agent.
