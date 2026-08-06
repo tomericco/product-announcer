@@ -146,6 +146,15 @@ async function recordRun(
  * Writes nothing when the model call fails: a run nobody judged has proposed
  * nothing, and inventing briefs from a failure is the opposite of what the
  * human-gated model is for.
+ *
+ * Everything below the deps setup runs inside a try/catch that is NOT for
+ * swallowing errors — it is so a THROW (a DB error, or an FK violation on
+ * `briefSignals` if the retention sweep deletes a signal mid-run) still
+ * writes a `brief_runs` row before the error propagates. Without this, a
+ * throw here leaves no row at all, and the inbox header then renders
+ * yesterday's clean run as "quiet" — asserting health for a run that never
+ * finished. `sweepIdeation` catches and logs per tenant, so this function
+ * must keep rethrowing for that log line to fire.
  */
 export async function runIdeation(tenantId: string, deps: IdeationRunDeps = {}): Promise<IdeationRunResult> {
   const database = deps.database ?? defaultDb;
@@ -153,6 +162,21 @@ export async function runIdeation(tenantId: string, deps: IdeationRunDeps = {}):
 
   const empty: IdeationRunResult = { proposed: 0, extended: 0, assessment: null };
 
+  try {
+    return await runIdeationUnsafe(tenantId, database, ideateFn, empty);
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    await recordRun(database, tenantId, { assessment: null, created: 0, extended: 0, error: message });
+    throw e;
+  }
+}
+
+async function runIdeationUnsafe(
+  tenantId: string,
+  database: typeof defaultDb,
+  ideateFn: IdeateFn,
+  empty: IdeationRunResult
+): Promise<IdeationRunResult> {
   const profile = await loadProfile(tenantId, database);
 
   const from = new Date(Date.now() - IDEATION_WINDOW_DAYS * 24 * 60 * 60 * 1000);
@@ -268,7 +292,14 @@ export async function runIdeation(tenantId: string, deps: IdeationRunDeps = {}):
         // visibly still gathering support. A brief the world keeps supplying
         // evidence for has earned another full TTL.
         .set({ lastEvidenceAt: now, expiresAt, updatedAt: now })
-        .where(and(eq(briefs.id, action.briefId), eq(briefs.tenantId, tenantId)));
+        // `status = "new"` guards against a race with a human decision: the
+        // read that built `openBriefs` filtered on `status = "new"`, but this
+        // run's model call can take seconds, and a human can accept or
+        // dismiss the same brief in that window. Without this clause the
+        // UPDATE would still match on id + tenant alone and re-date a brief
+        // someone just decided on — contradicting the comment above about
+        // dismissed briefs not coming back.
+        .where(and(eq(briefs.id, action.briefId), eq(briefs.tenantId, tenantId), eq(briefs.status, "new")));
       await database
         .insert(briefSignals)
         .values(action.evidenceSignalIds.map((signalId) => ({ briefId: action.briefId, signalId })))

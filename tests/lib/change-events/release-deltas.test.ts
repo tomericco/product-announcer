@@ -109,4 +109,35 @@ describe("computeReleaseDelta", () => {
     const delta = await computeReleaseDelta("00000000-0000-0000-0000-000000000000");
     expect(delta).toEqual({ newAtomicUpdates: [], changedAtomicUpdates: [], count: 0 });
   });
+
+  it("reports no catch-up deltas for a blog_post piece, even with a qualifying tenant-wide atomic update", async () => {
+    const [t] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const [r] = await db
+      .insert(contentPieces)
+      .values({ tenantId: t.id, title: "R", body: "B", type: "blog_post", composedAt: T })
+      .returning();
+    // Would otherwise qualify as a membership-delta new atomic update — the
+    // whole point of this test is that a non-product_update piece must never
+    // see it, since `newAtomicUpdates` is tenant-wide, not scoped to this piece.
+    await db.insert(atomicUpdates).values({ tenantId: t.id, title: "Shipped work", summary: "S", createdAt: AFTER });
+
+    const delta = await computeReleaseDelta(r.id);
+    expect(delta).toEqual({ newAtomicUpdates: [], changedAtomicUpdates: [], count: 0 });
+  });
+
+  it("still computes real deltas for a product_update piece", async () => {
+    const [t] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const [r] = await db
+      .insert(contentPieces)
+      .values({ tenantId: t.id, title: "R", body: "B", type: "product_update", composedAt: T })
+      .returning();
+    const [au] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: t.id, title: "Shipped work", summary: "S", createdAt: AFTER })
+      .returning();
+
+    const delta = await computeReleaseDelta(r.id);
+    expect(delta.newAtomicUpdates.map((a) => a.id)).toEqual([au.id]);
+    expect(delta.count).toBe(1);
+  });
 });

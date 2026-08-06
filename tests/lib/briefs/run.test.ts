@@ -432,4 +432,64 @@ describe("runIdeation", () => {
     const rows = await db.select().from(briefRuns).where(eq(briefRuns.tenantId, tenant.id));
     expect(rows).toHaveLength(2);
   });
+
+  it("records a run row and still rethrows when ideateFn throws", async () => {
+    const tenant = await seedTenant();
+    await seedSignal(tenant.id, "https://n.example.com/a");
+    const ideateFn = vi.fn().mockRejectedValue(new Error("model timeout mid-run"));
+
+    // Without the try/catch around the run body, a throw here would leave no
+    // `brief_runs` row at all — the inbox would then render yesterday's clean
+    // run as "quiet", asserting health for a run that never finished.
+    await expect(runIdeation(tenant.id, { database: db, ideateFn })).rejects.toThrow("model timeout mid-run");
+
+    const rows = await db.select().from(briefRuns).where(eq(briefRuns.tenantId, tenant.id));
+    expect(rows).toHaveLength(1);
+    expect(rows[0].error).toBe("model timeout mid-run");
+    expect(rows[0].assessment).toBeNull();
+    expect(rows[0].briefsCreated).toBe(0);
+    expect(rows[0].briefsExtended).toBe(0);
+  });
+
+  it("does not extend a brief a human already decided on while the run was in flight", async () => {
+    const tenant = await seedTenant();
+    const s = await seedSignal(tenant.id, "https://n.example.com/a");
+    const originalLastEvidenceAt = new Date("2026-01-01T00:00:00Z");
+    const originalExpiresAt = new Date(Date.now() + 86_400_000);
+    const [existing] = await db
+      .insert(briefs)
+      .values({
+        tenantId: tenant.id,
+        origin: "agent",
+        contentType: "blog_post",
+        title: "Existing",
+        angle: "A",
+        whyNow: "W",
+        suggestedChannel: "blog",
+        keyPoints: ["One.", "Two.", "Three."],
+        score: 0.5,
+        // Simulates a human accepting the brief after this run read its
+        // `openBriefs`, but before the model's extend action lands.
+        status: "accepted",
+        lastEvidenceAt: originalLastEvidenceAt,
+        expiresAt: originalExpiresAt,
+      })
+      .returning();
+
+    await runIdeation(tenant.id, {
+      database: db,
+      ideateFn: vi.fn().mockResolvedValue({
+        assessment: "x",
+        actions: [{ type: "extend", briefId: existing.id, evidenceSignalIds: [s.id] }],
+      }),
+    });
+
+    const [after] = await db.select().from(briefs).where(eq(briefs.id, existing.id));
+    // Untouched: the UPDATE's own `status = "new"` guard must have matched
+    // zero rows, or the run's own comment about dismissed briefs not coming
+    // back is a lie for accepted ones too.
+    expect(after.status).toBe("accepted");
+    expect(after.lastEvidenceAt.getTime()).toBe(originalLastEvidenceAt.getTime());
+    expect(after.expiresAt.getTime()).toBe(originalExpiresAt.getTime());
+  });
 });

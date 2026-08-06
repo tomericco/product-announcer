@@ -1,9 +1,10 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../src/db";
-import { tenants, briefs, contentPieces } from "../../src/db/schema";
+import { tenants, briefs, contentPieces, users } from "../../src/db/schema";
 
 const TENANT = "Briefs Actions Test Tenant";
+const USER_EMAIL = "briefs-actions-test@example.com";
 let currentTenantId = "";
 let currentUserId: string | null = null;
 
@@ -15,11 +16,18 @@ vi.mock("../../src/lib/workspace/session", () => ({
 
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 
+import { revalidatePath } from "next/cache";
 import { acceptBrief, dismissBrief } from "../../src/app/(dashboard)/briefs/actions";
 import { scaffoldBody } from "../../src/lib/briefs/scaffold";
+import { runIdeation } from "../../src/lib/briefs/run";
 
 afterEach(async () => {
   await db.delete(tenants).where(eq(tenants.name, TENANT));
+  await db.delete(users).where(eq(users.email, USER_EMAIL));
+  // Reset so a test that doesn't seed its own user never inherits a stale id
+  // from a previous test — the user row it pointed to was just deleted above,
+  // and acceptedBy/dismissedBy would otherwise violate their FK on insert.
+  currentUserId = null;
   vi.clearAllMocks();
 });
 
@@ -68,7 +76,8 @@ describe("scaffoldBody", () => {
 describe("acceptBrief", () => {
   it("creates one content piece and links it both ways", async () => {
     const tenant = await seedTenant();
-    currentUserId = null;
+    const [user] = await db.insert(users).values({ email: USER_EMAIL }).returning();
+    currentUserId = user.id;
     const brief = await seedBrief(tenant.id);
 
     const result = await acceptBrief(brief.id);
@@ -86,6 +95,13 @@ describe("acceptBrief", () => {
     expect(after.status).toBe("accepted");
     expect(after.contentPieceId).toBe(result.contentPieceId);
     expect(after.acceptedAt).toBeInstanceOf(Date);
+    // A null acceptedBy would pass silently if no test ever set a real user id.
+    expect(after.acceptedBy).toBe(user.id);
+
+    // The sidebar draft count reads /drafts, which would otherwise lag behind
+    // an accept until something unrelated revalidated it.
+    expect(revalidatePath).toHaveBeenCalledWith("/briefs");
+    expect(revalidatePath).toHaveBeenCalledWith("/drafts");
   });
 
   it("refuses a brief belonging to another tenant and creates nothing", async () => {
@@ -162,7 +178,8 @@ describe("acceptBrief", () => {
 describe("dismissBrief", () => {
   it("writes every dismissal column", async () => {
     const tenant = await seedTenant();
-    currentUserId = null;
+    const [user] = await db.insert(users).values({ email: USER_EMAIL }).returning();
+    currentUserId = user.id;
     const brief = await seedBrief(tenant.id);
 
     const result = await dismissBrief(brief.id, "already_covered", "We shipped this last week.");
@@ -173,6 +190,8 @@ describe("dismissBrief", () => {
     expect(after.dismissReason).toBe("already_covered");
     expect(after.dismissNote).toBe("We shipped this last week.");
     expect(after.dismissedAt).toBeInstanceOf(Date);
+    // A null dismissedBy would pass silently if no test ever set a real user id.
+    expect(after.dismissedBy).toBe(user.id);
   });
 
   it("refuses a brief belonging to another tenant", async () => {
@@ -194,5 +213,30 @@ describe("dismissBrief", () => {
     expect(result.ok).toBe(false);
     const [after] = await db.select().from(briefs).where(eq(briefs.id, brief.id));
     expect(after.status).toBe("accepted");
+  });
+});
+
+describe("dismissal trains the next run", () => {
+  it("carries a dismissed brief's title and note into runIdeation's prompt input", async () => {
+    const tenant = await seedTenant();
+    currentUserId = null;
+    const brief = await seedBrief(tenant.id, { title: "Unique Dismiss Title 8f2c1e" });
+
+    const result = await dismissBrief(brief.id, "not_our_voice", "Reads too much like a press release.");
+    expect(result.ok).toBe(true);
+
+    // The spec's claim is that writing the dismiss columns is what trains the
+    // agent, because run.ts reads them back. Assert on what the mocked
+    // ideateFn actually received — not on the columns, which a rename on
+    // either side (this write, or run.ts's read) would leave green.
+    const ideateFn = vi.fn().mockResolvedValue({ assessment: "x", actions: [] });
+    await runIdeation(tenant.id, { database: db, ideateFn });
+
+    expect(ideateFn).toHaveBeenCalledTimes(1);
+    const rejected = ideateFn.mock.calls[0][0].context.rejected as string[];
+    const entry = rejected.find((r) => r.includes("Unique Dismiss Title 8f2c1e"));
+    expect(entry).toBeDefined();
+    expect(entry).toContain("not_our_voice");
+    expect(entry).toContain("Reads too much like a press release.");
   });
 });

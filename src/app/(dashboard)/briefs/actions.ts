@@ -79,6 +79,10 @@ export async function acceptBrief(briefId: string): Promise<AcceptResult> {
   }
 
   revalidatePath("/briefs");
+  // The new content piece shows up in the drafts sidebar count too — without
+  // this the count can lag behind an accept until something else revalidates
+  // /drafts.
+  revalidatePath("/drafts");
   return { ok: true, contentPieceId };
 }
 

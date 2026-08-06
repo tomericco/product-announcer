@@ -169,6 +169,63 @@ describe("catchUpRelease", () => {
   });
 });
 
+describe("catchUpRelease content-type gating", () => {
+  afterEach(async () => {
+    await db.delete(tenants).where(eq(tenants.name, TENANT));
+  });
+
+  it("never lets a blog_post draft claim a tenant-wide unclaimed atomic update", async () => {
+    const [t] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const [r] = await db
+      .insert(contentPieces)
+      .values({ tenantId: t.id, title: "R", body: "Old body", type: "blog_post", composedAt: T })
+      .returning();
+    const [au] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: t.id, title: "Shipped work", summary: "S", createdAt: AFTER })
+      .returning();
+
+    const mergeDraft = vi.fn().mockResolvedValue({ title: "ignored", body: "Merged body" });
+    const result = await catchUpRelease(r.id, { mergeDraft });
+
+    // computeReleaseDelta resolves to the empty delta for a non-product_update
+    // piece, so catchUpRelease no-ops exactly as it does for "nothing to catch
+    // up on" — no merge call, no link, no body change.
+    expect(result).toBeNull();
+    expect(mergeDraft).not.toHaveBeenCalled();
+
+    const [after] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, au.id));
+    expect(after.contentPieceId).toBeNull();
+    expect(after.status).toBe("open");
+
+    const [piece] = await db.select().from(contentPieces).where(eq(contentPieces.id, r.id));
+    expect(piece.body).toBe("Old body");
+  });
+
+  it("still lets a product_update draft catch up exactly as before", async () => {
+    const [t] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const [r] = await db
+      .insert(contentPieces)
+      .values({ tenantId: t.id, title: "R", body: "Old body", type: "product_update", composedAt: T })
+      .returning();
+    const [au] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: t.id, title: "Shipped work", summary: "S", createdAt: AFTER })
+      .returning();
+
+    const mergeDraft = vi.fn().mockResolvedValue({ title: "ignored", body: "Merged body" });
+    const result = await catchUpRelease(r.id, { mergeDraft });
+
+    expect(result).not.toBeNull();
+    expect(result!.body).toBe("Merged body");
+    expect(mergeDraft).toHaveBeenCalledTimes(1);
+
+    const [after] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, au.id));
+    expect(after.contentPieceId).toBe(r.id);
+    expect(after.status).toBe("open");
+  });
+});
+
 describe("startOverRelease", () => {
   afterEach(async () => {
     await db.delete(tenants).where(eq(tenants.name, TENANT));
