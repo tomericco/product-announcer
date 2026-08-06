@@ -1,6 +1,6 @@
 import { and, desc, eq } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
-import { briefs, briefSignals, companyProfiles, tenants } from "@/db/schema";
+import { briefRuns, briefs, briefSignals, companyProfiles, tenants } from "@/db/schema";
 import { listSignals } from "@/lib/signals/query";
 import type { RelevanceProfile } from "@/lib/signals/relevance";
 import {
@@ -116,6 +116,31 @@ async function loadProfile(tenantId: string, database: typeof defaultDb): Promis
 }
 
 /**
+ * Records the outcome of one ideation run.
+ *
+ * Never throws. A failed bookkeeping write must not cost a run its briefs, so
+ * the failure is logged and the run continues — the worst case is a missing
+ * row, which is the behaviour that existed before this table.
+ */
+async function recordRun(
+  database: typeof defaultDb,
+  tenantId: string,
+  fields: { assessment: string | null; created: number; extended: number; error: string | null }
+): Promise<void> {
+  try {
+    await database.insert(briefRuns).values({
+      tenantId,
+      assessment: fields.assessment,
+      briefsCreated: fields.created,
+      briefsExtended: fields.extended,
+      error: fields.error,
+    });
+  } catch (e) {
+    console.error(`[ideation] could not record run for tenant ${tenantId}:`, e);
+  }
+}
+
+/**
  * One tenant's ideation run.
  *
  * Writes nothing when the model call fails: a run nobody judged has proposed
@@ -219,6 +244,12 @@ export async function runIdeation(tenantId: string, deps: IdeationRunDeps = {}):
     // silence is the worst failure this system has. Every sibling producer logs
     // its swallowed errors the same way.
     console.error(`[ideation] failed for tenant ${tenantId}:`, outcome.error);
+    await recordRun(database, tenantId, {
+      assessment: null,
+      created: 0,
+      extended: 0,
+      error: outcome.error,
+    });
     return empty;
   }
 
@@ -277,6 +308,13 @@ export async function runIdeation(tenantId: string, deps: IdeationRunDeps = {}):
       .onConflictDoNothing();
     proposed++;
   }
+
+  await recordRun(database, tenantId, {
+    assessment: outcome.assessment,
+    created: proposed,
+    extended,
+    error: null,
+  });
 
   return { proposed, extended, assessment: outcome.assessment };
 }

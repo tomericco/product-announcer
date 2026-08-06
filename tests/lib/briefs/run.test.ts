@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, companyProfiles, signals, briefs, briefSignals } from "../../../src/db/schema";
+import { tenants, companyProfiles, signals, briefs, briefSignals, briefRuns } from "../../../src/db/schema";
 import { runIdeation, BRIEF_TTL_DAYS, MAX_IDEATION_SIGNALS } from "../../../src/lib/briefs/run";
 
 const TENANT = "Ideation Run Test Tenant";
@@ -389,5 +389,47 @@ describe("runIdeation", () => {
 
     const passed = ideateFn.mock.calls[0][0].signals as { id: string }[];
     expect(passed.map((s) => s.id)).toEqual([fresh.id]);
+  });
+
+  it("records a run row when ideation succeeds", async () => {
+    const tenant = await seedTenant();
+    const ideateFn = vi.fn().mockResolvedValue({
+      assessment: "A quiet week — only maintenance shipped.",
+      actions: [],
+    });
+
+    await runIdeation(tenant.id, { database: db, ideateFn });
+
+    const rows = await db.select().from(briefRuns).where(eq(briefRuns.tenantId, tenant.id));
+    expect(rows).toHaveLength(1);
+    expect(rows[0].assessment).toContain("quiet week");
+    expect(rows[0].briefsCreated).toBe(0);
+    expect(rows[0].error).toBeNull();
+  });
+
+  it("records a run row carrying the error when ideation fails", async () => {
+    const tenant = await seedTenant();
+    const ideateFn = vi.fn().mockResolvedValue({ error: "model timeout" });
+
+    await runIdeation(tenant.id, { database: db, ideateFn });
+
+    const rows = await db.select().from(briefRuns).where(eq(briefRuns.tenantId, tenant.id));
+    expect(rows).toHaveLength(1);
+    // Without this the failure is invisible: runIdeation only console.errors it
+    // and returns `empty`, so the error string never reaches a caller.
+    expect(rows[0].error).toBe("model timeout");
+    expect(rows[0].assessment).toBeNull();
+    expect(rows[0].briefsCreated).toBe(0);
+  });
+
+  it("writes exactly one run row per call", async () => {
+    const tenant = await seedTenant();
+    const ideateFn = vi.fn().mockResolvedValue({ assessment: "ok", actions: [] });
+
+    await runIdeation(tenant.id, { database: db, ideateFn });
+    await runIdeation(tenant.id, { database: db, ideateFn });
+
+    const rows = await db.select().from(briefRuns).where(eq(briefRuns.tenantId, tenant.id));
+    expect(rows).toHaveLength(2);
   });
 });
