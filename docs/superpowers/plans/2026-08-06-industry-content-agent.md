@@ -42,7 +42,7 @@ Every decision below came from live probes run on 2026-08-06 against the real Ta
 ## Decisions already made by the product owner — do not re-litigate
 
 1. **Undated articles are kept, ranked below dated ones.** Dropping them would discard most of the professional content, which is the point of the change.
-2. **The window stays one week.** Noted risk, accepted: the week-windowed probe returned job postings, and the job-board exclusion added here is what should remove them. `TAVILY_TIME_RANGE` is a one-line constant precisely so it can be widened after the next live run.
+2. **The window stays one week.** Noted risk, accepted: the week-windowed probe returned job postings, and the job-board exclusion added here is what should remove them. `TAVILY_TIME_RANGE` and `RECENCY_WINDOW_DAYS` are both one-line constants precisely so the *pair* can be widened after the next live run — see Task 3's Interfaces block for why widening either one alone does nothing useful.
 3. **A dated article older than the window is dropped.** Recency is enforced only where we actually know it.
 
 ---
@@ -403,9 +403,14 @@ git commit -m "feat: search the general index, excluding job boards"
 - Test: `tests/lib/signals/news-agent.test.ts`, `tests/lib/signals/news-selection.test.ts`
 
 **Interfaces:**
-- Consumes: `extractPublishedDate` (Task 1). Nothing from Task 2 — the two windows are
-  independent: Tavily's `time_range` is a coarse index-side filter, `RECENCY_WINDOW_DAYS` is our
-  own rule applied to real page dates. Changing one does not change the other.
+- Consumes: `extractPublishedDate` (Task 1). From Task 2, `TAVILY_TIME_RANGE` — the two windows
+  are **coupled, not independent**. Tavily's `time_range` is the outer window, a coarse
+  index-side filter deciding what is fetched at all; `RECENCY_WINDOW_DAYS` is the inner window,
+  our own rule applied to the real page date. Widening `TAVILY_TIME_RANGE` alone admits 8–30-day-old
+  articles that `RECENCY_WINDOW_DAYS` then discards after paying for the fetch, so only *undated*
+  articles would benefit; widening `RECENCY_WINDOW_DAYS` alone has nothing new to admit, because
+  Tavily never returned it. They must be changed together, and each constant's comment must
+  cross-reference the other.
 - Produces: `export const RECENCY_WINDOW_DAYS = 7`. `NewsRunResult` gains `stale: number` — articles dropped because their extracted date was outside the window.
 
 **The pipeline after this task:**

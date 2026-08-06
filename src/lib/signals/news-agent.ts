@@ -122,9 +122,18 @@ const FETCH_CONCURRENCY = 8;
  * recency, which is how a two-year-old evergreen guide can arrive inside a
  * one-week window. This is the only place a real publication date is known.
  *
- * Applies ONLY to articles we could date. An undated article is kept and ranked
+ * COUPLED TO `TAVILY_TIME_RANGE` in `tavily.ts`, which is the outer window: it
+ * decides what is fetched, this decides what survives. Widening one alone does
+ * nothing useful. Widen `TAVILY_TIME_RANGE` to "month" and every dated article
+ * in the new 8–30-day range is fetched here and then thrown away by this
+ * constant — paid for, and discarded. Widen this alone and there is nothing
+ * new to admit, because Tavily never returned it. Change them together.
+ *
+ * Applies ONLY to articles we could date, and only to a date the page actually
+ * asserts — see `PublishedDateSource`. An undated article is kept and ranked
  * below dated ones: dropping them would discard most professional writing,
- * which is the content this agent exists to surface.
+ * which is the content this agent exists to surface. A `time`-derived date is
+ * likewise never grounds for dropping, because it is a guess.
  */
 export const RECENCY_WINDOW_DAYS = 7;
 
@@ -256,9 +265,11 @@ export async function runNewsSource(source: Source, deps: NewsAgentDeps = {}): P
   let searched = 0;
 
   for (const topic of topics) {
-    // The bare topic, deliberately. `searchNews` already sends `topic: "news"`,
-    // which scopes the index; appending the word as well biased results toward
-    // wire copy and press releases. On the first live run "developer cli news"
+    // The bare topic, deliberately. `searchNews` already scopes the search via
+    // `topic: "general"`; appending the word "news" as well biased results
+    // toward wire copy and press releases, and now also fights the whole point
+    // of the general index, which is the professional and opinion writing that
+    // never appears on a wire. On the first live run "developer cli news"
     // returned a crypto-brokerage press release as its top hit.
     const result = await search(topic);
     if ("error" in result) {
@@ -274,6 +285,13 @@ export async function runNewsSource(source: Source, deps: NewsAgentDeps = {}): P
       // hit that carries a publication date beats one that does not, whatever
       // the order. Otherwise an undated copy arriving first would throw away a
       // real date and leave `occurredAt` defaulted to run time.
+      //
+      // That exception is DORMANT, not live logic: on the general index
+      // `publishedAt` is null on every result, so the second half of the
+      // condition never fires, and dates are produced later by the fetch below
+      // rather than here. It is kept because it costs nothing and would matter
+      // the moment an index supplies dates again — do not read it as
+      // describing what a run currently does.
       const held = byUrl.get(url);
       if (!held || (held.publishedAt === null && raw.publishedAt !== null)) {
         byUrl.set(url, { ...raw, url });
@@ -342,6 +360,16 @@ export async function runNewsSource(source: Source, deps: NewsAgentDeps = {}): P
   // FETCH_CONCURRENCY.
   const bodies: string[] = [];
   const dates: (Date | null)[] = [];
+  /**
+   * Per-article: is this date only a guess?
+   *
+   * True when it came from `extractPublishedDate`'s `time` source — the first
+   * `<time datetime=…>` on the page, which is frequently a sidebar widget or a
+   * comment stamp rather than the article's own date. A guessed date is good
+   * enough to set `occurredAt` and to rank the article as dated; it is NOT good
+   * enough to delete the article, which is what the stale drop below does.
+   */
+  const guessed: boolean[] = [];
   for (let i = 0; i < fresh.length; i += FETCH_CONCURRENCY) {
     const batch = await Promise.all(
       fresh.slice(i, i + FETCH_CONCURRENCY).map(async (article) => {
@@ -350,41 +378,61 @@ export async function runNewsSource(source: Source, deps: NewsAgentDeps = {}): P
           // Tavily's own extract is real page text, not a model's paraphrase, so
           // falling back to it keeps the evidence honest. A paywalled or slow
           // article is still worth surfacing — but we cannot date it.
-          return { body: article.content, date: article.publishedAt };
+          return { body: article.content, date: article.publishedAt, guessed: false };
         }
         // The page is the authority on its own date; the index gave us none.
-        return { body: result.text, date: extractPublishedDate(result.html) ?? article.publishedAt };
+        const extracted = extractPublishedDate(result.html);
+        if (extracted) {
+          return { body: result.text, date: extracted.date, guessed: extracted.source === "time" };
+        }
+        return { body: result.text, date: article.publishedAt, guessed: false };
       })
     );
     for (const b of batch) {
       bodies.push(b.body);
       dates.push(b.date);
+      guessed.push(b.guessed);
     }
   }
 
   // ── Recency, enforced only where it is actually known ──────────────────
-  // Undated articles are NOT dropped here — see RECENCY_WINDOW_DAYS. Only an
-  // article we could date, and whose date falls outside the window, is cut.
+  // Undated articles are NOT dropped here — see RECENCY_WINDOW_DAYS. Nor are
+  // articles whose only date came from a bare `<time>` element, which is a
+  // guess: dropping on a guess deletes the article outright, and the pages that
+  // reach that pattern are the vendor blogs this agent exists to surface. Only
+  // an article the page itself dates, outside the window, is cut.
   const cutoff = new Date(Date.now() - RECENCY_WINDOW_DAYS * 24 * 60 * 60 * 1000);
   const kept: { article: NewsHit; body: string; date: Date | null }[] = [];
   let stale = 0;
   for (const [i, article] of fresh.entries()) {
     const date = dates[i];
-    if (date !== null && date < cutoff) {
+    if (date !== null && !guessed[i] && date < cutoff) {
       stale++;
       continue;
     }
     kept.push({ article, body: bodies[i], date });
   }
 
-  if (kept.length === 0) {
-    // No early return: the brief's test requires `select` to be called with an
-    // empty list, and `selectNewsSignals` short-circuits on that without a
-    // model call, so letting it through costs nothing. What must NOT be lost is
-    // the reason — a source that fetches fine but finds only stale articles
-    // would otherwise report `lastError: null`, `status: "active"` and produce
-    // nothing, every day, indistinguishable from a quiet week.
-    errors.push(`All ${fresh.length} fetched articles were older than ${RECENCY_WINDOW_DAYS} days.`);
+  if (stale > 0) {
+    // No early return when everything was stale: the brief's test requires
+    // `select` to be called with an empty list, and `selectNewsSignals`
+    // short-circuits on that without a model call, so letting it through costs
+    // nothing. What must NOT be lost is the reason — a source that fetches fine
+    // but finds only stale articles would otherwise report `lastError: null`,
+    // `status: "active"` and produce nothing, every day, indistinguishable from
+    // a quiet week.
+    //
+    // Partial staleness is recorded for the same reason. A run that dropped 19
+    // of 20 articles is one article away from the all-stale case and reads as
+    // completely clean without this; by the time it reaches 20 of 20 the
+    // operator has had no warning at all. `finish` still marks the source
+    // `active` — the run did its job — exactly as it does for a partial search
+    // failure.
+    errors.push(
+      kept.length === 0
+        ? `All ${fresh.length} fetched articles were older than ${RECENCY_WINDOW_DAYS} days.`
+        : `${stale} of ${fresh.length} fetched articles were older than ${RECENCY_WINDOW_DAYS} days.`
+    );
   }
 
   // Dated articles first, each group by Tavily score. An undated article is not

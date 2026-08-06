@@ -687,6 +687,135 @@ describe("runNewsSource", () => {
     expect(candidates[0].url).toBe("https://example.com/dated");
     expect(candidates[1].url).toBe("https://example.com/undated");
   });
+
+  it("writes the article the selector actually chose after the dated-first sort reorders them", async () => {
+    const tenant = await seedTenant();
+    const source = await seedNewsSource(tenant.id, ["localization"]);
+    const recent = new Date(Date.now() - 86_400_000).toISOString();
+
+    // The hazard this covers: `kept` is sorted, while `fresh` and `bodies` stay
+    // in pre-sort order. Every other test either has one candidate, or a sort
+    // that is a no-op, or an empty selection — so a write loop that indexed
+    // `fresh[selection.index]` would pass all of them while attaching one
+    // article's url, title and rationale to another article's row.
+    //
+    // Here the DATED article has the LOWER Tavily score, so the dated-first
+    // tiebreak genuinely reverses the order: arrival and score rank both put
+    // "undated" at index 0, the sort puts "dated" there.
+    const select = vi.fn().mockResolvedValue({
+      selections: [{ index: 0, score: 0.8, rationale: "the dated one", topics: ["localization"] }],
+    });
+
+    const result = await runNewsSource(source, {
+      database: db,
+      search: vi.fn().mockResolvedValue({
+        hits: [
+          { ...hit("https://example.com/undated", "Undated", 0.9), publishedAt: null },
+          { ...hit("https://example.com/dated", "Dated", 0.4), publishedAt: null },
+        ],
+        credits: 1,
+      }),
+      fetchPage: vi.fn().mockImplementation(async (url: string) =>
+        url.includes("/dated")
+          ? page(`Body of ${url}`, `<meta property="article:published_time" content="${recent}">`)
+          : page(`Body of ${url}`, "<p>no date</p>")
+      ),
+      select,
+    });
+
+    expect(result.written).toBe(1);
+    const rows = await db
+      .select()
+      .from(signals)
+      .where(and(eq(signals.tenantId, tenant.id), eq(signals.kind, "market_news")));
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].url).toBe("https://example.com/dated");
+    expect(rows[0].title).toBe("Dated");
+    expect(rows[0].relevanceRationale).toBe("the dated one");
+    // The body is carried on the same record, so it catches the same mistake
+    // independently of the article fields.
+    expect(rows[0].excerpt).toContain("https://example.com/dated");
+  });
+
+  it("keeps a stale article whose only date came from a bare <time> element", async () => {
+    const tenant = await seedTenant();
+    const source = await seedNewsSource(tenant.id, ["localization"]);
+    const select = vi.fn().mockResolvedValue({ selections: [] });
+
+    const result = await runNewsSource(source, {
+      database: db,
+      search: vi.fn().mockResolvedValue({
+        hits: [{ ...hit("https://vendor.example.com/blog/guide", "Vendor guide", 0.8), publishedAt: null }],
+        credits: 1,
+      }),
+      // No OG tag, no JSON-LD — a custom CMS whose only <time> belongs to a
+      // "recent posts" widget. That guess must not be able to delete the
+      // article; a wrong-but-recent date is harmless, a wrong-and-old one is
+      // destructive.
+      fetchPage: vi.fn().mockResolvedValue(
+        page("body", `<aside><time datetime="2024-01-01">Jan 1 2024</time></aside>`)
+      ),
+      select,
+    });
+
+    expect(result.stale).toBe(0);
+    expect(select.mock.calls[0][0]).toHaveLength(1);
+  });
+
+  it("still drops a stale article the page itself dates in a meta tag", async () => {
+    const tenant = await seedTenant();
+    const source = await seedNewsSource(tenant.id, ["localization"]);
+    const select = vi.fn().mockResolvedValue({ selections: [] });
+
+    const result = await runNewsSource(source, {
+      database: db,
+      search: vi.fn().mockResolvedValue({
+        hits: [{ ...hit("https://example.com/jsonld-old", "Old", 0.8), publishedAt: null }],
+        credits: 1,
+      }),
+      // JSON-LD is the page asserting its own publication date, not a guess.
+      fetchPage: vi.fn().mockResolvedValue(
+        page("body", `<script type="application/ld+json">{"datePublished":"2024-01-01T00:00:00Z"}</script>`)
+      ),
+      select,
+    });
+
+    expect(result.stale).toBe(1);
+    expect(select.mock.calls[0][0]).toHaveLength(0);
+  });
+
+  it("records partial staleness, not only the all-stale case", async () => {
+    const tenant = await seedTenant();
+    const source = await seedNewsSource(tenant.id, ["localization"]);
+    const recent = new Date(Date.now() - 86_400_000).toISOString();
+
+    await runNewsSource(source, {
+      database: db,
+      search: vi.fn().mockResolvedValue({
+        hits: [
+          { ...hit("https://example.com/fresh", "Fresh", 0.9), publishedAt: null },
+          { ...hit("https://example.com/old", "Old", 0.8), publishedAt: null },
+        ],
+        credits: 1,
+      }),
+      fetchPage: vi.fn().mockImplementation(async (url: string) =>
+        page(
+          "body",
+          `<meta property="article:published_time" content="${url.includes("/old") ? "2024-01-01T00:00:00Z" : recent}">`
+        )
+      ),
+      select: vi.fn().mockResolvedValue({ selections: [] }),
+    });
+
+    const [row] = await db.select().from(sources).where(eq(sources.id, source.id));
+    // A run that drops most of what it fetched is one article away from the
+    // all-stale case; without this it reads as completely clean.
+    expect(row.lastError).toContain("1 of 2 fetched articles were older than");
+    // The run still did its job, so the badge stays green — same ruling as a
+    // partial search failure.
+    expect(row.status).toBe("active");
+  });
 });
 
 describe("normalizeArticleUrl", () => {
@@ -732,9 +861,11 @@ describe("normalizeArticleUrl", () => {
 
     await runNewsSource(source, { database: db, search, fetchPage: vi.fn(), select: vi.fn() });
 
-    // `searchNews` already sends `topic: "news"`, which scopes the index.
-    // Appending the word biased results toward wire copy: on the first live run
-    // "developer cli news" returned a crypto-brokerage press release.
+    // `searchNews` already scopes the search via `topic: "general"`. Appending
+    // the word "news" biased results toward wire copy — on the first live run
+    // "developer cli news" returned a crypto-brokerage press release — and
+    // fights the general index's whole purpose, which is the professional
+    // writing that never appears on a wire.
     expect(search).toHaveBeenCalledWith("developer cli");
   });
 

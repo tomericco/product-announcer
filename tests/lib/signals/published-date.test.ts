@@ -1,27 +1,34 @@
 import { describe, it, expect } from "vitest";
 import { extractPublishedDate, MAX_DATE_SCAN_CHARS } from "../../../src/lib/signals/published-date";
 
-const iso = (d: Date | null) => d?.toISOString() ?? null;
+const iso = (d: { date: Date } | null) => d?.date.toISOString() ?? null;
 
 describe("extractPublishedDate", () => {
   it("reads article:published_time, the most reliable source", () => {
     const html = `<html><head><meta property="article:published_time" content="2026-08-01T09:30:00Z"></head></html>`;
     expect(iso(extractPublishedDate(html))).toBe("2026-08-01T09:30:00.000Z");
+    expect(extractPublishedDate(html)?.source).toBe("meta");
   });
 
   it("falls back to og:published_time", () => {
     const html = `<meta property="og:published_time" content="2026-07-15T00:00:00Z">`;
     expect(iso(extractPublishedDate(html))).toBe("2026-07-15T00:00:00.000Z");
+    expect(extractPublishedDate(html)?.source).toBe("meta");
   });
 
   it("falls back to JSON-LD datePublished", () => {
     const html = `<script type="application/ld+json">{"@type":"Article","datePublished":"2026-06-02T12:00:00Z"}</script>`;
     expect(iso(extractPublishedDate(html))).toBe("2026-06-02T12:00:00.000Z");
+    expect(extractPublishedDate(html)?.source).toBe("jsonld");
   });
 
   it("falls back to a time element's datetime attribute", () => {
     const html = `<article><time datetime="2026-05-20">May 20</time></article>`;
-    expect(extractPublishedDate(html)?.getUTCFullYear()).toBe(2026);
+    expect(extractPublishedDate(html)?.date.getUTCFullYear()).toBe(2026);
+    // Reported as the weak source it is: the first <time> on a page is as
+    // likely to be a "recent posts" widget or a comment stamp as the article's
+    // own date, and the caller must not delete an article on its say-so.
+    expect(extractPublishedDate(html)?.source).toBe("time");
   });
 
   it("prefers article:published_time over the later sources", () => {
@@ -60,7 +67,7 @@ describe("extractPublishedDate", () => {
       <meta property="article:published_time" content="0001-01-01T00:00:00Z">
       <meta property="og:published_time" content="2026-07-15T00:00:00Z">`;
     // A rejected date must `continue` to the next pattern, not abandon the search.
-    expect(extractPublishedDate(html)?.toISOString()).toBe("2026-07-15T00:00:00.000Z");
+    expect(extractPublishedDate(html)?.date.toISOString()).toBe("2026-07-15T00:00:00.000Z");
   });
 
   it("is bounded against repeated anchors with no closing bracket", () => {

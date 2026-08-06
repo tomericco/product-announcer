@@ -106,19 +106,38 @@ export const TAVILY_TOPIC = "general";
  * keep their value for longer than news events, so a piece published on
  * Thursday is still worth surfacing on Monday.
  *
+ * COUPLED TO `RECENCY_WINDOW_DAYS` (7) in `news-agent.ts`. This is the outer
+ * window — what Tavily is asked for — and that one is the inner window, applied
+ * to the real publication date read off each article's own page. This one
+ * cannot be widened alone: at "month", every dated article in the new 8–30-day
+ * range is searched for, fetched, and then dropped by `RECENCY_WINDOW_DAYS`,
+ * so the only articles that would actually benefit are the undated ones, which
+ * is the opposite of what widening is for. Widen both or neither.
+ *
  * Known risk, accepted deliberately: the week-windowed probe returned job
  * postings, and `EXCLUDED_DOMAINS` below is what should remove them. That exact
- * combination has not been observed live. This is a one-line constant so it can
- * be widened to "month" — which is what produced the best probe results — once
- * a real run says whether the exclusions did their job.
+ * combination has not been observed live. Both constants are one-liners so the
+ * pair can be widened to "month" / 30 — which is what produced the best probe
+ * results — once a real run says whether the exclusions did their job.
  */
 export const TAVILY_TIME_RANGE = "week";
 
 /**
- * Job boards and search aggregators. Both are noise for this product but for
- * different reasons: job postings match the topic vocabulary exactly while
- * carrying no editorial content, and aggregators return their own URLs rather
- * than the article's, which breaks URL-keyed identity downstream.
+ * Job boards and search aggregators, excluded for different reasons and on
+ * different evidence.
+ *
+ * The job boards are the measured half: the un-excluded week-windowed probe on
+ * the general index returned Google Careers, Target and an edtech UX Writer
+ * posting in its top three. Job postings match the topic vocabulary exactly
+ * while carrying no editorial content at all.
+ *
+ * The aggregators are precautionary. `news.google.com` and `google.com` are
+ * here because the `topic: "news"` probe returned Google News redirect URLs
+ * instead of article links, which would collapse under `normalizeArticleUrl`
+ * into one host and defeat `externalId` uniqueness. That was a symptom of a
+ * configuration this file no longer uses — the general-index probes did not
+ * return aggregator URLs — so this half is belt-and-braces against a
+ * regression, not a response to anything currently observed.
  */
 export const EXCLUDED_DOMAINS = [
   "careers.google.com",
