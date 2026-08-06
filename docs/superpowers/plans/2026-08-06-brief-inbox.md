@@ -247,7 +247,26 @@ Expected: PASS, 4 tests; typecheck clean.
 
 - [ ] **Step 7: Prove the SET NULL guard bites**
 
-Temporarily change `onDelete: "set null"` to `"cascade"`, regenerate and apply the migration to the test database only, and re-run. The test "nulls the link when the content piece is deleted, keeping the brief" must FAIL because the brief row is gone. Restore, regenerate, re-apply to **both**, and confirm green. Record both outcomes in your report.
+The guard lives in the **database**, not in TypeScript. Editing the Drizzle
+schema proves nothing once the constraint exists, and regenerating the
+migration to flip it would leave two junk migration files behind. Alter the
+live constraint on the TEST database instead.
+
+First find the constraint's real name (do not assume Drizzle's naming):
+
+```bash
+DATABASE_URL="${TEST_DATABASE_URL:-postgresql://postgres:postgres@localhost:5433/product_announcer_test}" \
+  npx tsx -e "import('./src/db').then(async ({db})=>{const {sql}=await import('drizzle-orm');const r=await db.execute(sql\`SELECT conname FROM pg_constraint WHERE conrelid='briefs'::regclass AND contype='f' AND conname LIKE '%content_piece%'\`);console.log(r.rows??r);process.exit(0)})"
+```
+
+**Confirm `DATABASE_URL` names a database ending in `_test` before running any
+DDL.** Then, using the name it printed, drop and recreate the constraint with
+`ON DELETE CASCADE`, run the test — "nulls the link when the content piece is
+deleted, keeping the brief" must FAIL because the brief row is gone — then
+restore it with `ON DELETE SET NULL` and confirm green.
+
+Paste both the failing and the restored output into your report. Create no
+migration files during this step; `git status` must be clean of them afterwards.
 
 - [ ] **Step 8: Commit**
 
