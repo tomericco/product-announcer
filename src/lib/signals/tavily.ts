@@ -81,6 +81,58 @@ const ResultSchema = z.object({
  */
 const CREDITS_PER_SEARCH = 1;
 
+/**
+ * The general index, not the news index.
+ *
+ * A live probe on 2026-08-06 found `topic: "news"` unusable for this product's
+ * niche: on "design localization" it returned relevance scores of 0.11 down to
+ * 0.01 (LiDAR perception, the World Gold Council, payment failures) and every
+ * result's URL was `www.google.com` — Google News aggregator redirects, not
+ * article links. Those collapse under `normalizeArticleUrl` into one host and
+ * defeat `externalId` uniqueness.
+ *
+ * The same query on the general index returned Phrase, Webflow, Lilt and
+ * SimpleLocalize writing substantively about multilingual UX. That is the
+ * material this product exists to surface.
+ *
+ * The cost of the switch: the general index returns no `published_date` on any
+ * result, so dates come from the article's own HTML instead — see
+ * `published-date.ts`.
+ */
+export const TAVILY_TOPIC = "general";
+
+/**
+ * Matches the daily cron loosely rather than exactly: professional articles
+ * keep their value for longer than news events, so a piece published on
+ * Thursday is still worth surfacing on Monday.
+ *
+ * Known risk, accepted deliberately: the week-windowed probe returned job
+ * postings, and `EXCLUDED_DOMAINS` below is what should remove them. That exact
+ * combination has not been observed live. This is a one-line constant so it can
+ * be widened to "month" — which is what produced the best probe results — once
+ * a real run says whether the exclusions did their job.
+ */
+export const TAVILY_TIME_RANGE = "week";
+
+/**
+ * Job boards and search aggregators. Both are noise for this product but for
+ * different reasons: job postings match the topic vocabulary exactly while
+ * carrying no editorial content, and aggregators return their own URLs rather
+ * than the article's, which breaks URL-keyed identity downstream.
+ */
+export const EXCLUDED_DOMAINS = [
+  "careers.google.com",
+  "corporate.target.com",
+  "indeed.com",
+  "glassdoor.com",
+  "ziprecruiter.com",
+  "lever.co",
+  "greenhouse.io",
+  "workday.com",
+  "news.google.com",
+  "google.com",
+];
+
 function parseDate(raw: string | null | undefined): Date | null {
   if (!raw) return null;
   const parsed = new Date(raw);
@@ -106,22 +158,12 @@ export async function searchNews(
       },
       body: JSON.stringify({
         query,
-        // The news topic is what makes `published_date` available. Without it
-        // every signal's occurredAt would be first-seen time, and spec 5's
-        // decay ranking would read a week-old article as breaking.
-        topic: "news",
+        topic: TAVILY_TOPIC,
         // One credit per search. `advanced` costs two and buys deeper page
         // extraction we do not use — we fetch the article ourselves.
         search_depth: "basic",
-        // Tied to the cron cadence: the sweep runs daily, so a day's window
-        // covers everything published since the last run with no overlap.
-        // A wider window would keep re-surfacing articles the previous runs
-        // already judged — an article scored below the floor is dropped
-        // without a record, so nothing can skip it, and a week's window means
-        // re-fetching and re-scoring it on seven consecutive days. Do not
-        // widen this without either changing the cron cadence to match or
-        // giving rejected articles somewhere to be remembered.
-        time_range: "day",
+        time_range: TAVILY_TIME_RANGE,
+        exclude_domains: EXCLUDED_DOMAINS,
         max_results: TAVILY_MAX_RESULTS,
       }),
     });

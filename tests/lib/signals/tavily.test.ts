@@ -50,7 +50,7 @@ describe("searchNews", () => {
     expect(result.credits).toBe(1);
   });
 
-  it("sends the news topic, a day window, a bounded result count, and the bearer key", async () => {
+  it("sends the general topic, a week window, domain exclusions, a bounded result count, and the bearer key", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(okResponse(SAMPLE));
 
     await searchNews("localization tooling", { fetchImpl });
@@ -60,14 +60,10 @@ describe("searchNews", () => {
     expect((init.headers as Record<string, string>).authorization).toBe("Bearer tvly-test-key");
     const body = JSON.parse(init.body as string);
     expect(body.query).toBe("localization tooling");
-    // The news topic is what makes published_date available at all; a plain
-    // search would leave every signal's occurredAt guessed.
-    expect(body.topic).toBe("news");
+    expect(body.topic).toBe("general");
     expect(body.search_depth).toBe("basic");
-    // Load-bearing, not cosmetic: the sweep is daily and a rejected article is
-    // recorded nowhere, so any window wider than the cadence re-fetches and
-    // re-scores the same sub-floor articles once per day for its whole length.
-    expect(body.time_range).toBe("day");
+    expect(body.time_range).toBe("week");
+    expect(body.exclude_domains).toBeDefined();
     expect(body.max_results).toBe(TAVILY_MAX_RESULTS);
   });
 
@@ -287,5 +283,45 @@ describe("searchNews", () => {
     expect(result.credits).toBe(1);
   });
 
+  it("searches the general index, where professional writing actually lives", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(okResponse(SAMPLE));
+
+    await searchNews("design localization", { fetchImpl });
+
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body as string);
+    // A live probe found topic:"news" returns Google News aggregator URLs and
+    // near-zero relevance for this domain. See the plan's "Why each change".
+    expect(body.topic).toBe("general");
+    expect(body.time_range).toBe("week");
+  });
+
+  it("excludes job boards and aggregators, which otherwise dominate", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(okResponse(SAMPLE));
+
+    await searchNews("ux content management", { fetchImpl });
+
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body as string);
+    // Without this the top three results were Google Careers, Target and an
+    // edtech UX Writer posting.
+    expect(body.exclude_domains).toContain("careers.google.com");
+    expect(body.exclude_domains).toContain("indeed.com");
+    expect(body.exclude_domains).toContain("news.google.com");
+  });
+
+  it("still yields hits when the general index omits published_date", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      okResponse({
+        results: [{ title: "A guide", url: "https://phrase.com/blog/guide", content: "x", score: 0.78 }],
+      })
+    );
+
+    const result = await searchNews("q", { fetchImpl });
+
+    expect("hits" in result).toBe(true);
+    if (!("hits" in result)) return;
+    expect(result.hits).toHaveLength(1);
+    // Every general-index result is undated. Task 3 reads the date off the page.
+    expect(result.hits[0].publishedAt).toBeNull();
+  });
 
 });
