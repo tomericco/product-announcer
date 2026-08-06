@@ -160,6 +160,28 @@ export const TAVILY_TIME_RANGE = "month";
  * return aggregator URLs — so this half is belt-and-braces against a
  * regression, not a response to anything currently observed.
  */
+/**
+ * Extended on 2026-08-06 from two live runs of the real agent, not from a
+ * probe. Across 70 hits per run, roughly a third of everything the general
+ * index returned for these topics was structurally not an article:
+ *
+ *   linkedin.com 7   figma.com 7   youtube.com 5   instagram.com 2
+ *   facebook.com 2   + five job boards not previously listed
+ *
+ * They also score HIGH — a LinkedIn post at 0.902, a Capital One job listing at
+ * 0.838 — so no survivable `TAVILY_SCORE_FLOOR` can reach them; they outrank
+ * the real writing. Run 1 wrote a LinkedIn post as one of only two signals.
+ * Excluding them here is the only stage that can act on this.
+ *
+ * `linkedin.com` is deliberately NOT excluded, by the user's decision: LinkedIn
+ * hosts long-form articles as well as posts, and a domain rule cannot tell them
+ * apart. The cost is that LinkedIn remains the single most common host in the
+ * candidate pool.
+ *
+ * `figma.com` is deliberately NOT excluded either, for the same shape of
+ * reason: Figma's blog is legitimate industry writing, and the noise is
+ * community files, which a domain rule cannot separate from it.
+ */
 export const EXCLUDED_DOMAINS = [
   "careers.google.com",
   "corporate.target.com",
@@ -171,6 +193,17 @@ export const EXCLUDED_DOMAINS = [
   "workday.com",
   "news.google.com",
   "google.com",
+  // Social and video. Measured, not assumed — see the census above.
+  "youtube.com",
+  "instagram.com",
+  "facebook.com",
+  // Job boards, added as the live runs surfaced them. This list is
+  // whack-a-mole by nature: each run tends to reveal another ATS host.
+  "mediabistro.com",
+  "jobs.ashbyhq.com",
+  "capitalonecareers.com",
+  "careers.pnc.com",
+  "civilservicejobs.service.gov.uk",
 ];
 
 function parseDate(raw: string | null | undefined): Date | null {
