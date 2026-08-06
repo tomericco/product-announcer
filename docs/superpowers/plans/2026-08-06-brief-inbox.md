@@ -127,6 +127,7 @@ describe("briefs.contentPieceId", () => {
         score: 0.8,
         status: "accepted",
         contentPieceId: piece.id,
+        lastEvidenceAt: new Date(),
         expiresAt: new Date(Date.now() + 86_400_000),
       })
       .returning();
@@ -143,7 +144,7 @@ describe("briefs.contentPieceId", () => {
 });
 ```
 
-**Verified for you:** `briefOriginEnum` is `["agent", "manual"]` (`schema.ts:416`), so `origin: "agent"` above is correct. `briefs` requires `expiresAt` (NOT NULL, no default) — that is why every fixture sets it.
+**Verified for you:** `briefOriginEnum` is `["agent", "manual"]` (`schema.ts:416`), so `origin: "agent"` above is correct. `briefs` has **two** NOT NULL timestamp columns with no default — `lastEvidenceAt` (`schema.ts:477`) and `expiresAt` (`schema.ts:478`) — and every fixture in this plan sets both. Every existing brief test in the repo does the same; a fixture missing either fails with a `23502` not-null violation, not a clear error.
 
 - [ ] **Step 2: Run the test to verify it fails**
 
@@ -489,6 +490,7 @@ async function seedBrief(
       whyNow: "Because",
       suggestedChannel: "blog",
       score: 0.8,
+      lastEvidenceAt: new Date(),
       expiresAt: new Date(Date.now() + 86_400_000),
       ...overrides,
     })
@@ -797,6 +799,7 @@ async function seedBrief(tenantId: string, overrides: Partial<typeof briefs.$inf
       suggestedChannel: "blog",
       keyPoints: ["Point one", "Point two"],
       score: 0.8,
+      lastEvidenceAt: new Date(),
       expiresAt: new Date(Date.now() + 86_400_000),
       ...overrides,
     })
