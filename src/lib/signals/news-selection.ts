@@ -32,13 +32,19 @@ export const SelectionSchema = z.object({
   /**
    * Answered before the list, deliberately. The quiet-week spike found that a
    * model asked straight for items produces items; one asked first whether the
-   * day merits anything will decline when it does not.
+   * batch merits anything will decline when it does not.
+   *
+   * Named for the batch rather than the day because it is not a day's worth:
+   * `TAVILY_TIME_RANGE` is a week, and after the skip-held query removes what
+   * was already written, most of what remains is the same leftovers the
+   * previous run declined. Nothing reads this value — its whole job is to make
+   * the model rule on the batch before it starts picking from it.
    */
-  dayAssessment: z.string(),
+  batchAssessment: z.string(),
   selections: z.array(
     z.object({
       // Deliberately loose. Under fail-closed, a schema rejection costs the
-      // whole day's news, so a cosmetic model slip — a float index, a score of
+      // whole run's articles, so a cosmetic model slip — a float index, a score of
       // 1.02 — must not be able to trigger it. Both are rounded and clamped
       // below instead. The blast radius of a genuine failure is a settled
       // decision; the avoidable triggers for it are not.
@@ -55,8 +61,8 @@ export const SelectionSchema = z.object({
  *
  * Set explicitly because the design doc records a spike where an uncapped
  * default truncated the object mid-array. Under fail-closed a truncation now
- * costs the entire day's news, so this is not a tidy-up. 4,000 is ample for
- * `dayAssessment` plus five one-sentence rationales.
+ * costs the entire run's articles, so this is not a tidy-up. 4,000 is ample for
+ * `batchAssessment` plus five one-sentence rationales.
  */
 export const MAX_SELECTION_OUTPUT_TOKENS = 4_000;
 
@@ -76,41 +82,52 @@ export type NewsSelectionDeps = { generate?: SelectionGenerate };
 
 function buildSystem(profile: RelevanceProfile): string {
   return [
-    `You are the news editor for ${profile.name}.`,
+    `You are the industry-content editor for ${profile.name}.`,
     profile.oneLiner ? `${profile.name} is: ${profile.oneLiner}` : null,
     profile.positioning ? `${profile.name}'s positioning: ${profile.positioning}` : null,
     profile.topics.length > 0 ? `Topics ${profile.name} cares about: ${profile.topics.join(", ")}.` : null,
-    `Your job is to pick at most ${MAX_SIGNALS_PER_RUN} items from today's candidates that are genuinely`,
+    `Your job is to pick at most ${MAX_SIGNALS_PER_RUN} items from this week's candidates that are genuinely`,
     "worth this company's attention. There is no target number.",
     "",
-    "First assess the day in one sentence: is there anything here worth noting at all?",
+    "First assess the batch in one sentence: is there anything here worth noting at all?",
     "",
     "THE BAR. Select an item only if you would defend it to this company's own audience.",
     "Two things must both be true: it brings a NEW topic or a NEW angle — not a restatement of",
     "something in the already-covered list below — and it is substantial enough that a reader",
     "would be glad they read it.",
     "",
-    "Returning an empty list is a correct and common outcome. Most days are routine.",
+    "Returning an empty list is a correct and common outcome. Most of what a topic search returns",
+    "is routine, and much of this batch is material you were already shown and did not pick.",
     "Padding the list is the worst thing you can do: it teaches the reader to ignore the feed,",
     "and that is not recoverable. Two strong items beat five weak ones; zero beats one weak one.",
     "",
     "NEVER qualifying on their own: routine version bumps, incremental feature notes, maintenance",
-    "and patch releases, generic market-size statistics and analyst forecasts, listicles and",
-    "roundups, press releases with no substance, job postings, and SEO filler that restates",
-    "common knowledge.",
+    "and patch releases, generic market-size statistics and analyst forecasts, press releases with",
+    "no substance, job postings, listicles and roundups assembled to rank in search, and SEO filler",
+    "that restates common knowledge.",
     "",
     "A substantive opinion piece, analysis, or practitioner guide DOES qualify — it does not have",
-    "to report an event. What matters is whether someone in this company's field would be glad",
-    "they read it, not merely that it exists.",
+    "to report an event.",
+    "",
+    "The line between the two is WHO IT WAS WRITTEN FOR, not what format it takes and not who",
+    "published it. A how-to written by someone who has actually done the work qualifies — a",
+    "step-by-step guide with real detail, opinions and trade-offs in it is exactly the material",
+    "this feed exists to carry, and it still qualifies when a vendor publishes it on its own blog.",
+    "A listicle assembled to rank for a search term does not, however useful its title sounds:",
+    "the tell is that it teaches nothing a practitioner did not already know. Judge the body,",
+    "not the headline.",
+    "",
+    "What matters is whether someone in this company's field would be glad they read it, not",
+    "merely that it exists.",
     "",
     // Syndication is the gap the already-covered list does not close: it holds
-    // what we previously *wrote*, and says nothing about two of today's own
-    // candidates being one story. A wire report picked up by three outlets has
+    // what we previously *wrote*, and says nothing about two candidates in this
+    // very batch being one story. A wire report picked up by three outlets has
     // three hosts, so three externalIds, and survives both normalizeArticleUrl
     // and the skip-held query — one event could otherwise consume three of the
     // five slots, and spec 5 would read the copies as independent corroboration
     // for a cluster.
-    "If two or more of today's candidates are the same story — a wire report or announcement carried",
+    "If two or more of the candidates are the same story — a wire report or announcement carried",
     "by several outlets — select at most ONE of them, preferring the best-sourced or most substantial",
     "version, and ignore the rest.",
     "",
@@ -157,7 +174,7 @@ function buildPrompt(candidates: NewsCandidate[], recentTitles: string[]): strin
     )
     .join("\n\n");
 
-  return `${covered}Today's candidates:\n\n${numbered}`;
+  return `${covered}This week's candidates:\n\n${numbered}`;
 }
 
 export async function selectNewsSignals(

@@ -213,4 +213,35 @@ describe("selectNewsSignals", () => {
     expect(system).not.toMatch(/something happened/i);
     expect(system).toMatch(/opinion|analysis|guide/i);
   });
+
+  it("separates a practitioner how-to from an SEO listicle instead of leaving them contradictory", async () => {
+    const generate = generateReturning([]);
+
+    await selectNewsSignals([candidate(0)], PROFILE, [], "t1", { generate });
+
+    const system = generate.mock.calls[0][0].system as string;
+    // "listicles and roundups never qualify" beside "a practitioner guide DOES
+    // qualify" is a contradiction the model would have resolved unobserved —
+    // and the probe's four best results were vendor how-to guides.
+    expect(system).toMatch(/how-to/i);
+    expect(system).toMatch(/rank in search|search term/i);
+    expect(system).toMatch(/vendor publishes it/i);
+  });
+
+  it("frames the batch as a week's candidates, not a day's news", async () => {
+    const generate = generateReturning([]);
+
+    await selectNewsSignals([candidate(0)], PROFILE, [], "t1", { generate });
+
+    const { system, prompt } = generate.mock.calls[0][0] as { system: string; prompt: string };
+    // `TAVILY_TIME_RANGE` is a week, and after skip-held removes what was
+    // already written the batch is largely leftovers re-presented — so "today's
+    // candidates" and "the day" were describing something that does not exist.
+    expect(system).not.toMatch(/today|the day\b|most days/i);
+    expect(prompt).not.toMatch(/today/i);
+    expect(system).toMatch(/industry-content editor/i);
+    // The licence to return nothing is a spike result and must survive the
+    // reframing untouched.
+    expect(system).toMatch(/empty list is a correct and common outcome/i);
+  });
 });
