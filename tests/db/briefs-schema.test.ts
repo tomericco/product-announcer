@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../src/db";
-import { tenants, signals, briefs, briefSignals } from "../../src/db/schema";
+import { tenants, signals, briefs, briefSignals, contentPieces } from "../../src/db/schema";
 
 const TENANT = "Briefs Schema Test Tenant";
 // Deliberately in the future. A brief with a past expiry and the default `new`
@@ -98,11 +98,16 @@ describe("briefs schema", () => {
       lastEvidenceAt: new Date(),
       expiresAt: FUTURE(),
     };
-    const pieceId = crypto.randomUUID();
+    const [piece] = await db
+      .insert(contentPieces)
+      .values({ tenantId: tenant.id, type: "blog_post", title: "P", body: "b" })
+      .returning();
+    const pieceId = piece.id;
 
-    // A real content piece is not needed: the partial unique index is what is
-    // under test, and contentPieceId has no FK in this plan (the accept flow
-    // lands in the inbox plan).
+    // A real content piece IS needed: contentPieceId carries a foreign key to
+    // contentPieces.id, so a random UUID would fail on insert before the
+    // partial unique index — the thing actually under test here — ever gets
+    // a chance to bite.
     await db.insert(briefs).values({ ...base, contentPieceId: pieceId });
 
     await expect(db.insert(briefs).values({ ...base, contentPieceId: pieceId })).rejects.toThrow();
