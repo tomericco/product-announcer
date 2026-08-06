@@ -206,7 +206,43 @@ Expected: PASS, 3 tests.
 
 - [ ] **Step 6: Prove the tenant-scoping guard bites**
 
-Temporarily change the unique index to `.on(table.url)` only, regenerate nothing — just edit the schema and re-run. The "scopes a rejection to one tenant" test must FAIL. Restore the index afterwards and re-run to confirm green.
+The guard here lives in the **database**, not in TypeScript. Editing the
+Drizzle schema proves nothing — the index is already created, and the test
+would still pass. Reshape the live index on the TEST database instead.
+
+Create `/tmp/reindex.ts`, run it, run the test, then restore:
+
+```typescript
+import { db } from "./src/db";
+import { sql } from "drizzle-orm";
+
+const to = process.argv[2] === "broken" ? "(url)" : "(tenant_id, url)";
+await db.execute(sql.raw(`DROP INDEX IF EXISTS rejected_articles_tenant_url_unique`));
+await db.execute(
+  sql.raw(`CREATE UNIQUE INDEX rejected_articles_tenant_url_unique ON rejected_articles ${to}`)
+);
+console.log(`index is now ${to}`);
+process.exit(0);
+```
+
+```bash
+TEST_DATABASE_URL="${TEST_DATABASE_URL:-postgresql://postgres:postgres@localhost:5433/product_announcer_test}" \
+  DATABASE_URL="$TEST_DATABASE_URL" npx tsx /tmp/reindex.ts broken
+npx vitest run tests/lib/signals/rejected-articles.test.ts -t "scopes"
+```
+
+Expected: FAIL — the second tenant's insert violates a url-only unique index.
+
+Restore and confirm green:
+
+```bash
+DATABASE_URL="$TEST_DATABASE_URL" npx tsx /tmp/reindex.ts fixed
+npx vitest run tests/lib/signals/rejected-articles.test.ts
+rm /tmp/reindex.ts
+```
+
+**Confirm `DATABASE_URL` points at a database whose name ends in `_test`
+before running either command.** This mutates a live schema.
 
 - [ ] **Step 7: Commit**
 
