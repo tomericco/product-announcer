@@ -274,10 +274,10 @@ async function finish(
 /**
  * Records articles this tenant will not be offered again.
  *
- * Never throws. A failed memory write must not cost a run its signals, so the
- * caller records the failure in `errors` and carries on — the worst case is
- * that these articles are re-judged next run, which is the behaviour that
- * existed before this table.
+ * Throws on a database error — both call sites wrap it, because a failed
+ * memory write must not cost a run its signals. The worst case is that these
+ * articles are re-judged next run, which is the behaviour that existed before
+ * this table.
  *
  * `url` must already be normalized. `runNewsSource` stores normalized URLs in
  * `byUrl`, so every caller inside this module satisfies that by construction.
