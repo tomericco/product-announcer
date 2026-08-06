@@ -7,6 +7,7 @@ import {
   normalizeArticleUrl,
   SCORING_EXCERPT_CHARS,
   MAX_CANDIDATES_PER_RUN,
+  MAX_TOPICS_PER_RUN,
 } from "../../../src/lib/signals/news-agent";
 import type { PageResult } from "../../../src/lib/workspace/fetch-page";
 
@@ -334,12 +335,20 @@ describe("runNewsSource", () => {
 
   it("bounds how many topic searches one run performs", async () => {
     const tenant = await seedTenant();
-    const source = await seedNewsSource(tenant.id, ["a", "b", "c", "d", "e", "f", "g"]);
+    // Derived from the constant, never hardcoded. The previous fixture seeded
+    // seven topics and asserted five searches, which silently encoded "the cap
+    // is at most 7" — raising the cap to 10 broke it. Both numbers now move
+    // with the constant, so the test asserts that the cap BINDS rather than
+    // asserting what the cap happens to be.
+    const topics = Array.from({ length: MAX_TOPICS_PER_RUN + 3 }, (_, i) => `topic-${i}`);
+    const source = await seedNewsSource(tenant.id, topics);
     const search = vi.fn().mockResolvedValue({ hits: [], credits: 1 });
 
     await runNewsSource(source, { database: db, search, fetchPage: vi.fn(), select: vi.fn() });
 
-    expect(search).toHaveBeenCalledTimes(5);
+    expect(search).toHaveBeenCalledTimes(MAX_TOPICS_PER_RUN);
+    // And the ones it did search are the profile's first N, in order.
+    expect(search.mock.calls.map((c) => c[0])).toEqual(topics.slice(0, MAX_TOPICS_PER_RUN));
   });
 
   it("writes at most MAX_SIGNALS_PER_RUN signals however many clear the bar", async () => {

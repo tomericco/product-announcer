@@ -78,11 +78,22 @@ export const RECENT_TITLES_FOR_NOVELTY = 40;
 
 /**
  * Caps searches per run. Each is one Tavily credit, so this is the cost dial:
- * at 5, a tenant costs 5 credits/day — roughly 150/month against a 1,000-credit
- * free tier. Topics beyond this are not dropped forever, they are simply not
- * searched this run; the profile's topic order decides priority.
+ * at 10, a tenant costs 10 credits/day — roughly 300/month against a
+ * 1,000-credit free tier, so about three tenants fit free.
+ *
+ * Raised from 5 because the slice is `topics.slice(0, MAX_TOPICS_PER_RUN)` —
+ * an arbitrary prefix, not a ranked selection. At 5 the four most specific
+ * terms in a nine-topic profile were never searched at all, while its two
+ * broadest ones dominated the results. Ten covers a normal profile outright,
+ * which sidesteps the ordering problem rather than solving it.
+ *
+ * This does NOT multiply the fetch or model bill: MAX_CANDIDATES_PER_RUN still
+ * caps what is fetched and scored at 20 regardless of how many searches fed it.
+ * Only Tavily credits scale here. What does change is competition — twice the
+ * candidates for the same 20 slots — so the Tavily-score sort does more work
+ * and a weak topic can no longer crowd out a strong one by position alone.
  */
-export const MAX_TOPICS_PER_RUN = 5;
+export const MAX_TOPICS_PER_RUN = 10;
 
 /**
  * How much of each article body the selector sees.
@@ -122,12 +133,17 @@ const FETCH_CONCURRENCY = 8;
  * recency, which is how a two-year-old evergreen guide can arrive inside a
  * one-week window. This is the only place a real publication date is known.
  *
- * COUPLED TO `TAVILY_TIME_RANGE` in `tavily.ts`, which is the outer window: it
- * decides what is fetched, this decides what survives. Widening one alone does
- * nothing useful. Widen `TAVILY_TIME_RANGE` to "month" and every dated article
- * in the new 8–30-day range is fetched here and then thrown away by this
- * constant — paid for, and discarded. Widen this alone and there is nothing
- * new to admit, because Tavily never returned it. Change them together.
+ * COUPLED TO `TAVILY_TIME_RANGE` ("month") in `tavily.ts`, which is the outer
+ * window: it decides what is fetched, this decides what survives. Changing one
+ * alone does nothing useful. Narrow `TAVILY_TIME_RANGE` and this constant has
+ * nothing new to admit, because Tavily never returned it; narrow this one and
+ * every dated article in the range the outer window still asks for is fetched
+ * and then thrown away — paid for, and discarded. Change them together.
+ *
+ * 30 matches the outer window exactly, so a dated article is dropped here only
+ * if the page's own date disagrees with Tavily's notion of recency — which is
+ * the case this inner window exists for: Tavily filters on its crawl date, and
+ * an evergreen guide recrawled yesterday can be two years old.
  *
  * Applies ONLY to articles we could date, and only to a date the page actually
  * asserts — see `PublishedDateSource`. An undated article is kept and ranked
@@ -135,7 +151,7 @@ const FETCH_CONCURRENCY = 8;
  * which is the content this agent exists to surface. A `time`-derived date is
  * likewise never grounds for dropping, because it is a guess.
  */
-export const RECENCY_WINDOW_DAYS = 7;
+export const RECENCY_WINDOW_DAYS = 30;
 
 /** Params that identify a referral, not an article. */
 const TRACKING_PARAMS = /^(utm_|fbclid$|gclid$|mc_[ce]id$|ref$|source$)/i;

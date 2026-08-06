@@ -62,7 +62,7 @@ describe("searchNews", () => {
     expect(body.query).toBe("localization tooling");
     expect(body.topic).toBe("general");
     expect(body.search_depth).toBe("basic");
-    expect(body.time_range).toBe("week");
+    expect(body.time_range).toBe("month");
     expect(body.exclude_domains).toBeDefined();
     expect(body.max_results).toBe(TAVILY_MAX_RESULTS);
   });
@@ -292,7 +292,7 @@ describe("searchNews", () => {
     // A live probe found topic:"news" returns Google News aggregator URLs and
     // near-zero relevance for this domain. See the plan's "Why each change".
     expect(body.topic).toBe("general");
-    expect(body.time_range).toBe("week");
+    expect(body.time_range).toBe("month");
   });
 
   it("excludes job boards and aggregators, which otherwise dominate", async () => {

@@ -102,25 +102,35 @@ const CREDITS_PER_SEARCH = 1;
 export const TAVILY_TOPIC = "general";
 
 /**
- * Matches the daily cron loosely rather than exactly: professional articles
- * keep their value for longer than news events, so a piece published on
- * Thursday is still worth surfacing on Monday.
+ * Deliberately much wider than the daily cron: professional articles keep their
+ * value far longer than news events, so a guide published three weeks ago can
+ * still be the most useful thing in a company's field this week.
  *
- * COUPLED TO `RECENCY_WINDOW_DAYS` (7) in `news-agent.ts`. This is the outer
+ * COUPLED TO `RECENCY_WINDOW_DAYS` (30) in `news-agent.ts`. This is the outer
  * window — what Tavily is asked for — and that one is the inner window, applied
  * to the real publication date read off each article's own page. This one
- * cannot be widened alone: at "month", every dated article in the new 8–30-day
- * range is searched for, fetched, and then dropped by `RECENCY_WINDOW_DAYS`,
- * so the only articles that would actually benefit are the undated ones, which
- * is the opposite of what widening is for. Widen both or neither.
+ * cannot be changed alone: narrow this to "week" while the inner window stays
+ * at 30 and nothing new is admitted, because Tavily never returns it; widen
+ * this while the inner window stays at 7 and every dated article in the new
+ * 8–30-day range is searched for, fetched, and then discarded. Change both or
+ * neither.
  *
- * Known risk, accepted deliberately: the week-windowed probe returned job
- * postings, and `EXCLUDED_DOMAINS` below is what should remove them. That exact
- * combination has not been observed live. Both constants are one-liners so the
- * pair can be widened to "month" / 30 — which is what produced the best probe
- * results — once a real run says whether the exclusions did their job.
+ * Set to "month" because that is the window the probe actually validated: with
+ * job domains excluded it returned Phrase, Webflow, Lilt and SimpleLocalize
+ * writing substantively on the target topics. The week-windowed probe returned
+ * job postings instead, and week-plus-exclusions was never observed live — so
+ * "month" is the evidenced setting and "week" was the guess.
+ *
+ * The cost of the wider window is repetition, not spend: a rejected article is
+ * recorded nowhere, so it is re-searched and re-fetched on every run it stays
+ * inside the window — up to 30 days instead of 7. Tavily credits are unaffected
+ * (they scale with MAX_TOPICS_PER_RUN, not with the window) and fetches stay
+ * capped by MAX_CANDIDATES_PER_RUN, so the real harm is that repeats occupy
+ * candidate slots new articles could have used. Watch the ratio of `skipped` to
+ * `written` on the first few live runs; if repeats crowd out new material, the
+ * fix is a rejected-article memory, not a narrower window.
  */
-export const TAVILY_TIME_RANGE = "week";
+export const TAVILY_TIME_RANGE = "month";
 
 /**
  * Job boards and search aggregators, excluded for different reasons and on
