@@ -8,6 +8,7 @@ import {
   SCORING_EXCERPT_CHARS,
   MAX_CANDIDATES_PER_RUN,
   MAX_TOPICS_PER_RUN,
+  TAVILY_SCORE_FLOOR,
 } from "../../../src/lib/signals/news-agent";
 import type { PageResult } from "../../../src/lib/workspace/fetch-page";
 
@@ -430,9 +431,12 @@ describe("runNewsSource", () => {
     const tenant = await seedTenant();
     const source = await seedNewsSource(tenant.id, ["localization"]);
     const fetchPage = vi.fn().mockResolvedValue(page("body"));
-    // 30 candidates, all above the floor, with ascending scores.
+    // 30 candidates, all above the floor, with ascending scores. Derived from
+    // the constant, never hardcoded: the previous fixture started at a literal
+    // 0.3, which silently encoded "the floor is at most 0.3" and became an
+    // exact boundary case the moment the floor was raised to that value.
     const hits = Array.from({ length: 30 }, (_, i) =>
-      hit(`https://news.example.com/c${i}`, `C${i}`, 0.3 + i * 0.02)
+      hit(`https://news.example.com/c${i}`, `C${i}`, TAVILY_SCORE_FLOOR + 0.01 + i * 0.02)
     );
 
     await runNewsSource(source, {
@@ -558,8 +562,10 @@ describe("runNewsSource", () => {
       database: db,
       search: vi.fn().mockResolvedValue({
         hits: [
-          hit("https://news.example.com/w1", "Weak one", 0.001),
-          hit("https://news.example.com/w2", "Weak two", 0.002),
+          // Just under the floor, derived from it. Hardcoded values here would
+          // stop exercising the filter the moment the floor moved.
+          hit("https://news.example.com/w1", "Weak one", TAVILY_SCORE_FLOOR - 0.02),
+          hit("https://news.example.com/w2", "Weak two", TAVILY_SCORE_FLOOR - 0.01),
         ],
         credits: 1,
       }),

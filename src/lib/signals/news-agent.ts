@@ -47,20 +47,48 @@ export type NewsRunResult = {
  * model call. The cheapest filter in the pipeline: it arrives free with every
  * search result and costs nothing to apply.
  *
- * Calibrated against real traffic, not guessed. The first live run returned
- * these scores across three successful searches:
+ * Calibrated against real traffic, not guessed — and RE-calibrated after the
+ * switch to the general index, which scores on a completely different scale.
  *
- *   0.42  0.25  0.12  0.09  0.06  0.04  0.04  0.04  0.03  0.03  0.02
+ * The first calibration measured the NEWS index: 11 hits topping out at 0.42
+ * with a median near 0.04. That is what the original 0.2 was wrong against (it
+ * admitted 2 of 11) and what 0.05 was then set from. Both numbers describe a
+ * configuration this agent no longer runs.
  *
- * The original 0.2 was off by roughly an order of magnitude — it admitted 2 of
- * 11 hits and silently discarded the rest before anything looked at them. At
- * 0.05 the same sample keeps the top 5 and drops the tail, which is the job
- * this filter is actually for: skip obvious junk, not do the selecting.
+ * A 2026-08-06 probe of the CURRENT configuration — general index, month
+ * window, exclusions on, seven real topics — returned 68 unique scored hits:
  *
- * The real bounding is done by MAX_CANDIDATES_PER_RUN and by the selector.
- * Tavily's score is a better ordering signal than a gate, so keep this low —
- * raising it means dropping articles no human or model ever assessed. Eleven
- * data points from one run is thin; revisit once there are more.
+ *   min 0.074   p25 0.436   median 0.630   p75 0.763   max 0.944
+ *
+ * Those numbers make this floor look absurdly low, and it stays anyway. The
+ * probe was run specifically to justify raising it, and it argued the opposite:
+ *
+ * 1. Raising it changes nothing on a normal day. Candidates are sorted and cut
+ *    to MAX_CANDIDATES_PER_RUN, so the floor alters the fetched set ONLY if it
+ *    rises above the score at the slice cut point — 0.758 in that probe. Even
+ *    0.5 left 45 candidates, more than twice the cap of 20. Every floor below
+ *    the cut point is invisible.
+ * 2. The only day it acts is a thin day, when few topics return anything and
+ *    the pool falls below the cap. That day has never been measured, and it is
+ *    the day scores are most likely to be low across the board — so a floor
+ *    tuned on good-day data is at its most dangerous exactly when it finally
+ *    does something.
+ * 3. Nothing is lost by letting the tail through. It reaches the selector,
+ *    which fails closed and rejects listicles. The floor's whole marginal value
+ *    is saving a few HTTP fetches; its marginal risk is zeroing a run.
+ *
+ * The failure mode of a too-high floor is silent and total: articles dropped
+ * here are seen by no human and no model, and the source still reports a clean
+ * run. That is how the original 0.2 hid for as long as it did — calibrated on
+ * the news index, where 0.12 was a good hit. Do not repeat that by calibrating
+ * on general-index good days. `tests/lib/signals/news-agent.test.ts` guards
+ * this with "keeps hits Tavily scored below the old 0.2 floor"; if that test is
+ * in your way, you are making this mistake again.
+ *
+ * The real bounding is MAX_CANDIDATES_PER_RUN and the selector. Note too that
+ * no survivable floor touches high-scoring junk: the same probe returned a
+ * Capital One job posting at 0.838 and a social post at 0.902. Those belong to
+ * EXCLUDED_DOMAINS and the selector, not here.
  */
 export const TAVILY_SCORE_FLOOR = 0.05;
 
