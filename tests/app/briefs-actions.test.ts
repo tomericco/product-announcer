@@ -15,7 +15,8 @@ vi.mock("../../src/lib/workspace/session", () => ({
 
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 
-import { acceptBrief, dismissBrief, scaffoldBody } from "../../src/app/(dashboard)/briefs/actions";
+import { acceptBrief, dismissBrief } from "../../src/app/(dashboard)/briefs/actions";
+import { scaffoldBody } from "../../src/lib/briefs/scaffold";
 
 afterEach(async () => {
   await db.delete(tenants).where(eq(tenants.name, TENANT));

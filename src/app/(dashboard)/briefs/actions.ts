@@ -5,24 +5,11 @@ import { revalidatePath } from "next/cache";
 import { db } from "@/db";
 import { briefs, contentPieces, type Brief } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
+import { scaffoldBody } from "@/lib/briefs/scaffold";
 
 export type DismissReason = NonNullable<Brief["dismissReason"]>;
 export type AcceptResult = { ok: true; contentPieceId: string } | { ok: false; error: string };
 export type DismissResult = { ok: true } | { ok: false; error: string };
-
-/**
- * The starting body for an accepted brief.
- *
- * Deterministic and model-free on purpose: real drafting is spec 5c, and
- * `contentPieces.body` is NOT NULL so something has to be written. Key points
- * become headings because they ARE the outline — the schema deliberately has no
- * separate `outline` column.
- */
-export function scaffoldBody(brief: { angle: string; whyNow: string; keyPoints: string[] }): string {
-  return [brief.angle, "", `Why now: ${brief.whyNow}`, "", ...brief.keyPoints.map((p) => `## ${p}`)]
-    .join("\n")
-    .trim();
-}
 
 /**
  * Re-reads a brief scoped to the caller's tenant.

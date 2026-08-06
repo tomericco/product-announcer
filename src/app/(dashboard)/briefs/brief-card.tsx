@@ -15,7 +15,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { briefDismissReasonEnum, type Brief, type Signal } from "@/db/schema";
+import type { Brief, Signal } from "@/db/schema";
 import type { BriefWithSignals } from "@/lib/briefs/query";
 import { acceptBrief, dismissBrief, type DismissReason } from "./actions";
 
@@ -32,8 +32,16 @@ const SIGNAL_KIND_LABEL: Record<Signal["kind"], string> = {
   manual: "Manual",
 };
 
-// Human labels for the five reasons, keyed off the schema's own enum values
-// (imported below) rather than a hand-retyped list of strings.
+// Mirrors `briefDismissReasonEnum` in src/db/schema.ts. Kept as a local
+// `as const` array (the pattern `KIND_VALUES` in src/lib/signals/params.ts
+// already uses) rather than importing the enum object as a runtime value:
+// this is a client component, and `@/db/schema` is a ~900-line module of
+// table/enum definitions — every other client component in this codebase
+// imports `type`-only from it, and pulling the real module in risks shipping
+// table/column names and business-rationale comments into the browser
+// bundle. Changing one of these five values means changing the enum too.
+const DISMISS_REASON_VALUES = ["off_topic", "wrong_angle", "already_covered", "not_our_voice", "other"] as const;
+
 const DISMISS_REASON_LABEL: Record<DismissReason, string> = {
   off_topic: "Off topic",
   wrong_angle: "Wrong angle",
@@ -42,7 +50,7 @@ const DISMISS_REASON_LABEL: Record<DismissReason, string> = {
   other: "Other",
 };
 
-const DISMISS_REASON_OPTIONS = briefDismissReasonEnum.enumValues.map((value) => ({
+const DISMISS_REASON_OPTIONS = DISMISS_REASON_VALUES.map((value) => ({
   value,
   label: DISMISS_REASON_LABEL[value],
 }));
@@ -55,8 +63,9 @@ const DECIDED_LABEL: Record<Exclude<Brief["status"], "new">, string> = {
 
 /**
  * One brief in the inbox. A client component because it owns the
- * accept/dismiss interaction (`SignalRow` on `/signals` stays server-rendered
- * for the same reason it has no actions).
+ * accept/dismiss interaction — unlike `SignalRow` on `/signals`, which is
+ * also a client component but has no actions because that page is read-only
+ * by design (selection and bulk actions are a later spec).
  *
  * Only offers Accept/Dismiss when `brief.status === "new"` — `acceptBrief`
  * and `dismissBrief` both refuse anything else, so showing the buttons for a
