@@ -257,6 +257,58 @@ describe("runNewsSource", () => {
     expect(select).not.toHaveBeenCalled();
   });
 
+  it("skips a remembered article before fetching or scoring it", async () => {
+    const tenant = await seedTenant();
+    const source = await seedNewsSource(tenant.id, ["localization"]);
+    await db.insert(rejectedArticles).values({
+      tenantId: tenant.id,
+      url: "https://news.example.com/known",
+      title: "Known",
+      reason: "not_selected",
+    });
+    const fetchPage = vi.fn().mockResolvedValue(page("body"));
+    const select = vi.fn().mockResolvedValue({ selections: [] });
+
+    const result = await runNewsSource(source, {
+      database: db,
+      search: vi.fn().mockResolvedValue({
+        hits: [hit("https://news.example.com/known", "Known"), hit("https://news.example.com/new", "New")],
+        credits: 1,
+      }),
+      fetchPage,
+      select,
+    });
+
+    // The point of the memory is freeing a candidate slot, not merely avoiding
+    // a duplicate row — so assert it was never FETCHED, not just never written.
+    expect(fetchPage.mock.calls.map((c) => c[0])).toEqual(["https://news.example.com/new"]);
+    expect(select.mock.calls[0][0].map((c: { url: string }) => c.url)).toEqual(["https://news.example.com/new"]);
+    expect(result.alreadyRejected).toBe(1);
+  });
+
+  it("does not let one tenant's rejection hide an article from another", async () => {
+    const mine = await seedTenant();
+    const [other] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const source = await seedNewsSource(mine.id, ["localization"]);
+    await db.insert(rejectedArticles).values({
+      tenantId: other.id,
+      url: "https://news.example.com/shared",
+      title: "Shared",
+      reason: "not_selected",
+    });
+    const fetchPage = vi.fn().mockResolvedValue(page("body"));
+
+    const result = await runNewsSource(source, {
+      database: db,
+      search: vi.fn().mockResolvedValue({ hits: [hit("https://news.example.com/shared")], credits: 1 }),
+      fetchPage,
+      select: vi.fn().mockResolvedValue({ selections: [] }),
+    });
+
+    expect(fetchPage).toHaveBeenCalledWith("https://news.example.com/shared");
+    expect(result.alreadyRejected).toBe(0);
+  });
+
   it("records a search failure on the source without throwing, and marks it failing when every search failed", async () => {
     const tenant = await seedTenant();
     const source = await seedNewsSource(tenant.id, ["localization"]);

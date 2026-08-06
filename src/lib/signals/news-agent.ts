@@ -40,6 +40,14 @@ export type NewsRunResult = {
   selected: number;
   /** Dropped because the article's own page date was outside RECENCY_WINDOW_DAYS. */
   stale: number;
+  /**
+   * Already judged and turned down — not fetched, not scored, not billed.
+   * Distinct from `skipped`, which is "we already wrote this". Both are
+   * returned and BOTH ARE CURRENTLY DISCARDED by `sweepNewsSources`; the
+   * signature of a pool crowded out by repeats is this number staying high
+   * while `written` falls toward zero, and nothing surfaces that yet.
+   */
+  alreadyRejected: number;
 };
 
 /**
@@ -314,7 +322,15 @@ export async function runNewsSource(source: Source, deps: NewsAgentDeps = {}): P
   const fetchPage = deps.fetchPage ?? fetchPageText;
   const select = deps.select ?? selectNewsSignals;
 
-  const empty: NewsRunResult = { written: 0, dropped: 0, skipped: 0, credits: 0, selected: 0, stale: 0 };
+  const empty: NewsRunResult = {
+    written: 0,
+    dropped: 0,
+    skipped: 0,
+    credits: 0,
+    selected: 0,
+    stale: 0,
+    alreadyRejected: 0,
+  };
 
   const profile = await loadProfile(source.tenantId, database);
   const topics = profile.topics.slice(0, MAX_TOPICS_PER_RUN);
@@ -396,6 +412,24 @@ export async function runNewsSource(source: Source, deps: NewsAgentDeps = {}): P
     return { ...empty, skipped, credits };
   }
 
+  // ── Skip what we already judged ───────────────────────────────────────
+  // Deliberately BEFORE the score filter, the truncation and every fetch: a
+  // remembered article must free a candidate slot for new material, not merely
+  // avoid a duplicate row. Queried against what survived the signals skip, so
+  // it never asks about URLs already removed.
+  const remainingUrls = [...byUrl.keys()];
+  const rejectedRows = await database
+    .select({ url: rejectedArticles.url })
+    .from(rejectedArticles)
+    .where(and(eq(rejectedArticles.tenantId, source.tenantId), inArray(rejectedArticles.url, remainingUrls)));
+  for (const row of rejectedRows) byUrl.delete(row.url);
+  const alreadyRejected = rejectedRows.length;
+
+  if (byUrl.size === 0) {
+    await finish(database, source.id, errors.length > 0 ? errors.join("; ") : null, productive);
+    return { ...empty, skipped, alreadyRejected, credits };
+  }
+
   // ── Cheap filtering, before anything expensive ────────────────────────
   // Tavily's own score is free and already in hand. Applying it here removes
   // most of a run's cost before a single HTTP request, and the sort means the
@@ -419,7 +453,7 @@ export async function runNewsSource(source: Source, deps: NewsAgentDeps = {}): P
     // reading the health block.
     errors.push(`All ${beforeFilter} candidates were below the relevance floor.`);
     await finish(database, source.id, errors.join("; "), productive);
-    return { ...empty, skipped, credits };
+    return { ...empty, skipped, alreadyRejected, credits };
   }
 
   // ── Fetch each article through the guarded fetcher ─────────────────────
@@ -560,7 +594,7 @@ export async function runNewsSource(source: Source, deps: NewsAgentDeps = {}): P
     // than a silent gap.
     errors.push(`selection failed: ${outcome.error}`);
     await finish(database, source.id, errors.join("; "), false);
-    return { ...empty, skipped, credits };
+    return { ...empty, skipped, alreadyRejected, credits };
   }
 
   // The set, not the count, is the authority for what gets recorded: if the
@@ -640,5 +674,5 @@ export async function runNewsSource(source: Source, deps: NewsAgentDeps = {}): P
   }
 
   await finish(database, source.id, errors.length > 0 ? errors.join("; ") : null, productive);
-  return { written, dropped, skipped, credits, selected: outcome.selections.length, stale };
+  return { written, dropped, skipped, credits, selected: outcome.selections.length, stale, alreadyRejected };
 }
