@@ -200,4 +200,17 @@ describe("selectNewsSignals", () => {
       [1, 0],
     ]);
   });
+
+  it("welcomes professional and opinion writing rather than demanding an event", async () => {
+    const generate = generateReturning([]);
+
+    await selectNewsSignals([candidate(0)], PROFILE, [], "t1", { generate });
+
+    const system = generate.mock.calls[0][0].system as string;
+    // The old rule — "any item whose only claim is that it exists rather than
+    // that something happened" — rejected exactly the trade essays and
+    // practitioner guides this feed is meant to carry.
+    expect(system).not.toMatch(/something happened/i);
+    expect(system).toMatch(/opinion|analysis|guide/i);
+  });
 });

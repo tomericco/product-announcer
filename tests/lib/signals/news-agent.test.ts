@@ -22,14 +22,8 @@ async function seedTenant() {
   return tenant;
 }
 
-function page(text: string): PageResult {
-  return {
-    text,
-    html: `<p>${text}</p>`,
-    finalUrl: "https://news.example.com/a",
-    contentType: "text/html",
-    truncated: false,
-  };
+function page(text: string, html = `<p>${text}</p>`): PageResult {
+  return { text, html, finalUrl: "https://news.example.com/a", contentType: "text/html", truncated: false };
 }
 
 async function seedNewsSource(tenantId: string, topics: string[]): Promise<Source> {
@@ -569,6 +563,109 @@ describe("runNewsSource", () => {
     // A null lastError here is indistinguishable from a genuinely quiet day,
     // which is how a permanently-dead agent stays invisible.
     expect(row.lastError).toContain("2 candidates were below the relevance floor");
+  });
+
+  it("dates a signal from the article's own HTML when the index gave none", async () => {
+    const tenant = await seedTenant();
+    const source = await seedNewsSource(tenant.id, ["localization"]);
+
+    await runNewsSource(source, {
+      database: db,
+      // General-index results are always undated.
+      search: vi.fn().mockResolvedValue({
+        hits: [{ ...hit("https://phrase.com/blog/guide", "A guide", 0.8), publishedAt: null }],
+        credits: 1,
+      }),
+      fetchPage: vi.fn().mockResolvedValue(
+        page("body", `<meta property="article:published_time" content="${new Date(Date.now() - 86_400_000).toISOString()}">`)
+      ),
+      select: vi.fn().mockResolvedValue({
+        selections: [{ index: 0, score: 0.8, rationale: "r", topics: [] }],
+      }),
+    });
+
+    const [row] = await db
+      .select()
+      .from(signals)
+      .where(and(eq(signals.tenantId, tenant.id), eq(signals.kind, "market_news")));
+    // Yesterday, from the page — not the run time.
+    expect(Date.now() - row.occurredAt.getTime()).toBeGreaterThan(60_000);
+  });
+
+  it("drops an article whose page date is older than the recency window", async () => {
+    const tenant = await seedTenant();
+    const source = await seedNewsSource(tenant.id, ["localization"]);
+    const select = vi.fn().mockResolvedValue({ selections: [] });
+
+    const result = await runNewsSource(source, {
+      database: db,
+      search: vi.fn().mockResolvedValue({
+        hits: [{ ...hit("https://example.com/ancient", "Ancient", 0.9), publishedAt: null }],
+        credits: 1,
+      }),
+      fetchPage: vi.fn().mockResolvedValue(
+        page("body", `<meta property="article:published_time" content="2024-01-01T00:00:00Z">`)
+      ),
+      select,
+    });
+
+    expect(result.stale).toBe(1);
+    // The stale article never reaches the model: `select` is still invoked
+    // (its own empty-candidates short-circuit is what avoids the model call),
+    // but with nothing left to judge.
+    expect(select.mock.calls[0][0]).toHaveLength(0);
+  });
+
+  it("keeps an undated article rather than dropping it", async () => {
+    const tenant = await seedTenant();
+    const source = await seedNewsSource(tenant.id, ["localization"]);
+    const select = vi.fn().mockResolvedValue({ selections: [] });
+
+    const result = await runNewsSource(source, {
+      database: db,
+      search: vi.fn().mockResolvedValue({
+        hits: [{ ...hit("https://phrase.com/blog/guide", "Undated guide", 0.8), publishedAt: null }],
+        credits: 1,
+      }),
+      // No date metadata anywhere.
+      fetchPage: vi.fn().mockResolvedValue(page("body", "<p>no date</p>")),
+      select,
+    });
+
+    expect(result.stale).toBe(0);
+    // Kept: dropping undated articles would discard most professional writing,
+    // which is the content this change exists to surface.
+    expect(select.mock.calls[0][0]).toHaveLength(1);
+  });
+
+  it("ranks dated articles ahead of undated ones for the selector", async () => {
+    const tenant = await seedTenant();
+    const source = await seedNewsSource(tenant.id, ["localization"]);
+    const select = vi.fn().mockResolvedValue({ selections: [] });
+    const recent = new Date(Date.now() - 86_400_000).toISOString();
+
+    await runNewsSource(source, {
+      database: db,
+      search: vi.fn().mockResolvedValue({
+        hits: [
+          // Higher Tavily score but undated.
+          { ...hit("https://example.com/undated", "Undated", 0.9), publishedAt: null },
+          // Lower score but carries a real date.
+          { ...hit("https://example.com/dated", "Dated", 0.4), publishedAt: null },
+        ],
+        credits: 1,
+      }),
+      fetchPage: vi.fn().mockImplementation(async (url: string) =>
+        url.includes("/dated")
+          ? page("body", `<meta property="article:published_time" content="${recent}">`)
+          : page("body", "<p>no date</p>")
+      ),
+      select,
+    });
+
+    const candidates = select.mock.calls[0][0] as { url: string }[];
+    expect(candidates[0].url).toBe("https://example.com/dated");
+    expect(candidates[1].url).toBe("https://example.com/undated");
   });
 });
 

@@ -3,6 +3,7 @@ import { db as defaultDb } from "@/db";
 import { signals, sources, companyProfiles, tenants, type Source } from "@/db/schema";
 import { fetchPageText, type PageResult } from "@/lib/workspace/fetch-page";
 import { searchNews, type NewsHit, type TavilyResult } from "@/lib/signals/tavily";
+import { extractPublishedDate } from "@/lib/signals/published-date";
 import type { RelevanceProfile } from "@/lib/signals/relevance";
 import {
   selectNewsSignals,
@@ -37,6 +38,8 @@ export type NewsRunResult = {
   credits: number;
   /** How many of this run's candidates the selector chose. Capped by MAX_SIGNALS_PER_RUN. */
   selected: number;
+  /** Dropped because the article's own page date was outside RECENCY_WINDOW_DAYS. */
+  stale: number;
 };
 
 /**
@@ -110,6 +113,20 @@ export const SCORING_EXCERPT_CHARS = 2_000;
  * a pool dependency.
  */
 const FETCH_CONCURRENCY = 8;
+
+/**
+ * How recent an article must be to be worth surfacing, when we can tell.
+ *
+ * Enforced here rather than left to Tavily's `time_range` because the general
+ * index returns no dates at all — its window filters on its own crawl notion of
+ * recency, which is how a two-year-old evergreen guide can arrive inside a
+ * one-week window. This is the only place a real publication date is known.
+ *
+ * Applies ONLY to articles we could date. An undated article is kept and ranked
+ * below dated ones: dropping them would discard most professional writing,
+ * which is the content this agent exists to surface.
+ */
+export const RECENCY_WINDOW_DAYS = 7;
 
 /** Params that identify a referral, not an article. */
 const TRACKING_PARAMS = /^(utm_|fbclid$|gclid$|mc_[ce]id$|ref$|source$)/i;
@@ -219,7 +236,7 @@ export async function runNewsSource(source: Source, deps: NewsAgentDeps = {}): P
   const fetchPage = deps.fetchPage ?? fetchPageText;
   const select = deps.select ?? selectNewsSignals;
 
-  const empty: NewsRunResult = { written: 0, dropped: 0, skipped: 0, credits: 0, selected: 0 };
+  const empty: NewsRunResult = { written: 0, dropped: 0, skipped: 0, credits: 0, selected: 0, stale: 0 };
 
   const profile = await loadProfile(source.tenantId, database);
   const topics = profile.topics.slice(0, MAX_TOPICS_PER_RUN);
@@ -324,18 +341,55 @@ export async function runNewsSource(source: Source, deps: NewsAgentDeps = {}): P
   // Fetched in bounded batches rather than one big `Promise.all` — see
   // FETCH_CONCURRENCY.
   const bodies: string[] = [];
+  const dates: (Date | null)[] = [];
   for (let i = 0; i < fresh.length; i += FETCH_CONCURRENCY) {
     const batch = await Promise.all(
       fresh.slice(i, i + FETCH_CONCURRENCY).map(async (article) => {
         const result = await fetchPage(article.url);
-        // Tavily's own extract is real page text, not a model's paraphrase, so
-        // falling back to it keeps the evidence honest. A paywalled or slow
-        // article is still news worth surfacing.
-        return "error" in result ? article.content : result.text;
+        if ("error" in result) {
+          // Tavily's own extract is real page text, not a model's paraphrase, so
+          // falling back to it keeps the evidence honest. A paywalled or slow
+          // article is still worth surfacing — but we cannot date it.
+          return { body: article.content, date: article.publishedAt };
+        }
+        // The page is the authority on its own date; the index gave us none.
+        return { body: result.text, date: extractPublishedDate(result.html) ?? article.publishedAt };
       })
     );
-    bodies.push(...batch);
+    for (const b of batch) {
+      bodies.push(b.body);
+      dates.push(b.date);
+    }
   }
+
+  // ── Recency, enforced only where it is actually known ──────────────────
+  // Undated articles are NOT dropped here — see RECENCY_WINDOW_DAYS. Only an
+  // article we could date, and whose date falls outside the window, is cut.
+  const cutoff = new Date(Date.now() - RECENCY_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+  const kept: { article: NewsHit; body: string; date: Date | null }[] = [];
+  let stale = 0;
+  for (const [i, article] of fresh.entries()) {
+    const date = dates[i];
+    if (date !== null && date < cutoff) {
+      stale++;
+      continue;
+    }
+    kept.push({ article, body: bodies[i], date });
+  }
+
+  // Dated articles first, each group by Tavily score. An undated article is not
+  // rejected, just outranked — the model reads in order, so this is how "we know
+  // when this was written" earns its place without becoming a filter.
+  //
+  // `kept` is now the single ordered source of truth for everything below:
+  // `fresh` and `bodies` are in pre-sort order and must not be indexed by
+  // `selection.index` again.
+  kept.sort((a, b) => {
+    const aDated = a.date !== null ? 1 : 0;
+    const bDated = b.date !== null ? 1 : 0;
+    if (aDated !== bDated) return bDated - aDated;
+    return (b.article.score ?? 0) - (a.article.score ?? 0);
+  });
 
   // ── Recent titles, so novelty can be judged ───────────────────────────
   const recent = await database
@@ -347,13 +401,16 @@ export async function runNewsSource(source: Source, deps: NewsAgentDeps = {}): P
   const recentTitles = recent.map((r) => r.title);
 
   // ── Select ────────────────────────────────────────────────────────────
-  const candidates: NewsCandidate[] = fresh.map((article, i) => ({
-    title: article.title,
+  // Built from `kept`, not `fresh`/`bodies` — `kept` carries the post-sort
+  // order the selector actually sees, and its indices are what the write loop
+  // below maps `selection.index` back through.
+  const candidates: NewsCandidate[] = kept.map((k) => ({
+    title: k.article.title,
     // Capped: one run can carry MAX_CANDIDATES_PER_RUN full article bodies
     // into a single prompt. See SCORING_EXCERPT_CHARS for why overflow here is
     // a correctness problem, not just a cost one.
-    text: bodies[i].slice(0, SCORING_EXCERPT_CHARS),
-    url: article.url,
+    text: k.body.slice(0, SCORING_EXCERPT_CHARS),
+    url: k.article.url,
   }));
   const outcome = await select(candidates, profile, recentTitles, source.tenantId);
 
@@ -367,23 +424,26 @@ export async function runNewsSource(source: Source, deps: NewsAgentDeps = {}): P
     return { ...empty, skipped, credits };
   }
 
-  const dropped = fresh.length - outcome.selections.length;
+  const dropped = kept.length - outcome.selections.length;
 
   // ── Write ─────────────────────────────────────────────────────────────
   const now = new Date();
   let written = 0;
 
   for (const selection of outcome.selections) {
-    const article = fresh[selection.index];
-    const body = bodies[selection.index];
+    // `kept` is the single ordered source of truth — see the sort above. Never
+    // fall back to indexing `fresh`/`bodies` here: they are in pre-sort order.
+    const chosen = kept[selection.index];
 
     // Unreachable: `selectNewsSignals` already drops out-of-range indices. It
     // is here because the cost of being wrong is out of proportion to the
-    // check — an undefined `article` would throw a TypeError straight out of
+    // check — an undefined `chosen` would throw a TypeError straight out of
     // `runNewsSource`, breaking its "does not throw for the failures it
     // expects" contract and skipping `finish` entirely, which leaves the source
     // row stale with no lastRunAt and no error to explain it.
-    if (!article) continue;
+    if (!chosen) continue;
+    const article = chosen.article;
+    const body = chosen.body;
 
     try {
       const inserted = await database
@@ -398,14 +458,14 @@ export async function runNewsSource(source: Source, deps: NewsAgentDeps = {}): P
           // Sliced from the full fetched body, not from the capped copy the
           // selector saw.
           excerpt: body.slice(0, 500),
-          // The article's own date when it has one; an undated article is
-          // recorded as "seen now". That biases undated articles *fresh* —
-          // `now` is the freshest value there is, so spec 5's decay ranking
-          // will float them above correctly-dated ones. What bounds the damage
-          // is the search window: `time_range: "day"` in tavily.ts means an
-          // undated hit is at most a day old anyway. Widening that window
-          // widens this skew with it.
-          occurredAt: article.publishedAt ?? now,
+          // The article's own extracted date when we have one, falling back to
+          // Tavily's `publishedAt`, and only then to "seen now". An undated
+          // article is recorded as `now`, which biases it *fresh* — `now` is
+          // the freshest value there is, so spec 5's decay ranking will float
+          // it above correctly-dated ones. Accepted, not fixed here: dropping
+          // undated articles would discard most of what this agent exists to
+          // surface. See RECENCY_WINDOW_DAYS.
+          occurredAt: chosen.date ?? now,
           relevanceScore: selection.score,
           relevanceRationale: selection.rationale,
           topics: selection.topics,
@@ -422,5 +482,5 @@ export async function runNewsSource(source: Source, deps: NewsAgentDeps = {}): P
   }
 
   await finish(database, source.id, errors.length > 0 ? errors.join("; ") : null, productive);
-  return { written, dropped, skipped, credits, selected: outcome.selections.length };
+  return { written, dropped, skipped, credits, selected: outcome.selections.length, stale };
 }

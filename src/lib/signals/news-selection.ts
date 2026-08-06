@@ -96,8 +96,12 @@ function buildSystem(profile: RelevanceProfile): string {
     "",
     "NEVER qualifying on their own: routine version bumps, incremental feature notes, maintenance",
     "and patch releases, generic market-size statistics and analyst forecasts, listicles and",
-    "roundups, press releases with no substance, and any item whose only claim is that it exists",
-    "rather than that something happened.",
+    "roundups, press releases with no substance, job postings, and SEO filler that restates",
+    "common knowledge.",
+    "",
+    "A substantive opinion piece, analysis, or practitioner guide DOES qualify — it does not have",
+    "to report an event. What matters is whether someone in this company's field would be glad",
+    "they read it, not merely that it exists.",
     "",
     // Syndication is the gap the already-covered list does not close: it holds
     // what we previously *wrote*, and says nothing about two of today's own
