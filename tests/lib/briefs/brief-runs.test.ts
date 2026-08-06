@@ -71,6 +71,7 @@ describe("briefs.contentPieceId", () => {
         score: 0.8,
         status: "accepted",
         contentPieceId: piece.id,
+        lastEvidenceAt: new Date(),
         expiresAt: new Date(Date.now() + 86_400_000),
       })
       .returning();

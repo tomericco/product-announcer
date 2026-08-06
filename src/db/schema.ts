@@ -458,9 +458,15 @@ export const briefs = pgTable(
     status: briefStatusEnum("status").notNull().default("new"),
     acceptedBy: uuid("accepted_by").references(() => users.id, { onDelete: "set null" }),
     acceptedAt: timestamp("accepted_at", { withTimezone: true }),
-    // No FK: the accept flow lands in the inbox plan, and adding the reference
-    // before anything writes it would be schema written ahead of its consumer.
-    contentPieceId: uuid("content_piece_id"),
+    // The accepted brief's content piece. SET NULL rather than cascade: the
+    // brief is the durable record that a human accepted something, and deleting
+    // the draft must not erase that decision.
+    //
+    // Uniqueness is already enforced by `briefs_content_piece_unique` below —
+    // do NOT add another index.
+    contentPieceId: uuid("content_piece_id").references(() => contentPieces.id, {
+      onDelete: "set null",
+    }),
     dismissReason: briefDismissReasonEnum("dismiss_reason"),
     dismissNote: text("dismiss_note"),
     dismissedBy: uuid("dismissed_by").references(() => users.id, { onDelete: "set null" }),
@@ -825,3 +831,48 @@ export const rejectedArticles = pgTable(
     uniqueIndex("rejected_articles_tenant_url_unique").on(table.tenantId, table.url),
   ]
 );
+
+/**
+ * One row per ideation run, whatever the outcome.
+ *
+ * Exists because of the failure this codebase already named at
+ * `src/lib/briefs/run.ts:213` — a permanently broken ideation is
+ * "indistinguishable from a genuinely quiet company: the cron reports ok, no
+ * brief appears, and nothing is written anywhere." This table is the
+ * "anywhere". The inbox reads the latest row so an empty inbox can say which
+ * of the two it is.
+ *
+ * The assessment lives HERE and not on `briefs` on purpose: it describes a
+ * run, not a brief, and denormalising it onto each brief would mean a run that
+ * produced zero briefs carries no assessment at all — precisely the case worth
+ * explaining.
+ *
+ * No retention is enforced. At one row per tenant per day this is ~365 rows a
+ * year; `ranAt` is stored so a purge can be added later without a migration.
+ */
+export const briefRuns = pgTable(
+  "brief_runs",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    ranAt: timestamp("ran_at", { withTimezone: true }).notNull().defaultNow(),
+    // The model's one-line judgement of the period. Null when the call failed —
+    // there is no judgement to record, and a placeholder string would read as one.
+    assessment: text("assessment"),
+    briefsCreated: integer("briefs_created").notNull().default(0),
+    briefsExtended: integer("briefs_extended").notNull().default(0),
+    // Null on a clean run. Carries the ideation error, which `runIdeation`
+    // otherwise only writes to console.
+    error: text("error"),
+  },
+  (table) => [
+    // The inbox reads exactly one row: this tenant's most recent.
+    index("brief_runs_tenant_ran_at_idx").on(table.tenantId, table.ranAt),
+  ]
+);
+
+export type BriefRun = typeof briefRuns.$inferSelect;
