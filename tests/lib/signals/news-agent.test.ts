@@ -288,6 +288,37 @@ describe("runNewsSource", () => {
     expect(result.alreadyRejected).toBe(1);
   });
 
+  it("records that every candidate had already been judged rather than reporting a clean run", async () => {
+    const tenant = await seedTenant();
+    const source = await seedNewsSource(tenant.id, ["localization"]);
+    await db.insert(rejectedArticles).values([
+      { tenantId: tenant.id, url: "https://news.example.com/known1", title: "Known 1", reason: "not_selected" },
+      { tenantId: tenant.id, url: "https://news.example.com/known2", title: "Known 2", reason: "stale" },
+    ]);
+
+    const result = await runNewsSource(source, {
+      database: db,
+      search: vi.fn().mockResolvedValue({
+        hits: [
+          hit("https://news.example.com/known1", "Known 1"),
+          hit("https://news.example.com/known2", "Known 2"),
+        ],
+        credits: 1,
+      }),
+      fetchPage: vi.fn(),
+      select: vi.fn(),
+    });
+
+    expect(result.alreadyRejected).toBe(2);
+    const [row] = await db.select().from(sources).where(eq(sources.id, source.id));
+    // A null lastError here is indistinguishable from a genuinely quiet day —
+    // the same failure mode the score-floor branch guards against.
+    expect(row.lastError).toContain("All 2 candidates had already been judged");
+    // The run did its job — it correctly skipped remembered articles — so the
+    // badge stays active, matching the score-floor branch's ruling.
+    expect(row.status).toBe("active");
+  });
+
   it("does not let one tenant's rejection hide an article from another", async () => {
     const mine = await seedTenant();
     const [other] = await db.insert(tenants).values({ name: TENANT }).returning();
@@ -938,25 +969,42 @@ describe("runNewsSource", () => {
     expect(rows[0].reason).toBe("stale");
   });
 
-  it("records NOTHING when the selection call fails", async () => {
+  it("still records a stale drop when selection fails, but records NOTHING from the failed selection itself", async () => {
     const tenant = await seedTenant();
     const source = await seedNewsSource(tenant.id, ["localization"]);
+    const old = new Date(Date.now() - (RECENCY_WINDOW_DAYS + 5) * 24 * 60 * 60 * 1000).toISOString();
 
     await runNewsSource(source, {
       database: db,
       search: vi.fn().mockResolvedValue({
-        hits: [hit("https://news.example.com/unjudged", "Unjudged")],
+        hits: [
+          { ...hit("https://news.example.com/unjudged", "Unjudged"), publishedAt: null },
+          { ...hit("https://news.example.com/ancient", "Ancient"), publishedAt: null },
+        ],
         credits: 1,
       }),
-      fetchPage: vi.fn().mockResolvedValue(page("body")),
+      // Different HTML per URL: the "ancient" article carries a real page date
+      // outside RECENCY_WINDOW_DAYS, the "unjudged" one does not.
+      fetchPage: vi.fn().mockImplementation(async (url: string) =>
+        url.includes("/ancient")
+          ? page("body", `<meta property="article:published_time" content="${old}">`)
+          : page("body")
+      ),
       select: vi.fn().mockResolvedValue({ error: "model timeout" }),
     });
 
-    // An article nobody judged has not been rejected. Recording these would
-    // permanently bury up to MAX_CANDIDATES_PER_RUN articles because of one
-    // API timeout — the exact damage the fail-closed branch exists to prevent.
+    // Staleness is judged and recorded BEFORE selection runs, independently of
+    // whether selection later succeeds — that is correct, not a leak. What the
+    // fail-closed branch guards is the OTHER kind of rejection: an article
+    // nobody judged (still-fresh, still-fetched, but never scored because the
+    // selector call itself failed) must not be recorded as "not_selected".
+    // Recording those would permanently bury up to MAX_CANDIDATES_PER_RUN
+    // articles because of one API timeout.
     const rows = await db.select().from(rejectedArticles).where(eq(rejectedArticles.tenantId, tenant.id));
-    expect(rows).toHaveLength(0);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].url).toBe("https://news.example.com/ancient");
+    expect(rows[0].reason).toBe("stale");
+    expect(rows.filter((r) => r.reason === "not_selected")).toHaveLength(0);
   });
 
   it("does not record candidates that lost the truncation, only those judged", async () => {
@@ -1110,6 +1158,14 @@ describe("companyHost", () => {
 
   it("accepts a bare domain with no scheme, as stored profiles sometimes are", () => {
     expect(companyHost("frontitude.com")).toBe("frontitude.com");
+  });
+
+  it("strips a trailing dot, or the host would never match anything", () => {
+    // A trailing dot denotes the DNS root and is valid in a hostname, but
+    // `new URL` keeps it verbatim — without stripping it here, "frontitude.com."
+    // would fail to match "frontitude.com" everywhere isOwnContent is used.
+    expect(companyHost("https://frontitude.com.")).toBe("frontitude.com");
+    expect(companyHost("frontitude.com.")).toBe("frontitude.com");
   });
 
   it("returns null rather than throwing on absent or unusable input", () => {

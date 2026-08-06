@@ -215,6 +215,13 @@ const TRACKING_PARAMS = /^(utm_|fbclid$|gclid$|mc_[ce]id$|ref$|source$)/i;
  * identity. Any future change needs a backfill of existing externalIds, not
  * just an edit here.
  *
+ * It is ALSO the identity stored in `rejectedArticles.url`, the memory of
+ * articles this tenant already judged and turned down. Changing normalization
+ * breaks that lookup the same way: the rejection query stops matching
+ * already-judged articles by their old key, and every one of them is re-admitted
+ * as if new — re-fetched, re-scored, and put in front of the model again. Both
+ * the skip query and the rejection query miss together, from the same edit.
+ *
  * Returns the input unchanged when it will not parse. A URL we cannot
  * normalize is still a usable idempotency key — it just gets no help.
  */
@@ -245,6 +252,14 @@ export function normalizeArticleUrl(raw: string): string {
  * Returns null — never `""` — for anything unusable. An empty host would make
  * `isOwnContent` match every article and silently empty every run behind a
  * green badge, which is the worst failure this module can have.
+ *
+ * KNOWN LIMITATION: this discards the path, so a profile stored as a
+ * multi-tenant profile URL rather than a bare domain — e.g.
+ * `https://medium.com/@acme` — yields the platform's own host (`medium.com`),
+ * which then excludes that entire platform from industry news, silently, both
+ * here and in `excludeDomains`. Not fixable in general without a public-suffix
+ * / known-platform list, which is out of scope; recorded here so it is not
+ * rediscovered as a bug.
  */
 export function companyHost(websiteUrl: string | null): string | null {
   if (!websiteUrl || websiteUrl.trim().length === 0) return null;
@@ -253,7 +268,7 @@ export function companyHost(websiteUrl: string | null): string | null {
   // which `new URL` rejects outright.
   const candidate = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
   try {
-    const host = new URL(candidate).hostname.toLowerCase();
+    const host = new URL(candidate).hostname.toLowerCase().replace(/\.$/, "");
     if (host.length === 0) return null;
     return host.startsWith("www.") ? host.slice(4) : host;
   } catch {
@@ -424,8 +439,11 @@ export async function runNewsSource(source: Source, deps: NewsAgentDeps = {}): P
       const url = normalizeArticleUrl(raw.url);
       // Belt and braces with the `excludeDomains` sent above. Tavily's matching
       // is not a contract we control and its subdomain behaviour is unverified,
-      // so this is the guarantee: no `market_news` signal is ever created from
-      // the company's own writing.
+      // so this is a second check against the company's own host on this
+      // pre-fetch URL. It is NOT a guarantee against every path a company's own
+      // writing could arrive by: a redirector or a syndicated copy under a
+      // different host defeats it, because nothing here re-checks
+      // `fetchPageText`'s `finalUrl` after the redirect chain resolves.
       if (isOwnContent(url, ownHost)) continue;
       // First topic to surface an article wins — later duplicates are dropped
       // before they cost a fetch or a scoring slot — with one exception: a
@@ -488,7 +506,12 @@ export async function runNewsSource(source: Source, deps: NewsAgentDeps = {}): P
   const alreadyRejected = rejectedRows.length;
 
   if (byUrl.size === 0) {
-    await finish(database, source.id, errors.length > 0 ? errors.join("; ") : null, productive);
+    // A run that discarded every candidate must not report clean — same
+    // reasoning as the score-floor branch below. Without this, a source that
+    // remembered everything sits `active` with a null error and produces
+    // nothing, indistinguishable from a genuinely quiet day.
+    errors.push(`All ${alreadyRejected} candidates had already been judged.`);
+    await finish(database, source.id, errors.join("; "), productive);
     return { ...empty, skipped, alreadyRejected, credits };
   }
 
