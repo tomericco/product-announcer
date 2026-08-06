@@ -37,6 +37,8 @@
 
 **Already exists — do NOT re-add:** `briefs_content_piece_unique` (partial unique index on `contentPieceId` where not null, `schema.ts:487-490`) and `briefs_tenant_status_score_idx` on `(tenantId, status, score)`. Only the foreign key is missing, and no new read index is needed.
 
+**Task 1 must also modify `tests/db/briefs-schema.test.ts`.** That file inserts a random UUID as `contentPieceId` to exercise the partial unique index, on the stated grounds that "contentPieceId has no FK in this plan". Adding the FK makes that insert fail with `23503` — and the failure lands on the FIRST insert, so the duplicate assertion the test exists for is never reached and the index's coverage disappears silently. It must insert a real `contentPieces` row instead, and the stale comment must be corrected. This omission was found only after Task 1 was reviewed and marked complete.
+
 ---
 
 ### Task 1: `brief_runs` table and the `contentPieceId` foreign key
