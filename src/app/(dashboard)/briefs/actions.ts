@@ -80,7 +80,14 @@ export async function acceptBrief(briefId: string): Promise<AcceptResult> {
       if (updated.length === 0) tx.rollback();
       return piece.id;
     });
-  } catch {
+  } catch (e) {
+    // Not necessarily a double-accept — this catch also sees connection
+    // failures and constraint violations from the transaction above. The
+    // user-facing message stays generic (retrying tells a real failure from a
+    // lost race anyway), but the real cause must not vanish, so it's logged
+    // the same way `runIdeation` logs its swallowed error in
+    // `src/lib/briefs/run.ts`.
+    console.error(`[briefs] acceptBrief transaction failed for brief ${briefId}:`, e);
     return { ok: false, error: "This brief was already accepted." };
   }
 

@@ -124,6 +124,38 @@ describe("acceptBrief", () => {
     const pieces = await db.select().from(contentPieces).where(eq(contentPieces.tenantId, tenant.id));
     expect(pieces).toHaveLength(0);
   });
+
+  // The test above ("is a no-op on an already-accepted brief") awaits the two
+  // calls sequentially, so the pre-check alone (brief.status !== "new", read
+  // before either transaction starts) rejects the second call — it passes even
+  // if the UPDATE's `where(and(eq(briefs.id, briefId), eq(briefs.status,
+  // "new")))` loses its status clause entirely.
+  //
+  // Firing exactly two calls through Promise.all is not enough to prove
+  // anything either: on this suite's local, low-latency Postgres, one call's
+  // entire pre-check-plus-transaction round trip routinely finishes before the
+  // other call's very first (pre-check) query even returns, so two calls
+  // still resolve via the ordinary sequential pre-check almost every time —
+  // this was verified empirically before writing this test. Ten concurrent
+  // calls is what reliably gets multiple calls past the pre-check *together*
+  // and into the transaction, so the UPDATE's own status re-check is what has
+  // to settle it. Once that happens, the outcome stops being timing-dependent:
+  // Postgres row locking serializes the competing UPDATEs, every loser matches
+  // zero rows once a winner has committed, and `tx.rollback()` fires for each
+  // of them — so *which* call wins is unspecified, but that exactly one wins
+  // is not.
+  it("under ten simultaneous accepts, exactly one wins and exactly one content piece exists", async () => {
+    const tenant = await seedTenant();
+    const brief = await seedBrief(tenant.id);
+
+    const results = await Promise.all(Array.from({ length: 10 }, () => acceptBrief(brief.id)));
+
+    expect(results.filter((r) => r.ok)).toHaveLength(1);
+    expect(results.filter((r) => !r.ok)).toHaveLength(9);
+
+    const pieces = await db.select().from(contentPieces).where(eq(contentPieces.tenantId, tenant.id));
+    expect(pieces).toHaveLength(1);
+  });
 });
 
 describe("dismissBrief", () => {
