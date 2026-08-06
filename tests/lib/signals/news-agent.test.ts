@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { eq, and } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, signals, sources, companyProfiles, type Source } from "../../../src/db/schema";
+import { tenants, signals, sources, companyProfiles, rejectedArticles, type Source } from "../../../src/db/schema";
 import {
   runNewsSource,
   normalizeArticleUrl,
@@ -9,6 +9,7 @@ import {
   MAX_CANDIDATES_PER_RUN,
   MAX_TOPICS_PER_RUN,
   TAVILY_SCORE_FLOOR,
+  RECENCY_WINDOW_DAYS,
 } from "../../../src/lib/signals/news-agent";
 import type { PageResult } from "../../../src/lib/workspace/fetch-page";
 
@@ -830,6 +831,100 @@ describe("runNewsSource", () => {
     // The run still did its job, so the badge stays green — same ruling as a
     // partial search failure.
     expect(row.status).toBe("active");
+  });
+
+  it("records the articles the selector turned down", async () => {
+    const tenant = await seedTenant();
+    const source = await seedNewsSource(tenant.id, ["localization"]);
+
+    await runNewsSource(source, {
+      database: db,
+      search: vi.fn().mockResolvedValue({
+        hits: [
+          hit("https://news.example.com/picked", "Picked"),
+          hit("https://news.example.com/passed", "Passed over"),
+        ],
+        credits: 1,
+      }),
+      fetchPage: vi.fn().mockResolvedValue(page("body")),
+      select: vi.fn().mockResolvedValue({
+        selections: [{ index: 0, score: 0.8, rationale: "r", topics: [] }],
+      }),
+    });
+
+    const rows = await db.select().from(rejectedArticles).where(eq(rejectedArticles.tenantId, tenant.id));
+    expect(rows).toHaveLength(1);
+    expect(rows[0].url).toBe("https://news.example.com/passed");
+    expect(rows[0].title).toBe("Passed over");
+    expect(rows[0].reason).toBe("not_selected");
+  });
+
+  it("records an article dropped for being outside the recency window", async () => {
+    const tenant = await seedTenant();
+    const source = await seedNewsSource(tenant.id, ["localization"]);
+    const old = new Date(Date.now() - (RECENCY_WINDOW_DAYS + 5) * 24 * 60 * 60 * 1000).toISOString();
+
+    await runNewsSource(source, {
+      database: db,
+      search: vi.fn().mockResolvedValue({
+        hits: [hit("https://news.example.com/ancient", "Ancient")],
+        credits: 1,
+      }),
+      // A real <meta> date, not a bare <time> guess — only a page-asserted date
+      // may trigger the stale drop, so only that may be recorded.
+      fetchPage: vi
+        .fn()
+        .mockResolvedValue(page("body", `<meta property="article:published_time" content="${old}">`)),
+      select: vi.fn().mockResolvedValue({ selections: [] }),
+    });
+
+    const rows = await db.select().from(rejectedArticles).where(eq(rejectedArticles.tenantId, tenant.id));
+    expect(rows).toHaveLength(1);
+    expect(rows[0].url).toBe("https://news.example.com/ancient");
+    expect(rows[0].reason).toBe("stale");
+  });
+
+  it("records NOTHING when the selection call fails", async () => {
+    const tenant = await seedTenant();
+    const source = await seedNewsSource(tenant.id, ["localization"]);
+
+    await runNewsSource(source, {
+      database: db,
+      search: vi.fn().mockResolvedValue({
+        hits: [hit("https://news.example.com/unjudged", "Unjudged")],
+        credits: 1,
+      }),
+      fetchPage: vi.fn().mockResolvedValue(page("body")),
+      select: vi.fn().mockResolvedValue({ error: "model timeout" }),
+    });
+
+    // An article nobody judged has not been rejected. Recording these would
+    // permanently bury up to MAX_CANDIDATES_PER_RUN articles because of one
+    // API timeout — the exact damage the fail-closed branch exists to prevent.
+    const rows = await db.select().from(rejectedArticles).where(eq(rejectedArticles.tenantId, tenant.id));
+    expect(rows).toHaveLength(0);
+  });
+
+  it("does not record candidates that lost the truncation, only those judged", async () => {
+    const tenant = await seedTenant();
+    const source = await seedNewsSource(tenant.id, ["localization"]);
+    // More candidates than the cap, so some are cut by the slice rather than
+    // by any judgement. Derived from the constant, never hardcoded.
+    const hits = Array.from({ length: MAX_CANDIDATES_PER_RUN + 6 }, (_, i) =>
+      hit(`https://news.example.com/t${i}`, `T${i}`, TAVILY_SCORE_FLOOR + 0.01 + i * 0.01)
+    );
+
+    await runNewsSource(source, {
+      database: db,
+      search: vi.fn().mockResolvedValue({ hits, credits: 1 }),
+      fetchPage: vi.fn().mockResolvedValue(page("body")),
+      select: vi.fn().mockResolvedValue({ selections: [] }),
+    });
+
+    // Truncated candidates were read by nobody and may rank into the top 20
+    // tomorrow. Only what reached the selector counts as rejected.
+    const rows = await db.select().from(rejectedArticles).where(eq(rejectedArticles.tenantId, tenant.id));
+    expect(rows).toHaveLength(MAX_CANDIDATES_PER_RUN);
   });
 });
 

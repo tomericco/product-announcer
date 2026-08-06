@@ -1,6 +1,6 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
-import { signals, sources, companyProfiles, tenants, type Source } from "@/db/schema";
+import { signals, sources, companyProfiles, tenants, rejectedArticles, type Source } from "@/db/schema";
 import { fetchPageText, type PageResult } from "@/lib/workspace/fetch-page";
 import { searchNews, type NewsHit, type TavilyResult } from "@/lib/signals/tavily";
 import { extractPublishedDate } from "@/lib/signals/published-date";
@@ -272,6 +272,31 @@ async function finish(
 }
 
 /**
+ * Records articles this tenant will not be offered again.
+ *
+ * Never throws. A failed memory write must not cost a run its signals, so the
+ * caller records the failure in `errors` and carries on — the worst case is
+ * that these articles are re-judged next run, which is the behaviour that
+ * existed before this table.
+ *
+ * `url` must already be normalized. `runNewsSource` stores normalized URLs in
+ * `byUrl`, so every caller inside this module satisfies that by construction.
+ */
+async function rememberRejections(
+  database: typeof defaultDb,
+  tenantId: string,
+  entries: { url: string; title: string; reason: "not_selected" | "stale" }[]
+): Promise<void> {
+  if (entries.length === 0) return;
+  await database
+    .insert(rejectedArticles)
+    .values(entries.map((e) => ({ tenantId, url: e.url, title: e.title, reason: e.reason })))
+    // A repeat rejection is expected, not exceptional: an article stays in the
+    // search window for weeks. First write wins.
+    .onConflictDoNothing({ target: [rejectedArticles.tenantId, rejectedArticles.url] });
+}
+
+/**
  * One tenant's daily news run.
  *
  * Deliberately has no watermark. A news article carries its own durable
@@ -447,11 +472,13 @@ export async function runNewsSource(source: Source, deps: NewsAgentDeps = {}): P
   // an article the page itself dates, outside the window, is cut.
   const cutoff = new Date(Date.now() - RECENCY_WINDOW_DAYS * 24 * 60 * 60 * 1000);
   const kept: { article: NewsHit; body: string; date: Date | null }[] = [];
+  const staleRejections: { url: string; title: string; reason: "stale" }[] = [];
   let stale = 0;
   for (const [i, article] of fresh.entries()) {
     const date = dates[i];
     if (date !== null && !guessed[i] && date < cutoff) {
       stale++;
+      staleRejections.push({ url: article.url, title: article.title, reason: "stale" });
       continue;
     }
     kept.push({ article, body: bodies[i], date });
@@ -477,6 +504,16 @@ export async function runNewsSource(source: Source, deps: NewsAgentDeps = {}): P
         ? `All ${fresh.length} fetched articles were older than ${RECENCY_WINDOW_DAYS} days.`
         : `${stale} of ${fresh.length} fetched articles were older than ${RECENCY_WINDOW_DAYS} days.`
     );
+  }
+
+  // Recorded here rather than with the selector's rejections below, because
+  // staleness is a complete judgement on its own: it does not depend on the
+  // selection call, so a later selection failure must not discard it. It is
+  // also permanent in a way selection is not — an article only gets older.
+  try {
+    await rememberRejections(database, source.tenantId, staleRejections);
+  } catch (e) {
+    errors.push(`could not record stale articles: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   // Dated articles first, each group by Tavily score. An undated article is not
@@ -526,6 +563,14 @@ export async function runNewsSource(source: Source, deps: NewsAgentDeps = {}): P
     return { ...empty, skipped, credits };
   }
 
+  // The set, not the count, is the authority for what gets recorded: if the
+  // model ever returned a duplicate index, arithmetic on lengths would
+  // disagree with the actual complement. `dropped` is left as-is because it is
+  // an existing reported number and this task does not change its contract.
+  const selectedIndices = new Set(outcome.selections.map((s) => s.index));
+  const notSelected = kept
+    .filter((_, i) => !selectedIndices.has(i))
+    .map((k) => ({ url: k.article.url, title: k.article.title, reason: "not_selected" as const }));
   const dropped = kept.length - outcome.selections.length;
 
   // ── Write ─────────────────────────────────────────────────────────────
@@ -581,6 +626,17 @@ export async function runNewsSource(source: Source, deps: NewsAgentDeps = {}): P
       // `active` with a null error while silently losing articles every run.
       errors.push(`write failed for ${article.url}: ${String(error)}`);
     }
+  }
+
+  // MUST stay after the `"error" in outcome` branch above, which returns early.
+  // An article nobody judged has not been rejected, and recording these on a
+  // failed selection would bury up to MAX_CANDIDATES_PER_RUN articles
+  // permanently because of one API timeout. Do not hoist this to "keep the
+  // write path together".
+  try {
+    await rememberRejections(database, source.tenantId, notSelected);
+  } catch (e) {
+    errors.push(`could not record rejected articles: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   await finish(database, source.id, errors.length > 0 ? errors.join("; ") : null, productive);
