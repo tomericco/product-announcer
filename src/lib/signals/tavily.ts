@@ -44,6 +44,17 @@ export type TavilyResult = { hits: NewsHit[]; credits: number } | { error: Tavil
 
 export type TavilyFetch = typeof fetch;
 
+export type SearchOptions = {
+  /**
+   * Per-tenant exclusions, merged with the static EXCLUDED_DOMAINS. Used for
+   * the searching company's own domain: its blog ranks for exactly the topics
+   * it configured, so without this it consumes result slots the industry
+   * should have — and could become a `market_news` signal about itself.
+   */
+  excludeDomains?: string[];
+  fetchImpl?: TavilyFetch;
+};
+
 /**
  * The envelope only. Individual results are parsed one at a time below, on
  * purpose: validating the whole array at once means a single malformed result
@@ -170,12 +181,16 @@ function parseDate(raw: string | null | undefined): Date | null {
 
 export async function searchNews(
   query: string,
-  deps: { fetchImpl?: TavilyFetch } = {}
+  options: SearchOptions = {}
 ): Promise<TavilyResult> {
   const apiKey = process.env.TAVILY_API_KEY;
   if (!apiKey) return { error: "no-api-key" };
 
-  const fetchImpl = deps.fetchImpl ?? fetch;
+  const fetchImpl = options.fetchImpl ?? fetch;
+  // Set, not concat: a caller-supplied domain already in the static list would
+  // otherwise be sent twice.
+  const excludeDomains = [...new Set([...EXCLUDED_DOMAINS, ...(options.excludeDomains ?? [])])];
+
 
   let response: Response;
   try {
@@ -192,7 +207,7 @@ export async function searchNews(
         // extraction we do not use — we fetch the article ourselves.
         search_depth: "basic",
         time_range: TAVILY_TIME_RANGE,
-        exclude_domains: EXCLUDED_DOMAINS,
+        exclude_domains: excludeDomains,
         max_results: TAVILY_MAX_RESULTS,
       }),
     });

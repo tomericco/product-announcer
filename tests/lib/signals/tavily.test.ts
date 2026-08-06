@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { searchNews, TAVILY_MAX_RESULTS } from "../../../src/lib/signals/tavily";
+import { searchNews, TAVILY_MAX_RESULTS, EXCLUDED_DOMAINS } from "../../../src/lib/signals/tavily";
 
 function okResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -322,6 +322,30 @@ describe("searchNews", () => {
     expect(result.hits).toHaveLength(1);
     // Every general-index result is undated. Task 3 reads the date off the page.
     expect(result.hits[0].publishedAt).toBeNull();
+  });
+
+  it("merges caller-supplied domains into the static exclusion list", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ results: [] }), { status: 200 })
+    );
+
+    await searchNews("ux writing", { fetchImpl, excludeDomains: ["frontitude.com"] });
+
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body as string);
+    expect(body.exclude_domains).toContain("frontitude.com");
+    // The static list is a floor, not a default the caller replaces.
+    for (const domain of EXCLUDED_DOMAINS) expect(body.exclude_domains).toContain(domain);
+  });
+
+  it("sends the static list unchanged when the caller supplies none", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ results: [] }), { status: 200 })
+    );
+
+    await searchNews("ux writing", { fetchImpl });
+
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body as string);
+    expect(body.exclude_domains).toEqual(EXCLUDED_DOMAINS);
   });
 
 });
