@@ -52,6 +52,47 @@ export const MAX_CONTEXT_ITEMS = 20;
  */
 export const MAX_IDEATION_SIGNALS = 120;
 
+/**
+ * How close `occurredAt` and `createdAt` must be for the date to be first-seen
+ * rather than real.
+ *
+ * They are never byte-identical even when they mean the same instant:
+ * `runNewsSource` computes its fallback `now` in JS before the insert, while
+ * `createdAt` defaults to the database's own `now()`. The gap is the write
+ * round-trip plus whatever clock skew exists between the app and Postgres. A
+ * minute swallows both with room to spare, and cannot swallow a real one: a
+ * general-index article dated within a minute of when we first saw it does not
+ * exist — the fastest anything reaches this pipeline is the next daily cron.
+ */
+const FIRST_SEEN_TOLERANCE_MS = 60_000;
+
+/**
+ * The signal's real publication date, or null when all we have is when we first
+ * saw it.
+ *
+ * Only `market_news` can lie here, and only since the news agent moved to
+ * Tavily's general index: an article whose own HTML carries no date is written
+ * with `occurredAt = now`. `listSignals` orders `desc(occurredAt)`, so those
+ * undated rows sort to the FRONT, and `ideate` would render each as
+ * "(market_news, <today>)" while asking the strategist to build a why-now on
+ * dated evidence. A two-year-old evergreen guide could produce a brief whose
+ * `whyNow` asserts recency, and a human reads that as fact.
+ *
+ * Deliberately scoped to `market_news`. A `competitor_move` also carries
+ * first-seen time, but there it is the truth: diffing only observes forward
+ * changes, so a block that is new on this run genuinely appeared since the last
+ * one (see `runCompetitorSource`). Blanking those would throw away a real date.
+ *
+ * Derived rather than stored because no schema change is warranted for this:
+ * the row already holds both timestamps, and their near-equality IS the record
+ * that the date was defaulted.
+ */
+function publicationDateOf(signal: { kind: string; occurredAt: Date; createdAt: Date }): Date | null {
+  if (signal.kind !== "market_news") return signal.occurredAt;
+  const gap = Math.abs(signal.occurredAt.getTime() - signal.createdAt.getTime());
+  return gap <= FIRST_SEEN_TOLERANCE_MS ? null : signal.occurredAt;
+}
+
 type IdeateFn = typeof ideate;
 
 export type IdeationRunDeps = { ideateFn?: IdeateFn; database?: typeof defaultDb };
@@ -97,7 +138,7 @@ export async function runIdeation(tenantId: string, deps: IdeationRunDeps = {}):
   const ideationSignals: IdeationSignal[] = rows.slice(0, MAX_IDEATION_SIGNALS).map((s) => ({
     id: s.id,
     kind: s.kind,
-    occurredAt: s.occurredAt,
+    occurredAt: publicationDateOf(s),
     title: s.title,
     excerpt: s.excerpt,
   }));

@@ -303,6 +303,51 @@ describe("runIdeation", () => {
     expect(passed.map((s) => s.title)).not.toContain(`Title https://n.example.com/${total - 1}`);
   });
 
+  it("does not hand the strategist a first-seen timestamp as a publication date", async () => {
+    const tenant = await seedTenant();
+    // How an undated article is stored: `runNewsSource` falls back to run time,
+    // so `occurredAt` lands within the write round-trip of `createdAt`.
+    await seedSignal(tenant.id, "https://n.example.com/undated");
+
+    const ideateFn = vi.fn().mockResolvedValue({ assessment: "x", actions: [] });
+    await runIdeation(tenant.id, { database: db, ideateFn });
+
+    const passed = ideateFn.mock.calls[0][0].signals as { occurredAt: Date | null }[];
+    expect(passed).toHaveLength(1);
+    // `listSignals` orders desc(occurredAt), so these sort FIRST — the model
+    // would see a two-year-old evergreen guide dated today, at the top of the
+    // list, and could build a `whyNow` asserting recency that a human reads as
+    // fact.
+    expect(passed[0].occurredAt).toBeNull();
+  });
+
+  it("keeps a real publication date, and keeps a competitor signal's first-seen date", async () => {
+    const tenant = await seedTenant();
+    const published = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+    await seedSignal(tenant.id, "https://n.example.com/dated", published);
+    // A competitor move also carries first-seen time — but there it is the
+    // truth: diffing only observes forward changes, so a block that is new on
+    // this run genuinely appeared since the last one. Blanking it would throw
+    // away a real date.
+    await db.insert(signals).values({
+      tenantId: tenant.id,
+      kind: "competitor_move",
+      externalId: "https://rival.example.com/pricing#block",
+      title: "Rival changed its pricing page",
+      occurredAt: new Date(),
+      relevanceScore: 0.8,
+    });
+
+    const ideateFn = vi.fn().mockResolvedValue({ assessment: "x", actions: [] });
+    await runIdeation(tenant.id, { database: db, ideateFn });
+
+    const passed = ideateFn.mock.calls[0][0].signals as { kind: string; occurredAt: Date | null }[];
+    const news = passed.find((s) => s.kind === "market_news");
+    const competitor = passed.find((s) => s.kind === "competitor_move");
+    expect(news?.occurredAt?.toISOString()).toBe(published.toISOString());
+    expect(competitor?.occurredAt).not.toBeNull();
+  });
+
   it("puts expired briefs in the covered context, labelled as undecided", async () => {
     const tenant = await seedTenant();
     await seedSignal(tenant.id, "https://n.example.com/a");

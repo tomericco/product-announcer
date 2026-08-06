@@ -24,7 +24,19 @@ export const MAX_IDEATION_OUTPUT_TOKENS = 8_000;
 export type IdeationSignal = {
   id: string;
   kind: string;
-  occurredAt: Date;
+  /**
+   * When this actually happened, or NULL when we do not know.
+   *
+   * Nullable on purpose, and the caller is required to use it. Since the news
+   * agent moved to Tavily's general index, an article that carries no
+   * publication date anywhere in its own HTML is written with
+   * `occurredAt = now` — a first-seen timestamp, not a publication date.
+   * Rendering that as a date here tells the strategist a two-year-old evergreen
+   * guide was published today, and rule 3 then invites it to build a why-now on
+   * the recency it was just told about. A human reads the resulting brief as
+   * fact. Better to say nothing than to say something false.
+   */
+  occurredAt: Date | null;
   title: string;
   excerpt: string | null;
 };
@@ -111,8 +123,8 @@ function buildSystem(profile: RelevanceProfile): string {
     profile.positioning ? `${profile.name}'s positioning: ${profile.positioning}` : null,
     profile.topics.length > 0 ? `Topics ${profile.name} cares about: ${profile.topics.join(", ")}.` : null,
     "",
-    "Read everything that has happened recently and decide what — if anything —",
-    "this company should publish.",
+    "Read the recent evidence below and decide what — if anything — this company",
+    "should publish.",
     "",
     "First, in one sentence, assess the period: is there anything here genuinely",
     "worth publishing about?",
@@ -124,7 +136,7 @@ function buildSystem(profile: RelevanceProfile): string {
     "publishing this?' is 'because it is Tuesday', it does not clear the bar.",
     "",
     "Most periods are quiet. Returning an empty list is a correct and common",
-    "outcome, and it is the RIGHT answer when nothing of substance happened. A",
+    "outcome, and it is the RIGHT answer when there is nothing of substance here. A",
     "company that publishes nothing this week loses nothing. A company that",
     "publishes filler teaches its audience to ignore it, and that is not",
     "recoverable. Two strong briefs beat six padded ones; zero beats one padded.",
@@ -132,7 +144,7 @@ function buildSystem(profile: RelevanceProfile): string {
     "WHAT NEVER CLEARS THE BAR ALONE: routine version bumps, dependency updates,",
     "patch and maintenance releases, generic market-size statistics and analyst",
     "forecasts, a competitor's cosmetic or non-functional change, and anything",
-    "whose why-now is 'this exists' rather than 'this happened'.",
+    "whose why-now points at nothing in the evidence you were given.",
     "",
     "FOR EACH BRIEF THAT DOES CLEAR IT:",
     "1. FAVOUR CLUSTERS. A brief joining two or more signals — especially across",
@@ -140,8 +152,14 @@ function buildSystem(profile: RelevanceProfile): string {
     "   is almost always stronger than one restating a single changelog entry.",
     "2. THE SWAP TEST. If the brief would read exactly the same with a",
     "   competitor's name swapped in, it is worthless. Do not propose it.",
-    "3. WHY-NOW MUST BE REAL. Point at something dated in the evidence. 'AI is a",
-    "   big topic right now' is not a why-now.",
+    "3. WHY-NOW MUST BE REAL — but it does not have to be an event. Point at a",
+    "   specific signal you were given. A substantive piece recently published in",
+    "   this field is itself a legitimate why-now: the industry is discussing this",
+    "   now, and that is a real occasion to have a view. What fails is a why-now",
+    "   anchored to nothing in front of you — 'AI is a big topic right now' names",
+    "   no signal and is not a why-now. Some signals are marked 'publication date",
+    "   unknown' — we could not tell when they were published. Use them as",
+    "   evidence, but never claim one of them is recent.",
     "4. NO DUPLICATE ANGLES.",
     "5. MATCH TYPE TO SUBSTANCE. product_update for shipped work worth announcing,",
     "   blog_post for an argument needing room, social_post for one sharp point.",
@@ -162,10 +180,14 @@ function buildPrompt(
   openBriefs: OpenBrief[],
   context: IdeationContext,
 ): string {
+  // A signal with no known date is rendered without one, never with today's.
+  // "date unknown" is honest and costs the model a little context; a fabricated
+  // date is a claim the strategist will repeat into a `whyNow` a human reads as
+  // fact.
   const sig = signals
     .map(
       (s) =>
-        `[${s.id}] (${s.kind}, ${s.occurredAt.toISOString().slice(0, 10)})\n  ${s.title}\n  ${s.excerpt ?? "(no excerpt)"}`
+        `[${s.id}] (${s.kind}, ${s.occurredAt ? s.occurredAt.toISOString().slice(0, 10) : "publication date unknown"})\n  ${s.title}\n  ${s.excerpt ?? "(no excerpt)"}`
     )
     .join("\n\n");
 

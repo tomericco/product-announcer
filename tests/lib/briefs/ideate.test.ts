@@ -154,6 +154,52 @@ describe("ideate", () => {
     expect(generate.mock.calls[0][0].maxOutputTokens).toBe(MAX_IDEATION_OUTPUT_TOKENS);
   });
 
+  it("lets a recently published piece be its own why-now instead of demanding an event", async () => {
+    const generate = generateReturning({ assessment: "x", actions: [] });
+
+    await ideate(
+      { signals: [signal("s1")], openBriefs: [], context: { covered: [], rejected: [] }, profile: PROFILE, tenantId: "t1" },
+      { generate }
+    );
+
+    const system = generate.mock.calls[0][0].system as string;
+    // This is the gate that produced the two zero-brief runs. The news selector
+    // was broadened to admit professional and opinion writing; handing those
+    // signals to a strategist told to reject anything whose why-now is not
+    // "this happened" would have left the whole change with nothing to show.
+    expect(system).not.toMatch(/\bhappened\b/i);
+    expect(system).toMatch(/recently published/i);
+    expect(system).toMatch(/does not have to be an event/i);
+    // The rule still has to do its original job: rejecting timeless
+    // hand-waving that points at no signal at all.
+    expect(system).toMatch(/anchored to nothing/i);
+    expect(system).toMatch(/AI is a big topic right now/i);
+  });
+
+  it("renders a signal with no known publication date without inventing one", async () => {
+    const generate = generateReturning({ assessment: "x", actions: [] });
+    const today = new Date().toISOString().slice(0, 10);
+
+    await ideate(
+      {
+        signals: [{ ...signal("s1"), occurredAt: null }],
+        openBriefs: [],
+        context: { covered: [], rejected: [] },
+        profile: PROFILE,
+        tenantId: "t1",
+      },
+      { generate }
+    );
+
+    const prompt = generate.mock.calls[0][0].prompt as string;
+    // An undated article is stored with `occurredAt = now`. Rendering that as a
+    // date tells the strategist a two-year-old evergreen guide was published
+    // today, and rule 3 then invites a `whyNow` built on that recency — which a
+    // human reads as fact.
+    expect(prompt).not.toContain(today);
+    expect(prompt).toContain("publication date unknown");
+  });
+
   it("puts covered and rejected context in the prompt", async () => {
     const generate = generateReturning({ assessment: "x", actions: [] });
 
