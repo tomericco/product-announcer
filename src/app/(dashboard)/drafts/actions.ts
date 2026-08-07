@@ -6,7 +6,7 @@ import { redirect } from "next/navigation";
 import { db } from "@/db";
 import { contentPieces } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
-import { assertDraftEditable, notEditableMessage } from "@/lib/draft-editable";
+import { assertDraftEditable, assertDraftDeletable, notEditableMessage } from "@/lib/draft-editable";
 import { dispatchAllDestinations } from "@/lib/publishing/dispatch";
 import { revertReleaseAtomicUpdates, markReleaseAtomicUpdatesReleased } from "@/lib/change-events/release-claim";
 import type { DestinationId } from "@/lib/publishing/destinations/types";
@@ -78,7 +78,12 @@ export async function saveDraft(formData: FormData) {
       title: formData.get("title") as string,
       body,
       editedBy: session.user.id,
-      ...(bodyChanged ? { bodyEditedAt: new Date() } : {}),
+      // A body-changing save is exactly when a human might have removed the
+      // name the competitor scan flagged — without clearing generationError
+      // here, the amber warning banner is permanent even after the edit that
+      // fixed it. Only cleared on a real body change, not every re-save,
+      // matching bodyEditedAt's own condition just above.
+      ...(bodyChanged ? { bodyEditedAt: new Date(), generationError: null } : {}),
     })
     .where(eq(contentPieces.id, contentPieceId));
 
@@ -104,12 +109,14 @@ export async function approveDraft(formData: FormData): Promise<{ problems: Link
   const existing = await loadOwnedDraft(session.user.tenantId, contentPieceId);
   // NOT `assertDraftEditable` — this action deliberately also serves an
   // intentional re-publish of an already-`published` piece (see the docstring
-  // on `assertDraftEditable`), which that gate would refuse. But a "brief" is
-  // an ungenerated scaffold, never a legitimate publish target: the detail
-  // page no longer renders this form for one (`[releaseId]/page.tsx`'s early
-  // return), and that UI guard needs a server-side backstop against a crafted
-  // request doing the same thing directly.
-  if (existing.status === "brief") {
+  // on `assertDraftEditable`), which that gate would refuse. So this is an
+  // allowlist, not a single-status blocklist: only "draft" and "published"
+  // may proceed. "brief" is an ungenerated scaffold and never a legitimate
+  // publish target, but a bare `=== "brief"` check would silently let
+  // "review" and "scheduled" through too — both are declared in
+  // `contentPieceStatusEnum` and would become publishable the moment
+  // anything assigns them, even though nothing here means to allow it.
+  if (existing.status !== "draft" && existing.status !== "published") {
     throw new Error(notEditableMessage(existing.status));
   }
 
@@ -212,10 +219,11 @@ export async function publishDraft(
   const contentPieceId = formData.get("contentPieceId") as string;
   const existing = await loadOwnedDraft(session.user.tenantId, contentPieceId);
   // Same as `approveDraft`: NOT `assertDraftEditable` (this list also
-  // re-publishes already-`published` pieces), but a "brief" row has no
-  // Publish entry point in the drafts list UI and must not gain one via a
-  // crafted request either.
-  if (existing.status === "brief") {
+  // re-publishes already-`published` pieces), and the same allowlist —
+  // only "draft" and "published" may proceed. A "brief" row has no Publish
+  // entry point in the drafts list UI, and "review"/"scheduled" have none
+  // either; a bare `=== "brief"` check would leave both silently publishable.
+  if (existing.status !== "draft" && existing.status !== "published") {
     throw new Error(notEditableMessage(existing.status));
   }
   // Publishes as-stored (no editor here), so gate the stored body: an invalid
@@ -261,10 +269,12 @@ export async function publishDraft(
 export async function deleteDraft(formData: FormData) {
   const session = await requireSession();
   const contentPieceId = formData.get("contentPieceId") as string;
-  // A published content piece is the record of what was sent; deleting it
-  // would erase that history and, via the revert below, reopen its shipped
-  // atomic updates.
-  assertDraftEditable(await loadOwnedDraft(session.user.tenantId, contentPieceId));
+  // NOT `assertDraftEditable` — that gate refuses "brief", but a "brief"
+  // piece whose generation can never succeed needs a way out or it sits
+  // forever inflating the drafts count. A published content piece is still
+  // refused: deleting it would erase that history and, via the revert below,
+  // reopen its shipped atomic updates.
+  assertDraftDeletable(await loadOwnedDraft(session.user.tenantId, contentPieceId));
 
   await db.transaction(async (tx) => {
     // Must precede the delete: contentPieceId is ON DELETE SET NULL, so

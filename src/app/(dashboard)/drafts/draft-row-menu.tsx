@@ -38,11 +38,18 @@ type Props = {
    * mechanism as approveDraft's, not a special case.
    */
   publishedAt: string | null;
+  /**
+   * False for a "brief"-status row: an ungenerated scaffold has no Publish
+   * entry point (`publishDraft` refuses it server-side too), but it still
+   * needs a Delete path — a piece whose generation can never succeed would
+   * otherwise be stuck forever.
+   */
+  canPublish: boolean;
 };
 
 type Confirming = "publish" | "delete" | null;
 
-export function DraftRowMenu({ contentPieceId, title, atomicUpdateCount, publishedAt }: Props) {
+export function DraftRowMenu({ contentPieceId, title, atomicUpdateCount, publishedAt, canPublish }: Props) {
   const router = useRouter();
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirming, setConfirming] = useState<Confirming>(null);
@@ -103,11 +110,15 @@ export function DraftRowMenu({ contentPieceId, title, atomicUpdateCount, publish
           <MoreHorizontal className="size-4" />
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-40">
-          <DropdownMenuItem onClick={() => setConfirming("publish")}>
-            <Send />
-            Publish
-          </DropdownMenuItem>
-          <DropdownMenuSeparator />
+          {canPublish && (
+            <>
+              <DropdownMenuItem onClick={() => setConfirming("publish")}>
+                <Send />
+                Publish
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+            </>
+          )}
           <DropdownMenuItem variant="destructive" onClick={() => setConfirming("delete")}>
             <Trash2 />
             Delete
@@ -116,7 +127,7 @@ export function DraftRowMenu({ contentPieceId, title, atomicUpdateCount, publish
       </DropdownMenu>
 
       <Dialog
-        open={confirming === "publish"}
+        open={canPublish && confirming === "publish"}
         onOpenChange={(next) => !next && !submitting && setConfirming(null)}
       >
         <DialogContent className="sm:max-w-md">

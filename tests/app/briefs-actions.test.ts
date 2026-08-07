@@ -16,15 +16,32 @@ vi.mock("../../src/lib/workspace/session", () => ({
 
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 
-// Runs the callback immediately so the test can observe its effect. The real
-// `after` defers until the response is finished, which never happens here.
-vi.mock("next/server", () => ({ after: (fn: () => unknown) => fn() }));
+// Stores the callback instead of invoking it inline. The real `after` defers
+// until the response is finished, which never happens in a test — but the
+// previous version of this mock called `fn()` synchronously without awaiting
+// it, which raced every test's own assertions against the background
+// generateDraftForPiece call: "leaves generation state empty on a freshly
+// accepted brief" (below) only passed because its assertions usually — not
+// always — won that race by finishing first. Storing the callback here and
+// draining it in `afterEach` (after each test's own assertions have already
+// run) makes that ordering true by construction: during a test body,
+// acceptBrief's generation callback genuinely has not run yet. Draining
+// before deleting the tenant also stops the background UPDATE from landing
+// after its rows are gone, which previously surfaced as a swallowed
+// FK-violation error.
+const pendingAfterCallbacks = vi.hoisted(() => [] as Array<() => unknown>);
+vi.mock("next/server", () => ({
+  after: (fn: () => unknown) => {
+    pendingAfterCallbacks.push(fn);
+  },
+}));
 
 // acceptBrief's `after()` callback calls generateDraftForPiece with no
 // generator override, so it falls through to the real generateBriefDraft —
 // which calls the real Anthropic API — unless that module is mocked here too.
-// With `after` mocked to run synchronously above, an unmocked
-// generateBriefDraft would issue a real network request on every accept test.
+// `afterEach` above drains and awaits every stored `after()` callback, so an
+// unmocked generateBriefDraft would issue a real network request once per
+// accept test, every time.
 const generateBriefDraft = vi.fn(async (..._args: unknown[]) => ({
   title: "Mock generated title",
   body: "Mock generated body.",
@@ -37,6 +54,10 @@ import { scaffoldBody } from "../../src/lib/briefs/scaffold";
 import { runIdeation } from "../../src/lib/briefs/run";
 
 afterEach(async () => {
+  // Drain and await every `after()` callback this test scheduled BEFORE
+  // tearing down its tenant — otherwise the background generateDraftForPiece
+  // write can land after the tenant row is gone.
+  await Promise.all(pendingAfterCallbacks.splice(0).map((fn) => fn()));
   await db.delete(tenants).where(eq(tenants.name, TENANT));
   await db.delete(users).where(eq(users.email, USER_EMAIL));
   // Reset so a test that doesn't seed its own user never inherits a stale id

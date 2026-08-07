@@ -39,3 +39,21 @@ export function assertDraftEditable(piece: { status: ContentPieceStatus }): void
     throw new Error(notEditableMessage(piece.status));
   }
 }
+
+/**
+ * Refuses `deleteDraft` on a content piece that must not be removed:
+ * "published" is the record of what actually shipped, and this codebase has
+ * no delete path for "review"/"scheduled" either.
+ *
+ * Deliberately its OWN check, not a loosened `assertDraftEditable` — nine
+ * other call sites depend on that gate refusing "brief", and this one needs
+ * the opposite answer: a "brief" piece whose generation can never succeed
+ * (no linked brief, or a persistent model failure) has no other exit. Without
+ * this, `assertDraftEditable`'s refusal makes it permanently undeletable and
+ * it inflates the drafts sidebar count forever.
+ */
+export function assertDraftDeletable(piece: { status: ContentPieceStatus }): void {
+  if (piece.status !== "brief" && piece.status !== "draft") {
+    throw new Error(notEditableMessage(piece.status));
+  }
+}

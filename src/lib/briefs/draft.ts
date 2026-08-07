@@ -76,7 +76,7 @@ export function findNamedCompanies(text: string, names: string[]): string[] {
  * writing `generationError` after a thrown generation fails too, that second
  * failure is logged and swallowed rather than escaping in its place.
  *
- * Three properties this function is built around:
+ * Four properties this function is built around:
  *   1. A generation failure must cost the human nothing: the piece stays at
  *      "brief" with its scaffold body intact, so the accept decision survives
  *      and the Generate button can retry.
@@ -86,6 +86,11 @@ export function findNamedCompanies(text: string, names: string[]): string[] {
  *   3. A hand-edited body (`bodyEditedAt` set) is refused before the
  *      generator is ever called — regenerating over a human's own words is
  *      not a retry, it's data loss.
+ *   4. Only a piece still at "brief" is a legitimate generation target —
+ *      refused before the generator is ever called. Without this, a
+ *      "published" or "archived" piece (whose `bodyEditedAt` is often still
+ *      null) can be silently regenerated and demoted over content already
+ *      dispatched to destinations.
  */
 export async function generateDraftForPiece(
   contentPieceId: string,
@@ -101,6 +106,22 @@ export async function generateDraftForPiece(
       .from(contentPieces)
       .where(and(eq(contentPieces.id, contentPieceId), eq(contentPieces.tenantId, tenantId)));
     if (!piece) return { ok: false, error: "Content piece not found." };
+
+    // Generation is only ever legitimate on an ungenerated piece. Without
+    // this, a piece published straight from a generated draft has
+    // `bodyEditedAt === null` (nothing was ever hand-edited), so it sails
+    // through the check below — a stray retry or a racing `after()` then
+    // rewrites its body and demotes it to "draft" over content already
+    // dispatched to destinations. That flip also drops it out of
+    // `history/page.tsx` (which filters on `status === "published"`) while
+    // `deliveryAttempts` rows keep pointing at a body that no longer exists.
+    // "archived" pieces from `rejectDraft` are exposed the same way. This
+    // also closes a second bug: a retry that throws on a "draft" piece would
+    // otherwise write a failure message into a row whose status makes the UI
+    // render it as the amber competitor-name warning.
+    if (piece.status !== "brief") {
+      return { ok: false, error: `This piece is not awaiting generation (status: ${piece.status}).` };
+    }
 
     // Must happen before the generator is ever invoked — a retry must never
     // clobber words a human already typed.
@@ -134,9 +155,23 @@ export async function generateDraftForPiece(
       .where(eq(briefSignals.briefId, brief.id));
 
     // Built from the PIECE's own type, so a blog_post piece gets blog-post
-    // examples and system prompt (the brief's content type and the piece's
-    // are expected to match, but the piece is the source of truth here).
+    // few-shot examples (the brief's content type and the piece's are
+    // expected to match). This only selects examples, though — the system
+    // prompt's role line and format/length guidance come from
+    // `brief.contentType` inside `composeBriefPrompt`, not from this value.
     const { brandProfile, personas, examples } = await prepareGenerationContext(tenantId, database, [], piece.type);
+
+    // Written BEFORE the model call, not after. `generationError: null` on a
+    // "brief" piece is otherwise ambiguous between "generation hasn't run
+    // yet" and "generation ran and was cut off mid-callback" (a function
+    // timeout or worker recycle) — this marker makes an interrupted attempt
+    // visibly interrupted instead of indistinguishable from untouched. A
+    // successful run below overwrites it with `null` or the competitor
+    // warning; the catch block overwrites it with the real failure reason.
+    await database
+      .update(contentPieces)
+      .set({ generationError: "Generation was interrupted before it finished. Retry to try again." })
+      .where(eq(contentPieces.id, contentPieceId));
 
     let result: { title: string; body: string };
     try {
@@ -157,9 +192,17 @@ export async function generateDraftForPiece(
       return { ok: false, error: message };
     }
 
+    // This only scans for names already saved in this tenant's competitors
+    // list, not for any company — the system prompt forbids naming ANY
+    // company, but a publication, an unlisted competitor, or a product brand
+    // passes this check clean. The message below says so explicitly so a
+    // clean pass doesn't read as "no company named".
     const competitorNames = (await listCompetitors(tenantId, database)).map((c) => c.name);
     const matches = findNamedCompanies(`${result.title}\n${result.body}`, competitorNames);
-    const generationError = matches.length > 0 ? `Draft may reference a competitor: ${matches.join(", ")}.` : null;
+    const generationError =
+      matches.length > 0
+        ? `This draft may name a company from your competitors list: ${matches.join(", ")}. This only checks names on that list, not every company — review before publishing.`
+        : null;
 
     await database
       .update(contentPieces)

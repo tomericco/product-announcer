@@ -93,11 +93,31 @@ export async function acceptBrief(briefId: string): Promise<AcceptResult> {
   // Runs once the response is finished, so accept stays instant and a
   // generation failure can never cost the human their decision.
   //
-  // Request APIs (cookies, headers) are NOT available inside `after` — see
-  // node_modules/next/dist/docs/01-app/03-api-reference/04-functions/after.md.
-  // tenantId and contentPieceId are read above and closed over deliberately.
+  // Request APIs (cookies, headers) ARE available inside `after` when it's
+  // called from a Server Function like this one — the restriction in
+  // node_modules/next/dist/docs/01-app/03-api-reference/04-functions/after.md
+  // applies to Server Components (pages/layouts), not Server Functions.
+  // tenantId and contentPieceId are still read above and closed over here
+  // deliberately: acceptBrief already has both in scope, and closing over
+  // them keeps this callback's inputs explicit rather than re-deriving them
+  // from the request inside the callback.
   after(async () => {
     await generateDraftForPiece(contentPieceId, tenantId);
+    // The revalidatePath calls above ran before this callback was even
+    // scheduled, so they only ever refreshed the page for the "brief"
+    // placeholder. Without revalidating again here, the page the user is
+    // sitting on never learns the draft actually finished generating until
+    // something unrelated triggers a revalidation. revalidatePath is legal
+    // here: its own docs (revalidatePath.md) say it "can be called in Server
+    // Functions and Route Handlers" with no carve-out for `after` callbacks,
+    // and unlike cookies()/headers() it isn't on next/server's list of
+    // request-time APIs restricted from Server Component `after` callbacks —
+    // the restriction that page even describes is specific to those APIs.
+    // `npm run build` is the backstop: it already caught one illegal-export
+    // rule this suite's 1216 tests missed, and would fail here too if this
+    // usage were actually invalid.
+    revalidatePath("/drafts");
+    revalidatePath(`/drafts/${contentPieceId}`);
   });
 
   return { ok: true, contentPieceId };

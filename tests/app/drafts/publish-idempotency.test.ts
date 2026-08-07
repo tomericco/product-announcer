@@ -189,6 +189,34 @@ describe("draft publish idempotency (approveDraft / publishDraft)", () => {
       expect(fetch).toHaveBeenCalledTimes(1);
     });
 
+    // The guard is an allowlist (only "draft" and "published" proceed), not a
+    // single `=== "brief"` blocklist entry — both "review" and "scheduled"
+    // are declared in contentPieceStatusEnum and would otherwise become
+    // silently publishable the moment anything assigns them.
+    it("refuses a \"review\"-status piece", async () => {
+      const { tenant, update, user } = await seed();
+      await db.update(contentPieces).set({ status: "review" }).where(eq(contentPieces.id, update.id));
+      vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id, id: user.id } } as never);
+
+      await expect(approveDraft(approveFormData(update.id, ""))).rejects.toThrow();
+
+      const row = await rowFor(update.id);
+      expect(row.status).toBe("review");
+      expect(fetch).not.toHaveBeenCalled();
+    });
+
+    it("refuses a \"scheduled\"-status piece", async () => {
+      const { tenant, update, user } = await seed();
+      await db.update(contentPieces).set({ status: "scheduled" }).where(eq(contentPieces.id, update.id));
+      vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id, id: user.id } } as never);
+
+      await expect(approveDraft(approveFormData(update.id, ""))).rejects.toThrow();
+
+      const row = await rowFor(update.id);
+      expect(row.status).toBe("scheduled");
+      expect(fetch).not.toHaveBeenCalled();
+    });
+
     it("tenant isolation: another tenant cannot approve this update", async () => {
       const { update } = await seed();
       const { otherUser } = await seedOtherTenantMember();
@@ -325,6 +353,21 @@ describe("draft publish idempotency (approveDraft / publishDraft)", () => {
       const row = await rowFor(update.id);
       expect(row.status).toBe("published");
       expect(fetch).toHaveBeenCalledTimes(1);
+    });
+
+    // Same allowlist as approveDraft: "review" and "scheduled" are declared
+    // in contentPieceStatusEnum and must stay refused even though the old
+    // guard only ever named "brief".
+    it("refuses a \"review\"-status piece", async () => {
+      const { tenant, update, user } = await seed();
+      await db.update(contentPieces).set({ status: "review" }).where(eq(contentPieces.id, update.id));
+      vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id, id: user.id } } as never);
+
+      await expect(publishDraft(publishFormData(update.id, ""))).rejects.toThrow();
+
+      const row = await rowFor(update.id);
+      expect(row.status).toBe("review");
+      expect(fetch).not.toHaveBeenCalled();
     });
 
     it("tenant isolation: another tenant cannot publish this update", async () => {

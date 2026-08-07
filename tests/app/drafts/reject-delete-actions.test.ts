@@ -128,4 +128,22 @@ describe("deleteDraft", () => {
     expect(untouched.status).toBe("released");
     expect(untouched.contentPieceId).toBe(release.id);
   });
+
+  // assertDraftEditable (which every other deleteDraft case in this file
+  // exercises indirectly through the "draft"/"published" statuses seed()
+  // produces) refuses "brief" outright. deleteDraft uses its own check
+  // instead specifically so a "brief" piece — one whose generation can never
+  // succeed, e.g. no linked brief or a persistent model failure — has a way
+  // out rather than sitting forever, undeletable, inflating the sidebar count.
+  it("deletes a \"brief\"-status piece, unlike assertDraftEditable's other callers", async () => {
+    const { release, atomic } = await seed("draft");
+    await db.update(contentPieces).set({ status: "brief" }).where(eq(contentPieces.id, release.id));
+
+    await deleteDraft(formDataFor(release.id));
+
+    expect(await releaseRow(release.id)).toBeUndefined();
+    const reverted = await atomicRow(atomic.id);
+    expect(reverted.status).toBe("open");
+    expect(reverted.contentPieceId).toBeNull();
+  });
 });

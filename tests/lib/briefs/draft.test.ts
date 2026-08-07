@@ -249,6 +249,65 @@ describe("generateDraftForPiece", () => {
     expect(after.body).toBe("HUMAN WORDS");
   });
 
+  it("refuses to regenerate a published piece, and never calls the generator", async () => {
+    const tenant = await seedTenant();
+    const { piece } = await seedPieceWithBrief(tenant.id, {
+      status: "published",
+      body: "SHIPPED BODY",
+      publishedAt: new Date(),
+    });
+    const generate = vi.fn(async () => ({ title: "Rewritten title", body: "Rewritten body." }));
+
+    const result = await generateDraftForPiece(piece.id, tenant.id, { database: db, generate });
+    expect(result.ok).toBe(false);
+    expect(generate).not.toHaveBeenCalled();
+
+    // The bug this guards: a published piece generated straight from a draft
+    // has bodyEditedAt === null, so without a status check it sails through
+    // that guard and gets silently rewritten and demoted.
+    const [after] = await db.select().from(contentPieces).where(eq(contentPieces.id, piece.id));
+    expect(after.status).toBe("published");
+    expect(after.body).toBe("SHIPPED BODY");
+    expect(after.publishedAt).not.toBeNull();
+  });
+
+  it("refuses to regenerate an archived piece, and never calls the generator", async () => {
+    const tenant = await seedTenant();
+    const { piece } = await seedPieceWithBrief(tenant.id, { status: "archived", body: "ARCHIVED BODY" });
+    const generate = vi.fn(async () => ({ title: "Rewritten title", body: "Rewritten body." }));
+
+    const result = await generateDraftForPiece(piece.id, tenant.id, { database: db, generate });
+    expect(result.ok).toBe(false);
+    expect(generate).not.toHaveBeenCalled();
+
+    const [after] = await db.select().from(contentPieces).where(eq(contentPieces.id, piece.id));
+    expect(after.status).toBe("archived");
+    expect(after.body).toBe("ARCHIVED BODY");
+  });
+
+  it("records an interruption marker before calling the model", async () => {
+    const tenant = await seedTenant();
+    const { piece } = await seedPieceWithBrief(tenant.id);
+    let generationErrorDuringCall: string | null | undefined;
+    const generate = vi.fn(async () => {
+      // Read the row from inside the mocked generator — this is the one
+      // moment that stands in for "the model call is in flight", which is
+      // exactly when a marker recorded only AFTER the call would still be
+      // absent.
+      const [current] = await db.select().from(contentPieces).where(eq(contentPieces.id, piece.id));
+      generationErrorDuringCall = current.generationError;
+      return { title: "T", body: "B" };
+    });
+
+    const result = await generateDraftForPiece(piece.id, tenant.id, { database: db, generate });
+    expect(result.ok).toBe(true);
+    expect(generationErrorDuringCall).toMatch(/interrupted/i);
+
+    // And a successful run still overwrites the marker with null afterwards.
+    const [after] = await db.select().from(contentPieces).where(eq(contentPieces.id, piece.id));
+    expect(after.generationError).toBeNull();
+  });
+
   it("refuses a piece belonging to another tenant", async () => {
     const mine = await seedTenant();
     const [other] = await db.insert(tenants).values({ name: TENANT }).returning();

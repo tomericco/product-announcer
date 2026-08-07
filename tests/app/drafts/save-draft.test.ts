@@ -127,3 +127,39 @@ describe("saveDraft draft-status gate", () => {
     expect(row.title).toBe("Original title");
   });
 });
+
+// The competitor-name scan's warning (generationError on a "draft" piece) is
+// permanent unless something clears it — without this, editing the flagged
+// name back out of the body would never make the amber banner go away.
+describe("saveDraft clears the competitor-name warning", () => {
+  afterEach(async () => {
+    await db.delete(tenants).where(eq(tenants.name, TENANT_NAME));
+    await db.delete(users).where(eq(users.email, USER_EMAIL));
+  });
+
+  it("clears generationError when the saved body actually changes", async () => {
+    const { release } = await seed("Original body");
+    await db
+      .update(contentPieces)
+      .set({ generationError: "This draft may name a company from your competitors list: Acme." })
+      .where(eq(contentPieces.id, release.id));
+
+    await saveDraft(formDataFor(release.id, "Original title", "Edited body"));
+
+    const row = await rowFor(release.id);
+    expect(row.generationError).toBeNull();
+  });
+
+  it("leaves generationError in place when the saved body is unchanged", async () => {
+    const { release } = await seed("Original body");
+    await db
+      .update(contentPieces)
+      .set({ generationError: "This draft may name a company from your competitors list: Acme." })
+      .where(eq(contentPieces.id, release.id));
+
+    await saveDraft(formDataFor(release.id, "A new title", "Original body"));
+
+    const row = await rowFor(release.id);
+    expect(row.generationError).toBe("This draft may name a company from your competitors list: Acme.");
+  });
+});

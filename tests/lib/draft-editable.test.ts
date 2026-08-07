@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { assertDraftEditable, notEditableMessage } from "../../src/lib/draft-editable";
+import { assertDraftEditable, assertDraftDeletable, notEditableMessage } from "../../src/lib/draft-editable";
 
 describe("assertDraftEditable", () => {
   it("permits a draft", () => {
@@ -16,6 +16,31 @@ describe("assertDraftEditable", () => {
 
   it("refuses a piece under review", () => {
     expect(() => assertDraftEditable({ status: "review" })).toThrow(/review/i);
+  });
+});
+
+describe("assertDraftDeletable", () => {
+  // The one place this differs from assertDraftEditable: a "brief" piece
+  // whose generation can never succeed needs an exit, or it inflates the
+  // drafts count forever with no way to leave.
+  it("permits a \"brief\" piece, unlike assertDraftEditable", () => {
+    expect(() => assertDraftDeletable({ status: "brief" })).not.toThrow();
+  });
+
+  it("permits a draft", () => {
+    expect(() => assertDraftDeletable({ status: "draft" })).not.toThrow();
+  });
+
+  it("refuses a published release, naming publication", () => {
+    expect(() => assertDraftDeletable({ status: "published" })).toThrow(/already been published/i);
+  });
+
+  it("refuses an archived piece", () => {
+    expect(() => assertDraftDeletable({ status: "archived" })).toThrow(/archived/i);
+  });
+
+  it("refuses a piece under review", () => {
+    expect(() => assertDraftDeletable({ status: "review" })).toThrow(/review/i);
   });
 });
 

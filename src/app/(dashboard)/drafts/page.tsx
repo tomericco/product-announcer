@@ -64,8 +64,9 @@ export default async function DraftsPage() {
           </EmptyStateIcon>
           <EmptyStateTitle>No drafts to review</EmptyStateTitle>
           <EmptyStateDescription>
-            Drafts appear here once an update is generated from your pending changes, or as soon as
-            you accept a brief — on the next scheduled run, or as soon as you generate one yourself.
+            Drafts appear here once your pending changes are composed into an update — whether that
+            happens on the next scheduled run or when you generate one yourself — or as soon as you
+            accept a brief.
           </EmptyStateDescription>
           <EmptyStateActions>
             <Button render={<Link href="/atomic-updates" />}>
@@ -116,16 +117,21 @@ export default async function DraftsPage() {
             >
               {formatShortDate(d.createdAt)}
             </span>
-            {/* Publish/Delete only make sense for a real draft — a "brief" row
-                has no menu here at all; its only action (Generate draft) lives
-                on the detail page. */}
-            {d.status === "draft" && (
+            {/* Both statuses get the menu, but a "brief" row only gets Delete —
+                Publish only makes sense for a real draft, and Generate draft
+                (the only other action a "brief" row supports) lives on the
+                detail page, not here. Delete is what a "brief" row needs most:
+                a piece whose generation can never succeed (no linked brief,
+                or a persistent model failure) would otherwise have no exit
+                and inflate this count forever. */}
+            {(d.status === "draft" || d.status === "brief") && (
               <div className="relative shrink-0">
                 <DraftRowMenu
                   contentPieceId={d.id}
                   title={d.title}
                   atomicUpdateCount={atomicUpdateCounts.get(d.id) ?? 0}
                   publishedAt={d.publishedAt ? d.publishedAt.toISOString() : null}
+                  canPublish={d.status === "draft"}
                 />
               </div>
             )}

@@ -147,10 +147,15 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
               above), so a set generationError means the post-generation
               competitor-name scan matched something — not a failure. The
               draft is real and the editor below is fully usable; this is a
-              warning to look at, not a reason to distrust the body. */}
+              warning to look at, not a reason to distrust the body. The
+              message itself (generationError, written in
+              generateDraftForPiece) already spells out that this is a check
+              against the tenant's saved competitors list, not a guarantee
+              that no other company is named — a clean pass (no banner at
+              all) is not that guarantee either. */}
           {update.generationError && (
             <div className="space-y-1 rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm">
-              <p className="font-medium">Worth a look before you publish</p>
+              <p className="font-medium">Possible competitor mention</p>
               <p>{update.generationError}</p>
             </div>
           )}
