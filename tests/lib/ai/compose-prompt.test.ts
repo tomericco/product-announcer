@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { buildSystemPrompt } from "../../../src/lib/ai/compose-prompt";
 import { serializeAtomicUpdates, composeReleasePrompt, composeMergePrompt } from "../../../src/lib/ai/compose-prompt";
+import { composeBriefPrompt, serializeBriefEvidence } from "../../../src/lib/ai/compose-prompt";
 
 describe("buildSystemPrompt", () => {
   const baseBrand = { guidelines: null, industry: null, userPersonas: [] };
@@ -152,5 +153,114 @@ describe("size-aware composition", () => {
     expect(prompt).toContain(`"Tiny fix" (fix, S)`);
     expect(prompt).toContain(`"Unsized" (improvement)`); // no size token when null
     expect(prompt).toContain("gather them into a single bulleted list");
+  });
+});
+
+const PROFILE = {
+  tenantId: "t1",
+  industry: "Design tooling",
+  guidelines: null,
+  userPersonas: [],
+} as unknown as Parameters<typeof buildSystemPrompt>[0];
+
+describe("buildSystemPrompt content types", () => {
+  it("is byte-identical to the three-argument form when the type is omitted", () => {
+    // The three existing product-update paths (release, merge, edit, extract)
+    // call this with three arguments. If this ever differs, those prompts
+    // changed silently and their output changed with them.
+    expect(buildSystemPrompt(PROFILE, [], [])).toBe(buildSystemPrompt(PROFILE, [], [], "product_update"));
+  });
+
+  it("gives each content type its own role line", () => {
+    const update = buildSystemPrompt(PROFILE, [], [], "product_update");
+    const blog = buildSystemPrompt(PROFILE, [], [], "blog_post");
+    const social = buildSystemPrompt(PROFILE, [], [], "social_post");
+
+    expect(update).toContain("product update announcements");
+    expect(blog).not.toContain("product update announcements");
+    expect(social).not.toContain("product update announcements");
+    expect(blog).not.toBe(social);
+  });
+
+  it("keeps the grounding, link and naming rules on EVERY content type", () => {
+    for (const type of ["product_update", "blog_post", "social_post"] as const) {
+      const system = buildSystemPrompt(PROFILE, [], [], type);
+      // These three are universal by decision. The naming rule in particular was
+      // chosen deliberately over relaxing it for non-product types.
+      expect(system).toContain("never invent");
+      expect(system).toContain("[add link]");
+      expect(system).toMatch(/never name, compare to, or reference/i);
+    }
+  });
+});
+
+describe("composeBriefPrompt", () => {
+  const BRIEF = {
+    title: "Why localization breaks design systems",
+    angle: "Teams discover it too late",
+    whyNow: "Two vendors shipped multilingual tooling this month",
+    keyPoints: ["Point one", "Point two"],
+    contentType: "blog_post" as const,
+    targetLength: 800,
+  };
+
+  it("separates the commission from the evidence", () => {
+    const { prompt } = composeBriefPrompt({
+      brief: BRIEF,
+      evidence: [{ title: "Phrase ships X", kind: "market_news", excerpt: "Body text." }],
+      brandProfile: PROFILE,
+      personas: [],
+      examples: [],
+    });
+
+    // The angle and key points are INSTRUCTIONS to follow; the signals are
+    // source material to ground against. Merging them makes the model treat the
+    // commission as just more evidence.
+    expect(prompt).toContain("Teams discover it too late");
+    expect(prompt).toContain("Point one");
+    expect(prompt).toContain("Phrase ships X");
+    expect(prompt.indexOf("Teams discover it too late")).toBeLessThan(prompt.indexOf("Phrase ships X"));
+  });
+
+  it("tells the model that names in the evidence must not be reproduced", () => {
+    const { prompt, system } = composeBriefPrompt({
+      brief: BRIEF,
+      evidence: [{ title: "Phrase ships X", kind: "market_news", excerpt: null }],
+      brandProfile: PROFILE,
+      personas: [],
+      examples: [],
+    });
+    // The evidence necessarily contains company names. Without this the naming
+    // rule reads as contradicted by the material it is given.
+    expect(`${system}\n${prompt}`).toMatch(/do not (repeat|reproduce|name)/i);
+  });
+
+  it("uses the brief's own content type for the system prompt", () => {
+    const { system } = composeBriefPrompt({
+      brief: { ...BRIEF, contentType: "social_post" },
+      evidence: [],
+      brandProfile: PROFILE,
+      personas: [],
+      examples: [],
+    });
+    expect(system).toBe(buildSystemPrompt(PROFILE, [], [], "social_post"));
+  });
+});
+
+describe("serializeBriefEvidence", () => {
+  it("drops trailing items past the cap with a note rather than truncating mid-item", () => {
+    const items = Array.from({ length: 50 }, (_, i) => ({
+      title: `Signal ${i}`,
+      kind: "market_news",
+      excerpt: "x".repeat(200),
+    }));
+    const out = serializeBriefEvidence(items, 1_000);
+    expect(out.length).toBeLessThan(1_500);
+    expect(out).toMatch(/more signals not shown/);
+    expect(out).toContain("Signal 0");
+  });
+
+  it("handles an item with no excerpt", () => {
+    expect(() => serializeBriefEvidence([{ title: "T", kind: "shipped_work", excerpt: null }])).not.toThrow();
   });
 });

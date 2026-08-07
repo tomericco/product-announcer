@@ -1,7 +1,9 @@
 import type { companyProfiles, ResolvedPersona, systemContentExamples } from "@/db/schema";
+import { contentTypeEnum } from "@/db/schema";
 
 type BrandProfileRow = typeof companyProfiles.$inferSelect;
 type ExampleRow = typeof systemContentExamples.$inferSelect;
+export type ContentType = (typeof contentTypeEnum.enumValues)[number];
 
 const DEFAULT_MAX_PROMPT_CHARS = 24000;
 const MAX_GUIDELINES_CHARS = 6000;
@@ -29,13 +31,20 @@ export function truncateGuidelines(guidelines: string | null): string | null {
     : trimmed;
 }
 
+const ROLE_LINES: Record<ContentType, string> = {
+  product_update: "You write concise, user-facing product update announcements.",
+  blog_post: "You write industry blog posts for this company's audience — substantive, specific, and useful to a practitioner.",
+  social_post: "You write a single short social post: one idea, no headings, no preamble.",
+};
+
 export function buildSystemPrompt(
   brandProfile: BrandProfileRow,
   personas: ResolvedPersona[],
-  examples: ExampleRow[]
+  examples: ExampleRow[],
+  contentType: ContentType = "product_update"
 ): string {
   const lines = [
-    "You write concise, user-facing product update announcements.",
+    ROLE_LINES[contentType],
     "Write only about this company's own product. Never name, compare to, or reference competitors or other companies.",
     "Ground every statement strictly in the source material you are given. Only describe changes that appear in that material; never invent or embellish features, capabilities, benefits, use cases, metrics, numbers, dates, version names, quotes, or any other specifics. If a detail is not in the source, leave it out rather than guessing — an omission is always better than a fabrication.",
     "Never fabricate links. Only include a URL if it appears verbatim in the source material; do not construct, complete, shorten, or recall a URL from memory, and do not guess a plausible one. If a link would be helpful but no verified URL is present in the source, write the literal placeholder [add link] in its place so an editor can fill it in — never emit a made-up or guessed URL.",
@@ -90,6 +99,12 @@ const SIZE_GUIDANCE =
   "may share a paragraph. S updates are minor: when there are two or more, gather them into a single bulleted " +
   "list (e.g. under \"Also improved\" or \"Smaller fixes\") rather than a paragraph each; a lone S update may be " +
   "a brief one-liner. Treat an update with no stated size as M.";
+
+const FORMAT_GUIDANCE: Record<ContentType, string> = {
+  product_update: SIZE_GUIDANCE,
+  blog_post: "Format the body as Markdown with section headings. Aim for the target length if one is given.",
+  social_post: "Plain text, no Markdown headings, no bullet lists. A few sentences at most.",
+};
 
 /**
  * Renders selected atomic updates as numbered title + summary lines. Atomic
@@ -255,4 +270,77 @@ export function composeExtractPrompt(args: {
     `(short paragraphs, and bullet lists where helpful).\n\n${sections.join("\n\n")}`;
 
   return { system, prompt };
+}
+
+export type BriefForPrompt = {
+  title: string;
+  angle: string;
+  whyNow: string;
+  keyPoints: string[];
+  contentType: ContentType;
+  targetLength: number | null;
+};
+
+export type BriefEvidenceForPrompt = { title: string; kind: string; excerpt: string | null };
+
+/**
+ * Renders the signals a brief cited. The analogue of `serializeAtomicUpdates`,
+ * which serializes atomic updates and is the wrong shape for this input.
+ * Trailing items past `maxChars` are dropped whole with a note, never cut
+ * mid-item.
+ */
+export function serializeBriefEvidence(
+  items: BriefEvidenceForPrompt[],
+  maxChars = DEFAULT_MAX_PROMPT_CHARS
+): string {
+  const lines = items.map(
+    (item, i) => `${i + 1}. [${item.kind}] "${item.title}"${item.excerpt ? ` — ${item.excerpt}` : ""}`
+  );
+  const full = lines.join("\n");
+  if (full.length <= maxChars) return full;
+
+  const kept: string[] = [];
+  for (const line of lines) {
+    if ([...kept, line].join("\n").length > maxChars && kept.length > 0) break;
+    kept.push(line);
+    if (kept.join("\n").length > maxChars) break;
+  }
+  const dropped = lines.length - kept.length;
+  return dropped > 0 ? `${kept.join("\n")}\n…and ${dropped} more signals not shown.` : kept.join("\n");
+}
+
+export function composeBriefPrompt(args: {
+  brief: BriefForPrompt;
+  evidence: BriefEvidenceForPrompt[];
+  brandProfile: BrandProfileRow;
+  personas: ResolvedPersona[];
+  examples: ExampleRow[];
+}): { system: string; prompt: string } {
+  const { brief } = args;
+  const commission = [
+    `Write this piece. Title: "${brief.title}".`,
+    `Angle: ${brief.angle}`,
+    `Why now: ${brief.whyNow}`,
+    brief.keyPoints.length > 0
+      ? `Cover these points, in order:\n${brief.keyPoints.map((p, i) => `${i + 1}. ${p}`).join("\n")}`
+      : null,
+    brief.targetLength ? `Target length: about ${brief.targetLength} words.` : null,
+    FORMAT_GUIDANCE[brief.contentType],
+  ]
+    .filter((line): line is string => Boolean(line))
+    .join("\n");
+
+  // The evidence is source material, NOT part of the commission — the two are
+  // fenced apart because the model otherwise treats the angle as one more
+  // signal. The naming reminder sits here rather than only in the system
+  // prompt because this is where the company names actually appear.
+  const evidence =
+    args.evidence.length > 0
+      ? `\n\nSource material — ground every factual claim in it. It names companies and publications: use what they describe, but do not repeat any company name in your copy.\n<sources>\n${serializeBriefEvidence(args.evidence)}\n</sources>`
+      : "\n\nNo source material was attached. Write only what the commission above supports.";
+
+  return {
+    system: buildSystemPrompt(args.brandProfile, args.personas, args.examples, brief.contentType),
+    prompt: `${commission}${evidence}`,
+  };
 }
