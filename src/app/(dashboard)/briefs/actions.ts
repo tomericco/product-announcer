@@ -2,10 +2,12 @@
 
 import { and, eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
+import { after } from "next/server";
 import { db } from "@/db";
 import { briefs, contentPieces, type Brief } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { scaffoldBody } from "@/lib/briefs/scaffold";
+import { generateDraftForPiece } from "@/lib/briefs/draft";
 
 export type DismissReason = NonNullable<Brief["dismissReason"]>;
 export type AcceptResult = { ok: true; contentPieceId: string } | { ok: false; error: string };
@@ -87,6 +89,17 @@ export async function acceptBrief(briefId: string): Promise<AcceptResult> {
   // this the count can lag behind an accept until something else revalidates
   // /drafts.
   revalidatePath("/drafts");
+
+  // Runs once the response is finished, so accept stays instant and a
+  // generation failure can never cost the human their decision.
+  //
+  // Request APIs (cookies, headers) are NOT available inside `after` — see
+  // node_modules/next/dist/docs/01-app/03-api-reference/04-functions/after.md.
+  // tenantId and contentPieceId are read above and closed over deliberately.
+  after(async () => {
+    await generateDraftForPiece(contentPieceId, tenantId);
+  });
+
   return { ok: true, contentPieceId };
 }
 
@@ -121,4 +134,18 @@ export async function dismissBrief(
 
   revalidatePath("/briefs");
   return { ok: true };
+}
+
+/**
+ * The Generate/retry button's action. `contentPieceId` is user-supplied (it
+ * arrives from a URL), so tenant scoping is not optional here — it's enforced
+ * inside `generateDraftForPiece`, which re-reads the piece scoped to the
+ * caller's own tenant rather than trusting the id alone.
+ */
+export async function generateDraft(contentPieceId: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  const session = await requireSession();
+  const result = await generateDraftForPiece(contentPieceId, session.user.tenantId);
+  revalidatePath("/drafts");
+  revalidatePath(`/drafts/${contentPieceId}`);
+  return result;
 }

@@ -16,6 +16,21 @@ vi.mock("../../src/lib/workspace/session", () => ({
 
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 
+// Runs the callback immediately so the test can observe its effect. The real
+// `after` defers until the response is finished, which never happens here.
+vi.mock("next/server", () => ({ after: (fn: () => unknown) => fn() }));
+
+// acceptBrief's `after()` callback calls generateDraftForPiece with no
+// generator override, so it falls through to the real generateBriefDraft —
+// which calls the real Anthropic API — unless that module is mocked here too.
+// With `after` mocked to run synchronously above, an unmocked
+// generateBriefDraft would issue a real network request on every accept test.
+const generateBriefDraft = vi.fn(async (..._args: unknown[]) => ({
+  title: "Mock generated title",
+  body: "Mock generated body.",
+}));
+vi.mock("../../src/lib/ai/generation", () => ({ generateBriefDraft: (...args: unknown[]) => generateBriefDraft(...args) }));
+
 import { revalidatePath } from "next/cache";
 import { acceptBrief, dismissBrief } from "../../src/app/(dashboard)/briefs/actions";
 import { scaffoldBody } from "../../src/lib/briefs/scaffold";
@@ -191,6 +206,19 @@ describe("acceptBrief", () => {
 
     const pieces = await db.select().from(contentPieces).where(eq(contentPieces.tenantId, tenant.id));
     expect(pieces).toHaveLength(1);
+  });
+
+  it("schedules generation without letting it block or fail the accept", async () => {
+    const tenant = await seedTenant();
+    const brief = await seedBrief(tenant.id);
+
+    const result = await acceptBrief(brief.id);
+
+    // Accept succeeds regardless of what generation does — that is the whole
+    // point of deferring it.
+    expect(result.ok).toBe(true);
+    const [after] = await db.select().from(briefs).where(eq(briefs.id, brief.id));
+    expect(after.status).toBe("accepted");
   });
 });
 
