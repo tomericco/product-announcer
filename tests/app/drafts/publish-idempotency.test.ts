@@ -160,6 +160,35 @@ describe("draft publish idempotency (approveDraft / publishDraft)", () => {
       expect(deliveries[0].attempts).toBe(1);
     });
 
+    it("refuses a \"brief\"-status piece — an ungenerated scaffold must not be published as finished copy", async () => {
+      const { tenant, update, user } = await seed();
+      await db.update(contentPieces).set({ status: "brief" }).where(eq(contentPieces.id, update.id));
+      vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id, id: user.id } } as never);
+
+      await expect(approveDraft(approveFormData(update.id, ""))).rejects.toThrow(/hasn't been generated yet/i);
+
+      const row = await rowFor(update.id);
+      expect(row.status).toBe("brief");
+      expect(row.publishedAt).toBeNull();
+      // The delivery side effect, not just the return value — this is the
+      // part an ungenerated scaffold reaching a real destination would
+      // actually hurt.
+      expect(fetch).not.toHaveBeenCalled();
+      expect(await deliveriesFor(update.id)).toHaveLength(0);
+    });
+
+    it("still succeeds for a \"draft\"-status piece — the brief guard must not over-block", async () => {
+      const { tenant, update, user } = await seed();
+      vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id, id: user.id } } as never);
+      vi.mocked(fetch).mockResolvedValue({ ok: true } as Response);
+
+      await approveDraft(approveFormData(update.id, ""));
+
+      const row = await rowFor(update.id);
+      expect(row.status).toBe("published");
+      expect(fetch).toHaveBeenCalledTimes(1);
+    });
+
     it("tenant isolation: another tenant cannot approve this update", async () => {
       const { update } = await seed();
       const { otherUser } = await seedOtherTenantMember();
@@ -267,6 +296,35 @@ describe("draft publish idempotency (approveDraft / publishDraft)", () => {
       const deliveries = await deliveriesFor(update.id);
       expect(deliveries).toHaveLength(1);
       expect(deliveries[0].id).toBe(deliveryAfterFirst.id);
+    });
+
+    it("refuses a \"brief\"-status piece — an ungenerated scaffold must not be published as finished copy", async () => {
+      const { tenant, update, user } = await seed();
+      await db.update(contentPieces).set({ status: "brief" }).where(eq(contentPieces.id, update.id));
+      vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id, id: user.id } } as never);
+
+      await expect(publishDraft(publishFormData(update.id, ""))).rejects.toThrow(/hasn't been generated yet/i);
+
+      const row = await rowFor(update.id);
+      expect(row.status).toBe("brief");
+      expect(row.publishedAt).toBeNull();
+      // The delivery side effect, not just the return value — this is the
+      // part an ungenerated scaffold reaching a real destination would
+      // actually hurt.
+      expect(fetch).not.toHaveBeenCalled();
+      expect(await deliveriesFor(update.id)).toHaveLength(0);
+    });
+
+    it("still succeeds for a \"draft\"-status piece — the brief guard must not over-block", async () => {
+      const { tenant, update, user } = await seed();
+      vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id, id: user.id } } as never);
+      vi.mocked(fetch).mockResolvedValue({ ok: true } as Response);
+
+      await publishDraft(publishFormData(update.id, ""));
+
+      const row = await rowFor(update.id);
+      expect(row.status).toBe("published");
+      expect(fetch).toHaveBeenCalledTimes(1);
     });
 
     it("tenant isolation: another tenant cannot publish this update", async () => {

@@ -26,4 +26,14 @@ describe("notEditableMessage", () => {
     expect(notEditableMessage("published")).not.toMatch(/is published/);
     expect(notEditableMessage("published")).toMatch(/can no longer be edited/);
   });
+
+  it("gives the brief case its own message instead of the generic 'can no longer be edited' fallback", () => {
+    // A "brief" was never editable in the first place, so the generic
+    // fallback's "can no longer be edited" (which implies it once was) would
+    // read oddly — this pins the dedicated branch added in Task 6.
+    const message = notEditableMessage("brief");
+    expect(message).toMatch(/hasn't been generated yet/i);
+    expect(message).not.toMatch(/^This update is brief/);
+    expect(message).not.toMatch(/can no longer be edited/);
+  });
 });
