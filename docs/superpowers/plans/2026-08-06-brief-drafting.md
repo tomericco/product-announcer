@@ -871,10 +871,14 @@ git commit -m "feat: generate a draft after accept, and on demand"
 ### Task 6: Surface the brief state
 
 **Files:**
-- Modify: `src/app/(dashboard)/drafts/page.tsx`, `src/app/(dashboard)/drafts/[releaseId]/page.tsx`
+- Modify: `src/app/(dashboard)/drafts/page.tsx`, `src/app/(dashboard)/drafts/[releaseId]/page.tsx`, `src/app/(dashboard)/layout.tsx`
 - Create: a small client component for the Generate button
 
 **The bug this fixes:** `drafts/page.tsx:25` filters `eq(contentPieces.status, "draft")`. With Task 1 in place, an accepted brief lands at status `"brief"` and **disappears from the drafts list entirely** — accept redirects the user to a piece they can never find again.
+
+**`layout.tsx:31` has the same gate** and drives the sidebar draft count, so an accepted brief is also uncounted. Widen it identically. This was missed when the plan was written and found by Task 1's reviewer; search for any OTHER reader of `contentPieces.status` before assuming these two are the last of them.
+
+**Deliberately NOT changed:** `src/lib/draft-editable.ts:30` (`assertDraftEditable`) gates on `status === "draft"` and therefore refuses save/publish/extract on a `"brief"`-status piece, across nine call sites. That is correct — an ungenerated scaffold should not be editable or publishable. Its `notEditableMessage` says "can no longer be edited", which reads oddly for a piece that was never editable; adjusting that wording is in scope, changing the gate is not.
 
 - [ ] **Step 1: Include brief-status pieces in the list, distinctly**
 
