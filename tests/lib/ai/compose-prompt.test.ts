@@ -192,6 +192,44 @@ describe("buildSystemPrompt content types", () => {
     }
   });
 
+  it("carries the guidelines' voice but not their structure into a non-product piece", () => {
+    // The guidelines document is derived from the company's changelog, so it
+    // prescribes changelog conventions. Applying it wholesale to a blog post
+    // produced a fabricated "UX impact / May 15, 2025" header and a sign-off on
+    // the first live run — neither present in any source.
+    const withGuidelines = {
+      ...PROFILE,
+      guidelines: "## Voice\n\nHelpful and concrete.\n\n## Do\n\n- Open with what shipped\n",
+    } as unknown as Parameters<typeof buildSystemPrompt>[0];
+
+    const update = buildSystemPrompt(withGuidelines, [], [], "product_update");
+    expect(update).toContain("Follow these brand writing guidelines");
+    expect(update).not.toMatch(/not for this piece/i);
+
+    for (const type of ["blog_post", "social_post"] as const) {
+      const system = buildSystemPrompt(withGuidelines, [], [], type);
+      // The team's own words still reach the model — it is only their
+      // structural conventions that are disclaimed.
+      expect(system).toContain("Helpful and concrete.");
+      expect(system).toMatch(/written by the team for the company's PRODUCT UPDATES/);
+      expect(system).toMatch(/only the voice/i);
+      // The three artifacts observed live, named so the model cannot reproduce
+      // them by pattern-matching the guidelines' format.
+      expect(system).toMatch(/date line/i);
+      expect(system).toMatch(/sign-off/i);
+      expect(system).toMatch(/percentages or metrics/i);
+    }
+  });
+
+  it("emits no guidelines block at all when the team has written none", () => {
+    for (const type of ["product_update", "blog_post", "social_post"] as const) {
+      // PROFILE.guidelines is null. The disclaimer must not appear on its own,
+      // describing a document that was never supplied.
+      expect(buildSystemPrompt(PROFILE, [], [], type)).not.toContain("<brand-guidelines>");
+      expect(buildSystemPrompt(PROFILE, [], [], type)).not.toMatch(/PRODUCT UPDATES, not for this piece/);
+    }
+  });
+
   it("forbids naming other companies in a product update, and permits it elsewhere", () => {
     // Reversed on 2026-08-06. A product announcement has no business naming
     // anyone else; an industry blog post that refuses to say who shipped the

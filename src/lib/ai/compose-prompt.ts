@@ -77,11 +77,33 @@ export function buildSystemPrompt(
   // from reading as further instructions to the model.
   const blocks = [lines.join(" ")];
 
+  // The guidelines document is written for product updates — the onboarding
+  // agent derives it from the company's own changelog, so it prescribes
+  // changelog conventions: opening with what shipped, emoji section anchors,
+  // breaking-change callouts, performance percentages.
+  //
+  // Applying that wholesale to a blog post produced exactly what you would
+  // expect on the first live run: a fabricated "UX impact / May 15, 2025"
+  // category-and-date header and a "Team Frontitude" sign-off, neither of which
+  // appeared in any source. The metrics guidance is the dangerous one — it
+  // invites invented numbers into a piece that has no shipped work to measure.
+  //
+  // So for other content types the guidelines are introduced as VOICE ONLY.
+  // They are still the team's own words about how the company sounds; it is
+  // their structural conventions that do not transfer.
   const guidelines = truncateGuidelines(brandProfile.guidelines);
   if (guidelines) {
-    blocks.push(
-      `Follow these brand writing guidelines, written by the team:\n<brand-guidelines>\n${guidelines}\n</brand-guidelines>`
-    );
+    const framing =
+      contentType === "product_update"
+        ? "Follow these brand writing guidelines, written by the team:"
+        : [
+            "These brand writing guidelines were written by the team for the company's PRODUCT UPDATES, not for this piece.",
+            "Take from them only the voice: tone, vocabulary, level of formality, and anything they tell you not to do.",
+            "Ignore their structural conventions entirely — do not open with what shipped, do not add emoji section anchors,",
+            "do not add a category label, a date line, or a sign-off, and do not cite performance percentages or metrics.",
+            "Never invent a detail in order to match a format they describe.",
+          ].join(" ");
+    blocks.push(`${framing}\n<brand-guidelines>\n${guidelines}\n</brand-guidelines>`);
   }
 
   if (examples.length > 0) {
