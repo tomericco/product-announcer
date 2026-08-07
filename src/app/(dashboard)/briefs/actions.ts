@@ -45,7 +45,11 @@ export async function acceptBrief(briefId: string): Promise<AcceptResult> {
           type: brief.contentType,
           title: brief.title,
           body: scaffoldBody(brief),
-          status: "draft",
+          // "brief" = approved, draft not yet generated (schema.ts's own
+          // definition). Generation moves it to "draft"; until then the body is
+          // the scaffold. Do NOT set "draft" here — that would present an
+          // ungenerated scaffold as a finished draft.
+          status: "brief",
         })
         .returning({ id: contentPieces.id });
 

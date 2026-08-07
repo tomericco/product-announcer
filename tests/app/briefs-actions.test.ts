@@ -88,7 +88,7 @@ describe("acceptBrief", () => {
     expect(pieces).toHaveLength(1);
     expect(pieces[0].id).toBe(result.contentPieceId);
     expect(pieces[0].type).toBe("blog_post");
-    expect(pieces[0].status).toBe("draft");
+    expect(pieces[0].status).toBe("brief");
     expect(pieces[0].body).toContain("## Point one");
 
     const [after] = await db.select().from(briefs).where(eq(briefs.id, brief.id));
@@ -102,6 +102,25 @@ describe("acceptBrief", () => {
     // an accept until something unrelated revalidated it.
     expect(revalidatePath).toHaveBeenCalledWith("/briefs");
     expect(revalidatePath).toHaveBeenCalledWith("/drafts");
+  });
+
+  it("leaves generation state empty on a freshly accepted brief", async () => {
+    const tenant = await seedTenant();
+    const brief = await seedBrief(tenant.id);
+
+    const result = await acceptBrief(brief.id);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const [piece] = await db
+      .select()
+      .from(contentPieces)
+      .where(eq(contentPieces.id, result.contentPieceId));
+    // "brief" means approved, not yet drafted. A null generatedAt is what
+    // distinguishes the scaffold from a model-written body.
+    expect(piece.status).toBe("brief");
+    expect(piece.generatedAt).toBeNull();
+    expect(piece.generationError).toBeNull();
   });
 
   it("refuses a brief belonging to another tenant and creates nothing", async () => {

@@ -581,6 +581,19 @@ export const contentPieces = pgTable("content_pieces", {
   reviewStatus: reviewStatusEnum("review_status"),
   reviewIssues: jsonb("review_issues").$type<string[]>().notNull().default([]),
   reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+  // Why the last generation attempt did not produce a usable draft. Carries two
+  // distinct meanings, and the status disambiguates them:
+  //   status "brief" + set  -> generation failed; the scaffold body is intact
+  //                            and the Generate button offers a retry.
+  //   status "draft" + set  -> the draft is real, but the post-generation name
+  //                            scan matched something the copy should not name.
+  // Null on a clean generated draft. A third meaning would need its own column
+  // rather than a third overload of this one.
+  generationError: text("generation_error"),
+  // When a model last wrote this body. Null means the body is still the
+  // deterministic scaffold written at accept time. Distinct from
+  // `bodyEditedAt`, which records a HUMAN edit and freezes regeneration.
+  generatedAt: timestamp("generated_at", { withTimezone: true }),
   // The baseline catch-up deltas measure against: how many new atomic updates
   // (or new commits on already-attached ones) have appeared since. Set at
   // claim, advanced again whenever a "catch up" merges the new material in.
