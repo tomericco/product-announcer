@@ -1,7 +1,15 @@
 import { generateObject } from "ai";
 import { z } from "zod";
 import type { companyProfiles, ResolvedPersona, systemContentExamples } from "@/db/schema";
-import { composeReleasePrompt, composeMergePrompt, composeExtractPrompt, type AtomicUpdateForPrompt } from "./compose-prompt";
+import {
+  composeReleasePrompt,
+  composeMergePrompt,
+  composeExtractPrompt,
+  composeBriefPrompt,
+  type AtomicUpdateForPrompt,
+  type BriefForPrompt,
+  type BriefEvidenceForPrompt,
+} from "./compose-prompt";
 import { resolveModel, modelId } from "./model";
 import { recordLlmUsage } from "./llm-usage";
 
@@ -113,6 +121,39 @@ export async function generateExtractedDraft(args: {
   await recordLlmUsage({
     tenantId: args.brandProfile.tenantId,
     operation: "generation",
+    model: modelId(spec),
+    usage: result.usage,
+  });
+
+  return result.object;
+}
+
+/**
+ * Writes a full draft from an accepted content brief (see `composeBriefPrompt`).
+ * Mirrors `generateReleaseDraft`'s model resolution and usage recording
+ * exactly — only the prompt composer differs.
+ */
+export async function generateBriefDraft(args: {
+  brief: BriefForPrompt;
+  evidence: BriefEvidenceForPrompt[];
+  brandProfile: BrandProfileRow;
+  personas?: ResolvedPersona[];
+  examples?: ExampleRow[];
+}): Promise<UpdateDraft> {
+  const { system, prompt } = composeBriefPrompt({
+    brief: args.brief,
+    evidence: args.evidence,
+    brandProfile: args.brandProfile,
+    personas: args.personas ?? [],
+    examples: args.examples ?? [],
+  });
+
+  const spec = process.env.GENERATION_MODEL ?? "anthropic/claude-sonnet-4-5";
+  const result = await generateObject({ model: resolveModel(spec), schema: UpdateDraftSchema, system, prompt });
+
+  await recordLlmUsage({
+    tenantId: args.brandProfile.tenantId,
+    operation: "brief_draft",
     model: modelId(spec),
     usage: result.usage,
   });

@@ -3,6 +3,7 @@ import { systemPersonas, systemContentExamples, type companyProfiles, type Resol
 import { getOrCreateCompanyProfile } from "@/lib/workspace/company-profile";
 import { resolvePersonaRefs, systemPersonaKeys } from "@/lib/workspace/personas";
 import { selectExamples } from "@/lib/ai/select-examples";
+import type { ContentType } from "@/lib/ai/compose-prompt";
 
 type Database = typeof defaultDb;
 
@@ -19,7 +20,8 @@ type Database = typeof defaultDb;
 export async function prepareGenerationContext(
   tenantId: string,
   database: Database = defaultDb,
-  categories: string[] = []
+  categories: string[] = [],
+  contentType: ContentType = "product_update"
 ): Promise<{
   brandProfile: typeof companyProfiles.$inferSelect;
   personas: ResolvedPersona[];
@@ -32,7 +34,7 @@ export async function prepareGenerationContext(
   const examples = selectExamples(allExamples, {
     industry: brandProfile.industry,
     personaKeys: systemPersonaKeys(brandProfile.userPersonas),
-    contentType: "product_update",
+    contentType,
     categories,
   });
   return { brandProfile, personas, examples };
