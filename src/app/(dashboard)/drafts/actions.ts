@@ -6,7 +6,7 @@ import { redirect } from "next/navigation";
 import { db } from "@/db";
 import { contentPieces } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
-import { assertDraftEditable } from "@/lib/draft-editable";
+import { assertDraftEditable, notEditableMessage } from "@/lib/draft-editable";
 import { dispatchAllDestinations } from "@/lib/publishing/dispatch";
 import { revertReleaseAtomicUpdates, markReleaseAtomicUpdatesReleased } from "@/lib/change-events/release-claim";
 import type { DestinationId } from "@/lib/publishing/destinations/types";
@@ -102,6 +102,16 @@ export async function approveDraft(formData: FormData): Promise<{ problems: Link
   const session = await requireSession();
   const contentPieceId = formData.get("contentPieceId") as string;
   const existing = await loadOwnedDraft(session.user.tenantId, contentPieceId);
+  // NOT `assertDraftEditable` — this action deliberately also serves an
+  // intentional re-publish of an already-`published` piece (see the docstring
+  // on `assertDraftEditable`), which that gate would refuse. But a "brief" is
+  // an ungenerated scaffold, never a legitimate publish target: the detail
+  // page no longer renders this form for one (`[releaseId]/page.tsx`'s early
+  // return), and that UI guard needs a server-side backstop against a crafted
+  // request doing the same thing directly.
+  if (existing.status === "brief") {
+    throw new Error(notEditableMessage(existing.status));
+  }
 
   // Authoritative backstop: the detail UI already checks links before opening
   // the destination modal, but re-check here so a crafted request (or a body
@@ -201,13 +211,21 @@ export async function publishDraft(
   const session = await requireSession();
   const contentPieceId = formData.get("contentPieceId") as string;
   const existing = await loadOwnedDraft(session.user.tenantId, contentPieceId);
+  // Same as `approveDraft`: NOT `assertDraftEditable` (this list also
+  // re-publishes already-`published` pieces), but a "brief" row has no
+  // Publish entry point in the drafts list UI and must not gain one via a
+  // crafted request either.
+  if (existing.status === "brief") {
+    throw new Error(notEditableMessage(existing.status));
+  }
   // Publishes as-stored (no editor here), so gate the stored body: an invalid
   // link returns the offenders — plus the body — so the list modal can fix them.
   const problems = await findInvalidLinks(existing.body);
   if (problems.length > 0) return { problems, body: existing.body };
-  // Same guard as approveDraft: the drafts list only ever renders drafts, so
-  // in practice this is always null, but the mechanism stays identical rather
-  // than special-casing the list's caller.
+  // Same guard as approveDraft: the drafts list only ever renders the Publish
+  // action for a "draft"-status piece, so in practice this is always null,
+  // but the mechanism stays identical rather than special-casing the list's
+  // caller.
   const expectedPublishedAt = parseExpectedPublishedAt(formData.get("publishedAt"));
 
   // See approveDraft: publish UPDATE + closing out the content piece's atomic

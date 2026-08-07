@@ -9,9 +9,16 @@ type ContentPieceStatus = (typeof contentPieces.$inferSelect)["status"];
  * site.
  */
 export function notEditableMessage(status: ContentPieceStatus): string {
-  return status === "published"
-    ? "This update has already been published and can no longer be edited."
-    : `This update is ${status} and can no longer be edited.`;
+  if (status === "published") {
+    return "This update has already been published and can no longer be edited.";
+  }
+  // A "brief"-status piece is an ungenerated scaffold — it was never editable
+  // in the first place, so "can no longer be edited" (which implies it once
+  // was) would read oddly here.
+  if (status === "brief") {
+    return "This draft hasn't been generated yet and can't be edited until it is.";
+  }
+  return `This update is ${status} and can no longer be edited.`;
 }
 
 /**

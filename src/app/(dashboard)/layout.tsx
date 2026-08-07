@@ -1,5 +1,5 @@
 import { UnsavedChangesProvider, GuardedLink } from "./unsaved-changes";
-import { and, count, eq } from "drizzle-orm";
+import { and, count, eq, inArray } from "drizzle-orm";
 import { redirect } from "next/navigation";
 import { ChevronsUpDown } from "lucide-react";
 import { db } from "@/db";
@@ -28,7 +28,14 @@ export default async function DashboardLayout({ children }: { children: React.Re
   const [draftCountRow] = await db
     .select({ value: count() })
     .from(contentPieces)
-    .where(and(eq(contentPieces.tenantId, session.user.tenantId), eq(contentPieces.status, "draft")));
+    .where(
+      and(
+        eq(contentPieces.tenantId, session.user.tenantId),
+        // "brief" (accepted, not yet generated) counts alongside "draft" — an
+        // accepted brief must not silently vanish from the sidebar count.
+        inArray(contentPieces.status, ["brief", "draft"])
+      )
+    );
   const draftCount = draftCountRow?.value ?? 0;
 
   return (

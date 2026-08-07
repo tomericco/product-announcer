@@ -22,7 +22,15 @@ export default async function DraftsPage() {
   const drafts = await db
     .select()
     .from(contentPieces)
-    .where(and(eq(contentPieces.tenantId, session.user.tenantId), eq(contentPieces.status, "draft")))
+    .where(
+      and(
+        eq(contentPieces.tenantId, session.user.tenantId),
+        // "brief" = accepted, not yet generated. It belongs in this list too —
+        // acceptBrief redirects here, and a "draft"-only filter would make the
+        // piece it just created invisible.
+        inArray(contentPieces.status, ["brief", "draft"])
+      )
+    )
     // Newest first — the list shows creation times, so an unordered result
     // would read as broken.
     .orderBy(desc(contentPieces.createdAt));
@@ -56,8 +64,8 @@ export default async function DraftsPage() {
           </EmptyStateIcon>
           <EmptyStateTitle>No drafts to review</EmptyStateTitle>
           <EmptyStateDescription>
-            Drafts appear here once an update is generated from your pending changes — on the next
-            scheduled run, or as soon as you generate one yourself.
+            Drafts appear here once an update is generated from your pending changes, or as soon as
+            you accept a brief — on the next scheduled run, or as soon as you generate one yourself.
           </EmptyStateDescription>
           <EmptyStateActions>
             <Button render={<Link href="/atomic-updates" />}>
@@ -88,6 +96,15 @@ export default async function DraftsPage() {
           >
             <Link href={`/drafts/${d.id}`} className="absolute inset-0 rounded-lg" aria-label={d.title} />
             <span className="min-w-0 flex-1 truncate font-medium">{d.title}</span>
+            {/* A "brief" row is an accepted-but-ungenerated scaffold — badge it
+                distinctly so it never reads as a finished draft. Mutually
+                exclusive with the review-status badge below: reviewStatus is
+                only ever set once a real draft has been generated. */}
+            {d.status === "brief" && (
+              <Badge variant={d.generationError ? "destructive" : "outline"}>
+                {d.generationError ? "Generation failed" : "Awaiting generation"}
+              </Badge>
+            )}
             {reviewStatusLabel(d.reviewStatus) && (
               <Badge variant={d.reviewStatus === "failed" ? "destructive" : "outline"}>
                 {reviewStatusLabel(d.reviewStatus)}
@@ -99,14 +116,19 @@ export default async function DraftsPage() {
             >
               {formatShortDate(d.createdAt)}
             </span>
-            <div className="relative shrink-0">
-              <DraftRowMenu
-                contentPieceId={d.id}
-                title={d.title}
-                atomicUpdateCount={atomicUpdateCounts.get(d.id) ?? 0}
-                publishedAt={d.publishedAt ? d.publishedAt.toISOString() : null}
-              />
-            </div>
+            {/* Publish/Delete only make sense for a real draft — a "brief" row
+                has no menu here at all; its only action (Generate draft) lives
+                on the detail page. */}
+            {d.status === "draft" && (
+              <div className="relative shrink-0">
+                <DraftRowMenu
+                  contentPieceId={d.id}
+                  title={d.title}
+                  atomicUpdateCount={atomicUpdateCounts.get(d.id) ?? 0}
+                  publishedAt={d.publishedAt ? d.publishedAt.toISOString() : null}
+                />
+              </div>
+            )}
           </div>
         ))}
       </div>

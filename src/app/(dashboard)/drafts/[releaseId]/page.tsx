@@ -6,6 +6,8 @@ import { db } from "@/db";
 import { contentPieces, webflowConnections } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { reviewStatusLabel } from "@/lib/ai/review-status";
+import { Badge } from "@/components/ui/badge";
+import { GenerateDraftButton } from "./generate-draft-button";
 import { containsCodeBlock } from "@/lib/publishing/markdown-to-html";
 import { computeReleaseDelta } from "@/lib/change-events/release-deltas";
 import { saveDraft } from "../actions";
@@ -37,6 +39,54 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
     .where(and(eq(contentPieces.id, releaseId), eq(contentPieces.tenantId, session.user.tenantId)));
 
   if (!update) notFound();
+
+  // A "brief"-status piece is an accepted brief whose draft hasn't been
+  // generated yet — its body is still `scaffoldBody`'s deterministic outline,
+  // not real copy. None of the editor/publish machinery below applies to it
+  // (assertDraftEditable refuses all of it), and none of its supporting
+  // queries — Webflow connection, release delta, publish targets, LinkedIn
+  // config — are meaningful for a piece that has never been drafted, so this
+  // returns before any of them run.
+  if (update.status === "brief") {
+    return (
+      <div className="mx-auto w-full max-w-3xl space-y-6">
+        <div className="sticky top-0 z-20 -mx-4 flex items-center justify-between bg-background px-4 py-3">
+          <GuardedLink
+            href="/drafts"
+            className="inline-flex items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground"
+          >
+            <ArrowLeft className="size-3.5" />
+            Drafts
+          </GuardedLink>
+        </div>
+
+        <div className="space-y-2">
+          <h1 className="font-heading text-3xl leading-[1.15] tracking-[0.015em]">
+            {update.title || "Untitled draft"}
+          </h1>
+          <Badge variant={update.generationError ? "destructive" : "outline"}>
+            {update.generationError ? "Generation failed" : "Awaiting generation"}
+          </Badge>
+        </div>
+
+        {update.generationError ? (
+          <div className="space-y-1 rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
+            <p className="font-medium">The last generation attempt failed.</p>
+            <p>{update.generationError}</p>
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            This brief was accepted, but its draft hasn&apos;t been generated yet. The outline below
+            is the scaffold it was accepted with, not the finished copy.
+          </p>
+        )}
+
+        <pre className="rounded-md border bg-muted/30 p-4 text-sm whitespace-pre-wrap">{update.body}</pre>
+
+        <GenerateDraftButton contentPieceId={update.id} isRetry={Boolean(update.generationError)} />
+      </div>
+    );
+  }
 
   const statusLabel = reviewStatusLabel(update.reviewStatus);
 
@@ -90,6 +140,18 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
                   ))}
                 </ul>
               )}
+            </div>
+          )}
+
+          {/* status here is always "draft" (the "brief" branch returns
+              above), so a set generationError means the post-generation
+              competitor-name scan matched something — not a failure. The
+              draft is real and the editor below is fully usable; this is a
+              warning to look at, not a reason to distrust the body. */}
+          {update.generationError && (
+            <div className="space-y-1 rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm">
+              <p className="font-medium">Worth a look before you publish</p>
+              <p>{update.generationError}</p>
             </div>
           )}
 
