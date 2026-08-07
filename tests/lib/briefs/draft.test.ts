@@ -195,10 +195,10 @@ describe("generateDraftForPiece", () => {
     expect(after.generatedAt).toBeNull();
   });
 
-  it("warns but keeps the draft when a competitor name survives into the copy", async () => {
+  it("warns but keeps the draft when a competitor is named in a PRODUCT UPDATE", async () => {
     const tenant = await seedTenant();
     await db.insert(competitors).values({ tenantId: tenant.id, name: "Phrase" });
-    const { piece } = await seedPieceWithBrief(tenant.id);
+    const { piece } = await seedPieceWithBrief(tenant.id, { type: "product_update" });
     const generate = vi.fn(async () => ({ title: "T", body: "As Phrase showed last week…" }));
 
     const result = await generateDraftForPiece(piece.id, tenant.id, { database: db, generate });
@@ -210,6 +210,23 @@ describe("generateDraftForPiece", () => {
     expect(after.status).toBe("draft");
     expect(after.body).toContain("Phrase");
     expect(after.generationError).toContain("Phrase");
+  });
+
+  it("does NOT warn when a competitor is named in a blog post", async () => {
+    const tenant = await seedTenant();
+    await db.insert(competitors).values({ tenantId: tenant.id, name: "Phrase" });
+    const { piece } = await seedPieceWithBrief(tenant.id, { type: "blog_post" });
+    const generate = vi.fn(async () => ({ title: "T", body: "As Phrase showed last week…" }));
+
+    const result = await generateDraftForPiece(piece.id, tenant.id, { database: db, generate });
+    expect(result.ok).toBe(true);
+
+    const [after] = await db.select().from(contentPieces).where(eq(contentPieces.id, piece.id));
+    // Blog and social posts were allowed to name companies on 2026-08-06.
+    // Warning about something the prompt explicitly permits would train the
+    // reader to ignore the banner, which is worse than not showing it.
+    expect(after.body).toContain("Phrase");
+    expect(after.generationError).toBeNull();
   });
 
   it("refuses when no brief is linked to the piece", async () => {

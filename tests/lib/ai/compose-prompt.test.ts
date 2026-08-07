@@ -182,14 +182,31 @@ describe("buildSystemPrompt content types", () => {
     expect(blog).not.toBe(social);
   });
 
-  it("keeps the grounding, link and naming rules on EVERY content type", () => {
+  it("keeps the grounding and link rules on EVERY content type", () => {
     for (const type of ["product_update", "blog_post", "social_post"] as const) {
       const system = buildSystemPrompt(PROFILE, [], [], type);
-      // These three are universal by decision. The naming rule in particular was
-      // chosen deliberately over relaxing it for non-product types.
+      // Universal, and the reason relaxing the naming rule is safe: whatever a
+      // draft says about another company still has to come from the sources.
       expect(system).toContain("never invent");
       expect(system).toContain("[add link]");
-      expect(system).toMatch(/never name, compare to, or reference/i);
+    }
+  });
+
+  it("forbids naming other companies in a product update, and permits it elsewhere", () => {
+    // Reversed on 2026-08-06. A product announcement has no business naming
+    // anyone else; an industry blog post that refuses to say who shipped the
+    // thing it is about reads as evasive.
+    expect(buildSystemPrompt(PROFILE, [], [], "product_update")).toMatch(
+      /never name, compare to, or reference/i
+    );
+
+    for (const type of ["blog_post", "social_post"] as const) {
+      const system = buildSystemPrompt(PROFILE, [], [], type);
+      expect(system).not.toMatch(/never name, compare to, or reference/i);
+      expect(system).toMatch(/may name other companies/i);
+      // Permission to name is not permission to invent: an unsupported
+      // comparison is still out of bounds.
+      expect(system).toMatch(/never state a comparison, ranking, or claim/i);
     }
   });
 });
@@ -222,17 +239,19 @@ describe("composeBriefPrompt", () => {
     expect(prompt.indexOf("Teams discover it too late")).toBeLessThan(prompt.indexOf("Phrase ships X"));
   });
 
-  it("tells the model that names in the evidence must not be reproduced", () => {
-    const { prompt, system } = composeBriefPrompt({
+  it("requires anything said about another company to come from the sources", () => {
+    const { prompt } = composeBriefPrompt({
       brief: BRIEF,
       evidence: [{ title: "Phrase ships X", kind: "market_news", excerpt: null }],
       brandProfile: PROFILE,
       personas: [],
       examples: [],
     });
-    // The evidence necessarily contains company names. Without this the naming
-    // rule reads as contradicted by the material it is given.
-    expect(`${system}\n${prompt}`).toMatch(/do not (repeat|reproduce|name)/i);
+    // A blog post may now name companies, so the evidence block's job changed:
+    // it no longer forbids reproducing names, it anchors what may be said about
+    // them. Without this, permission to name reads as permission to invent.
+    expect(prompt).toMatch(/ground every factual claim/i);
+    expect(prompt).toMatch(/about another company/i);
   });
 
   it("uses the brief's own content type for the system prompt", () => {

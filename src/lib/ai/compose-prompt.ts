@@ -45,7 +45,24 @@ export function buildSystemPrompt(
 ): string {
   const lines = [
     ROLE_LINES[contentType],
-    "Write only about this company's own product. Never name, compare to, or reference competitors or other companies.",
+    // Product updates keep the total prohibition — an announcement about our own
+    // release has no business naming anyone else, and that rule predates the
+    // brief pipeline entirely.
+    //
+    // Blog and social posts may name other companies, reversed on 2026-08-06
+    // from the stricter rule this file previously applied to every type. The
+    // reason for the reversal is the reason the strict rule was doubted when it
+    // was chosen: the validation spike's highest-value brief was a response to a
+    // named competitor's security advisory, and a piece that covers an industry
+    // development while refusing to say who did it reads as evasive to anyone
+    // who knows the context.
+    //
+    // Nothing here licenses invention: the grounding rule below still binds, so
+    // a claim about another company must come from the source material rather
+    // than from the model's memory.
+    contentType === "product_update"
+      ? "Write only about this company's own product. Never name, compare to, or reference competitors or other companies."
+      : "You may name other companies and respond to what they published or shipped, but only as the source material describes them. Never state a comparison, ranking, or claim about another company that the source material does not support.",
     "Ground every statement strictly in the source material you are given. Only describe changes that appear in that material; never invent or embellish features, capabilities, benefits, use cases, metrics, numbers, dates, version names, quotes, or any other specifics. If a detail is not in the source, leave it out rather than guessing — an omission is always better than a fabrication.",
     "Never fabricate links. Only include a URL if it appears verbatim in the source material; do not construct, complete, shorten, or recall a URL from memory, and do not guess a plausible one. If a link would be helpful but no verified URL is present in the source, write the literal placeholder [add link] in its place so an editor can fill it in — never emit a made-up or guessed URL.",
     brandProfile.industry ? `Industry: ${brandProfile.industry}.` : null,
@@ -336,7 +353,7 @@ export function composeBriefPrompt(args: {
   // prompt because this is where the company names actually appear.
   const evidence =
     args.evidence.length > 0
-      ? `\n\nSource material — ground every factual claim in it. It names companies and publications: use what they describe, but do not repeat any company name in your copy.\n<sources>\n${serializeBriefEvidence(args.evidence)}\n</sources>`
+      ? `\n\nSource material — ground every factual claim in it, including anything you say about another company.\n<sources>\n${serializeBriefEvidence(args.evidence)}\n</sources>`
       : "\n\nNo source material was attached. Write only what the commission above supports.";
 
   return {

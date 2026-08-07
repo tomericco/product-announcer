@@ -192,16 +192,24 @@ export async function generateDraftForPiece(
       return { ok: false, error: message };
     }
 
-    // This only scans for names already saved in this tenant's competitors
-    // list, not for any company — the system prompt forbids naming ANY
-    // company, but a publication, an unlisted competitor, or a product brand
-    // passes this check clean. The message below says so explicitly so a
-    // clean pass doesn't read as "no company named".
-    const competitorNames = (await listCompetitors(tenantId, database)).map((c) => c.name);
-    const matches = findNamedCompanies(`${result.title}\n${result.body}`, competitorNames);
+    // Only product updates are scanned, because only they still forbid naming
+    // another company. Blog and social posts were allowed to name companies on
+    // 2026-08-06 — warning about a name the prompt explicitly permits would
+    // train the reader to ignore the banner, which is worse than not showing it.
+    //
+    // Still only the tenant's saved competitors list, not every company: a
+    // publication, an unlisted competitor or a product brand passes clean. The
+    // message says so, so a clean pass does not read as "no company named".
+    const scanned = piece.type === "product_update";
+    const matches = scanned
+      ? findNamedCompanies(
+          `${result.title}\n${result.body}`,
+          (await listCompetitors(tenantId, database)).map((c) => c.name)
+        )
+      : [];
     const generationError =
       matches.length > 0
-        ? `This draft may name a company from your competitors list: ${matches.join(", ")}. This only checks names on that list, not every company — review before publishing.`
+        ? `This product update may name a company from your competitors list: ${matches.join(", ")}. This only checks names on that list, not every company — review before publishing.`
         : null;
 
     await database
