@@ -481,7 +481,12 @@ export const briefs = pgTable(
     // `expiresAt` alone and bumping only this one would leave the promise
     // above a lie.
     lastEvidenceAt: timestamp("last_evidence_at", { withTimezone: true }).notNull(),
-    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    // Null means this brief never expires. Agent briefs always carry a date —
+    // the inbox would otherwise accumulate undecided proposals forever — but a
+    // brief a human wrote by hand is a deliberate act, and deleting it on a
+    // timer is not ours to do. A far-future date was the alternative and would
+    // have been a value the data claims and the sweep never honours.
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

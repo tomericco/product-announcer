@@ -1,4 +1,4 @@
-import { and, eq, lte } from "drizzle-orm";
+import { and, eq, isNotNull, lte } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
 import { briefs, companyProfiles } from "@/db/schema";
 import { runIdeation, type IdeationRunResult } from "./run";
@@ -17,7 +17,17 @@ export async function expireStaleBriefs(deps: ExpireDeps = {}): Promise<number> 
   const rows = await database
     .update(briefs)
     .set({ status: "expired", updatedAt: new Date() })
-    .where(and(eq(briefs.status, "new"), lte(briefs.expiresAt, new Date())))
+    .where(
+      and(
+        eq(briefs.status, "new"),
+        // Stated rather than implied. SQL's three-valued logic already excludes
+        // NULL from the comparison below, but a later rewrite of this query
+        // would not obviously preserve that, and the failure would be silent
+        // deletion of hand-written briefs.
+        isNotNull(briefs.expiresAt),
+        lte(briefs.expiresAt, new Date())
+      )
+    )
     .returning({ id: briefs.id });
   return rows.length;
 }

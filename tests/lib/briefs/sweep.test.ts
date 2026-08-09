@@ -13,18 +13,25 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-async function seedTenant(name: string) {
+async function seedTenant(name: string = TENANT) {
   const [tenant] = await db.insert(tenants).values({ name }).returning();
   await db.insert(companyProfiles).values({ tenantId: tenant.id, topics: ["localization"] });
   return tenant;
 }
 
-async function seedBrief(tenantId: string, status: "new" | "accepted", expiresAt: Date) {
+type SeedBriefOptions = {
+  status?: "new" | "accepted";
+  origin?: "agent" | "manual";
+  expiresAt?: Date | null;
+};
+
+async function seedBrief(tenantId: string, opts: SeedBriefOptions = {}) {
+  const { status = "new", origin = "agent", expiresAt = null } = opts;
   const [b] = await db
     .insert(briefs)
     .values({
       tenantId,
-      origin: "agent",
+      origin,
       contentType: "blog_post",
       title: "T",
       angle: "A",
@@ -46,7 +53,7 @@ const future = new Date(Date.now() + 86_400_000);
 describe("expireStaleBriefs", () => {
   it("expires an undecided brief past its expiry", async () => {
     const tenant = await seedTenant(TENANT);
-    const b = await seedBrief(tenant.id, "new", past);
+    const b = await seedBrief(tenant.id, { status: "new", expiresAt: past });
 
     await expireStaleBriefs({ database: db });
 
@@ -56,7 +63,7 @@ describe("expireStaleBriefs", () => {
 
   it("leaves an undecided brief that has not expired", async () => {
     const tenant = await seedTenant(TENANT);
-    const b = await seedBrief(tenant.id, "new", future);
+    const b = await seedBrief(tenant.id, { status: "new", expiresAt: future });
 
     await expireStaleBriefs({ database: db });
 
@@ -68,12 +75,28 @@ describe("expireStaleBriefs", () => {
     const tenant = await seedTenant(TENANT);
     // Accepted long ago and long past its expiry: expiry is about undecided
     // work, and re-expiring a decision would rewrite history.
-    const b = await seedBrief(tenant.id, "accepted", past);
+    const b = await seedBrief(tenant.id, { status: "accepted", expiresAt: past });
 
     await expireStaleBriefs({ database: db });
 
     const [after] = await db.select().from(briefs).where(eq(briefs.id, b.id));
     expect(after.status).toBe("accepted");
+  });
+
+  it("never expires a brief with no expiry date", async () => {
+    const tenant = await seedTenant();
+    const past = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const agentBrief = await seedBrief(tenant.id, { origin: "agent", expiresAt: past });
+    const manualBrief = await seedBrief(tenant.id, { origin: "manual", expiresAt: null });
+
+    const expired = await expireStaleBriefs({ database: db });
+    expect(expired).toBe(1);
+
+    const [agent] = await db.select().from(briefs).where(eq(briefs.id, agentBrief.id));
+    const [manual] = await db.select().from(briefs).where(eq(briefs.id, manualBrief.id));
+    expect(agent.status).toBe("expired");
+    // A brief someone wrote by hand is a decision, not a proposal awaiting one.
+    expect(manual.status).toBe("new");
   });
 });
 

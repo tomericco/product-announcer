@@ -87,7 +87,9 @@ describe("runIdeation", () => {
 
     const [brief] = await db.select().from(briefs).where(eq(briefs.tenantId, tenant.id));
     const expectedMin = before + (BRIEF_TTL_DAYS - 1) * 24 * 60 * 60 * 1000;
-    expect(brief.expiresAt.getTime()).toBeGreaterThan(expectedMin);
+    // Agent-proposed briefs always carry an expiry (only a hand-written brief
+    // may have none), so the non-null assertion here reflects that guarantee.
+    expect(brief.expiresAt!.getTime()).toBeGreaterThan(expectedMin);
   });
 
   it("extends an open brief instead of writing a duplicate", async () => {
@@ -166,9 +168,9 @@ describe("runIdeation", () => {
     });
 
     const [after] = await db.select().from(briefs).where(eq(briefs.id, existing.id));
-    expect(after.expiresAt.getTime()).toBeGreaterThan(nearlyExpired.getTime());
+    expect(after.expiresAt!.getTime()).toBeGreaterThan(nearlyExpired.getTime());
     // A full fresh TTL, not a nudge.
-    expect(after.expiresAt.getTime()).toBeGreaterThan(before + (BRIEF_TTL_DAYS - 1) * 24 * 60 * 60 * 1000);
+    expect(after.expiresAt!.getTime()).toBeGreaterThan(before + (BRIEF_TTL_DAYS - 1) * 24 * 60 * 60 * 1000);
   });
 
   it("re-attaching the same signal to the same brief is idempotent", async () => {
@@ -490,6 +492,6 @@ describe("runIdeation", () => {
     // back is a lie for accepted ones too.
     expect(after.status).toBe("accepted");
     expect(after.lastEvidenceAt.getTime()).toBe(originalLastEvidenceAt.getTime());
-    expect(after.expiresAt.getTime()).toBe(originalExpiresAt.getTime());
+    expect(after.expiresAt!.getTime()).toBe(originalExpiresAt.getTime());
   });
 });
