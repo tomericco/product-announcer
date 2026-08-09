@@ -64,8 +64,8 @@ const DECIDED_LABEL: Record<Exclude<Brief["status"], "new">, string> = {
 /**
  * One brief in the inbox. A client component because it owns the
  * accept/dismiss interaction — unlike `SignalRow` on `/signals`, which is
- * also a client component but has no actions because that page is read-only
- * by design (selection and bulk actions are a later spec).
+ * also a client component and now owns a selection checkbox, but no
+ * accept/dismiss-style action of its own.
  *
  * Only offers Accept/Dismiss when `brief.status === "new"` — `acceptBrief`
  * and `dismissBrief` both refuse anything else, so showing the buttons for a

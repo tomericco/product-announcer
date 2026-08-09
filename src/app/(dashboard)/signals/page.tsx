@@ -10,15 +10,22 @@ import { requireSession } from "@/lib/workspace/session";
 import { listCompetitors } from "@/lib/workspace/competitors";
 import { listSignals, type SignalFilters } from "@/lib/signals/query";
 import { single, parseKind, parseCompetitorId, parseMinScore, parseDateFrom, parseDateTo } from "@/lib/signals/params";
+import { MAX_PROPOSAL_SIGNALS } from "@/lib/briefs/propose";
 import { SignalsFilters } from "./signals-filters";
 import { SignalsList } from "./signals-list";
+import { AddSignalDialog } from "./add-signal-dialog";
 
 /**
  * The signals browser: a debugging surface first, a feature second (see the
  * spec's framing). It ships before any external ingestion agent exists, so
  * that agent's first run lands on a page that already works instead of being
- * debugged blind. Read-only in this task — selection and manual signal
- * creation are spec 6.
+ * debugged blind.
+ *
+ * This page is a Server Component, so importing `MAX_PROPOSAL_SIGNALS` from
+ * `@/lib/briefs/propose` here is safe — that module (and the AI SDK it pulls
+ * in) stays on the server. `SignalsList` is a client component and gets only
+ * the resolved number as a prop, never the import itself; see the comment on
+ * `SignalsList` for why that boundary matters.
  *
  * Filters come from `searchParams` — a Next.js 16 async Server Component
  * page, per `node_modules/next/dist/docs/01-app/01-getting-started/03-layouts-and-pages.md`
@@ -62,16 +69,19 @@ export default async function SignalsPage({
 
   return (
     <div className="space-y-4">
-      <div>
-        <div className="flex items-center gap-2">
-          <h1 className="font-heading text-3xl leading-[1.15] tracking-[0.015em]">Signals</h1>
-          <Badge variant="secondary">{rows.length}</Badge>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-2">
+            <h1 className="font-heading text-3xl leading-[1.15] tracking-[0.015em]">Signals</h1>
+            <Badge variant="secondary">{rows.length}</Badge>
+          </div>
+          <p className="text-sm text-muted-foreground">
+            Everything ingested in the last 60 days — shipped work, competitor moves, and market news — ahead of
+            scoring, clustering, or turning into a brief. A row with no score means scoring failed, not that it
+            scored zero.
+          </p>
         </div>
-        <p className="text-sm text-muted-foreground">
-          Everything ingested in the last 60 days — shipped work, competitor moves, and market news — ahead of
-          scoring, clustering, or turning into a brief. A row with no score means scoring failed, not that it
-          scored zero.
-        </p>
+        <AddSignalDialog />
       </div>
 
       <SignalsFilters
@@ -95,7 +105,7 @@ export default async function SignalsPage({
           </EmptyStateDescription>
         </EmptyState>
       ) : (
-        <SignalsList rows={rows} competitorsById={competitorsById} />
+        <SignalsList rows={rows} competitorsById={competitorsById} maxSelectable={MAX_PROPOSAL_SIGNALS} />
       )}
     </div>
   );

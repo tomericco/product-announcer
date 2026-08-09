@@ -70,8 +70,37 @@ function ScoreBadge({ score, rationale }: { score: number | null; rationale: str
  * unreachable in practice (nothing marks a signal stale yet — the retention
  * job that would is deferred), but the row still renders correctly for the
  * one seeded directly in tests, and for whenever that job lands.
+ *
+ * Selection lives in `SignalsList` (a `Set<string>` of ids), not here — this
+ * row only renders the checkbox and reports toggles up. `selectionDisabled`,
+ * when set, is a human-readable reason (a stale signal, or the selection cap)
+ * rendered as a tooltip rather than a silently inert control, per the same
+ * "visible reason" rule `DisabledHint` follows elsewhere in the dashboard.
  */
-export function SignalRow({ row, competitorName }: { row: Signal; competitorName?: string }) {
+export function SignalRow({
+  row,
+  competitorName,
+  selected,
+  onToggleSelected,
+  selectionDisabled,
+}: {
+  row: Signal;
+  competitorName?: string;
+  selected: boolean;
+  onToggleSelected: () => void;
+  selectionDisabled?: string | null;
+}) {
+  const checkbox = (
+    <input
+      type="checkbox"
+      className="size-4 shrink-0 rounded border-input disabled:cursor-not-allowed disabled:opacity-40"
+      checked={selected}
+      disabled={!!selectionDisabled}
+      onChange={onToggleSelected}
+      aria-label={selectionDisabled ? `${row.title} — ${selectionDisabled}` : `Select ${row.title}`}
+    />
+  );
+
   return (
     <div
       className={cn(
@@ -79,6 +108,18 @@ export function SignalRow({ row, competitorName }: { row: Signal; competitorName
         row.status === "stale" && "dashed-outline border-transparent opacity-85"
       )}
     >
+      <div className="flex shrink-0 items-center self-start pt-0.5">
+        {selectionDisabled ? (
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger render={<span className="inline-flex" />}>{checkbox}</TooltipTrigger>
+              <TooltipContent>{selectionDisabled}</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        ) : (
+          checkbox
+        )}
+      </div>
       <div className="flex min-w-0 flex-1 flex-col gap-1.5">
         <div className="flex flex-wrap items-center gap-2">
           <Badge variant="secondary" className="shrink-0">

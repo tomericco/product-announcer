@@ -1,29 +1,94 @@
+"use client";
+
+import { useState } from "react";
+import Link from "next/link";
+import { Button } from "@/components/ui/button";
 import { groupByMonth } from "@/lib/group-by-month";
 import type { Signal } from "@/db/schema";
 import { SignalRow } from "./signal-row";
 
 /**
- * Read-only list for the signals browser (selection and bulk actions are
- * spec 6, deliberately not here). Rows are grouped by the month they
- * *occurred* in, newest first — `occurredAt` is the "when did this happen"
- * question a debugging view is worth grouping by, distinct from `createdAt`'s
- * "how long do we keep it" that `listSignals`'s 60-day window already
- * enforces upstream of this component ever seeing a row.
+ * The signals browser's list, plus selection (spec 6: turning a chosen set
+ * into a brief). Rows are grouped by the month they *occurred* in, newest
+ * first — `occurredAt` is the "when did this happen" question a debugging
+ * view is worth grouping by, distinct from `createdAt`'s "how long do we
+ * keep it" that `listSignals`'s 60-day window already enforces upstream of
+ * this component ever seeing a row.
  *
  * `rows` already arrives newest-occurredAt-first from `listSignals`, so this
  * only adds the month headings — it never reorders rows within a month.
+ *
+ * A client component because selection is pure client UI state (`Set<string>`
+ * of ids) — the page itself stays a Server Component and only ever passes
+ * plain props down, keeping `db`/pg out of this bundle.
+ *
+ * `maxSelectable` arrives as a prop rather than being imported here as
+ * `MAX_PROPOSAL_SIGNALS` from `@/lib/briefs/propose`: that module pulls in
+ * the AI SDK and the model resolver, and importing a runtime value from it
+ * into a `"use client"` file would drag all of that into the browser bundle —
+ * the exact bug this project shipped and caught days ago. The page (a Server
+ * Component) reads the real constant and hands down only the number.
  */
 export function SignalsList({
   rows,
   competitorsById,
+  maxSelectable,
 }: {
   rows: Signal[];
   competitorsById: Map<string, string>;
+  maxSelectable: number;
 }) {
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  function toggle(id: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else if (next.size < maxSelectable) {
+        next.add(id);
+      }
+      return next;
+    });
+  }
+
+  const atCap = selected.size >= maxSelectable;
+
+  // Never selectable: a stale `shipped_work` signal is work that was
+  // withdrawn, and commissioning a brief about something that no longer
+  // ships is the same failure `listSignals` already filters for elsewhere.
+  // Beyond the cap: the proposal prompt (`proposeBriefFromSignals`) stops
+  // being bounded past `maxSelectable` signals, so once it's reached, only
+  // already-selected rows stay interactive (to deselect) — everything else
+  // is disabled with a reason rather than silently doing nothing on click.
+  function disabledReason(row: Signal): string | null {
+    if (row.status === "stale") return "Stale signals can't be turned into a brief.";
+    if (atCap && !selected.has(row.id)) return `Selection is capped at ${maxSelectable} signals.`;
+    return null;
+  }
+
   const monthGroups = groupByMonth(rows, (row) => row.occurredAt);
+  const selectedIds = [...selected];
 
   return (
     <div className="space-y-3">
+      {selectedIds.length > 0 && (
+        <div className="flex flex-wrap items-center gap-3 rounded-lg border bg-muted/40 p-3">
+          <span className="text-sm font-medium">
+            {selectedIds.length} of {maxSelectable} selected
+          </span>
+          {atCap && <span className="text-xs text-muted-foreground">Maximum reached — deselect one to add another.</span>}
+          <div className="ml-auto flex items-center gap-2">
+            <Button variant="ghost" size="sm" onClick={() => setSelected(new Set())}>
+              Clear
+            </Button>
+            <Button size="sm" render={<Link href={`/briefs/new?signals=${selectedIds.join(",")}`} />}>
+              Create brief
+            </Button>
+          </div>
+        </div>
+      )}
+
       {monthGroups.map((group) => (
         <section key={group.key} className="space-y-2">
           <h2 className="text-sm font-medium text-muted-foreground">{group.label}</h2>
@@ -33,6 +98,9 @@ export function SignalsList({
                 <SignalRow
                   row={row}
                   competitorName={row.competitorId ? competitorsById.get(row.competitorId) : undefined}
+                  selected={selected.has(row.id)}
+                  onToggleSelected={() => toggle(row.id)}
+                  selectionDisabled={disabledReason(row)}
                 />
               </li>
             ))}
