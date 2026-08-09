@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { groupByMonth } from "@/lib/group-by-month";
+import { retainVisible } from "@/lib/signals/selection";
 import type { Signal } from "@/db/schema";
 import { SignalRow } from "./signal-row";
 
@@ -39,6 +40,31 @@ export function SignalsList({
   maxSelectable: number;
 }) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  // Filters navigate via `router.push` — a soft navigation — so this
+  // component is never remounted when `rows` narrows; without this,
+  // `selected` would keep ids that scrolled out of the current filter,
+  // still eating a cap slot and still riding along in the "create brief"
+  // link, with no row left on screen to show or deselect them. See
+  // `retainVisible`'s own comment for the full reasoning. Skips the
+  // `setSelected` call when nothing was dropped, so an unrelated re-render
+  // that hands down a new-but-equivalent `rows` array doesn't churn state.
+  useEffect(() => {
+    // `selected` is state React owns, but `rows` is an external input (the
+    // server-rendered filter result) this effect must stay synchronized
+    // against — the standard, intentional shape the newer react-hooks lint
+    // rule flags as "setState synchronously in an effect". There's no
+    // subscribe-to-an-external-system alternative here: `rows` simply
+    // changes identity on every filter navigation, and reconciling in the
+    // render body itself would still need this same call to actually drop
+    // the state (a derived value alone wouldn't stop stale ids from being
+    // added right back to by a stale `toggle` closure).
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setSelected((prev) => {
+      const next = retainVisible(prev, rows);
+      return next.size === prev.size ? prev : next;
+    });
+  }, [rows]);
 
   function toggle(id: string) {
     setSelected((prev) => {
