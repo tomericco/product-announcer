@@ -109,4 +109,44 @@ describe("proposeBriefFromSignals", () => {
       operation: "brief_proposal",
     });
   });
+
+  it("clamps a score returned on the wrong scale", async () => {
+    // A live run returned 8.2 on a 0-1 field. The inbox orders by score DESC,
+    // so one out-of-scale value outranks every agent brief permanently and the
+    // row looks entirely normal.
+    const generate = vi.fn(async () => ({ object: { ...GOOD, score: 8.2 }, usage: {} }));
+    const result = await proposeBriefFromSignals(
+      { signals: SIGNALS, profile: PROFILE, tenantId: "t1" },
+      { generate: generate as never }
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.brief.score).toBe(1);
+  });
+
+  it("clamps a negative score and leaves an in-range one alone", async () => {
+    const low = vi.fn(async () => ({ object: { ...GOOD, score: -3 }, usage: {} }));
+    const a = await proposeBriefFromSignals(
+      { signals: SIGNALS, profile: PROFILE, tenantId: "t1" },
+      { generate: low as never }
+    );
+    expect(a.ok && a.brief.score).toBe(0);
+
+    const fine = vi.fn(async () => ({ object: { ...GOOD, score: 0.72 }, usage: {} }));
+    const b = await proposeBriefFromSignals(
+      { signals: SIGNALS, profile: PROFILE, tenantId: "t1" },
+      { generate: fine as never }
+    );
+    expect(b.ok && b.brief.score).toBe(0.72);
+  });
+
+  it("tells the model the score scale", async () => {
+    const generate = vi.fn(async (_c: { system: string; prompt: string }) => ({ object: GOOD, usage: {} }));
+    await proposeBriefFromSignals(
+      { signals: SIGNALS, profile: PROFILE, tenantId: "t1" },
+      { generate: generate as never }
+    );
+    const { system } = generate.mock.calls[0][0];
+    expect(system).toMatch(/between 0 and 1/i);
+  });
 });

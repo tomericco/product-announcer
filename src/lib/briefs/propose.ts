@@ -82,6 +82,10 @@ function buildSystem(profile: RelevanceProfile): string {
     "3. KEY POINTS ARE A COMMISSION, NOT A DRAFT. Three to five, one sentence each.",
     "4. MATCH TYPE TO SUBSTANCE. product_update for shipped work worth announcing,",
     "   blog_post for an argument needing room, social_post for one sharp point.",
+    "5. SCORE IS A DECIMAL BETWEEN 0 AND 1 — for example 0.72, never 7.2 or 72.",
+    "   It is your confidence in the brief, and it is compared directly against",
+    "   scores from other briefs, so a value on any other scale is not merely",
+    "   imprecise, it outranks everything else permanently.",
   ]
     .filter((l) => l !== null)
     .join("\n");
@@ -140,7 +144,12 @@ export async function proposeBriefFromSignals(
         keyPoints: object.keyPoints,
         targetLength: object.targetLength ?? null,
         suggestedChannel: object.suggestedChannel,
-        score: object.score,
+        // Clamped, because an instruction is not an enforcement. A live run
+        // returned 8.2 on a 0-1 field: the inbox orders by score DESC, so one
+        // out-of-scale value silently outranks every agent brief forever, and
+        // nothing about the row looks wrong. The prompt states the range; this
+        // makes it true.
+        score: Math.min(1, Math.max(0, object.score)),
         scoreRationale: object.scoreRationale,
       },
     };

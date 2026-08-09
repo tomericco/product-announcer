@@ -133,6 +133,24 @@ export async function generateExtractedDraft(args: {
  * Mirrors `generateReleaseDraft`'s model resolution and usage recording
  * exactly — only the prompt composer differs.
  */
+/**
+ * Ceiling on a brief-driven draft's output.
+ *
+ * NOT optional. Without it the AI SDK's default applied and a live run of a
+ * 1200-word blog post came back cut off mid-word at 631 words — a truncation
+ * nothing in the pipeline detects, because a short body is indistinguishable
+ * from a concise one. The validation spike had already found this shape ("6
+ * uncapped briefs overflowed a 4096 default; set maxOutputTokens explicitly
+ * regardless"); `ideate` and `proposeBriefFromSignals` both took the lesson and
+ * this call, which writes by far the longest output, did not.
+ *
+ * 4,000 covers roughly 2,900 words at ~1.35 tokens per word — comfortably past
+ * any `targetLength` a brief realistically asks for, while still bounding a
+ * runaway. A brief asking for more than that will still truncate; if that ever
+ * becomes real, derive this from `targetLength` rather than raising it blindly.
+ */
+export const MAX_BRIEF_DRAFT_OUTPUT_TOKENS = 4_000;
+
 export async function generateBriefDraft(args: {
   brief: BriefForPrompt;
   evidence: BriefEvidenceForPrompt[];
@@ -149,7 +167,13 @@ export async function generateBriefDraft(args: {
   });
 
   const spec = process.env.GENERATION_MODEL ?? "anthropic/claude-sonnet-4-5";
-  const result = await generateObject({ model: resolveModel(spec), schema: UpdateDraftSchema, system, prompt });
+  const result = await generateObject({
+    model: resolveModel(spec),
+    schema: UpdateDraftSchema,
+    system,
+    prompt,
+    maxOutputTokens: MAX_BRIEF_DRAFT_OUTPUT_TOKENS,
+  });
 
   await recordLlmUsage({
     tenantId: args.brandProfile.tenantId,

@@ -8,7 +8,7 @@ const generateObject = vi.fn(async (..._args: unknown[]) => ({
 }));
 vi.mock("ai", () => ({ generateObject: (...a: unknown[]) => generateObject(...a) }));
 
-import { generateBriefDraft } from "../../../src/lib/ai/generation";
+import { generateBriefDraft, MAX_BRIEF_DRAFT_OUTPUT_TOKENS } from "../../../src/lib/ai/generation";
 import { recordLlmUsage } from "../../../src/lib/ai/llm-usage";
 
 const PROFILE = { tenantId: "t1", industry: null, guidelines: null, userPersonas: [] } as never;
@@ -41,5 +41,14 @@ describe("generateBriefDraft", () => {
     });
     const call = generateObject.mock.calls.at(-1)?.[0] as { system: string };
     expect(call.system).toContain("short social post");
+  });
+
+  it("caps its output so a long draft cannot truncate mid-word", async () => {
+    // Without this the SDK default applied and a live 1200-word blog post came
+    // back cut off at 631 words. A short body is indistinguishable from a
+    // concise one, so nothing downstream detects it.
+    await generateBriefDraft({ brief: BRIEF, evidence: [], brandProfile: PROFILE });
+    const call = generateObject.mock.calls.at(-1)?.[0] as { maxOutputTokens?: number };
+    expect(call.maxOutputTokens).toBe(MAX_BRIEF_DRAFT_OUTPUT_TOKENS);
   });
 });
