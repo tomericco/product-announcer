@@ -65,7 +65,7 @@ export type IdeationAction =
 
 export type IdeationResult = { assessment: string; actions: IdeationAction[] } | { error: string };
 
-const ProposedBriefSchema = z.object({
+export const ProposedBriefSchema = z.object({
   contentType: z.enum(["product_update", "blog_post", "social_post"]),
   title: z.string(),
   angle: z.string(),
