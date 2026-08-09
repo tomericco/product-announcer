@@ -61,6 +61,15 @@ const DECIDED_LABEL: Record<Exclude<Brief["status"], "new">, string> = {
   expired: "Expired",
 };
 
+// The inbox header no longer claims every brief was agent-proposed (some are
+// hand-written, per the manual-creation spec), so the card is what
+// distinguishes the two. Only "Written by hand" renders — an agent brief is
+// the default the header already describes, and a badge on every single card
+// saying so would be noise.
+const ORIGIN_LABEL: Partial<Record<Brief["origin"], string>> = {
+  manual: "Written by hand",
+};
+
 /**
  * One brief in the inbox. A client component because it owns the
  * accept/dismiss interaction — unlike `SignalRow` on `/signals`, which is
@@ -120,6 +129,7 @@ export function BriefCard({ brief }: { brief: BriefWithSignals }) {
           <Badge variant="secondary">{CONTENT_TYPE_LABEL[brief.contentType]}</Badge>
           <Badge variant="outline">{brief.suggestedChannel}</Badge>
           <Badge variant="outline">{brief.score.toFixed(2)}</Badge>
+          {ORIGIN_LABEL[brief.origin] && <Badge variant="outline">{ORIGIN_LABEL[brief.origin]}</Badge>}
           {brief.status !== "new" && <Badge variant="outline">{DECIDED_LABEL[brief.status]}</Badge>}
         </div>
         <CardTitle className="text-lg">{brief.title}</CardTitle>

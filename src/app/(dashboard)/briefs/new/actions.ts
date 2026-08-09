@@ -23,6 +23,7 @@ export type ManualBriefInput = {
   targetLength: number | null;
   audience: string | null;
   score: number;
+  scoreRationale: string | null;
   signalIds: string[];
 };
 
@@ -86,6 +87,7 @@ export async function createManualBrief(input: ManualBriefInput): Promise<Create
       keyPoints: input.keyPoints,
       targetLength: input.targetLength ?? null,
       score: input.score,
+      scoreRationale: input.scoreRationale?.trim() || null,
       status: "new",
       // Never expires — see the doc comment above.
       expiresAt: null,

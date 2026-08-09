@@ -3,7 +3,7 @@ import { db } from "@/db";
 import { tenants, companyProfiles, type Signal } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { listSignals } from "@/lib/signals/query";
-import { proposeBriefFromSignals, type ProposalInput } from "@/lib/briefs/propose";
+import { proposeBriefFromSignals, MAX_PROPOSAL_SIGNALS, type ProposalInput } from "@/lib/briefs/propose";
 import type { RelevanceProfile } from "@/lib/signals/relevance";
 import { single } from "@/lib/signals/params";
 import { BriefForm } from "./brief-form";
@@ -56,6 +56,15 @@ function parseSignalIds(raw: string | undefined): string[] {
  * signals attached"), the human's selection is not the model's to revise, so
  * a failed proposal still keeps the evidence and blanks only the prose
  * fields the model would have written.
+ *
+ * `resolved` can legitimately fall short of `requestedIds`: `listSignals`
+ * excludes stale rows and anything past the 60-day window, and
+ * `syncShippedWorkSignals` can mark a `shipped_work` signal stale between the
+ * moment it was selected on `/signals` and the moment this page renders. A
+ * silently shrunk selection is exactly what this page must not do — a human
+ * who picked 5 signals and lands on a brief built from 3, with no notice, has
+ * no way to know their selection was second-guessed. `droppedUnavailable`
+ * below drives the notice that says so.
  */
 export default async function NewBriefPage({
   searchParams,
@@ -70,9 +79,20 @@ export default async function NewBriefPage({
 
   const allSignals = requestedIds.length > 0 ? await listSignals(tenantId, {}) : [];
   const byId = new Map(allSignals.map((s) => [s.id, s]));
-  const chosen: Signal[] = requestedIds
+  const resolved: Signal[] = requestedIds
     .map((id) => byId.get(id))
     .filter((s): s is Signal => s !== undefined);
+  const droppedUnavailable = requestedIds.length - resolved.length;
+
+  // `/signals` caps selection at `MAX_PROPOSAL_SIGNALS` client-side, but
+  // `?signals=` is a URL a human can hand-edit past that cap. Without this,
+  // a 15-id selection would attach all 15 as evidence while
+  // `proposeBriefFromSignals` only fed the first `MAX_PROPOSAL_SIGNALS` to
+  // the model — the saved brief would carry evidence its own prose never
+  // saw. Capped here, once, so the proposal input and the saved evidence
+  // always agree.
+  const chosen = resolved.slice(0, MAX_PROPOSAL_SIGNALS);
+  const droppedOverCap = resolved.length - chosen.length;
 
   // No signals resolved (none requested, or none survived tenant/window
   // scoping) means nothing to propose from — `proposeBriefFromSignals`
@@ -106,6 +126,21 @@ export default async function NewBriefPage({
             : "Write a brief by hand and it lands in the inbox like any other."}
         </p>
       </div>
+
+      {droppedUnavailable > 0 && (
+        <div className="rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm">
+          {droppedUnavailable} of {requestedIds.length} selected signal
+          {droppedUnavailable === 1 ? "" : "s"} could not be used — no longer available (stale, or past the
+          60-day window) since you selected {droppedUnavailable === 1 ? "it" : "them"}.
+        </div>
+      )}
+
+      {droppedOverCap > 0 && (
+        <div className="rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm">
+          Only the first {MAX_PROPOSAL_SIGNALS} of {resolved.length} selected signals are used per brief —{" "}
+          {droppedOverCap} more {droppedOverCap === 1 ? "was" : "were"} left out.
+        </div>
+      )}
 
       <BriefForm
         proposal={proposal && proposal.ok ? proposal.brief : null}

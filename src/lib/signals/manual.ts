@@ -39,6 +39,14 @@ function isUniqueViolation(error: unknown): boolean {
  *
  * `relevanceScore` is left unset (null) — a human-entered signal was never
  * scored, and null means "not scored", not "scored zero".
+ *
+ * The duplicate check above is scoped to `kind: "manual"` — it is the whole
+ * unique index, `(tenantId, kind, externalId)`. A human pasting a link the
+ * news agent already ingested as `market_news` is NOT caught here and
+ * produces a second row for the same URL, one per kind. That is intentional
+ * (kinds are scoped on purpose, so this form never collides with what an
+ * agent wrote), but the human sees what looks like a duplicate in the
+ * signals browser. Nothing here resolves that; it is a known gap.
  */
 export async function createManualSignal(
   tenantId: string,

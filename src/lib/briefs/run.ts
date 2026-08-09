@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
 import { briefRuns, briefs, briefSignals, companyProfiles, tenants } from "@/db/schema";
 import { listSignals } from "@/lib/signals/query";
@@ -291,7 +291,19 @@ async function runIdeationUnsafe(
         // brief extended on day 13 would still expire on day 14 while it was
         // visibly still gathering support. A brief the world keeps supplying
         // evidence for has earned another full TTL.
-        .set({ lastEvidenceAt: now, expiresAt, updatedAt: now })
+        //
+        // But `openBriefs` (above) has no `origin` filter — a manual brief with
+        // `expiresAt: null` is offered for extension too, deliberately: fresh
+        // evidence attaching to a hand-written brief is legitimate. Setting
+        // `expiresAt` unconditionally would flip that NULL into a real date,
+        // putting a timer back on a brief the design promises will never expire
+        // on one. The `case when` preserves NULL when the row already had it,
+        // and only advances a real date for a brief that already had one.
+        .set({
+          lastEvidenceAt: now,
+          expiresAt: sql`case when ${briefs.expiresAt} is null then null else ${expiresAt}::timestamptz end`,
+          updatedAt: now,
+        })
         // `status = "new"` guards against a race with a human decision: the
         // read that built `openBriefs` filtered on `status = "new"`, but this
         // run's model call can take seconds, and a human can accept or

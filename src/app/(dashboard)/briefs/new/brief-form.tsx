@@ -136,6 +136,11 @@ export function BriefForm({
       targetLength: parsedLength && Number.isFinite(parsedLength) ? Math.trunc(parsedLength) : null,
       audience: audience.trim() || null,
       score: initial.score,
+      // Not user-editable — it's the model's own rationale for `score`, which
+      // this form never surfaces as a judgement of the human's idea (see the
+      // `score` doc comment on `BLANK` above). Passed through so it isn't
+      // dropped on save, same as `score` itself.
+      scoreRationale: initial.scoreRationale || null,
       signalIds: evidence.map((s) => s.id),
     };
 
@@ -233,7 +238,7 @@ export function BriefForm({
           <Input
             id="brief-target-length"
             type="number"
-            min={0}
+            min={1}
             value={targetLength}
             onChange={(e) => setTargetLength(e.target.value)}
             placeholder="Words"

@@ -43,6 +43,7 @@ const FORM = {
   targetLength: 700,
   audience: null,
   score: 0.7,
+  scoreRationale: "Strong evidence, clear angle.",
 };
 
 describe("createManualBrief", () => {
@@ -61,6 +62,9 @@ describe("createManualBrief", () => {
     // A hand-written brief is a decision, not a proposal awaiting one.
     expect(brief.expiresAt).toBeNull();
     expect(brief.lastEvidenceAt).toBeInstanceOf(Date);
+    // The proposal produces a rationale for its score; dropping it on save
+    // would silently discard something the model wrote.
+    expect(brief.scoreRationale).toBe("Strong evidence, clear angle.");
 
     const links = await db.select().from(briefSignals).where(eq(briefSignals.briefId, brief.id));
     expect(links.map((l) => l.signalId)).toEqual([signal.id]);

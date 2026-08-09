@@ -453,6 +453,48 @@ describe("runIdeation", () => {
     expect(rows[0].briefsExtended).toBe(0);
   });
 
+  it("extends a manual brief's evidence without putting an expiry back on it", async () => {
+    const tenant = await seedTenant();
+    const s = await seedSignal(tenant.id, "https://n.example.com/a");
+    const [existing] = await db
+      .insert(briefs)
+      .values({
+        tenantId: tenant.id,
+        origin: "manual",
+        contentType: "blog_post",
+        title: "Hand-written",
+        angle: "A",
+        whyNow: "W",
+        suggestedChannel: "blog",
+        keyPoints: ["One.", "Two.", "Three."],
+        score: 0.5,
+        status: "new",
+        lastEvidenceAt: new Date("2026-01-01T00:00:00Z"),
+        // A hand-written brief never carries an expiry.
+        expiresAt: null,
+      })
+      .returning();
+
+    await runIdeation(tenant.id, {
+      database: db,
+      ideateFn: vi.fn().mockResolvedValue({
+        assessment: "x",
+        actions: [{ type: "extend", briefId: existing.id, evidenceSignalIds: [s.id] }],
+      }),
+    });
+
+    const [after] = await db.select().from(briefs).where(eq(briefs.id, existing.id));
+    // The extend path may attach fresh evidence to a manual brief — that part
+    // is legitimate — but it must never manufacture an expiry where there was
+    // none. Deleting the `case when` guard in run.ts and re-running this test
+    // must turn this back into a real date.
+    expect(after.expiresAt).toBeNull();
+    expect(after.lastEvidenceAt.getTime()).toBeGreaterThan(existing.lastEvidenceAt.getTime());
+
+    const joins = await db.select().from(briefSignals).where(eq(briefSignals.briefId, existing.id));
+    expect(joins.map((j) => j.signalId)).toEqual([s.id]);
+  });
+
   it("does not extend a brief a human already decided on while the run was in flight", async () => {
     const tenant = await seedTenant();
     const s = await seedSignal(tenant.id, "https://n.example.com/a");
