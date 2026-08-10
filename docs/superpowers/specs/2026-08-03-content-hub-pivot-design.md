@@ -454,3 +454,58 @@ Four prompt rules earned their place and should carry into spec 5 close to
 verbatim: favour clusters, the swap test ("if it reads the same with a
 competitor's name swapped in, do not propose it"), ignore noise, and why-now must
 point at something dated.
+
+---
+
+## Status — closed 2026-08-06
+
+All nine specs are complete on `feat/content-hub-pivot`. The pipeline runs end
+to end: agents collect signals → the brief agent proposes (or a human selects
+signals and gets a brief proposed from exactly those) → a human accepts →
+generation writes a draft → the board and calendar track it → it publishes to
+chosen destinations.
+
+### Spec 9 closed without further work
+
+Its three parts were already done or turned out not to be needed:
+
+- **Draft-from-brief per type** — built in the brief-drafting spec (5c).
+  `buildSystemPrompt` forks on `contentTypeEnum`.
+- **Publish per channel** — already existed. `dispatchAllDestinations` takes an
+  `only?: DestinationId[]`, and the publish modal renders configured
+  destinations as checkboxes with the button disabled until one is chosen.
+- **Channel variants UI** — deliberately NOT generalised. `channelVariants` is
+  keyed by a free-text `channel`, and LinkedIn is the only destination whose
+  copy differs from the body; it has had an editor since spec 1. Webflow and
+  the webhook take the body unchanged, so a generic per-channel editor would
+  ship one useful tab and two that duplicate the body, abstracting over
+  channels that do not exist. Build it when a second channel needs different
+  copy, not before.
+
+### The decompositions that changed during the build
+
+- **Specs 3 and 5 were each split in two** — the signals layer from the
+  competitor agent, and the brief agent from the inbox. Spec 5 split again for
+  drafting (5c).
+- **Spec 4 grew a second spec** for news candidate filtering, after live runs
+  showed the agent re-fetching articles it had already judged.
+- **Spec 6 (manual brief creation) turned out to be the most load-bearing of
+  the later specs**, not the smallest. Two live runs had the brief agent
+  correctly refuse to propose anything from a thin signal pool, which made a
+  human-initiated path the only way to exercise drafting at all.
+
+### What is NOT done
+
+- **Signal quality is the binding constraint on the automated path.** Live runs
+  surface portfolio pages, GitHub READMEs and LinkedIn posts against roughly one
+  substantive article. Spec 6 routes around this; nothing fixes it. Topic tuning
+  and the news agent's acquisition are the highest-value remaining work.
+- **No UI has ever been rendered.** The dev preview sits behind an OAuth wall,
+  so eight surfaces — the signals browser's selection, the brief inbox, the
+  brief form, the drafts states, the board, its scheduling dialog, the calendar,
+  the add-signal form — have shipped verified only by `tsc`, `eslint` and
+  `npm run build`.
+- Retention: nothing deletes signals, `rejected_articles`, or `brief_runs`.
+- Deferred and recorded in their own specs: auto-publishing a scheduled piece,
+  board ordering by last activity (no `updatedAt` column), regenerating a draft
+  after a human edit, and re-running the model on every `/briefs/new` render.
