@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import {
   Activity,
   Building2,
+  CalendarDays,
   Columns3,
   FilePen,
   History,
@@ -22,6 +23,7 @@ const NAV = [
   { href: "/signals", label: "Signals", icon: Radar },
   { href: "/briefs", label: "Briefs", icon: Inbox },
   { href: "/board", label: "Board", icon: Columns3 },
+  { href: "/calendar", label: "Calendar", icon: CalendarDays },
   { href: "/atomic-updates", label: "Atomic updates", icon: ToyBrick },
   { href: "/drafts", label: "Drafts", icon: FilePen },
   { href: "/history", label: "Release history", icon: History },

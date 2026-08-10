@@ -1,46 +1,26 @@
 import { and, eq, gte, isNull, lt, or, sql } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
 import { contentPieces } from "@/db/schema";
+import { monthRangeUtc, type CalendarMonth, type CalendarPiece } from "./calendar-view";
 
 type Database = typeof defaultDb;
 
-export const CALENDAR_TYPES = ["product_update", "blog_post", "social_post"] as const;
-export type CalendarType = (typeof CALENDAR_TYPES)[number];
-
-export type CalendarPiece = {
-  id: string;
-  title: string;
-  type: CalendarType;
-  status: "scheduled" | "published";
-  at: Date; // scheduledFor for scheduled, publishedAt for published
-};
-
-export type CalendarMonth = { pieces: CalendarPiece[]; undatedPublished: number };
-
-export type CalendarDay = { key: string; pieces: Record<CalendarType, CalendarPiece[]> };
-
-// Parses "YYYY-MM" and returns the UTC instant one day before the month's
-// first and one day after its last. Built directly from Date.UTC (not
-// date-fns' local-time helpers like startOfMonth/addDays) because this must
-// return the same instants no matter what timezone the server process runs
-// in — Date.UTC ignores the runtime's local zone, while date-fns' calendar
-// helpers read and write through local getters/setters and would drift.
-export function monthRangeUtc(month: string): { from: Date; to: Date } {
-  const [year, monthNum] = month.split("-").map(Number);
-  const monthIndex = monthNum - 1;
-
-  // Date.UTC rolls month overflow into the year correctly (e.g. December + 1
-  // becomes January of the next year), so no separate year-boundary handling
-  // is needed here.
-  const monthStart = Date.UTC(year, monthIndex, 1);
-  const nextMonthStart = Date.UTC(year, monthIndex + 1, 1);
-
-  const oneDayMs = 24 * 60 * 60 * 1000;
-  return {
-    from: new Date(monthStart - oneDayMs),
-    to: new Date(nextMonthStart + oneDayMs),
-  };
-}
+// `CALENDAR_TYPES`, the `Calendar*` types, `monthRangeUtc`, and
+// `bucketByLocalDay` all live in `./calendar-view`, which has no `@/db`
+// import — see that file's header comment for why the split exists (a
+// client component must be able to import the pure pieces without pulling
+// `pg`/`net`/`tls` into the browser bundle). Re-exported here unchanged so
+// every existing import of `@/lib/content/calendar` — the test suite
+// included — keeps working exactly as before.
+export {
+  CALENDAR_TYPES,
+  monthRangeUtc,
+  bucketByLocalDay,
+  type CalendarType,
+  type CalendarPiece,
+  type CalendarMonth,
+  type CalendarDay,
+} from "./calendar-view";
 
 export async function readMonth(
   tenantId: string,
@@ -102,41 +82,4 @@ export async function readMonth(
     );
 
   return { pieces, undatedPublished };
-}
-
-// Runs in the browser, where the local timezone is real. Builds every day of
-// the month up front (with all three type lanes present and empty) and then
-// places each piece on the LOCAL day its `Date` reports — never the UTC one
-// — discarding anything that lands outside the month once bucketed locally.
-export function bucketByLocalDay(pieces: CalendarPiece[], month: string): CalendarDay[] {
-  const [year, monthNum] = month.split("-").map(Number);
-  const monthIndex = monthNum - 1;
-
-  const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
-
-  const emptyLanes = (): Record<CalendarType, CalendarPiece[]> => ({
-    product_update: [],
-    blog_post: [],
-    social_post: [],
-  });
-
-  const days: CalendarDay[] = [];
-  const dayByKey = new Map<string, CalendarDay>();
-  for (let day = 1; day <= daysInMonth; day++) {
-    const key = `${year}-${String(monthNum).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-    const calendarDay: CalendarDay = { key, pieces: emptyLanes() };
-    days.push(calendarDay);
-    dayByKey.set(key, calendarDay);
-  }
-
-  for (const piece of pieces) {
-    const localKey = `${piece.at.getFullYear()}-${String(piece.at.getMonth() + 1).padStart(2, "0")}-${String(
-      piece.at.getDate()
-    ).padStart(2, "0")}`;
-    const calendarDay = dayByKey.get(localKey);
-    if (!calendarDay) continue; // outside the month once bucketed locally
-    calendarDay.pieces[piece.type].push(piece);
-  }
-
-  return days;
 }
