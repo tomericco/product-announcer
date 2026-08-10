@@ -88,6 +88,63 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
     );
   }
 
+  // A `published` piece is not editable content anymore — it's a record of
+  // what already shipped. `approveDraft`/`publishDraft` still ALLOW an
+  // intentional re-publish of a `published` piece (see the allowlist and
+  // comments in `drafts/actions.ts` and `assertDraftEditable`'s docstring in
+  // `@/lib/draft-editable` — that flow is deliberate and
+  // `tests/app/drafts/publish-idempotency.test.ts` locks it in), so this is
+  // NOT a change to those actions. It closes a different hole: `/calendar`
+  // (spec 8) is the first and only place that links a `published` piece into
+  // THIS page. Before it existed, nothing reachable by clicking around ever
+  // opened this editor for an already-published piece — `/drafts` filters to
+  // `brief`/`draft`, and the board's `published` column is read-only. A fresh
+  // load of this page for a published piece carries the CURRENT
+  // `publishedAt` into the hidden field the double-submit guard checks, so an
+  // accidental Publish click here would pass that guard and re-dispatch for
+  // real (a duplicate LinkedIn post, a Webflow republish) while also
+  // resetting the piece's date to today on the very calendar the click came
+  // from. Gating the controls here — rather than refusing in the actions —
+  // is what keeps the deliberate re-publish flow intact for whatever
+  // legitimate caller needs it, while removing the accidental one-click path
+  // to it.
+  if (update.status === "published") {
+    return (
+      <div className="mx-auto w-full max-w-3xl space-y-6">
+        <div className="sticky top-0 z-20 -mx-4 flex items-center justify-between bg-background px-4 py-3">
+          <GuardedLink
+            href="/drafts"
+            className="inline-flex items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground"
+          >
+            <ArrowLeft className="size-3.5" />
+            Drafts
+          </GuardedLink>
+        </div>
+
+        <div className="space-y-2">
+          <h1 className="font-heading text-3xl leading-[1.15] tracking-[0.015em]">
+            {update.title || "Untitled draft"}
+          </h1>
+          {/* Server-rendered once, never re-executed client-side (this is a
+              plain Server Component, not hydrated JS) — so unlike the
+              calendar's cards there is no server-vs-browser zone mismatch to
+              gate behind hydration here; whatever renders is what stays on
+              screen. */}
+          <Badge variant="secondary">
+            {update.publishedAt ? `Published ${update.publishedAt.toLocaleString()}` : "Published"}
+          </Badge>
+        </div>
+
+        <p className="text-sm text-muted-foreground">
+          This piece has already been published. It is shown here for reference only —
+          publishing, rejecting, and editing are only available before a piece goes out.
+        </p>
+
+        <pre className="rounded-md border bg-muted/30 p-4 text-sm whitespace-pre-wrap">{update.body}</pre>
+      </div>
+    );
+  }
+
   const statusLabel = reviewStatusLabel(update.reviewStatus);
 
   // Only warn once Webflow is actually usable as a publish target — a

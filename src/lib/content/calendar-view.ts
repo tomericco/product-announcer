@@ -12,9 +12,19 @@
 // the fix: it holds nothing but pure, dependency-free code, so a client
 // component can import it without touching `db`.
 //
-// `calendar.ts` re-exports every name below unchanged, so `readMonth` (and
-// existing test imports from `@/lib/content/calendar`) see no difference —
-// this is a file-organization change only, not an interface change.
+// `calendar.ts` does NOT re-export these — that re-export used to exist
+// purely so the test file could import everything from one path, but it made
+// `@/lib/content/calendar` (the safe-looking path) the one that reintroduces
+// the exact `pg`/`net`/`tls` leak this split exists to prevent. Import the
+// pure members (this file) and `readMonth` (`calendar.ts`) from their own
+// paths — the two-import cost is what keeps the leak from being one typo
+// away.
+//
+// `resolveMonth`, `isValidMonthParam`, and `shiftMonth` live here too, not in
+// the route files that used to hold them unexported: they're pure
+// year/month arithmetic with no route dependency, so they belong beside
+// `monthRangeUtc` — and being unexported was the reason they had no direct
+// test coverage at all.
 
 export const CALENDAR_TYPES = ["product_update", "blog_post", "social_post"] as const;
 export type CalendarType = (typeof CALENDAR_TYPES)[number];
@@ -88,5 +98,65 @@ export function bucketByLocalDay(pieces: CalendarPiece[], month: string): Calend
     calendarDay.pieces[piece.type].push(piece);
   }
 
+  // `readMonth`'s query has no ORDER BY (rows arrive in Postgres heap order,
+  // which can change between identical reloads), and every card in a lane
+  // shows its time — so an unsorted lane can render 21:00 above 09:00 with
+  // nothing to explain why. This is the one place that can fix it once: every
+  // piece for every day funnels through here regardless of source query.
+  for (const day of days) {
+    for (const type of CALENDAR_TYPES) {
+      day.pieces[type].sort((a, b) => a.at.getTime() - b.at.getTime());
+    }
+  }
+
   return days;
+}
+
+const MONTH_PARAM_RE = /^\d{4}-\d{2}$/;
+
+/**
+ * True only for a `"YYYY-MM"` string that is both well-formed and names a
+ * real calendar month (`01`-`12`). Shared by `resolveMonth` (what to fall
+ * back to) and the route (whether a fallback happened at all, which is what
+ * decides whether the viewer's own clock gets a say — see `resolveMonth`'s
+ * comment).
+ */
+export function isValidMonthParam(raw: string | undefined): raw is string {
+  if (!raw || !MONTH_PARAM_RE.test(raw)) return false;
+  const monthNum = Number(raw.slice(5, 7));
+  return monthNum >= 1 && monthNum <= 12;
+}
+
+/**
+ * Falls back to `now`'s month for anything that isn't a clean `YYYY-MM` in
+ * range — absent, malformed (`?month=nonsense`), out-of-range
+ * (`?month=2026-13`), or repeated (`?month=a&month=b`, where `single()`
+ * already collapses to the first value before this runs). A bad query string
+ * is a navigation mistake, not an error condition, so this never throws.
+ *
+ * `now` defaults to the caller's clock. The route calls this once on the
+ * server (server-local `now`, just to have *something* to query with on the
+ * first paint) and the client corrects it afterwards if it guessed wrong —
+ * see `month-grid.tsx`'s effect, which redoes this exact fallback against
+ * the viewer's own clock and navigates to the right month when the two
+ * disagree. "Local day" means local to the viewer everywhere else in this
+ * feature; a defaulted month is no exception.
+ */
+export function resolveMonth(raw: string | undefined, now: Date = new Date()): string {
+  if (isValidMonthParam(raw)) return raw;
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+}
+
+/**
+ * Shifts a `"YYYY-MM"` month by `delta` months, crossing year boundaries
+ * (`2026-12` + 1 -> `2027-01`, `2026-01` - 1 -> `2025-12`). Built on
+ * `Date.UTC`, the same trick `monthRangeUtc` uses: UTC month overflow rolls
+ * into the year on its own, and UTC math never reads the runtime's local
+ * zone, so this produces the same answer on the server pass and every
+ * client — no hydration gate needed for prev/next links.
+ */
+export function shiftMonth(month: string, delta: number): string {
+  const [year, monthNum] = month.split("-").map(Number);
+  const shifted = new Date(Date.UTC(year, monthNum - 1 + delta, 1));
+  return `${shifted.getUTCFullYear()}-${String(shifted.getUTCMonth() + 1).padStart(2, "0")}`;
 }

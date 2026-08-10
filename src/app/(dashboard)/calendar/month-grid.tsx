@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useSyncExternalStore } from "react";
+import { useRouter } from "next/navigation";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -14,7 +15,7 @@ import { Button } from "@/components/ui/button";
 // fails `npm run build`. `calendar-view.ts` is the db-free split of the
 // same names (see its header comment); `readMonth` itself must never be
 // imported here regardless of which file it's imported from.
-import { bucketByLocalDay, type CalendarPiece } from "@/lib/content/calendar-view";
+import { bucketByLocalDay, resolveMonth, shiftMonth, type CalendarPiece } from "@/lib/content/calendar-view";
 import { DayCell } from "./day-cell";
 
 // Same pattern as day-cell.tsx and board/card.tsx: a mount-gated
@@ -47,20 +48,6 @@ const MONTH_NAMES = [
 const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 /**
- * Shifts a `"YYYY-MM"` month by `delta` months, crossing year boundaries
- * (`2026-12` + 1 -> `2027-01`, `2026-01` - 1 -> `2025-12`). Built on
- * `Date.UTC`, the same trick `calendar.ts`'s `monthRangeUtc` uses: UTC
- * month overflow rolls into the year on its own, and UTC math never reads
- * the runtime's local zone, so this produces the same answer on the server
- * pass and every client — no hydration gate needed for prev/next links.
- */
-function shiftMonth(month: string, delta: number): string {
-  const [year, monthNum] = month.split("-").map(Number);
-  const shifted = new Date(Date.UTC(year, monthNum - 1 + delta, 1));
-  return `${shifted.getUTCFullYear()}-${String(shifted.getUTCMonth() + 1).padStart(2, "0")}`;
-}
-
-/**
  * The client half of `/calendar`. `bucketByLocalDay` runs here and only
  * here — it's the whole reason Task 1 split it out of `readMonth`: "local
  * day" means local to the viewer, and this is the one place that's known.
@@ -77,15 +64,37 @@ function shiftMonth(month: string, delta: number): string {
  */
 export function MonthGrid({
   month,
+  isDefaulted,
   pieces,
   undatedPublished,
 }: {
   month: string;
+  /** True when the server had no explicit `?month=` to honour and guessed
+   * from its own clock — see the effect below and page.tsx's comment. */
+  isDefaulted: boolean;
   pieces: CalendarPiece[];
   undatedPublished: number;
 }) {
   const hydrated = useHydrated();
+  const router = useRouter();
   const [year, monthNum] = month.split("-").map(Number);
+
+  // The server's fallback month (when `?month=` was absent/invalid) is a
+  // guess made from ITS clock, not the viewer's — the one date decision in
+  // this feature that isn't already pushed to the client (every other one
+  // goes through `bucketByLocalDay`, which only runs here). Once mounted,
+  // redo that same fallback against the browser's real clock; if it disagrees
+  // with what the server guessed, replace the URL with the viewer's actual
+  // current month so `readMonth` re-queries the right range. A no-op — no
+  // extra navigation — whenever `?month=` was explicit or the two clocks
+  // already agree, which is the overwhelming majority of loads.
+  useEffect(() => {
+    if (!isDefaulted) return;
+    const viewerMonth = resolveMonth(undefined);
+    if (viewerMonth !== month) {
+      router.replace(`/calendar?month=${viewerMonth}`);
+    }
+  }, [isDefaulted, month, router]);
 
   const days = useMemo(
     () => bucketByLocalDay(hydrated ? pieces : [], month),

@@ -5,23 +5,16 @@ import { monthRangeUtc, type CalendarMonth, type CalendarPiece } from "./calenda
 
 type Database = typeof defaultDb;
 
-// `CALENDAR_TYPES`, the `Calendar*` types, `monthRangeUtc`, and
-// `bucketByLocalDay` all live in `./calendar-view`, which has no `@/db`
-// import — see that file's header comment for why the split exists (a
-// client component must be able to import the pure pieces without pulling
-// `pg`/`net`/`tls` into the browser bundle). Re-exported here unchanged so
-// every existing import of `@/lib/content/calendar` — the test suite
-// included — keeps working exactly as before.
-export {
-  CALENDAR_TYPES,
-  monthRangeUtc,
-  bucketByLocalDay,
-  type CalendarType,
-  type CalendarPiece,
-  type CalendarMonth,
-  type CalendarDay,
-} from "./calendar-view";
-
+// `CALENDAR_TYPES`, the `Calendar*` types, `monthRangeUtc`, `bucketByLocalDay`,
+// `resolveMonth`, `isValidMonthParam`, and `shiftMonth` all live in
+// `./calendar-view`, which has no `@/db` import — see that file's header
+// comment for why the split exists (a client component must be able to
+// import the pure pieces without pulling `pg`/`net`/`tls` into the browser
+// bundle). Deliberately NOT re-exported here — import them from
+// `./calendar-view` directly. A re-export used to sit here so the test file
+// could pull everything from one path, but that made this module (the
+// safe-looking `@/lib/content/calendar` path) the one that reintroduces the
+// leak the split exists to prevent.
 export async function readMonth(
   tenantId: string,
   month: string,

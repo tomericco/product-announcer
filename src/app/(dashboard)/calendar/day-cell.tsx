@@ -53,7 +53,11 @@ export function DayCell({
   return (
     <div className="flex min-h-28 flex-col gap-1.5 rounded-lg border border-border p-1.5">
       <span className="text-xs font-medium text-muted-foreground">{dayNumber}</span>
-      <div className="flex flex-col gap-1.5 overflow-hidden">
+      {/* No `overflow-hidden` here on purpose: this view's whole job is
+          coverage, so a busy day must grow the cell (and its row) rather
+          than silently clip pieces past the third or so with no "+N more"
+          affordance to say anything was hidden. */}
+      <div className="flex flex-col gap-1.5">
         {CALENDAR_TYPES.map((type) => {
           const typePieces = pieces[type];
           if (typePieces.length === 0) return null;
