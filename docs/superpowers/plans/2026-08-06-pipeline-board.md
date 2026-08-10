@@ -431,6 +431,22 @@ On a `draft`-status card with `generationError` set, show it as a warning rather
 
 - [ ] **Step 3: Wire the moves**
 
+**Use `@dnd-kit/core` for the drag interaction. Do not hand-roll it.** Install it
+(`npm install @dnd-kit/core`); version 6.3.1 declares `react: ">=16.8.0"`, which
+this project's React 19.2.4 satisfies, so there is no peer conflict and no
+`--legacy-peer-deps`. If the install reports one anyway, STOP and report rather
+than forcing it.
+
+`@dnd-kit/core` alone — **not** `@dnd-kit/sortable`. The board never reorders
+within a column; `readBoard` returns each column already ordered by `createdAt`
+descending and the only gesture is moving a card between columns. Sortable would
+add reordering semantics with no column to persist them to.
+
+Use `DndContext` around the board, `useDraggable` on cards, `useDroppable` on
+columns, and `onDragEnd` to call the action. Take dnd-kit's keyboard sensor as
+well as the pointer one — a board that can only be operated by mouse is worse
+than a board with buttons.
+
 `actions.ts` carries `"use server"` and may export **only async functions** — a synchronous export there breaks the production build while every test passes. Two thin wrappers taking the session's tenant and delegating to Task 2:
 
 ```typescript
