@@ -1,6 +1,6 @@
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
-import { contentPieces } from "@/db/schema";
+import { contentPieces, tenantMembers } from "@/db/schema";
 import type { ContentPiece } from "@/lib/publishing/destinations/types";
 
 type Database = typeof defaultDb;
@@ -73,4 +73,101 @@ export async function readBoard(
   board.published = board.published.slice(0, PUBLISHED_COLUMN_LIMIT);
 
   return board;
+}
+
+export type MoveResult = { ok: true } | { ok: false; error: string };
+
+// Explicit allowed-pairs table, not a negation list — a negation list
+// silently permits whatever nobody thought to forbid. `draft`, `review`, and
+// `scheduled` are the planning states a human owns and can freely move a
+// card between; `brief` (the accept-time scaffold, left only by generation)
+// and `published` (already shipped, entered only through `publishDraft`'s
+// own guards) are excluded from both sides.
+const ALLOWED_MOVES: ReadonlySet<`${BoardColumn}:${BoardColumn}`> = new Set([
+  "draft:review",
+  "draft:scheduled",
+  "review:draft",
+  "review:scheduled",
+  "scheduled:draft",
+  "scheduled:review",
+]);
+
+export function canMove(from: BoardColumn, to: BoardColumn): boolean {
+  return ALLOWED_MOVES.has(`${from}:${to}`);
+}
+
+export async function moveContentPiece(
+  contentPieceId: string,
+  tenantId: string,
+  to: BoardColumn,
+  opts: { scheduledFor?: Date | null } = {},
+  database: Database = defaultDb
+): Promise<MoveResult> {
+  const [piece] = await database
+    .select({ id: contentPieces.id, status: contentPieces.status })
+    .from(contentPieces)
+    .where(and(eq(contentPieces.id, contentPieceId), eq(contentPieces.tenantId, tenantId)));
+
+  if (!piece) {
+    return { ok: false, error: "Content piece not found." };
+  }
+
+  const from = piece.status as BoardColumn;
+  if (!canMove(from, to)) {
+    return { ok: false, error: `Cannot move a piece from ${from} to ${to}.` };
+  }
+
+  if (to === "scheduled" && !opts.scheduledFor) {
+    return { ok: false, error: "A scheduled time is required to move a piece into scheduled." };
+  }
+
+  // Any move away from scheduled clears scheduledFor — the calendar reads
+  // that column directly and must never draw a piece that is no longer
+  // scheduled. Only "scheduled" itself carries a value.
+  const scheduledFor = to === "scheduled" ? (opts.scheduledFor ?? null) : null;
+
+  // status only — contentPieces has no updatedAt column.
+  await database
+    .update(contentPieces)
+    .set({ status: to, scheduledFor })
+    .where(and(eq(contentPieces.id, contentPieceId), eq(contentPieces.tenantId, tenantId)));
+
+  return { ok: true };
+}
+
+export async function assignContentPiece(
+  contentPieceId: string,
+  tenantId: string,
+  userId: string | null,
+  database: Database = defaultDb
+): Promise<MoveResult> {
+  const [piece] = await database
+    .select({ id: contentPieces.id })
+    .from(contentPieces)
+    .where(and(eq(contentPieces.id, contentPieceId), eq(contentPieces.tenantId, tenantId)));
+
+  if (!piece) {
+    return { ok: false, error: "Content piece not found." };
+  }
+
+  if (userId !== null) {
+    // The user id arrives from a form. Without this check, assigning an
+    // outsider would put the piece in a queue belonging to someone who
+    // cannot see the workspace it lives in.
+    const [membership] = await database
+      .select({ userId: tenantMembers.userId })
+      .from(tenantMembers)
+      .where(and(eq(tenantMembers.tenantId, tenantId), eq(tenantMembers.userId, userId)));
+
+    if (!membership) {
+      return { ok: false, error: "That user is not a member of this workspace." };
+    }
+  }
+
+  await database
+    .update(contentPieces)
+    .set({ assignedTo: userId })
+    .where(and(eq(contentPieces.id, contentPieceId), eq(contentPieces.tenantId, tenantId)));
+
+  return { ok: true };
 }
