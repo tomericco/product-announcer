@@ -25,6 +25,13 @@ export type BoardCard = {
   createdAt: Date;
 };
 
+// `contentPieces.status` includes `archived`, which is not a board column
+// (see BOARD_COLUMNS). Shared by readBoard (to skip archived rows) and
+// moveContentPiece (to type-narrow a loaded piece's status) instead of each
+// asserting the narrower type on its own.
+const isBoardColumn = (status: string): status is BoardColumn =>
+  (BOARD_COLUMNS as readonly string[]).includes(status);
+
 export async function readBoard(
   tenantId: string,
   database: Database = defaultDb
@@ -58,9 +65,6 @@ export async function readBoard(
     scheduled: [],
     published: [],
   };
-
-  const isBoardColumn = (status: string): status is BoardColumn =>
-    (BOARD_COLUMNS as readonly string[]).includes(status);
 
   for (const row of rows) {
     // `archived` (and any other status outside the five board columns) has
@@ -112,7 +116,12 @@ export async function moveContentPiece(
     return { ok: false, error: "Content piece not found." };
   }
 
-  const from = piece.status as BoardColumn;
+  if (!isBoardColumn(piece.status)) {
+    // archived (or any future non-board status) has no row in ALLOWED_MOVES
+    // and no board column to move into or out of.
+    return { ok: false, error: `Cannot move a piece from ${piece.status} to ${to}.` };
+  }
+  const from = piece.status;
   if (!canMove(from, to)) {
     return { ok: false, error: `Cannot move a piece from ${from} to ${to}.` };
   }
@@ -126,7 +135,9 @@ export async function moveContentPiece(
   // scheduled. Only "scheduled" itself carries a value.
   const scheduledFor = to === "scheduled" ? (opts.scheduledFor ?? null) : null;
 
-  // status only — contentPieces has no updatedAt column.
+  // No updatedAt write here — contentPieces has no such column; status and
+  // scheduledFor (cleared above on the way out of scheduled) are the only
+  // fields a move touches.
   await database
     .update(contentPieces)
     .set({ status: to, scheduledFor })

@@ -101,6 +101,12 @@ describe("canMove", () => {
     expect(canMove("review", "scheduled")).toBe(true);
     expect(canMove("scheduled", "review")).toBe(true);
     expect(canMove("review", "draft")).toBe(true);
+    // draft <-> scheduled skips review in both directions, deliberately: the
+    // three planning states are a full mesh, not a chain that must pass
+    // through review. review is advisory — a label a human can skip — not a
+    // gate a card must clear before reaching scheduled.
+    expect(canMove("draft", "scheduled")).toBe(true);
+    expect(canMove("scheduled", "draft")).toBe(true);
   });
 
   it("never allows a move into published", () => {
