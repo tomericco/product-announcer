@@ -50,7 +50,7 @@ export const PUBLISHED_COLUMN_LIMIT = 20;
 export type BoardCard = {
   id: string; title: string; type: ContentPiece["type"]; status: BoardColumn;
   assignedTo: string | null; scheduledFor: Date | null;
-  generationError: string | null; generatedAt: Date | null; updatedAt: Date;
+  generationError: string | null; generatedAt: Date | null; createdAt: Date;
 };
 export async function readBoard(tenantId: string, database?): Promise<Record<BoardColumn, BoardCard[]>>;
 ```
@@ -161,7 +161,7 @@ Expected: FAIL — the module does not exist.
 
 - [ ] **Step 3: Write the read**
 
-`readBoard` selects the card fields for the tenant, orders by `updatedAt` descending, and groups into an object seeded with every column so an empty column is `[]` rather than absent. The published column is sliced to `PUBLISHED_COLUMN_LIMIT` **after** ordering, so the newest survive; the working columns are never capped.
+`readBoard` selects the card fields for the tenant, orders by `createdAt` descending (**`contentPieces` has no `updatedAt` column** — an earlier draft of this plan assumed one; do not add it, and do not substitute `composedAt`, which means when the body was first composed, not when the row last changed), and groups into an object seeded with every column so an empty column is `[]` rather than absent. The published column is sliced to `PUBLISHED_COLUMN_LIMIT` **after** ordering, so the newest survive; the working columns are never capped.
 
 - [ ] **Step 4: Run the test to verify it passes**
 
@@ -376,7 +376,7 @@ Expected: FAIL — `canMove` is not exported.
 
 `canMove` is a lookup over an explicit allowed-pairs table, not a set of negations — a table is readable and a negation list silently permits whatever nobody thought to forbid.
 
-`moveContentPiece`: load the piece scoped to `tenantId`; return `{ ok: false }` if absent; reject unless `canMove(piece.status, to)`; require `scheduledFor` when `to === "scheduled"` and write it; set `scheduledFor: null` on any move away from `scheduled`; update `status` and `updatedAt`.
+`moveContentPiece`: load the piece scoped to `tenantId`; return `{ ok: false }` if absent; reject unless `canMove(piece.status, to)`; require `scheduledFor` when `to === "scheduled"` and write it; set `scheduledFor: null` on any move away from `scheduled`; update `status` only — there is no `updatedAt` column on this table.
 
 `assignContentPiece`: load the piece scoped to `tenantId`; when `userId` is non-null, confirm a `tenantMembers` row joins that user to this tenant before writing.
 
