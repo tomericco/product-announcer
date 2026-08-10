@@ -6,7 +6,7 @@ import { hasValidSession } from "@/lib/workspace/session";
 import { ACTIVE_TENANT_COOKIE, resolveActiveTenant } from "@/lib/workspace/active-tenant";
 import { db } from "@/db";
 import { contentPieces } from "@/db/schema";
-import { notEditableMessage } from "@/lib/draft-editable";
+import { assertDraftEditable } from "@/lib/draft-editable";
 import { runExtractForRelease } from "@/lib/ai/extract-release";
 import type { DraftProgressEvent } from "@/lib/drafting/draft-progress";
 
@@ -67,9 +67,10 @@ export async function POST(req: Request): Promise<Response> {
           return;
         }
         // Ownership + existence check against the resolved tenant, not the
-        // client-supplied id. `status` comes back too so a piece that has
-        // left the draft state is refused here, before the pipeline runs —
-        // splitting a published piece would rewrite text already delivered.
+        // client-supplied id. `status` comes back too so a piece outside the
+        // editable planning states ("draft", "review", "scheduled") is
+        // refused here, before the pipeline runs — splitting a published
+        // piece would rewrite text already delivered.
         const [owned] = await db
           .select({ id: contentPieces.id, status: contentPieces.status })
           .from(contentPieces)
@@ -78,10 +79,10 @@ export async function POST(req: Request): Promise<Response> {
           emit({ type: "error", message: "Update not found for this tenant." });
           return;
         }
-        if (owned.status !== "draft") {
-          emit({ type: "error", message: notEditableMessage(owned.status) });
-          return;
-        }
+        // Throws for anything assertDraftEditable refuses; caught below and
+        // re-emitted as the same ndjson error event the manual check used to
+        // produce.
+        assertDraftEditable(owned);
         await runExtractForRelease(
           { contentPieceId, excerpt, remainingBody, instruction, editedBy },
           db,

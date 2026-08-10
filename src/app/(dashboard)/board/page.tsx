@@ -1,13 +1,6 @@
 import { Badge } from "@/components/ui/badge";
 import { requireSession } from "@/lib/workspace/session";
-import {
-  readBoard,
-  canMove,
-  BOARD_COLUMNS,
-  PUBLISHED_COLUMN_LIMIT,
-  type BoardCard,
-  type BoardColumn,
-} from "@/lib/content/board";
+import { readBoard, canMove, BOARD_COLUMNS, PUBLISHED_COLUMN_LIMIT, type BoardColumn } from "@/lib/content/board";
 import { listWorkspaceMembers } from "@/lib/workspace/members";
 import { Board } from "./board";
 
@@ -21,10 +14,11 @@ import { Board } from "./board";
  * — and reading it (for the assignee filter, ?assignee=<userId|unassigned>)
  * opts the page into dynamic rendering, mirroring /signals.
  *
- * The filter is applied here, after readBoard() returns every column for
- * the tenant — readBoard's signature is fixed by Task 1/2 and takes no
- * filter argument, so narrowing by assignee is this page's job, not the
- * board module's.
+ * The filter is passed INTO readBoard, not applied here afterwards —
+ * readBoard applies it before slicing the published column to
+ * PUBLISHED_COLUMN_LIMIT. Filtering after that slice would show only a
+ * filtered share of the 20 newest published pieces overall while the count
+ * still read as a total for the filtered set.
  */
 export default async function BoardPage({
   searchParams,
@@ -37,22 +31,14 @@ export default async function BoardPage({
   const assigneeFilter = assigneeParam ?? "all";
 
   const session = await requireSession();
-  const [board, members] = await Promise.all([
-    readBoard(session.user.tenantId),
+  const [filteredBoard, members] = await Promise.all([
+    readBoard(
+      session.user.tenantId,
+      undefined,
+      assigneeFilter === "all" ? {} : { assignedTo: assigneeFilter }
+    ),
     listWorkspaceMembers(session.user.tenantId),
   ]);
-
-  const filteredBoard =
-    assigneeFilter === "all"
-      ? board
-      : (Object.fromEntries(
-          BOARD_COLUMNS.map((column) => [
-            column,
-            board[column].filter((card) =>
-              assigneeFilter === "unassigned" ? card.assignedTo === null : card.assignedTo === assigneeFilter
-            ),
-          ])
-        ) as Record<BoardColumn, BoardCard[]>);
 
   const total = BOARD_COLUMNS.reduce((sum, column) => sum + filteredBoard[column].length, 0);
 

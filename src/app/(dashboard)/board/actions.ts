@@ -24,7 +24,19 @@ import { moveContentPiece, assignContentPiece, type MoveResult, type BoardColumn
  */
 export async function moveCard(id: string, to: BoardColumn, scheduledForIso?: string): Promise<MoveResult> {
   const session = await requireSession();
-  const scheduledFor = scheduledForIso ? new Date(scheduledForIso) : undefined;
+  let scheduledFor: Date | undefined;
+  if (scheduledForIso) {
+    scheduledFor = new Date(scheduledForIso);
+    // `new Date("garbage")` is an Invalid Date, not a thrown error — it is
+    // still truthy and would otherwise sail past moveContentPiece's own
+    // "scheduledFor is required" guard, only to blow up as a RangeError when
+    // drizzle calls `.toISOString()` on it during the write. Catch it here,
+    // as a normal refused move, so the client's optimistic patch reverts
+    // instead of the card silently sitting in a column the DB never wrote.
+    if (Number.isNaN(scheduledFor.getTime())) {
+      return { ok: false, error: "That schedule time isn't valid." };
+    }
+  }
   const result = await moveContentPiece(id, session.user.tenantId, to, { scheduledFor });
   if (result.ok) revalidatePath("/board");
   return result;

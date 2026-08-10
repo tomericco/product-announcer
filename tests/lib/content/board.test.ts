@@ -93,6 +93,37 @@ describe("readBoard", () => {
     expect(card.scheduledFor?.toISOString()).toBe(when.toISOString());
     expect(card.generationError).toBe("warned");
   });
+
+  it("filters by assignee BEFORE capping the published column, not after", async () => {
+    const tenant = await seedTenant();
+    const [member] = await db.insert(users).values({ email: `board-filter-${Date.now()}@example.com`, name: "M" }).returning();
+    await db.insert(tenantMembers).values({ tenantId: tenant.id, userId: member.id, role: "member" });
+
+    // `member`'s one piece is seeded FIRST (so it is the OLDEST row), then
+    // more than PUBLISHED_COLUMN_LIMIT newer pieces belong to someone else.
+    // If the filter ran AFTER the published slice (on just the 20 newest
+    // overall), "Mine" would already have fallen out of that top 20 before
+    // the filter ever got to look at it, and the column would come back
+    // empty instead of showing the one piece that actually matches.
+    await seedPiece(tenant.id, { title: "Mine", status: "published", assignedTo: member.id });
+    for (let i = 0; i < PUBLISHED_COLUMN_LIMIT + 4; i++) {
+      await seedPiece(tenant.id, { title: `P${i}`, status: "published" });
+    }
+
+    const board = await readBoard(tenant.id, db, { assignedTo: member.id });
+    expect(board.published.map((c) => c.title)).toEqual(["Mine"]);
+  });
+
+  it("filters to unassigned pieces with the \"unassigned\" sentinel", async () => {
+    const tenant = await seedTenant();
+    const [member] = await db.insert(users).values({ email: `board-unassigned-${Date.now()}@example.com`, name: "M" }).returning();
+    await db.insert(tenantMembers).values({ tenantId: tenant.id, userId: member.id, role: "member" });
+    await seedPiece(tenant.id, { title: "Assigned", status: "draft", assignedTo: member.id });
+    await seedPiece(tenant.id, { title: "Unassigned", status: "draft" });
+
+    const board = await readBoard(tenant.id, db, { assignedTo: "unassigned" });
+    expect(board.draft.map((c) => c.title)).toEqual(["Unassigned"]);
+  });
 });
 
 describe("canMove", () => {
@@ -201,6 +232,16 @@ describe("moveContentPiece", () => {
     expect((await moveContentPiece(theirs.id, mine.id, "review", {}, db)).ok).toBe(false);
     const [after] = await db.select().from(contentPieces).where(eq(contentPieces.id, theirs.id));
     expect(after.status).toBe("draft");
+  });
+
+  it("refuses a move whose source status is \"archived\" — no board column to leave from", async () => {
+    const tenant = await seedTenant();
+    const piece = await seedPiece(tenant.id, { status: "archived" });
+
+    const result = await moveContentPiece(piece.id, tenant.id, "review", {}, db);
+    expect(result.ok).toBe(false);
+    const [after] = await db.select().from(contentPieces).where(eq(contentPieces.id, piece.id));
+    expect(after.status).toBe("archived");
   });
 });
 

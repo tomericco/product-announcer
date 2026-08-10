@@ -2,8 +2,19 @@ import { describe, it, expect } from "vitest";
 import { assertDraftEditable, assertDraftDeletable, notEditableMessage } from "../../src/lib/draft-editable";
 
 describe("assertDraftEditable", () => {
+  // "draft", "review" and "scheduled" are all planning states a human owns —
+  // the board can move a card freely among them, and none is a checkpoint
+  // that should freeze editing.
   it("permits a draft", () => {
     expect(() => assertDraftEditable({ status: "draft" })).not.toThrow();
+  });
+
+  it("permits a piece under review", () => {
+    expect(() => assertDraftEditable({ status: "review" })).not.toThrow();
+  });
+
+  it("permits a scheduled piece", () => {
+    expect(() => assertDraftEditable({ status: "scheduled" })).not.toThrow();
   });
 
   it("refuses a published release, naming publication", () => {
@@ -14,8 +25,8 @@ describe("assertDraftEditable", () => {
     expect(() => assertDraftEditable({ status: "archived" })).toThrow(/archived/i);
   });
 
-  it("refuses a piece under review", () => {
-    expect(() => assertDraftEditable({ status: "review" })).toThrow(/review/i);
+  it("refuses a \"brief\" piece — an ungenerated scaffold was never editable", () => {
+    expect(() => assertDraftEditable({ status: "brief" })).toThrow(/hasn't been generated yet/i);
   });
 });
 
@@ -31,16 +42,20 @@ describe("assertDraftDeletable", () => {
     expect(() => assertDraftDeletable({ status: "draft" })).not.toThrow();
   });
 
+  it("permits a piece under review", () => {
+    expect(() => assertDraftDeletable({ status: "review" })).not.toThrow();
+  });
+
+  it("permits a scheduled piece", () => {
+    expect(() => assertDraftDeletable({ status: "scheduled" })).not.toThrow();
+  });
+
   it("refuses a published release, naming publication", () => {
     expect(() => assertDraftDeletable({ status: "published" })).toThrow(/already been published/i);
   });
 
   it("refuses an archived piece", () => {
     expect(() => assertDraftDeletable({ status: "archived" })).toThrow(/archived/i);
-  });
-
-  it("refuses a piece under review", () => {
-    expect(() => assertDraftDeletable({ status: "review" })).toThrow(/review/i);
   });
 });
 

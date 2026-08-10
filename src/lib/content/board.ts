@@ -34,7 +34,13 @@ const isBoardColumn = (status: string): status is BoardColumn =>
 
 export async function readBoard(
   tenantId: string,
-  database: Database = defaultDb
+  database: Database = defaultDb,
+  // Applied BEFORE the published-column slice below, not after — filtering
+  // post-slice would show only a filtered share of the already-capped 20
+  // newest published pieces while the count still reads as if it were a
+  // total. `assignedTo` narrows to that exact member; `"unassigned"` narrows
+  // to a null assignedTo. Left undefined, every piece for the tenant counts.
+  opts: { assignedTo?: string | "unassigned" } = {}
 ): Promise<Record<BoardColumn, BoardCard[]>> {
   const rows = await database
     .select({
@@ -70,10 +76,14 @@ export async function readBoard(
     // `archived` (and any other status outside the five board columns) has
     // no column to land in and is intentionally excluded from the board.
     if (!isBoardColumn(row.status)) continue;
+    if (opts.assignedTo === "unassigned" && row.assignedTo !== null) continue;
+    if (opts.assignedTo && opts.assignedTo !== "unassigned" && row.assignedTo !== opts.assignedTo) continue;
     board[row.status].push({ ...row, status: row.status });
   }
 
-  // Sliced to the limit AFTER ordering (newest first), so the newest survive.
+  // Sliced to the limit AFTER ordering (newest first) and AFTER the assignee
+  // filter above, so the newest survive and the cap applies to the same set
+  // the caller sees, not to a superset it never gets to look at.
   board.published = board.published.slice(0, PUBLISHED_COLUMN_LIMIT);
 
   return board;

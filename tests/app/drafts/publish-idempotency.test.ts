@@ -189,32 +189,41 @@ describe("draft publish idempotency (approveDraft / publishDraft)", () => {
       expect(fetch).toHaveBeenCalledTimes(1);
     });
 
-    // The guard is an allowlist (only "draft" and "published" proceed), not a
-    // single `=== "brief"` blocklist entry — both "review" and "scheduled"
-    // are declared in contentPieceStatusEnum and would otherwise become
-    // silently publishable the moment anything assigns them.
-    it("refuses a \"review\"-status piece", async () => {
+    // The allowlist admits "review" and "scheduled" alongside "draft" and
+    // "published" — both are planning states a human owns, not checkpoints,
+    // and the board can move a card straight into either without it ever
+    // passing back through "draft". Only "brief" (an ungenerated scaffold)
+    // stays refused, exercised below.
+    it("accepts a \"review\"-status piece", async () => {
       const { tenant, update, user } = await seed();
       await db.update(contentPieces).set({ status: "review" }).where(eq(contentPieces.id, update.id));
       vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id, id: user.id } } as never);
+      vi.mocked(fetch).mockResolvedValue({ ok: true } as Response);
 
-      await expect(approveDraft(approveFormData(update.id, ""))).rejects.toThrow();
+      await approveDraft(approveFormData(update.id, ""));
 
       const row = await rowFor(update.id);
-      expect(row.status).toBe("review");
-      expect(fetch).not.toHaveBeenCalled();
+      expect(row.status).toBe("published");
+      expect(fetch).toHaveBeenCalledTimes(1);
     });
 
-    it("refuses a \"scheduled\"-status piece", async () => {
+    it("accepts a \"scheduled\"-status piece, and clears its stale scheduledFor on publish", async () => {
       const { tenant, update, user } = await seed();
-      await db.update(contentPieces).set({ status: "scheduled" }).where(eq(contentPieces.id, update.id));
+      await db
+        .update(contentPieces)
+        .set({ status: "scheduled", scheduledFor: new Date("2026-09-01T09:00:00Z") })
+        .where(eq(contentPieces.id, update.id));
       vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id, id: user.id } } as never);
+      vi.mocked(fetch).mockResolvedValue({ ok: true } as Response);
 
-      await expect(approveDraft(approveFormData(update.id, ""))).rejects.toThrow();
+      await approveDraft(approveFormData(update.id, ""));
 
       const row = await rowFor(update.id);
-      expect(row.status).toBe("scheduled");
-      expect(fetch).not.toHaveBeenCalled();
+      expect(row.status).toBe("published");
+      // The calendar (spec 8) reads scheduledFor directly; a published piece
+      // must not still carry a date that reads as "still upcoming".
+      expect(row.scheduledFor).toBeNull();
+      expect(fetch).toHaveBeenCalledTimes(1);
     });
 
     it("tenant isolation: another tenant cannot approve this update", async () => {
@@ -355,19 +364,37 @@ describe("draft publish idempotency (approveDraft / publishDraft)", () => {
       expect(fetch).toHaveBeenCalledTimes(1);
     });
 
-    // Same allowlist as approveDraft: "review" and "scheduled" are declared
-    // in contentPieceStatusEnum and must stay refused even though the old
-    // guard only ever named "brief".
-    it("refuses a \"review\"-status piece", async () => {
+    // Same allowlist as approveDraft: "review" and "scheduled" are admitted
+    // alongside "draft" and "published"; only "brief" stays refused,
+    // exercised below.
+    it("accepts a \"review\"-status piece", async () => {
       const { tenant, update, user } = await seed();
       await db.update(contentPieces).set({ status: "review" }).where(eq(contentPieces.id, update.id));
       vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id, id: user.id } } as never);
+      vi.mocked(fetch).mockResolvedValue({ ok: true } as Response);
 
-      await expect(publishDraft(publishFormData(update.id, ""))).rejects.toThrow();
+      await publishDraft(publishFormData(update.id, ""));
 
       const row = await rowFor(update.id);
-      expect(row.status).toBe("review");
-      expect(fetch).not.toHaveBeenCalled();
+      expect(row.status).toBe("published");
+      expect(fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("accepts a \"scheduled\"-status piece, and clears its stale scheduledFor on publish", async () => {
+      const { tenant, update, user } = await seed();
+      await db
+        .update(contentPieces)
+        .set({ status: "scheduled", scheduledFor: new Date("2026-09-01T09:00:00Z") })
+        .where(eq(contentPieces.id, update.id));
+      vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id, id: user.id } } as never);
+      vi.mocked(fetch).mockResolvedValue({ ok: true } as Response);
+
+      await publishDraft(publishFormData(update.id, ""));
+
+      const row = await rowFor(update.id);
+      expect(row.status).toBe("published");
+      expect(row.scheduledFor).toBeNull();
+      expect(fetch).toHaveBeenCalledTimes(1);
     });
 
     it("tenant isolation: another tenant cannot publish this update", async () => {

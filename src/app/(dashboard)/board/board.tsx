@@ -109,7 +109,7 @@ export function Board({
   // this picker, and the move only happens on confirm. Cancelling (or
   // navigating away) leaves the card exactly where it was, so an
   // unconfirmed drop is a no-op, not a move.
-  const [pendingSchedule, setPendingSchedule] = useState<{ id: string; from: BoardColumn } | null>(null);
+  const [pendingSchedule, setPendingSchedule] = useState<{ id: string } | null>(null);
   const [scheduleValue, setScheduleValue] = useState("");
   const [scheduling, setScheduling] = useState(false);
 
@@ -146,17 +146,30 @@ export function Board({
       [to]: [moved, ...prev[to]],
     }));
 
-    const result = await moveCard(id, to, scheduledForIso);
-    if (!result.ok) {
-      toast.error(result.error);
+    const revert = () =>
       setBoard((prev) => ({
         ...prev,
         [to]: prev[to].filter((c) => c.id !== id),
         [from]: [original, ...prev[from]],
       }));
-      return;
+
+    // A thrown rejection (expired session, a DB blip, any server error) is
+    // just as much a failed move as an explicit `{ ok: false }` — without
+    // this catch, an uncaught rejection here leaves the optimistic patch in
+    // place forever with no toast, so the card sits in a column the server
+    // never actually wrote it into.
+    try {
+      const result = await moveCard(id, to, scheduledForIso);
+      if (!result.ok) {
+        toast.error(result.error);
+        revert();
+        return;
+      }
+      router.refresh();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Something went wrong. The move wasn't saved.");
+      revert();
     }
-    router.refresh();
   }
 
   function handleDragEnd(event: DragEndEvent) {
@@ -175,7 +188,7 @@ export function Board({
     if (!canMove(from, to)) return;
 
     if (to === "scheduled") {
-      setPendingSchedule({ id: card.id, from });
+      setPendingSchedule({ id: card.id });
       setScheduleValue("");
       return;
     }

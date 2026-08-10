@@ -21,39 +21,49 @@ export function notEditableMessage(status: ContentPieceStatus): string {
   return `This update is ${status} and can no longer be edited.`;
 }
 
+// "draft", "review", and "scheduled" are all planning states a human owns —
+// the board can move a piece freely among them, and none of them is a
+// checkpoint that freezes editing. Only "brief" (an ungenerated scaffold),
+// "published" (already delivered), and "archived" (rejected, atomic updates
+// handed back) are not.
+const EDITABLE_STATUSES: readonly ContentPieceStatus[] = ["draft", "review", "scheduled"];
+
 /**
- * Refuses a body-mutating action on a content piece that is no longer a draft.
+ * Refuses a body-mutating action on a content piece that is not in one of the
+ * editable planning states ("draft", "review", "scheduled").
  *
  * Publishing already delivered the stored body to users, and archiving handed
  * the piece's atomic updates back to the pool — so rewriting either
  * afterwards silently changes what shipped, or edits a write-up whose
- * underlying changes have since been reassigned elsewhere.
+ * underlying changes have since been reassigned elsewhere. "brief" was never
+ * editable in the first place — its body is still the accept-time scaffold.
  *
  * Deliberately NOT folded into either `loadOwnedDraft`: `approveDraft` and
  * `publishDraft` share those loaders and support an intentional re-publish,
  * which this guard would break. They stay gated by their own `publishedAt`
- * check instead.
+ * check instead (and their own allowlist, which independently also admits
+ * "review"/"scheduled" — see the comment there).
  */
 export function assertDraftEditable(piece: { status: ContentPieceStatus }): void {
-  if (piece.status !== "draft") {
+  if (!EDITABLE_STATUSES.includes(piece.status)) {
     throw new Error(notEditableMessage(piece.status));
   }
 }
 
 /**
  * Refuses `deleteDraft` on a content piece that must not be removed:
- * "published" is the record of what actually shipped, and this codebase has
- * no delete path for "review"/"scheduled" either.
+ * "published" is the record of what actually shipped, and there is no
+ * delete path for "archived" either.
  *
- * Deliberately its OWN check, not a loosened `assertDraftEditable` — nine
- * other call sites depend on that gate refusing "brief", and this one needs
- * the opposite answer: a "brief" piece whose generation can never succeed
- * (no linked brief, or a persistent model failure) has no other exit. Without
- * this, `assertDraftEditable`'s refusal makes it permanently undeletable and
- * it inflates the drafts sidebar count forever.
+ * Deliberately its OWN check, not a reuse of `assertDraftEditable` — this one
+ * additionally admits "brief", which `assertDraftEditable`'s other callers
+ * depend on staying refused: a "brief" piece whose generation can never
+ * succeed (no linked brief, or a persistent model failure) has no other exit.
+ * Without this, `assertDraftEditable`'s refusal makes it permanently
+ * undeletable and it inflates the drafts sidebar count forever.
  */
 export function assertDraftDeletable(piece: { status: ContentPieceStatus }): void {
-  if (piece.status !== "brief" && piece.status !== "draft") {
+  if (piece.status !== "brief" && !EDITABLE_STATUSES.includes(piece.status)) {
     throw new Error(notEditableMessage(piece.status));
   }
 }

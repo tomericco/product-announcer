@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState, useSyncExternalStore, useTransition } from "react";
 import Link from "next/link";
 import { format } from "date-fns";
 import { GripVertical } from "lucide-react";
@@ -20,6 +20,33 @@ import type { WorkspaceMember } from "@/lib/workspace/members";
 // Function reference, which is how Next.js expects client code to invoke one.
 import { generateDraft } from "../briefs/actions";
 import { assignCard } from "./actions";
+
+// The scheduled badge must show the piece's LOCAL wall-clock time (the
+// spec's requirement — see the picker in board.tsx), which rules out pinning
+// a fixed zone the way signal-row.tsx's DATE_FORMAT does. A local zone
+// differs between the server's render and the browser's, so formatting
+// straight from `card.scheduledFor` on the first client render would
+// mismatch the HTML sent down and trip a hydration warning.
+//
+// Same pattern as webflow-code-warning.tsx's useDismissed: useSyncExternalStore
+// with a server snapshot that always returns false, so the server render and
+// React's first client render (before hydration settles) agree, and the real
+// value only takes effect once hydration has actually finished. Plain
+// useState+useEffect (calling setState from inside the effect body) was the
+// other option, but it causes an extra synchronous re-render on every mount
+// that the lint rule (react-hooks/set-state-in-effect) flags for exactly
+// that reason; useSyncExternalStore doesn't have that cost.
+// suppressHydrationWarning was rejected outright: it only silences the
+// warning, it does not force a re-render, so the server's (wrong-zone) text
+// would keep sitting on screen indefinitely instead of ever correcting to
+// the viewer's local time.
+function useHydrated(): boolean {
+  return useSyncExternalStore(
+    () => () => {},
+    () => true,
+    () => false
+  );
+}
 
 const CONTENT_TYPE_LABEL: Record<BoardCardType["type"], string> = {
   product_update: "Product update",
@@ -62,6 +89,7 @@ export function BoardCardItem({ card, members, draggable, onGenerated, onAssigne
 
   const [generating, startGenerate] = useTransition();
   const [assigning, setAssigning] = useState(false);
+  const hydrated = useHydrated();
 
   function handleGenerate() {
     startGenerate(async () => {
@@ -139,7 +167,7 @@ export function BoardCardItem({ card, members, draggable, onGenerated, onAssigne
             )}
 
             {card.status === "scheduled" && card.scheduledFor && (
-              <Badge variant="outline">{format(card.scheduledFor, "d MMM, HH:mm")}</Badge>
+              <Badge variant="outline">{hydrated ? format(card.scheduledFor, "d MMM, HH:mm") : "—"}</Badge>
             )}
           </div>
 

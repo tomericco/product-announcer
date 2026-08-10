@@ -110,13 +110,18 @@ export async function approveDraft(formData: FormData): Promise<{ problems: Link
   // NOT `assertDraftEditable` — this action deliberately also serves an
   // intentional re-publish of an already-`published` piece (see the docstring
   // on `assertDraftEditable`), which that gate would refuse. So this is an
-  // allowlist, not a single-status blocklist: only "draft" and "published"
-  // may proceed. "brief" is an ungenerated scaffold and never a legitimate
-  // publish target, but a bare `=== "brief"` check would silently let
-  // "review" and "scheduled" through too — both are declared in
-  // `contentPieceStatusEnum` and would become publishable the moment
-  // anything assigns them, even though nothing here means to allow it.
-  if (existing.status !== "draft" && existing.status !== "published") {
+  // allowlist, not a single-status blocklist: "draft", "review", "scheduled"
+  // and "published" may proceed — "review" and "scheduled" are planning
+  // states a human owns, not checkpoints, and the board can move a card
+  // straight into either without it ever passing back through "draft". Only
+  // "brief" is refused: it is an ungenerated scaffold and never a legitimate
+  // publish target.
+  if (
+    existing.status !== "draft" &&
+    existing.status !== "review" &&
+    existing.status !== "scheduled" &&
+    existing.status !== "published"
+  ) {
     throw new Error(notEditableMessage(existing.status));
   }
 
@@ -154,6 +159,13 @@ export async function approveDraft(formData: FormData): Promise<{ problems: Link
         publishedBy: session.user.id,
         status: "published",
         publishedAt: new Date(),
+        // A "scheduled" piece publishing is leaving "scheduled" the same as a
+        // board drag out of it — moveContentPiece already clears scheduledFor
+        // on every other way out, so publish must match or the calendar (spec
+        // 8) would keep drawing a piece that has already shipped as if it
+        // were still upcoming. Unconditional: a piece that was never
+        // scheduled just has this stay null.
+        scheduledFor: null,
       })
       .where(
         and(
@@ -220,10 +232,17 @@ export async function publishDraft(
   const existing = await loadOwnedDraft(session.user.tenantId, contentPieceId);
   // Same as `approveDraft`: NOT `assertDraftEditable` (this list also
   // re-publishes already-`published` pieces), and the same allowlist —
-  // only "draft" and "published" may proceed. A "brief" row has no Publish
-  // entry point in the drafts list UI, and "review"/"scheduled" have none
-  // either; a bare `=== "brief"` check would leave both silently publishable.
-  if (existing.status !== "draft" && existing.status !== "published") {
+  // "draft", "review", "scheduled" and "published" may proceed. The drafts
+  // list UI has no Publish entry point for "review"/"scheduled" today, but
+  // the board's card links straight into the editor for them, and this
+  // action must not refuse what that editor's own Publish now allows. Only
+  // "brief" is refused — an ungenerated scaffold is never publishable.
+  if (
+    existing.status !== "draft" &&
+    existing.status !== "review" &&
+    existing.status !== "scheduled" &&
+    existing.status !== "published"
+  ) {
     throw new Error(notEditableMessage(existing.status));
   }
   // Publishes as-stored (no editor here), so gate the stored body: an invalid
@@ -242,7 +261,14 @@ export async function publishDraft(
   const [changed] = await db.transaction(async (tx) => {
     const rows = await tx
       .update(contentPieces)
-      .set({ status: "published", publishedAt: new Date(), publishedBy: session.user.id })
+      .set({
+        status: "published",
+        publishedAt: new Date(),
+        publishedBy: session.user.id,
+        // See approveDraft: publishing is leaving "scheduled" the same as a
+        // board drag out of it, so scheduledFor must clear here too.
+        scheduledFor: null,
+      })
       .where(
         and(
           eq(contentPieces.id, contentPieceId),

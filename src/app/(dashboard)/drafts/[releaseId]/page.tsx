@@ -143,12 +143,14 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
             </div>
           )}
 
-          {/* status here is always "draft" (the "brief" branch returns
-              above), so a set generationError means the post-generation
-              competitor-name scan matched something — not a failure. The
-              draft is real and the editor below is fully usable; this is a
-              warning to look at, not a reason to distrust the body. The
-              message itself (generationError, written in
+          {/* status here is "draft", "review", "scheduled" or "published"
+              (the "brief" branch returns above) — generationError is only
+              ever set while a piece is "draft" or has moved on from it
+              without being cleared, and in every one of those cases it means
+              the post-generation competitor-name scan matched something, not
+              a failure. The draft is real and the editor below is fully
+              usable; this is a warning to look at, not a reason to distrust
+              the body. The message itself (generationError, written in
               generateDraftForPiece) already spells out that this is a check
               against the tenant's saved competitors list, not a guarantee
               that no other company is named — a clean pass (no banner at
