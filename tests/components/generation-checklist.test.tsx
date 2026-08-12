@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { DRAFT_STEPS } from "../../src/lib/drafting/draft-progress";
 import {
   statusesForStep,
+  statusesForGaveUp,
   shouldStopPolling,
   hasExceededPollLimit,
   terminalOutcome,
@@ -62,6 +63,39 @@ describe("statusesForStep", () => {
     // never started.
     const statuses = statusesForStep("complete");
     for (const step of DRAFT_STEPS) expect(statuses[step.key]).toBe("done");
+  });
+});
+
+describe("statusesForGaveUp", () => {
+  // The give-up branch must not keep rendering the last-known step as
+  // "active" — ProgressChecklist renders "active" with an animate-spin
+  // Loader2 that keeps spinning regardless of the interval being cleared,
+  // which is exactly the misleading "still working" UI the poll cap was
+  // introduced to eliminate. "stalled" reads as frozen instead of moving.
+  it("downgrades the active step to stalled", () => {
+    const statuses = statusesForStep("generating");
+    const frozen = statusesForGaveUp(statuses);
+    expect(frozen.generating).toBe("stalled");
+  });
+
+  it("leaves done and pending steps unchanged", () => {
+    const statuses = statusesForStep("generating");
+    const frozen = statusesForGaveUp(statuses);
+    for (const step of DRAFT_STEPS) {
+      if (statuses[step.key] !== "active") {
+        expect(frozen[step.key]).toBe(statuses[step.key]);
+      }
+    }
+  });
+
+  it("is a no-op when nothing is active (nothing was ever in flight)", () => {
+    const statuses = statusesForStep(null);
+    expect(statusesForGaveUp(statuses)).toEqual(statuses);
+  });
+
+  it("is a no-op on the 'complete' sentinel (already all done)", () => {
+    const statuses = statusesForStep("complete");
+    expect(statusesForGaveUp(statuses)).toEqual(statuses);
   });
 });
 

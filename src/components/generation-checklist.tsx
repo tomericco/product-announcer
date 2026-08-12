@@ -95,6 +95,30 @@ export function statusesForStep(currentKey: ChecklistDisplayState): Record<Draft
 }
 
 /**
+ * Downgrades an "active" step to "stalled" once the poll loop has given up
+ * (see `hasExceededPollLimit`) — everything else passes through unchanged.
+ *
+ * Without this, the give-up branch kept rendering `statusesForStep`'s last
+ * poll result as-is, which left whatever step was in flight marked "active" —
+ * and `ProgressChecklist` renders "active" with an `animate-spin` `Loader2`
+ * (src/components/draft-progress-checklist.tsx) regardless of whether
+ * anything is still polling. The CSS animation doesn't know the interval was
+ * cleared, so the step kept spinning forever directly above text saying
+ * polling gave up: the same misleading "still working" UI the cap itself was
+ * written to eliminate. "stalled" keeps the step's done-so-far progress
+ * visible (it isn't reset to "pending") without implying it is still moving.
+ */
+export function statusesForGaveUp(
+  statuses: Record<DraftStepKey, StepStatus>
+): Record<DraftStepKey, StepStatus> {
+  const frozen = {} as Record<DraftStepKey, StepStatus>;
+  for (const key of Object.keys(statuses) as DraftStepKey[]) {
+    frozen[key] = statuses[key] === "active" ? "stalled" : statuses[key];
+  }
+  return frozen;
+}
+
+/**
  * Whether the poll loop should stop calling the server again: a completed
  * generation (`generatedAt` set), a failure that has already cleared its
  * in-flight step (`generationError` set with a null step — that combination
@@ -213,9 +237,15 @@ export function GenerationChecklist({ contentPieceId }: { contentPieceId: string
     return null;
   }
 
+  const statuses = statusesForStep(step);
+
   return (
     <div>
-      <ProgressChecklist steps={DRAFT_STEPS} statuses={statusesForStep(step)} className="text-xs" />
+      <ProgressChecklist
+        steps={DRAFT_STEPS}
+        statuses={gaveUp ? statusesForGaveUp(statuses) : statuses}
+        className="text-xs"
+      />
       {gaveUp && (
         <p className="mt-1 text-xs text-muted-foreground">
           This is taking longer than expected. Reload the page to check for an update.

@@ -1,10 +1,16 @@
 "use client";
 
-import { Loader2, Check, Circle } from "lucide-react";
+import { Loader2, Check, Circle, CirclePause } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { DraftStepKey } from "@/lib/drafting/draft-progress";
 
-export type StepStatus = "pending" | "active" | "done";
+// "stalled" is distinct from "active": both mean "this step was in
+// progress," but "stalled" renders without the spinner because nothing is
+// actually advancing it anymore — the give-up path in generation-checklist.tsx
+// downgrades a poll's last-known "active" step to this once it stops
+// polling, so the last-known-in-progress step doesn't keep animating next to
+// text saying the poll gave up.
+export type StepStatus = "pending" | "active" | "done" | "stalled";
 
 /** Every step pending — the state a checklist starts and resets to. */
 export function initialStepStatuses(
@@ -42,6 +48,8 @@ export function ProgressChecklist({
               <Check className="size-4 text-emerald-600" />
             ) : st === "active" ? (
               <Loader2 className="size-4 animate-spin text-foreground" />
+            ) : st === "stalled" ? (
+              <CirclePause className="size-4 text-muted-foreground" />
             ) : (
               <Circle className="size-4 text-muted-foreground/40" />
             )}
