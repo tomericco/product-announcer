@@ -63,10 +63,24 @@ Four templates, all keyed to a competitor, so the grid is exactly `4N`:
 Question text is plain string templating, not a model call. These are literally
 how the queries are typed, it costs nothing, and it is trivially testable.
 
-**`{X} vs {Y}` is cut.** It is the only template that grows combinatorially
-(`N(N-1)/2`), and its value depends on knowing whether the company is *absent*
-from that comparison — which needs SERP data this spec does not have. It
-belongs with the demand map.
+**`{X} vs {Y}` is cut**, and worth recording why, because its ceiling is
+genuinely higher than `vs_us`: it reaches people evaluating the category who
+have not considered this company at all, rather than people already comparing
+against it.
+
+Two things make it the wrong template for *this* spec. It grows
+combinatorially (`N(N-1)/2` — 28 questions at eight competitors, against
+`vs_us`'s 8), and nobody writes 28 comparison posts, so it needs a way to pick
+which pairs matter. That means knowing where the company is absent from the
+SERP or the generated answer, which is precisely the data this spec does not
+have. And it is a different genre: the company has no natural role in the
+piece, so it must be written as a neutral category guide — excellent when it
+lands, bait-and-switch when it does not, and a harder brief for the agent to
+get right than "here is how we differ."
+
+It belongs with the demand map. The cheap version, if it is ever wanted
+earlier, is to restrict pairs to the top two or three competitors, which needs
+no ranking data.
 
 **`best {category} for {persona}` is cut.** It is the only candidate template
 not derived from a competitor, so it fits nowhere in the model below, and it is
