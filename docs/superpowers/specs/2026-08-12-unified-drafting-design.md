@@ -111,8 +111,15 @@ would mean a write per token-ish event for something nothing displays.
 
 `generationStep` is cleared in the same write that sets `generatedAt`, and in the
 failure write that sets `generationError`. A piece must never be left displaying
-a step it is no longer running; the interrupted-generation write at
-`draft.ts:173` is the third place that has to clear it.
+a step it is no longer running.
+
+There are **four** exits that need a clear, not two: those two, the missing-brief
+refusal (a plain `return` that never reaches the outer `catch`), and the outer
+`catch` itself. The interrupted-generation write is **not** one of them — that
+write is where `"generating"` is *set*, folded into the existing marker so it
+stays one statement. Its whole purpose is to survive a process that dies before
+any terminal write runs, which is exactly why the client cannot assume the step
+is always eventually cleared.
 
 ### The read
 
