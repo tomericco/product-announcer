@@ -1,5 +1,26 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { eq } from "drizzle-orm";
+
+/**
+ * Lets one test make `linkAtomicUpdatesToPiece` fail from inside the release
+ * save, which is the only way to observe whether that save is one transaction
+ * or two sequential writes. Every other test delegates to the real function, so
+ * this mock is inert unless `linkFailure.error` is set (cleared in `afterEach`).
+ */
+const linkFailure = vi.hoisted(() => ({ error: null as Error | null }));
+vi.mock("../../../src/lib/change-events/release-claim", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../src/lib/change-events/release-claim")>();
+  return {
+    ...actual,
+    linkAtomicUpdatesToPiece: async (
+      ...args: Parameters<typeof actual.linkAtomicUpdatesToPiece>
+    ): Promise<number> => {
+      if (linkFailure.error) throw linkFailure.error;
+      return actual.linkAtomicUpdatesToPiece(...args);
+    },
+  };
+});
+
 import { db } from "../../../src/db";
 import {
   tenants,
@@ -19,6 +40,7 @@ const TENANT = "Brief Draft Test Tenant";
 
 afterEach(async () => {
   await db.delete(tenants).where(eq(tenants.name, TENANT));
+  linkFailure.error = null;
   vi.restoreAllMocks();
 });
 
@@ -686,6 +708,39 @@ describe("generateDraftForPiece — release fork", () => {
     // Released, not left open: an atomic update left `open` would be offered to
     // the next compose run and shipped twice.
     expect(linked.status).toBe("released");
+  });
+
+  it("rolls the body write back when the atomic-update link fails", async () => {
+    const tenant = await seedTenant();
+    const { piece, brief } = await seedProductUpdate(tenant.id);
+    const { atomicUpdate } = await seedShippedWork({ tenantId: tenant.id, briefId: brief.id });
+
+    // The link and the body write must be ONE transaction. Two sequential
+    // writes would leave the piece holding a generated body while its atomic
+    // updates stayed open — the next compose run would then offer the same
+    // shipped work and ship it twice. Failing the link is the only way to tell
+    // the two shapes apart from outside.
+    linkFailure.error = new Error("link failed");
+
+    const result = await generateDraftForPiece(piece.id, tenant.id, {
+      database: db,
+      generate: vi.fn(async () => ({ title: "Brief title", body: "Brief body." })),
+      generateRelease: vi.fn(async () => ({ title: "Release title", body: "Release body." })),
+      review: passingReview,
+    });
+    expect(result.ok).toBe(false);
+
+    const [after] = await db.select().from(contentPieces).where(eq(contentPieces.id, piece.id));
+    // Rolled back: no body, no promotion, nothing for the next run to trip on.
+    expect(after.status).toBe("brief");
+    expect(after.body).toBe("SCAFFOLD BODY");
+    expect(after.generatedAt).toBeNull();
+    // The outer catch still clears the step, as every exit must.
+    expect(after.generationStep).toBeNull();
+
+    const [untouched] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, atomicUpdate.id));
+    expect(untouched.status).toBe("open");
+    expect(untouched.contentPieceId).toBeNull();
   });
 
   it("reports no phantom catch-up on the piece it just drafted", async () => {

@@ -127,10 +127,16 @@ export async function claimReleaseFromAtomicUpdates(
  * reads every atomic update just linked here as a post-compose change — the
  * phantom catch-up documented on `claimReleaseFromAtomicUpdates` above.
  *
- * No `status`/`contentPieceId` precondition, unlike the claim: the caller has
- * already re-derived this set from its own tenant-scoped query, and the
- * exclusion of already-linked atomic updates belongs there (see
- * `generateDraftForPiece`), not in a second, weaker copy here.
+ * Drops rather than steals: an atomic update that is no longer `open`, or that
+ * something else linked to a piece in the meantime, is left alone and simply
+ * not counted in the return value. The caller re-derives its set with the same
+ * predicates (`generateDraftForPiece`), but that derivation and this write are
+ * separated by a full generate + review round-trip — tens of seconds, during
+ * which the still-live `/api/atomic-updates/draft` → `claimReleaseFromAtomicUpdates`
+ * path can claim the same rows. Every other writer in this subsystem takes the
+ * same stance (`claimReleaseFromAtomicUpdates` above, `linkNewAtomicUpdates` in
+ * `catch-up.ts`); this one being the exception would make a lost race silently
+ * rewrite somebody else's evidence.
  */
 export async function linkAtomicUpdatesToPiece(
   input: {
@@ -157,7 +163,11 @@ export async function linkAtomicUpdatesToPiece(
         inArray(atomicUpdates.id, input.atomicUpdateIds),
         // The security boundary. Without it a signal citing another tenant's
         // atomic update would pull that row into this tenant's piece.
-        eq(atomicUpdates.tenantId, input.tenantId)
+        eq(atomicUpdates.tenantId, input.tenantId),
+        // Drop, don't steal — see the docstring. Only work that is still open
+        // and unspoken-for can be linked here.
+        eq(atomicUpdates.status, "open"),
+        isNull(atomicUpdates.contentPieceId)
       )
     )
     .returning({ id: atomicUpdates.id });

@@ -60,6 +60,20 @@ vi.mock("../../src/lib/ai/generation", () => ({
   generateReleaseDraft: (...args: unknown[]) => generateReleaseDraft(...args),
 }));
 
+// Pre-emptive, not currently load-bearing: every brief in this file is a
+// blog_post, so generateDraftForPiece's release branch — the only caller of
+// reviewAndReconcile — is unreachable today. The first product_update brief
+// anyone adds here would otherwise run the REAL reviewer against the Anthropic
+// API from a drained after() callback, which is the same trap the generation
+// mock above exists for. No test may reach a real model.
+vi.mock("../../src/lib/ai/review-draft", () => ({
+  reviewAndReconcile: vi.fn(async (draft: { title: string; body: string }) => ({
+    finalDraft: draft,
+    status: "passed" as const,
+    issues: [] as string[],
+  })),
+}));
+
 import { revalidatePath } from "next/cache";
 import { acceptBrief, dismissBrief } from "../../src/app/(dashboard)/briefs/actions";
 import { scaffoldBody } from "../../src/lib/briefs/scaffold";

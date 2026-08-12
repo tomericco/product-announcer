@@ -187,14 +187,15 @@ export function findNamedCompanies(text: string, names: string[]): string[] {
  * `validateDraftLinks` — reached from here rather than from a parallel route,
  * because atomic updates are signals, including for drafting.
  *
- * `generationStep` is cleared on EVERY exit. There are seven:
+ * `generationStep` is cleared on EVERY exit. There are eight:
  *   1. piece not found              — returns before the first step write
  *   2. piece not at "brief"         — likewise
  *   3. body hand-edited             — likewise
  *   4. no brief linked              — explicit clear ("collecting" is already set)
  *   5. generation/review failure    — cleared in the generationError write
- *   6. success                      — cleared in the body write (both branches)
- *   7. outer catch                  — explicit clear
+ *   6. success, generic branch      — cleared in the body write
+ *   7. success, release branch      — same `draftWrite` literal, inside the tx
+ *   8. outer catch                  — explicit clear
  * The interrupted-generation marker is not an exit: it SETS "generating".
  *
  * Never throws: every code path — the lookups, context prep, the generator

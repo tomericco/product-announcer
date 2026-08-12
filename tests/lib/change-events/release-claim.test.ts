@@ -296,6 +296,58 @@ describe("linkAtomicUpdatesToPiece", () => {
     expect(after.contentPieceId).toBeNull();
   });
 
+  it("does not steal an atomic update another piece already claimed", async () => {
+    const [t] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const [a1, a2] = await seed(t.id, ["Already claimed", "Still open"]);
+    const piece = await seedPiece(t.id);
+
+    // The claim-based compose path is still live until Task 6, and a full
+    // generate + review round-trip separates the caller's derivation from this
+    // write — so losing that race is reachable, not hypothetical.
+    const other = await claimReleaseFromAtomicUpdates({
+      tenantId: t.id,
+      atomicUpdateIds: [a1.id],
+      draft: { title: "Someone else's release", body: "B" },
+    });
+    expect(other).not.toBeNull();
+
+    const linked = await linkAtomicUpdatesToPiece({
+      tenantId: t.id,
+      contentPieceId: piece.id,
+      atomicUpdateIds: [a1.id, a2.id],
+    });
+    // Drops rather than steals: the partial link is visible in the count.
+    expect(linked).toBe(1);
+
+    const [stolen] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, a1.id));
+    expect(stolen.contentPieceId).toBe(other!.id);
+    expect(stolen.status).toBe("open");
+
+    const [taken] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, a2.id));
+    expect(taken.contentPieceId).toBe(piece.id);
+    expect(taken.status).toBe("released");
+  });
+
+  it("does not relink an atomic update that is no longer open", async () => {
+    const [t] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const [released] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: t.id, title: "Shipped already", summary: "S", status: "released" })
+      .returning();
+    const piece = await seedPiece(t.id);
+
+    expect(
+      await linkAtomicUpdatesToPiece({
+        tenantId: t.id,
+        contentPieceId: piece.id,
+        atomicUpdateIds: [released.id],
+      })
+    ).toBe(0);
+
+    const [after] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, released.id));
+    expect(after.contentPieceId).toBeNull();
+  });
+
   it("does nothing on an empty id list", async () => {
     const [t] = await db.insert(tenants).values({ name: TENANT }).returning();
     const [a1] = await seed(t.id, ["A1"]);
