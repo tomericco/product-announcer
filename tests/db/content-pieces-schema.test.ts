@@ -66,4 +66,22 @@ describe("content_pieces schema", () => {
     const [after] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, atomic.id));
     expect(after.contentPieceId).toBeNull();
   });
+
+  it("defaults generationStep to null and round-trips a step key", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const [piece] = await db
+      .insert(contentPieces)
+      .values({ tenantId: tenant.id, title: "T", body: "B", type: "product_update" })
+      .returning();
+
+    expect(piece.generationStep).toBeNull();
+
+    const [updated] = await db
+      .update(contentPieces)
+      .set({ generationStep: "generating" })
+      .where(eq(contentPieces.id, piece.id))
+      .returning();
+
+    expect(updated.generationStep).toBe("generating");
+  });
 });

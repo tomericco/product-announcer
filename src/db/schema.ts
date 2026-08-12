@@ -599,6 +599,19 @@ export const contentPieces = pgTable("content_pieces", {
   // deterministic scaffold written at accept time. Distinct from
   // `bodyEditedAt`, which records a HUMAN edit and freezes regeneration.
   generatedAt: timestamp("generated_at", { withTimezone: true }),
+  // The DraftStepKey currently in flight (see lib/drafting/draft-progress.ts),
+  // or null when nothing is generating. Persisted rather than streamed because
+  // generation runs in `after()`, which has no open response to stream into —
+  // the client polls this instead.
+  //
+  // Free text, not an enum: the step vocabulary lives in TypeScript, a piece
+  // generated before this column existed reads null and renders as "no progress
+  // information", and adding a step later must not need a migration.
+  //
+  // MUST be cleared in every terminal write — success, failure, and the
+  // interrupted-generation marker. A piece left displaying a step it is no
+  // longer running is worse than showing none.
+  generationStep: text("generation_step"),
   // The baseline catch-up deltas measure against: how many new atomic updates
   // (or new commits on already-attached ones) have appeared since. Set at
   // claim, advanced again whenever a "catch up" merges the new material in.

@@ -421,6 +421,13 @@
       "when": 1786282596060,
       "tag": "0059_lovely_warstar",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1786553906032,
+      "tag": "0060_cloudy_mole_man",
+      "breakpoints": true
     }
   ]
 }
