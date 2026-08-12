@@ -13,6 +13,7 @@ import type { BriefForPrompt, BriefEvidenceForPrompt } from "@/lib/ai/compose-pr
 import { generateBriefDraft } from "@/lib/ai/generation";
 import { prepareGenerationContext } from "@/lib/ai/generation-context";
 import { listCompetitors } from "@/lib/workspace/competitors";
+import type { DraftStepKey } from "@/lib/drafting/draft-progress";
 
 type Database = typeof defaultDb;
 type BrandProfileRow = typeof companyProfiles.$inferSelect;
@@ -33,6 +34,26 @@ export const MIN_COMPETITOR_NAME_LENGTH = 3;
 
 function escapeForRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Records which step is in flight so the client's checklist can poll it.
+ * Never throws: progress is cosmetic, and a failed progress write must not
+ * abort a generation that is otherwise fine. Passing null clears it.
+ */
+async function setStep(
+  database: Database,
+  contentPieceId: string,
+  step: DraftStepKey | null
+): Promise<void> {
+  try {
+    await database
+      .update(contentPieces)
+      .set({ generationStep: step })
+      .where(eq(contentPieces.id, contentPieceId));
+  } catch (e) {
+    console.error(`[briefs/draft] failed to record step ${step} for piece ${contentPieceId}:`, e);
+  }
 }
 
 /**
@@ -129,6 +150,8 @@ export async function generateDraftForPiece(
       return { ok: false, error: "This draft has been edited by hand." };
     }
 
+    await setStep(database, contentPieceId, "collecting");
+
     const [brief] = await database
       .select()
       .from(briefs)
@@ -159,6 +182,7 @@ export async function generateDraftForPiece(
     // expected to match). This only selects examples, though — the system
     // prompt's role line and format/length guidance come from
     // `brief.contentType` inside `composeBriefPrompt`, not from this value.
+    await setStep(database, contentPieceId, "preparing");
     const { brandProfile, personas, examples } = await prepareGenerationContext(tenantId, database, [], piece.type);
 
     // Written BEFORE the model call, not after. `generationError: null` on a
@@ -170,7 +194,10 @@ export async function generateDraftForPiece(
     // warning; the catch block overwrites it with the real failure reason.
     await database
       .update(contentPieces)
-      .set({ generationError: "Generation was interrupted before it finished. Retry to try again." })
+      .set({
+        generationError: "Generation was interrupted before it finished. Retry to try again.",
+        generationStep: "generating",
+      })
       .where(eq(contentPieces.id, contentPieceId));
 
     let result: { title: string; body: string };
@@ -181,7 +208,7 @@ export async function generateDraftForPiece(
       try {
         await database
           .update(contentPieces)
-          .set({ generationError: message })
+          .set({ generationError: message, generationStep: null })
           .where(eq(contentPieces.id, contentPieceId));
       } catch (writeError) {
         console.error(
@@ -212,6 +239,7 @@ export async function generateDraftForPiece(
         ? `This product update may name a company from your competitors list: ${matches.join(", ")}. This only checks names on that list, not every company — review before publishing.`
         : null;
 
+    await setStep(database, contentPieceId, "saving");
     await database
       .update(contentPieces)
       .set({
@@ -220,6 +248,7 @@ export async function generateDraftForPiece(
         status: "draft",
         generatedAt: new Date(),
         generationError,
+        generationStep: null,
       })
       .where(eq(contentPieces.id, contentPieceId));
 
@@ -227,6 +256,7 @@ export async function generateDraftForPiece(
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     console.error(`[briefs/draft] generateDraftForPiece failed for piece ${contentPieceId}:`, e);
+    await setStep(database, contentPieceId, null);
     return { ok: false, error: message };
   }
 }

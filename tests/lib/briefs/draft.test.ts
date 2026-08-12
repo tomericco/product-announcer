@@ -340,4 +340,71 @@ describe("generateDraftForPiece", () => {
     // let this test pass for the wrong reason and mask a real regression.
     if (!result.ok) expect(result.error).toBe("Content piece not found.");
   });
+
+  it("advances generationStep and clears it on success", async () => {
+    const tenant = await seedTenant();
+    const { piece } = await seedPieceWithBrief(tenant.id);
+    const seen: (string | null)[] = [];
+
+    const generate = vi.fn(async () => {
+      const [mid] = await db
+        .select({ step: contentPieces.generationStep })
+        .from(contentPieces)
+        .where(eq(contentPieces.id, piece.id));
+      seen.push(mid.step);
+      return { title: "T", body: "B" };
+    });
+
+    const result = await generateDraftForPiece(piece.id, tenant.id, { database: db, generate });
+    expect(result.ok).toBe(true);
+
+    // Observed from inside the generator: the step in flight is "generating".
+    expect(seen).toEqual(["generating"]);
+
+    const [after] = await db
+      .select({ step: contentPieces.generationStep, generatedAt: contentPieces.generatedAt })
+      .from(contentPieces)
+      .where(eq(contentPieces.id, piece.id));
+    expect(after.step).toBeNull();
+    expect(after.generatedAt).not.toBeNull();
+  });
+
+  it("clears generationStep when generation throws", async () => {
+    const tenant = await seedTenant();
+    const { piece } = await seedPieceWithBrief(tenant.id);
+
+    const generate = vi.fn(async () => {
+      throw new Error("model exploded");
+    });
+
+    const result = await generateDraftForPiece(piece.id, tenant.id, { database: db, generate });
+    expect(result.ok).toBe(false);
+
+    const [after] = await db
+      .select({ step: contentPieces.generationStep, generationError: contentPieces.generationError })
+      .from(contentPieces)
+      .where(eq(contentPieces.id, piece.id));
+    expect(after.step).toBeNull();
+    expect(after.generationError).toBe("model exploded");
+  });
+
+  it("clears generationStep when the piece is refused before generating", async () => {
+    const tenant = await seedTenant();
+    const { piece } = await seedPieceWithBrief(tenant.id);
+    await db.update(contentPieces).set({ status: "published" }).where(eq(contentPieces.id, piece.id));
+
+    const generate = vi.fn(async () => {
+      throw new Error("must not be called");
+    });
+
+    const result = await generateDraftForPiece(piece.id, tenant.id, { database: db, generate });
+    expect(result.ok).toBe(false);
+    expect(generate).not.toHaveBeenCalled();
+
+    const [after] = await db
+      .select({ step: contentPieces.generationStep })
+      .from(contentPieces)
+      .where(eq(contentPieces.id, piece.id));
+    expect(after.step).toBeNull();
+  });
 });
