@@ -1,6 +1,12 @@
 import { describe, it, expect } from "vitest";
 import { DRAFT_STEPS } from "../../src/lib/drafting/draft-progress";
-import { statusesForStep, shouldStopPolling } from "../../src/app/(dashboard)/board/generation-checklist";
+import {
+  statusesForStep,
+  shouldStopPolling,
+  hasExceededPollLimit,
+  terminalOutcome,
+  MAX_POLL_ATTEMPTS,
+} from "../../src/components/generation-checklist";
 import type { GenerationProgress } from "../../src/lib/content/generation-progress";
 
 // No jsdom/testing-library in this project (vitest.config.ts runs the
@@ -47,6 +53,49 @@ describe("statusesForStep", () => {
     expect(() => statusesForStep("some-future-step" as never)).not.toThrow();
     const statuses = statusesForStep("some-future-step" as never);
     for (const step of DRAFT_STEPS) expect(statuses[step.key]).toBe("pending");
+  });
+
+  it("marks every step done for the 'complete' sentinel", () => {
+    // Finding 1: the poll loop substitutes "complete" once a run lands,
+    // rather than passing the server's now-null generationStep straight
+    // through — that null used to make a successful run render as if it had
+    // never started.
+    const statuses = statusesForStep("complete");
+    for (const step of DRAFT_STEPS) expect(statuses[step.key]).toBe("done");
+  });
+});
+
+describe("hasExceededPollLimit", () => {
+  it("allows polling below the cap", () => {
+    expect(hasExceededPollLimit(1)).toBe(false);
+    expect(hasExceededPollLimit(MAX_POLL_ATTEMPTS - 1)).toBe(false);
+  });
+
+  it("stops at and beyond the cap", () => {
+    // Finding 2: shouldStopPolling returns false forever for a wedged
+    // generation (the interrupted marker leaves step="generating" with no
+    // further write, and a pre-marker throw leaves step=null/error=null
+    // indistinguishable from "not started"). This cap is what actually
+    // bounds the loop in both cases.
+    expect(hasExceededPollLimit(MAX_POLL_ATTEMPTS)).toBe(true);
+    expect(hasExceededPollLimit(MAX_POLL_ATTEMPTS + 1)).toBe(true);
+  });
+});
+
+describe("terminalOutcome", () => {
+  // Finding 1: a landed failure must render distinctly from a completed
+  // run — it must not resolve to the same "complete" outcome, which is what
+  // used to paint five green checkmarks over a failed generation.
+  it("is 'complete' when generatedAt is set", () => {
+    expect(terminalOutcome(progress({ generatedAt: new Date(), generationStep: null }))).toBe("complete");
+  });
+
+  it("is 'failed' for a landed failure — error set, step already cleared", () => {
+    expect(terminalOutcome(progress({ generationError: "boom", generationStep: null }))).toBe("failed");
+  });
+
+  it("is 'gone' when the piece disappeared from under the poll", () => {
+    expect(terminalOutcome(null)).toBe("gone");
   });
 });
 

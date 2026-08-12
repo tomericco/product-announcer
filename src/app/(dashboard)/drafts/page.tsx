@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { reviewStatusLabel } from "@/lib/ai/review-status";
 import { formatShortDate } from "@/lib/utils";
+import { GenerationChecklist } from "@/components/generation-checklist";
 import { DraftRowMenu } from "./draft-row-menu";
 import {
   EmptyState,
@@ -90,49 +91,63 @@ export default async function DraftsPage() {
       <div className="-mx-3">
         {drafts.map((d) => (
           // The menu button can't nest inside the anchor, so the link is
-          // stretched over the row and the menu sits above it as a sibling.
+          // stretched over the whole row (including the checklist below, when
+          // it renders) and the menu sits above it as a sibling.
           <div
             key={d.id}
-            className="group relative flex items-center gap-3 rounded-lg px-3 py-2.5 transition-colors hover:bg-muted/60"
+            className="group relative rounded-lg px-3 py-2.5 transition-colors hover:bg-muted/60"
           >
             <Link href={`/drafts/${d.id}`} className="absolute inset-0 rounded-lg" aria-label={d.title} />
-            <span className="min-w-0 flex-1 truncate font-medium">{d.title}</span>
-            {/* A "brief" row is an accepted-but-ungenerated scaffold — badge it
-                distinctly so it never reads as a finished draft. Mutually
-                exclusive with the review-status badge below: reviewStatus is
-                only ever set once a real draft has been generated. */}
-            {d.status === "brief" && (
-              <Badge variant={d.generationError ? "destructive" : "outline"}>
-                {d.generationError ? "Generation failed" : "Awaiting generation"}
-              </Badge>
-            )}
-            {reviewStatusLabel(d.reviewStatus) && (
-              <Badge variant={d.reviewStatus === "failed" ? "destructive" : "outline"}>
-                {reviewStatusLabel(d.reviewStatus)}
-              </Badge>
-            )}
-            <span
-              className="shrink-0 text-sm text-muted-foreground"
-              title={d.createdAt.toLocaleString()}
-            >
-              {formatShortDate(d.createdAt)}
-            </span>
-            {/* Both statuses get the menu, but a "brief" row only gets Delete —
-                Publish only makes sense for a real draft, and Generate draft
-                (the only other action a "brief" row supports) lives on the
-                detail page, not here. Delete is what a "brief" row needs most:
-                a piece whose generation can never succeed (no linked brief,
-                or a persistent model failure) would otherwise have no exit
-                and inflate this count forever. */}
-            {(d.status === "draft" || d.status === "brief") && (
-              <div className="relative shrink-0">
-                <DraftRowMenu
-                  contentPieceId={d.id}
-                  title={d.title}
-                  atomicUpdateCount={atomicUpdateCounts.get(d.id) ?? 0}
-                  publishedAt={d.publishedAt ? d.publishedAt.toISOString() : null}
-                  canPublish={d.status === "draft"}
-                />
+            <div className="flex items-center gap-3">
+              <span className="min-w-0 flex-1 truncate font-medium">{d.title}</span>
+              {/* A "brief" row is an accepted-but-ungenerated scaffold — badge it
+                  distinctly so it never reads as a finished draft. Mutually
+                  exclusive with the review-status badge below: reviewStatus is
+                  only ever set once a real draft has been generated. */}
+              {d.status === "brief" && (
+                <Badge variant={d.generationError ? "destructive" : "outline"}>
+                  {d.generationError ? "Generation failed" : "Awaiting generation"}
+                </Badge>
+              )}
+              {reviewStatusLabel(d.reviewStatus) && (
+                <Badge variant={d.reviewStatus === "failed" ? "destructive" : "outline"}>
+                  {reviewStatusLabel(d.reviewStatus)}
+                </Badge>
+              )}
+              <span
+                className="shrink-0 text-sm text-muted-foreground"
+                title={d.createdAt.toLocaleString()}
+              >
+                {formatShortDate(d.createdAt)}
+              </span>
+              {/* Both statuses get the menu, but a "brief" row only gets Delete —
+                  Publish only makes sense for a real draft, and Generate draft
+                  (the only other action a "brief" row supports) lives on the
+                  detail page, not here. Delete is what a "brief" row needs most:
+                  a piece whose generation can never succeed (no linked brief,
+                  or a persistent model failure) would otherwise have no exit
+                  and inflate this count forever. */}
+              {(d.status === "draft" || d.status === "brief") && (
+                <div className="relative shrink-0">
+                  <DraftRowMenu
+                    contentPieceId={d.id}
+                    title={d.title}
+                    atomicUpdateCount={atomicUpdateCounts.get(d.id) ?? 0}
+                    publishedAt={d.publishedAt ? d.publishedAt.toISOString() : null}
+                    canPublish={d.status === "draft"}
+                  />
+                </div>
+              )}
+            </div>
+            {/* Same condition the board card uses (column.tsx / card.tsx):
+                only while a generation is actually in flight — a brief that
+                hasn't been generated yet (generationStep null, no error)
+                shows just the badge above, not a half-lit checklist. Reuses
+                the same component the board polls so the two surfaces can
+                never drift out of sync on what "in flight" means. */}
+            {d.status === "brief" && d.generationStep !== null && (
+              <div className="relative mt-2">
+                <GenerationChecklist contentPieceId={d.id} />
               </div>
             )}
           </div>
