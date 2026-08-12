@@ -20,7 +20,7 @@ import type { WorkspaceMember } from "@/lib/workspace/members";
 // Function reference, which is how Next.js expects client code to invoke one.
 import { generateDraft } from "../briefs/actions";
 import { assignCard } from "./actions";
-import { GenerationChecklist } from "./generation-checklist";
+import { GenerationChecklist } from "@/components/generation-checklist";
 
 // The scheduled badge must show the piece's LOCAL wall-clock time (the
 // spec's requirement — see the picker in board.tsx), which rules out pinning
