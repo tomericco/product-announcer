@@ -257,7 +257,11 @@ Call sites, in order through `generateDraftForPiece`:
 - Cleared by adding `generationStep: null` to the **final success write** (line 215) and to the **catch block's error write** (line 182). Both are existing statements — add the field, do not add a second update.
 - Cleared in the outer `catch` too, before returning, via `setStep(database, contentPieceId, null)`.
 
-> The three early returns (`piece not found`, wrong status, `bodyEditedAt`) need no clear because nothing was written yet — that is exactly why `"collecting"` goes *after* them.
+> There are **four** early returns, not three, and they split into two groups.
+>
+> `piece not found`, wrong status, and `bodyEditedAt` all sit *before* the `"collecting"` write, so nothing has been written and no clear is needed — that is exactly why `"collecting"` goes after them.
+>
+> **`!brief` ("No brief is linked to this piece") sits *after* it, and must clear the step before returning.** It is a plain `return`, not a throw, so it never reaches the outer `catch`. Missing this leaves a piece permanently displaying `"collecting"` — caught in Task 2's review, recorded here so it is not reintroduced.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
