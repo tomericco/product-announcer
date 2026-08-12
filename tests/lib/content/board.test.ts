@@ -87,11 +87,17 @@ describe("readBoard", () => {
   it("carries the fields a card renders", async () => {
     const tenant = await seedTenant();
     const when = new Date("2026-09-01T09:00:00Z");
-    await seedPiece(tenant.id, { status: "scheduled", scheduledFor: when, generationError: "warned" });
+    await seedPiece(tenant.id, {
+      status: "scheduled",
+      scheduledFor: when,
+      generationError: "warned",
+      generationStep: "generating",
+    });
 
     const [card] = (await readBoard(tenant.id, db)).scheduled;
     expect(card.scheduledFor?.toISOString()).toBe(when.toISOString());
     expect(card.generationError).toBe("warned");
+    expect(card.generationStep).toBe("generating");
   });
 
   it("filters by assignee BEFORE capping the published column, not after", async () => {

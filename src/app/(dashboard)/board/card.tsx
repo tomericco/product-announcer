@@ -20,6 +20,7 @@ import type { WorkspaceMember } from "@/lib/workspace/members";
 // Function reference, which is how Next.js expects client code to invoke one.
 import { generateDraft } from "../briefs/actions";
 import { assignCard } from "./actions";
+import { GenerationChecklist } from "./generation-checklist";
 
 // The scheduled badge must show the piece's LOCAL wall-clock time (the
 // spec's requirement — see the picker in board.tsx), which rules out pinning
@@ -176,6 +177,14 @@ export function BoardCardItem({ card, members, draggable, onGenerated, onAssigne
           )}
           {card.status === "draft" && card.generationError && (
             <p className="text-xs text-muted-foreground">{card.generationError}</p>
+          )}
+
+          {/* Only while a generation is actually in flight — a brief that
+              hasn't been generated yet (generationStep null, no error) shows
+              just the "Awaiting generation" badge above, not a half-lit
+              checklist. */}
+          {card.status === "brief" && card.generationStep !== null && (
+            <GenerationChecklist contentPieceId={card.id} />
           )}
 
           <Select

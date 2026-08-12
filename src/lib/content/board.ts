@@ -2,6 +2,7 @@ import { and, desc, eq } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
 import { contentPieces, tenantMembers } from "@/db/schema";
 import type { ContentPiece } from "@/lib/publishing/destinations/types";
+import type { DraftStepKey } from "@/lib/drafting/draft-progress";
 
 type Database = typeof defaultDb;
 
@@ -22,6 +23,10 @@ export type BoardCard = {
   scheduledFor: Date | null;
   generationError: string | null;
   generatedAt: Date | null;
+  // Free text in the database (see the schema comment on the column); cast
+  // the same way readGenerationProgress does, tolerating a key this build
+  // does not recognize rather than asserting it away.
+  generationStep: DraftStepKey | null;
   createdAt: Date;
 };
 
@@ -52,6 +57,7 @@ export async function readBoard(
       scheduledFor: contentPieces.scheduledFor,
       generationError: contentPieces.generationError,
       generatedAt: contentPieces.generatedAt,
+      generationStep: contentPieces.generationStep,
       createdAt: contentPieces.createdAt,
     })
     .from(contentPieces)
@@ -78,7 +84,11 @@ export async function readBoard(
     if (!isBoardColumn(row.status)) continue;
     if (opts.assignedTo === "unassigned" && row.assignedTo !== null) continue;
     if (opts.assignedTo && opts.assignedTo !== "unassigned" && row.assignedTo !== opts.assignedTo) continue;
-    board[row.status].push({ ...row, status: row.status });
+    board[row.status].push({
+      ...row,
+      status: row.status,
+      generationStep: row.generationStep as DraftStepKey | null,
+    });
   }
 
   // Sliced to the limit AFTER ordering (newest first) and AFTER the assignee
