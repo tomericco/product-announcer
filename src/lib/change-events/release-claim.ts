@@ -106,9 +106,74 @@ export async function claimReleaseFromAtomicUpdates(
 }
 
 /**
+ * Links already-derived atomic updates to an EXISTING content piece and closes
+ * them (`status = 'released'`), tenant-scoped.
+ *
+ * The half of `claimReleaseFromAtomicUpdates` that survives the unified
+ * drafting path. That function had to CREATE the piece because the
+ * atomic-update flow had none until it made one; a brief-driven piece already
+ * exists by the time drafting runs, so only the link remains. (The claim stays
+ * in place until its last caller — `compose-draft.ts`, still wired to the live
+ * API route — retires.)
+ *
+ * Takes an `Executor` so the caller can pass a transaction and make the link
+ * atomic with its own draft-body write: a piece saved with a body while its
+ * atomic updates stayed `open` would offer the same shipped work to the next
+ * compose run and ship it twice. Called with the default `database` it is a
+ * single UPDATE, atomic on its own.
+ *
+ * `at` stamps `updatedAt`. Pass the same Date the caller writes to the piece's
+ * `composedAt`, or `computeReleaseDelta`'s strict `updatedAt > composedAt`
+ * reads every atomic update just linked here as a post-compose change — the
+ * phantom catch-up documented on `claimReleaseFromAtomicUpdates` above.
+ *
+ * No `status`/`contentPieceId` precondition, unlike the claim: the caller has
+ * already re-derived this set from its own tenant-scoped query, and the
+ * exclusion of already-linked atomic updates belongs there (see
+ * `generateDraftForPiece`), not in a second, weaker copy here.
+ */
+export async function linkAtomicUpdatesToPiece(
+  input: {
+    tenantId: string;
+    contentPieceId: string;
+    atomicUpdateIds: string[];
+    at?: Date;
+  },
+  database: Executor = defaultDb
+): Promise<number> {
+  // `inArray` with an empty list is a query that can only match nothing —
+  // return before spending a round-trip on it.
+  if (input.atomicUpdateIds.length === 0) return 0;
+
+  const linked = await database
+    .update(atomicUpdates)
+    .set({
+      contentPieceId: input.contentPieceId,
+      status: "released",
+      updatedAt: input.at ?? new Date(),
+    })
+    .where(
+      and(
+        inArray(atomicUpdates.id, input.atomicUpdateIds),
+        // The security boundary. Without it a signal citing another tenant's
+        // atomic update would pull that row into this tenant's piece.
+        eq(atomicUpdates.tenantId, input.tenantId)
+      )
+    )
+    .returning({ id: atomicUpdates.id });
+  return linked.length;
+}
+
+/**
  * On publish: closes a release's atomic updates. The inverse of leaving them
- * open while the release is a draft — this is the only place `status`
- * transitions to `released`.
+ * open while the release is a draft.
+ *
+ * This is the publish-time transition to `released`. It is no longer the only
+ * one: the unified drafting path closes them at DRAFT time, through
+ * `linkAtomicUpdatesToPiece` above, because a brief-driven piece is drafted
+ * once and its shipped work must not be offered again in the meantime. This
+ * function still serves the claim-based path, and re-running it over already
+ * released rows is a no-op in effect.
  */
 export async function markReleaseAtomicUpdatesReleased(
   contentPieceId: string,

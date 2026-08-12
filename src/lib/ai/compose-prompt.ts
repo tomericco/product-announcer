@@ -171,15 +171,33 @@ export function serializeAtomicUpdates(
   return dropped > 0 ? `${kept.join("\n")}\n…and ${dropped} more updates not shown.` : kept.join("\n");
 }
 
+/**
+ * `evidence` carries the NON-shipped-work signals a product-update brief cited
+ * when this prompt is reached through the unified drafting path. Only
+ * `shipped_work` signals supply `items`; the rest would otherwise be silently
+ * dropped on the way into a release composition. It is optional and empty by
+ * default, so the claim-based compose path is unaffected.
+ *
+ * It is fenced as context, not as material to announce: a news article a brief
+ * cited is background for how the update is framed, not something this company
+ * shipped.
+ */
 export function composeReleasePrompt(args: {
   items: AtomicUpdateForPrompt[];
   brandProfile: BrandProfileRow;
   personas: ResolvedPersona[];
   examples: ExampleRow[];
+  evidence?: BriefEvidenceForPrompt[];
 }): { system: string; prompt: string } {
+  const evidence = args.evidence ?? [];
+  const context =
+    evidence.length > 0
+      ? `\n\nBackground the brief cited — context for framing only. None of it is work this company shipped, so do not announce any of it as a change; ground anything you take from it strictly in what it says.\n<sources>\n${serializeBriefEvidence(evidence)}\n</sources>`
+      : "";
+
   return {
     system: buildSystemPrompt(args.brandProfile, args.personas, args.examples),
-    prompt: `Here are the changes to summarize into one product update. Format the body as Markdown (short paragraphs, and bullet lists where helpful). ${SIZE_GUIDANCE}\n\n${serializeAtomicUpdates(args.items)}`,
+    prompt: `Here are the changes to summarize into one product update. Format the body as Markdown (short paragraphs, and bullet lists where helpful). ${SIZE_GUIDANCE}\n\n${serializeAtomicUpdates(args.items)}${context}`,
   };
 }
 

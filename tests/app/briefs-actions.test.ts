@@ -46,7 +46,19 @@ const generateBriefDraft = vi.fn(async (..._args: unknown[]) => ({
   title: "Mock generated title",
   body: "Mock generated body.",
 }));
-vi.mock("../../src/lib/ai/generation", () => ({ generateBriefDraft: (...args: unknown[]) => generateBriefDraft(...args) }));
+// `generateReleaseDraft` is the release fork's generator. No brief here cites
+// shipped work, so the fork never selects it — but `generateDraftForPiece`
+// reads the export unconditionally to resolve its default, and a mocked module
+// throws on an export it doesn't define. Mocked for the same reason as the one
+// above: so nothing in this file can reach a real model.
+const generateReleaseDraft = vi.fn(async (..._args: unknown[]) => ({
+  title: "Mock release title",
+  body: "Mock release body.",
+}));
+vi.mock("../../src/lib/ai/generation", () => ({
+  generateBriefDraft: (...args: unknown[]) => generateBriefDraft(...args),
+  generateReleaseDraft: (...args: unknown[]) => generateReleaseDraft(...args),
+}));
 
 import { revalidatePath } from "next/cache";
 import { acceptBrief, dismissBrief } from "../../src/app/(dashboard)/briefs/actions";

@@ -9,8 +9,11 @@ import {
   briefs,
   briefSignals,
   signals,
+  atomicUpdates,
 } from "../../../src/db/schema";
 import { generateDraftForPiece, findNamedCompanies, MIN_COMPETITOR_NAME_LENGTH } from "../../../src/lib/briefs/draft";
+import { computeReleaseDelta } from "../../../src/lib/change-events/release-deltas";
+import type { ReviewOutcome } from "../../../src/lib/ai/review-draft";
 
 const TENANT = "Brief Draft Test Tenant";
 
@@ -91,6 +94,58 @@ async function seedPieceWithBrief(
 
   return { piece, brief, signal };
 }
+
+/**
+ * The shipped-work half of a brief's evidence: a real atomic update, the
+ * `shipped_work` signal that `syncShippedWorkSignals` derives from it, and the
+ * brief_signals row citing it. This is the only shape the release fork reads —
+ * it re-derives the atomic updates through this join rather than trusting any
+ * id from a caller.
+ *
+ * `atomicUpdateTenantId` defaults to the signal's tenant; pass a different one
+ * to build the cross-tenant case (a signal this tenant owns pointing at
+ * somebody else's atomic update).
+ */
+async function seedShippedWork(args: {
+  tenantId: string;
+  briefId: string;
+  title?: string;
+  atomicUpdateTenantId?: string;
+}) {
+  const [atomicUpdate] = await db
+    .insert(atomicUpdates)
+    .values({
+      tenantId: args.atomicUpdateTenantId ?? args.tenantId,
+      title: args.title ?? "Shipped thing",
+      summary: `Summary for ${args.title ?? "Shipped thing"}`,
+      category: "new",
+      size: "l",
+    })
+    .returning();
+
+  const [signal] = await db
+    .insert(signals)
+    .values({
+      tenantId: args.tenantId,
+      kind: "shipped_work",
+      // Mirrors syncShippedWorkSignals: the atomic update's id is the key.
+      externalId: atomicUpdate.id,
+      title: atomicUpdate.title,
+      excerpt: atomicUpdate.summary,
+      occurredAt: new Date(),
+      atomicUpdateId: atomicUpdate.id,
+    })
+    .returning();
+
+  await db.insert(briefSignals).values({ briefId: args.briefId, signalId: signal.id });
+  return { atomicUpdate, signal };
+}
+
+const passingReview = async (draft: { title: string; body: string }): Promise<ReviewOutcome> => ({
+  finalDraft: draft,
+  status: "passed",
+  issues: [],
+});
 
 describe("findNamedCompanies", () => {
   it("matches case-insensitively on a word boundary", () => {
@@ -412,5 +467,338 @@ describe("generateDraftForPiece", () => {
       .from(contentPieces)
       .where(eq(contentPieces.id, piece.id));
     expect(after.step).toBeNull();
+  });
+});
+
+/**
+ * The release fork. `brief.contentType === "product_update"` selects the
+ * release composition — NOT "the evidence is all shipped work", which would
+ * give a blog post built from shipped work changelog treatment.
+ *
+ * Every test here injects BOTH generators and the reviewer: the release branch
+ * runs generate → review → validate-links, and none of those may reach a real
+ * model.
+ */
+describe("generateDraftForPiece — release fork", () => {
+  /** A product-update piece whose brief is also a product update. */
+  async function seedProductUpdate(tenantId: string) {
+    return seedPieceWithBrief(tenantId, { type: "product_update" }, { contentType: "product_update" });
+  }
+
+  it("routes a product_update brief carrying shipped work through the RELEASE generator", async () => {
+    const tenant = await seedTenant();
+    const { piece, brief } = await seedProductUpdate(tenant.id);
+    await seedShippedWork({ tenantId: tenant.id, briefId: brief.id });
+
+    const generate = vi.fn(async () => ({ title: "Brief title", body: "Brief body." }));
+    const generateRelease = vi.fn(async () => ({ title: "Release title", body: "Release body." }));
+
+    const result = await generateDraftForPiece(piece.id, tenant.id, {
+      database: db,
+      generate,
+      generateRelease,
+      review: passingReview,
+    });
+    expect(result.ok).toBe(true);
+
+    // Which generator ran is the assertion — not the output.
+    expect(generateRelease).toHaveBeenCalledTimes(1);
+    expect(generate).not.toHaveBeenCalled();
+
+    const [after] = await db.select().from(contentPieces).where(eq(contentPieces.id, piece.id));
+    expect(after.status).toBe("draft");
+    expect(after.body).toBe("Release body.");
+  });
+
+  it("falls back to the BRIEF generator for a product_update brief with no shipped work", async () => {
+    const tenant = await seedTenant();
+    // seedPieceWithBrief cites one market_news signal and nothing else.
+    const { piece } = await seedProductUpdate(tenant.id);
+
+    const generate = vi.fn(async () => ({ title: "Brief title", body: "Brief body." }));
+    const generateRelease = vi.fn(async () => ({ title: "Release title", body: "Release body." }));
+
+    const result = await generateDraftForPiece(piece.id, tenant.id, {
+      database: db,
+      generate,
+      generateRelease,
+      review: passingReview,
+    });
+    expect(result.ok).toBe(true);
+
+    // A manually created product-update brief citing only news is a real case:
+    // it has no atomic updates to compose from, so it falls back rather than
+    // erroring.
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(generateRelease).not.toHaveBeenCalled();
+  });
+
+  it("keeps a blog_post brief on the BRIEF generator even when it cites shipped work", async () => {
+    const tenant = await seedTenant();
+    // seedPieceWithBrief's default contentType is blog_post.
+    const { piece, brief } = await seedPieceWithBrief(tenant.id);
+    await seedShippedWork({ tenantId: tenant.id, briefId: brief.id });
+
+    const generate = vi.fn(async () => ({ title: "Brief title", body: "Brief body." }));
+    const generateRelease = vi.fn(async () => ({ title: "Release title", body: "Release body." }));
+
+    const result = await generateDraftForPiece(piece.id, tenant.id, {
+      database: db,
+      generate,
+      generateRelease,
+      review: passingReview,
+    });
+    expect(result.ok).toBe(true);
+
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(generateRelease).not.toHaveBeenCalled();
+  });
+
+  it("still sends non-shipped-work evidence to the release generator as context", async () => {
+    const tenant = await seedTenant();
+    // `signal` here is the market_news one seedPieceWithBrief always attaches.
+    const { piece, brief, signal } = await seedProductUpdate(tenant.id);
+    const { atomicUpdate } = await seedShippedWork({ tenantId: tenant.id, briefId: brief.id });
+
+    const generate = vi.fn(async () => ({ title: "Brief title", body: "Brief body." }));
+    const generateRelease = vi.fn(async () => ({ title: "Release title", body: "Release body." }));
+
+    const result = await generateDraftForPiece(piece.id, tenant.id, {
+      database: db,
+      generate,
+      generateRelease,
+      review: passingReview,
+    });
+    expect(result.ok).toBe(true);
+
+    const [items, , , , evidence] = generateRelease.mock.calls[0] as unknown as [
+      { id: string }[],
+      unknown,
+      unknown,
+      unknown,
+      { title: string; kind: string }[],
+    ];
+    // The shipped work supplies the atomic updates…
+    expect(items.map((i) => i.id)).toEqual([atomicUpdate.id]);
+    // …and the other evidence still reaches the prompt as context. Nothing is
+    // silently dropped. The shipped-work signal is NOT repeated there — it is
+    // already in `items`.
+    expect(evidence.map((e) => e.title)).toEqual([signal.title]);
+    expect(evidence.every((e) => e.kind !== "shipped_work")).toBe(true);
+  });
+
+  it("takes atomic updates only from shipped_work signals", async () => {
+    const tenant = await seedTenant();
+    const { piece, brief } = await seedProductUpdate(tenant.id);
+
+    // A non-shipped-work signal that nonetheless carries an atomicUpdateId.
+    // `atomicUpdateId` is a plain nullable FK on every signal kind, so the
+    // shipped_work predicate is what keeps a manual or news signal from
+    // dragging an atomic update into a composition.
+    const [foreignKindUpdate] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "Not shipped work", summary: "S" })
+      .returning();
+    const [manualSignal] = await db
+      .insert(signals)
+      .values({
+        tenantId: tenant.id,
+        kind: "manual",
+        externalId: `manual-${foreignKindUpdate.id}`,
+        title: "Manual note",
+        occurredAt: new Date(),
+        atomicUpdateId: foreignKindUpdate.id,
+      })
+      .returning();
+    await db.insert(briefSignals).values({ briefId: brief.id, signalId: manualSignal.id });
+
+    const generateRelease = vi.fn(async () => ({ title: "Release title", body: "Release body." }));
+    const result = await generateDraftForPiece(piece.id, tenant.id, {
+      database: db,
+      generate: vi.fn(async () => ({ title: "Brief title", body: "Brief body." })),
+      generateRelease,
+      review: passingReview,
+    });
+    expect(result.ok).toBe(true);
+    expect(generateRelease).not.toHaveBeenCalled();
+
+    const [after] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, foreignKindUpdate.id));
+    expect(after.contentPieceId).toBeNull();
+    expect(after.status).toBe("open");
+  });
+
+  it("contributes no atomic update for a signal pointing at another tenant's atomic update", async () => {
+    const tenant = await seedTenant();
+    const [other] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const { piece, brief } = await seedProductUpdate(tenant.id);
+    // A signal this tenant owns whose atomicUpdateId belongs to somebody else.
+    const { atomicUpdate } = await seedShippedWork({
+      tenantId: tenant.id,
+      briefId: brief.id,
+      atomicUpdateTenantId: other.id,
+    });
+
+    const generate = vi.fn(async () => ({ title: "Brief title", body: "Brief body." }));
+    const generateRelease = vi.fn(async () => ({ title: "Release title", body: "Release body." }));
+
+    const result = await generateDraftForPiece(piece.id, tenant.id, {
+      database: db,
+      generate,
+      generateRelease,
+      review: passingReview,
+    });
+    expect(result.ok).toBe(true);
+
+    // No composable atomic update -> the generic path, and the foreign row is
+    // untouched.
+    expect(generateRelease).not.toHaveBeenCalled();
+    expect(generate).toHaveBeenCalledTimes(1);
+
+    const [foreign] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, atomicUpdate.id));
+    expect(foreign.status).toBe("open");
+    expect(foreign.contentPieceId).toBeNull();
+  });
+
+  it("links its atomic updates to the EXISTING piece, releases them, and creates no second piece", async () => {
+    const tenant = await seedTenant();
+    const { piece, brief } = await seedProductUpdate(tenant.id);
+    const { atomicUpdate } = await seedShippedWork({ tenantId: tenant.id, briefId: brief.id });
+
+    const before = await db.select().from(contentPieces).where(eq(contentPieces.tenantId, tenant.id));
+    expect(before).toHaveLength(1);
+
+    const result = await generateDraftForPiece(piece.id, tenant.id, {
+      database: db,
+      generate: vi.fn(async () => ({ title: "Brief title", body: "Brief body." })),
+      generateRelease: vi.fn(async () => ({ title: "Release title", body: "Release body." })),
+      review: passingReview,
+    });
+    expect(result.ok).toBe(true);
+
+    // The brief path already created the piece at accept time — the release
+    // branch must link to it, never claim a new one.
+    const after = await db.select().from(contentPieces).where(eq(contentPieces.tenantId, tenant.id));
+    expect(after).toHaveLength(1);
+    expect(after[0].id).toBe(piece.id);
+
+    const [linked] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, atomicUpdate.id));
+    expect(linked.contentPieceId).toBe(piece.id);
+    // Released, not left open: an atomic update left `open` would be offered to
+    // the next compose run and shipped twice.
+    expect(linked.status).toBe("released");
+  });
+
+  it("reports no phantom catch-up on the piece it just drafted", async () => {
+    const tenant = await seedTenant();
+    const { piece, brief } = await seedProductUpdate(tenant.id);
+    await seedShippedWork({ tenantId: tenant.id, briefId: brief.id });
+
+    const result = await generateDraftForPiece(piece.id, tenant.id, {
+      database: db,
+      generate: vi.fn(async () => ({ title: "Brief title", body: "Brief body." })),
+      generateRelease: vi.fn(async () => ({ title: "Release title", body: "Release body." })),
+      review: passingReview,
+    });
+    expect(result.ok).toBe(true);
+
+    // composedAt was stamped at brief-accept time, BEFORE this link. Left
+    // there, computeReleaseDelta's strict `updatedAt > composedAt` reads every
+    // atomic update just linked here as a post-compose change — a catch-up
+    // banner on a brand-new draft.
+    const delta = await computeReleaseDelta(piece.id, db);
+    expect(delta.count).toBe(0);
+  });
+
+  it("writes the reviewing step, which the generic path never reaches", async () => {
+    const tenant = await seedTenant();
+    const { piece, brief } = await seedProductUpdate(tenant.id);
+    await seedShippedWork({ tenantId: tenant.id, briefId: brief.id });
+
+    let stepDuringReview: string | null | undefined;
+    const review = vi.fn(async (draft: { title: string; body: string }): Promise<ReviewOutcome> => {
+      const [current] = await db
+        .select({ step: contentPieces.generationStep })
+        .from(contentPieces)
+        .where(eq(contentPieces.id, piece.id));
+      stepDuringReview = current.step;
+      return { finalDraft: draft, status: "failed", issues: ["Too breezy."] };
+    });
+
+    const result = await generateDraftForPiece(piece.id, tenant.id, {
+      database: db,
+      generate: vi.fn(async () => ({ title: "Brief title", body: "Brief body." })),
+      generateRelease: vi.fn(async () => ({ title: "Release title", body: "Release body." })),
+      review,
+    });
+    expect(result.ok).toBe(true);
+    expect(stepDuringReview).toBe("reviewing");
+
+    const [after] = await db.select().from(contentPieces).where(eq(contentPieces.id, piece.id));
+    expect(after.generationStep).toBeNull();
+    expect(after.reviewStatus).toBe("failed");
+    expect(after.reviewIssues).toEqual(["Too breezy."]);
+  });
+
+  it("leaves the atomic updates open and the piece retryable when the release generator keeps failing", async () => {
+    const tenant = await seedTenant();
+    const { piece, brief } = await seedProductUpdate(tenant.id);
+    const { atomicUpdate } = await seedShippedWork({ tenantId: tenant.id, briefId: brief.id });
+
+    const generateRelease = vi.fn(async () => {
+      throw new Error("model unavailable");
+    });
+
+    const result = await generateDraftForPiece(piece.id, tenant.id, {
+      database: db,
+      generate: vi.fn(async () => ({ title: "Brief title", body: "Brief body." })),
+      generateRelease,
+      review: passingReview,
+    });
+    expect(result.ok).toBe(false);
+
+    const [after] = await db.select().from(contentPieces).where(eq(contentPieces.id, piece.id));
+    expect(after.status).toBe("brief");
+    expect(after.body).toBe("SCAFFOLD BODY");
+    expect(after.generationError).toContain("model unavailable");
+    // The invariant this whole plan keeps tripping over: every exit clears it.
+    expect(after.generationStep).toBeNull();
+
+    // Nothing was consumed, so the same shipped work is still composable.
+    const [untouched] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, atomicUpdate.id));
+    expect(untouched.status).toBe("open");
+    expect(untouched.contentPieceId).toBeNull();
+  });
+
+  it("does not re-derive an atomic update already linked to another piece", async () => {
+    const tenant = await seedTenant();
+    const { piece, brief } = await seedProductUpdate(tenant.id);
+    const { atomicUpdate } = await seedShippedWork({ tenantId: tenant.id, briefId: brief.id });
+
+    // Somebody else already composed this shipped work. The retiring API route
+    // intersected its requested ids with getOpenAtomicUpdates (open AND
+    // unlinked); that exclusion has to survive the move, or this draft steals
+    // the atomic update out of the piece already shipping it.
+    const [otherPiece] = await db
+      .insert(contentPieces)
+      .values({ tenantId: tenant.id, title: "Already composed", body: "B" })
+      .returning();
+    await db
+      .update(atomicUpdates)
+      .set({ contentPieceId: otherPiece.id })
+      .where(eq(atomicUpdates.id, atomicUpdate.id));
+
+    const generateRelease = vi.fn(async () => ({ title: "Release title", body: "Release body." }));
+    const result = await generateDraftForPiece(piece.id, tenant.id, {
+      database: db,
+      generate: vi.fn(async () => ({ title: "Brief title", body: "Brief body." })),
+      generateRelease,
+      review: passingReview,
+    });
+    expect(result.ok).toBe(true);
+    expect(generateRelease).not.toHaveBeenCalled();
+
+    const [still] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, atomicUpdate.id));
+    expect(still.contentPieceId).toBe(otherPiece.id);
+    expect(still.status).toBe("open");
   });
 });

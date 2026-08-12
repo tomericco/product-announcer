@@ -23,13 +23,19 @@ export const UpdateDraftSchema = z.object({
 
 export type UpdateDraft = z.infer<typeof UpdateDraftSchema>;
 
+/**
+ * `evidence` is the non-shipped-work material a product-update brief cited,
+ * passed only by the unified drafting path (`generateDraftForPiece`). Optional
+ * and empty by default so the claim-based compose path is unchanged.
+ */
 export async function generateReleaseDraft(
   items: AtomicUpdateForPrompt[],
   brandProfile: BrandProfileRow,
   personas: ResolvedPersona[] = [],
-  examples: ExampleRow[] = []
+  examples: ExampleRow[] = [],
+  evidence: BriefEvidenceForPrompt[] = []
 ): Promise<UpdateDraft> {
-  const { system, prompt } = composeReleasePrompt({ items, brandProfile, personas, examples });
+  const { system, prompt } = composeReleasePrompt({ items, brandProfile, personas, examples, evidence });
 
   const spec = process.env.GENERATION_MODEL ?? "anthropic/claude-sonnet-4-5";
   const result = await generateObject({

@@ -1,6 +1,7 @@
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq, isNull } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
 import {
+  atomicUpdates,
   contentPieces,
   briefs,
   briefSignals,
@@ -9,9 +10,16 @@ import {
   type systemContentExamples,
   type ResolvedPersona,
 } from "@/db/schema";
-import type { BriefForPrompt, BriefEvidenceForPrompt } from "@/lib/ai/compose-prompt";
-import { generateBriefDraft } from "@/lib/ai/generation";
+import type {
+  AtomicUpdateForPrompt,
+  BriefForPrompt,
+  BriefEvidenceForPrompt,
+} from "@/lib/ai/compose-prompt";
+import { generateBriefDraft, generateReleaseDraft } from "@/lib/ai/generation";
 import { prepareGenerationContext } from "@/lib/ai/generation-context";
+import { reviewAndReconcile, type ReviewOutcome } from "@/lib/ai/review-draft";
+import { validateDraftLinks, type LinkCheck } from "@/lib/ai/validate-links";
+import { linkAtomicUpdatesToPiece } from "@/lib/change-events/release-claim";
 import { listCompetitors } from "@/lib/workspace/competitors";
 import type { DraftStepKey } from "@/lib/drafting/draft-progress";
 
@@ -26,6 +34,83 @@ export type DraftGenerator = (args: {
   personas?: ResolvedPersona[];
   examples?: ExampleRow[];
 }) => Promise<{ title: string; body: string }>;
+
+/** `generateReleaseDraft`'s shape, as a seam. Positional, matching it exactly. */
+export type ReleaseDraftGenerator = (
+  items: AtomicUpdateForPrompt[],
+  brandProfile: BrandProfileRow,
+  personas: ResolvedPersona[],
+  examples: ExampleRow[],
+  evidence: BriefEvidenceForPrompt[]
+) => Promise<{ title: string; body: string }>;
+
+/** `reviewAndReconcile`'s shape, as a seam. */
+export type DraftReviewer = (
+  draft: { title: string; body: string },
+  brandProfile: BrandProfileRow
+) => Promise<ReviewOutcome>;
+
+/**
+ * Distinct non-null categories among the atomic updates being composed, used to
+ * bias example selection toward examples about the same kinds of changes.
+ * (Was `compose-draft.ts`'s, which retires with the atomic-updates tab.)
+ */
+function atomicUpdateCategories(items: { category: string | null }[]): string[] {
+  const seen = new Set<string>();
+  for (const item of items) {
+    if (item.category !== null) seen.add(item.category);
+  }
+  return [...seen];
+}
+
+/**
+ * The atomic updates a brief's `shipped_work` signals stand for, re-derived
+ * server-side from the brief's own citations. No id reaches this path from a
+ * client — the retiring `/api/atomic-updates/draft` route took a list of ids
+ * from the browser and had to intersect it with `getOpenAtomicUpdates` to make
+ * it safe; deriving from `brief_signals` removes the untrusted input entirely.
+ *
+ * Both tenant predicates are load-bearing and separate: a signal is this
+ * tenant's, but `signals.atomicUpdateId` is a plain FK that a bad or migrated
+ * row could point across the boundary, so the atomic update must be scoped on
+ * its own account too.
+ *
+ * `status = 'open'` + `contentPieceId IS NULL` are exactly
+ * `getOpenAtomicUpdates`'s compose-candidate predicates, kept because the
+ * signal for an already-composed atomic update stays live (see
+ * `syncShippedWorkSignals`) and can be cited by a later brief. Without them
+ * this draft would relink shipped work out of the piece already carrying it.
+ */
+async function loadShippedWorkAtomicUpdates(
+  database: Database,
+  tenantId: string,
+  briefId: string
+): Promise<AtomicUpdateForPrompt[]> {
+  return database
+    .select({
+      id: atomicUpdates.id,
+      title: atomicUpdates.title,
+      summary: atomicUpdates.summary,
+      category: atomicUpdates.category,
+      size: atomicUpdates.size,
+    })
+    .from(briefSignals)
+    .innerJoin(signals, eq(briefSignals.signalId, signals.id))
+    .innerJoin(atomicUpdates, eq(signals.atomicUpdateId, atomicUpdates.id))
+    .where(
+      and(
+        eq(briefSignals.briefId, briefId),
+        eq(signals.kind, "shipped_work"),
+        eq(signals.tenantId, tenantId),
+        eq(atomicUpdates.tenantId, tenantId),
+        eq(atomicUpdates.status, "open"),
+        isNull(atomicUpdates.contentPieceId)
+      )
+    )
+    // Same-batch atomic updates share createdAt; tie-break on id so the
+    // prompt's item order is deterministic (as `getOpenAtomicUpdates` does).
+    .orderBy(asc(atomicUpdates.createdAt), asc(atomicUpdates.id));
+}
 
 // Names shorter than this match almost anything ("Ax", "Go") and would flag
 // nearly every draft — skipping them is deliberate, not an oversight. See
@@ -90,6 +175,28 @@ export function findNamedCompanies(text: string, names: string[]): string[] {
  * and a human-triggered Generate/retry button call this, and it has to be
  * testable without mocking Next internals.
  *
+ * THE ONE ENTRY POINT for turning evidence into a draft. It forks on
+ * `brief.contentType`:
+ *
+ *   product_update + ≥1 composable shipped_work signal -> release composition
+ *   product_update, no such signal                     -> generic brief draft
+ *   blog_post / social_post, any evidence              -> generic brief draft
+ *
+ * The release branch is the old `/api/atomic-updates/draft` pipeline —
+ * category-biased examples, `generateReleaseDraft`, `reviewAndReconcile`,
+ * `validateDraftLinks` — reached from here rather than from a parallel route,
+ * because atomic updates are signals, including for drafting.
+ *
+ * `generationStep` is cleared on EVERY exit. There are seven:
+ *   1. piece not found              — returns before the first step write
+ *   2. piece not at "brief"         — likewise
+ *   3. body hand-edited             — likewise
+ *   4. no brief linked              — explicit clear ("collecting" is already set)
+ *   5. generation/review failure    — cleared in the generationError write
+ *   6. success                      — cleared in the body write (both branches)
+ *   7. outer catch                  — explicit clear
+ * The interrupted-generation marker is not an exit: it SETS "generating".
+ *
  * Never throws: every code path — the lookups, context prep, the generator
  * call, and both writes — is covered by an outer `try`/`catch`, so any DB or
  * generator failure resolves to `{ ok: false }` rather than rejecting the
@@ -116,10 +223,18 @@ export function findNamedCompanies(text: string, names: string[]): string[] {
 export async function generateDraftForPiece(
   contentPieceId: string,
   tenantId: string,
-  deps: { database?: Database; generate?: DraftGenerator } = {}
+  deps: {
+    database?: Database;
+    generate?: DraftGenerator;
+    generateRelease?: ReleaseDraftGenerator;
+    review?: DraftReviewer;
+    checkLink?: LinkCheck;
+  } = {}
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const database = deps.database ?? defaultDb;
   const generate = deps.generate ?? generateBriefDraft;
+  const generateRelease = deps.generateRelease ?? generateReleaseDraft;
+  const review = deps.review ?? reviewAndReconcile;
 
   try {
     const [piece] = await database
@@ -184,13 +299,48 @@ export async function generateDraftForPiece(
       .innerJoin(signals, eq(briefSignals.signalId, signals.id))
       .where(eq(briefSignals.briefId, brief.id));
 
-    // Built from the PIECE's own type, so a blog_post piece gets blog-post
-    // few-shot examples (the brief's content type and the piece's are
+    // THE FORK. `brief.contentType` — what the author chose — selects the
+    // release composition. NOT "the evidence is all shipped work": deriving the
+    // branch from evidence would give a blog post built from shipped work
+    // changelog treatment, which is exactly what `buildSystemPrompt`'s prompt
+    // fork exists to prevent.
+    //
+    // A product_update brief with NO shipped work has no atomic updates to
+    // compose from and falls through to the generic path rather than erroring.
+    // That is a real case, not a defect: a manually created product-update
+    // brief citing only news.
+    const releaseItems =
+      brief.contentType === "product_update"
+        ? await loadShippedWorkAtomicUpdates(database, tenantId, brief.id)
+        : [];
+    const isRelease = releaseItems.length > 0;
+
+    // Only `shipped_work` signals supply atomic updates. The rest of the
+    // brief's evidence still reaches the release prompt as context — nothing is
+    // silently dropped — but the shipped-work signals themselves are excluded:
+    // they ARE `releaseItems`, and sending both would be the same material
+    // twice, once as a change to announce and once as background.
+    const releaseContext = evidence.filter((item) => item.kind !== "shipped_work");
+
+    // Generic path: built from the PIECE's own type, so a blog_post piece gets
+    // blog-post few-shot examples (the brief's content type and the piece's are
     // expected to match). This only selects examples, though — the system
     // prompt's role line and format/length guidance come from
     // `brief.contentType` inside `composeBriefPrompt`, not from this value.
+    //
+    // Release path: pinned to "product_update" (which is what the fork above
+    // already established the BRIEF asks for) and biased by the categories of
+    // the atomic updates being composed, exactly as the retiring compose run
+    // did. Pinning rather than reusing `piece.type` means a piece whose type
+    // has drifted from its brief's still can't pull blog exemplars into a
+    // changelog composition.
     await setStep(database, contentPieceId, "preparing");
-    const { brandProfile, personas, examples } = await prepareGenerationContext(tenantId, database, [], piece.type);
+    const { brandProfile, personas, examples } = await prepareGenerationContext(
+      tenantId,
+      database,
+      isRelease ? atomicUpdateCategories(releaseItems) : [],
+      isRelease ? "product_update" : piece.type
+    );
 
     // Written BEFORE the model call, not after. `generationError: null` on a
     // "brief" piece is otherwise ambiguous between "generation hasn't run
@@ -208,8 +358,40 @@ export async function generateDraftForPiece(
       .where(eq(contentPieces.id, contentPieceId));
 
     let result: { title: string; body: string };
+    // Non-null only on the release path, which is the only one with a review
+    // pass to record.
+    let reviewOutcome: ReviewOutcome | null = null;
     try {
-      result = await generate({ brief: briefForPrompt, evidence, brandProfile, personas, examples });
+      if (isRelease) {
+        // One retry before giving up, as the retiring compose run had. Both
+        // attempts failing lands in the same catch below as any other
+        // generation failure: the piece stays at "brief" with its scaffold, and
+        // the atomic updates stay open for the next attempt.
+        let draft: { title: string; body: string };
+        try {
+          draft = await generateRelease(releaseItems, brandProfile, personas, examples, releaseContext);
+        } catch {
+          draft = await generateRelease(releaseItems, brandProfile, personas, examples, releaseContext);
+        }
+
+        // The one step key the generic path never writes, because it has no
+        // review pass. The client renders the full DRAFT_STEPS list and marks
+        // everything before the stored key as done, so a path that skips a step
+        // is fine — this is what makes "reviewing" real for the first time.
+        //
+        // `reviewAndReconcile`'s optional onProgress is deliberately not
+        // passed: it emits only `detail` events, and detail text is not
+        // persisted (there is no reader for it once the streamed dialog goes).
+        await setStep(database, contentPieceId, "reviewing");
+        reviewOutcome = await review(draft, brandProfile);
+
+        // Validate links on the FINAL body — after review, which may itself
+        // rewrite links — so no unresolvable URL is persisted.
+        const { body } = await validateDraftLinks(reviewOutcome.finalDraft.body, deps.checkLink);
+        result = { title: reviewOutcome.finalDraft.title, body };
+      } else {
+        result = await generate({ brief: briefForPrompt, evidence, brandProfile, personas, examples });
+      }
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       try {
@@ -247,17 +429,58 @@ export async function generateDraftForPiece(
         : null;
 
     await setStep(database, contentPieceId, "saving");
-    await database
-      .update(contentPieces)
-      .set({
-        title: result.title,
-        body: result.body,
-        status: "draft",
-        generatedAt: new Date(),
-        generationError,
-        generationStep: null,
-      })
-      .where(eq(contentPieces.id, contentPieceId));
+
+    // One timestamp for the body write AND the atomic-update link below — see
+    // `composedAt` in the release branch.
+    const savedAt = new Date();
+    const draftWrite = {
+      title: result.title,
+      body: result.body,
+      status: "draft" as const,
+      generatedAt: savedAt,
+      generationError,
+      generationStep: null,
+    };
+
+    if (isRelease) {
+      // The link MUST be transactional with the body write. A piece saved with
+      // a body while its atomic updates stayed `open` would offer the same
+      // shipped work to the next compose run and ship it twice.
+      await database.transaction(async (tx) => {
+        await tx
+          .update(contentPieces)
+          .set({
+            ...draftWrite,
+            // `composedAt` was stamped when the brief was accepted, which is
+            // BEFORE this link. Left there, `computeReleaseDelta`'s strict
+            // `updatedAt > composedAt` reads every atomic update linked here as
+            // a post-compose change — a catch-up banner on a brand-new draft.
+            // The link below stamps `updatedAt` with this same value, so the
+            // strict `>` correctly excludes them.
+            composedAt: savedAt,
+            ...(reviewOutcome
+              ? {
+                  reviewStatus: reviewOutcome.status,
+                  reviewIssues: reviewOutcome.issues,
+                  reviewedAt: savedAt,
+                }
+              : {}),
+          })
+          .where(eq(contentPieces.id, contentPieceId));
+
+        await linkAtomicUpdatesToPiece(
+          {
+            tenantId,
+            contentPieceId,
+            atomicUpdateIds: releaseItems.map((item) => item.id),
+            at: savedAt,
+          },
+          tx
+        );
+      });
+    } else {
+      await database.update(contentPieces).set(draftWrite).where(eq(contentPieces.id, contentPieceId));
+    }
 
     return { ok: true };
   } catch (e) {
