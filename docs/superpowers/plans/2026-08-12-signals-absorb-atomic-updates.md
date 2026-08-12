@@ -8,11 +8,13 @@
 
 **Tech Stack:** Next.js 16.2.10 App Router, Drizzle ORM 0.45.2, Postgres, Base UI (`@base-ui/react/dialog`), Vitest.
 
-## Open decision — blocks Task 6 only
+## Dependency — Task 6 is blocked on spec 11
 
-Two components in the dying folders were not accounted for in the spec. Tasks 1–5 do not depend on the answer; **Task 6 must not run until it is settled.**
+Two components in the dying folders were not accounted for in spec 10.
 
-1. **`atomic-updates/draft-release-dialog.tsx`** posts to `/api/atomic-updates/draft` — the live "select shipped work → compose a product update" flow, with its own streamed progress (`DRAFT_STEPS`, `DraftProgressEvent`). Retiring the tab removes the only entry point to it. Either it relocates to the Company atomic-updates section, or it retires on the grounds that the manual-brief path now covers the same ground (`briefs/new` calls `listSignals(tenantId, {})` with no kind restriction, so `shipped_work` signals are already selectable into a brief). **This is a product decision, not a mechanical one.**
+1. **`atomic-updates/draft-release-dialog.tsx`** posts to `/api/atomic-updates/draft` — the "select shipped work → compose a product update" flow. It **retires**, and its composition logic moves into the unified drafting path: see [Unified Drafting](../specs/2026-08-12-unified-drafting-design.md), spec 11. Atomic updates get drafted like any other signal, with `brief.contentType === "product_update"` selecting the release composition inside `generateDraftForPiece`.
+
+   **Tasks 1–5 here do not depend on that. Task 6 does** — deleting the tab before spec 11 lands would remove the only way to draft a product update from shipped work. Do not run Task 6 until spec 11 is implemented.
 
 2. **`change-events/import-dialog.tsx` + `import-actions.ts`** — the manual GitHub/Notion import subsystem, rendered by *both* dying pages via `listImportRepos`. The spec said repo import "stays where it is" under Integrations; that was wrong, it lives in the change-events folder today. Task 5 gives it an explicit home. No decision needed.
 

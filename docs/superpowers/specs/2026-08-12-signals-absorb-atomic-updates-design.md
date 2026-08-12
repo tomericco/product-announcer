@@ -233,6 +233,21 @@ The UI cannot be visually verified; the dev preview is behind an OAuth wall.
 - Do not touch: `src/app/api/atomic-updates/draft/route.ts`
 - No schema change, no migration.
 
+## Drafting is spec 11, and it gates the tab's removal
+
+Not caught when this spec was written: `atomic-updates/draft-release-dialog.tsx`
+is the only entry point to `POST /api/atomic-updates/draft`, the flow that turns
+selected shipped work into a product-update draft. Retiring the tab removes it.
+
+That path does not relocate — it **merges**. Atomic updates are signals for
+drafting too, so the atomic-update composition becomes a branch inside
+`generateDraftForPiece`, selected by `brief.contentType === "product_update"`.
+See [Unified Drafting](2026-08-12-unified-drafting-design.md).
+
+Spec 11 carries the one schema change this work needs
+(`contentPieces.generationStep`); this spec still needs none of its own. **Spec
+11 must land before the tabs are deleted.**
+
 ## Open items
 
 - **`category` and `size` are very close to dead.** Nothing outside the
