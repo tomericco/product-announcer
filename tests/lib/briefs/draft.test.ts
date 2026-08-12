@@ -246,6 +246,12 @@ describe("generateDraftForPiece", () => {
     const [after] = await db.select().from(contentPieces).where(eq(contentPieces.id, piece.id));
     expect(after.status).toBe("brief");
     expect(after.body).toBe("SCAFFOLD BODY");
+    // Regression: "collecting" is written before this guard runs (it sits
+    // after the three status/ownership guards but before the brief lookup),
+    // so unlike those three, this refusal must explicitly clear it — a piece
+    // with no linked brief must not be left permanently displaying a step
+    // that is no longer running.
+    expect(after.generationStep).toBeNull();
   });
 
   it("refuses to overwrite a body a human has edited", async () => {

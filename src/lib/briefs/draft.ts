@@ -161,7 +161,14 @@ export async function generateDraftForPiece(
     // a missing link is a data-integrity anomaly, not a legitimate input —
     // refuse rather than synthesizing a thin, ungrounded commission from the
     // scaffold and silently flipping the piece to "draft" anyway.
-    if (!brief) return { ok: false, error: "No brief is linked to this piece." };
+    //
+    // Unlike the three guards above, "collecting" was already written before
+    // this check runs — clear it before returning, or the piece is left
+    // permanently displaying a step that is no longer in flight.
+    if (!brief) {
+      await setStep(database, contentPieceId, null);
+      return { ok: false, error: "No brief is linked to this piece." };
+    }
 
     const briefForPrompt: BriefForPrompt = {
       title: brief.title,
