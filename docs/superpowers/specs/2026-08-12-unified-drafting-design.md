@@ -208,8 +208,18 @@ need a migration.
 - A `product_update` brief with no shipped-work signals takes the generic branch.
 - A `blog_post` brief with shipped-work signals takes the generic branch.
 - Non-shipped-work evidence on a product-update brief still reaches the prompt.
-- The release branch links its atomic updates to the **existing** piece and marks
-  them `released`; it does not create a second piece.
+- The release branch links its atomic updates to the **existing** piece and does
+  **not** create a second piece. It sets `contentPieceId` only — the atomic
+  updates stay `status = 'open'` until publish, per the 2026-08-13 amendment
+  above. (This bullet said "marks them `released`" until that amendment; it was
+  missed at the time and corrected after the final review caught the
+  contradiction.)
+- A release save that links **zero** atomic updates rolls back rather than
+  saving a draft that announces shipped work it does not own. Two accepted
+  product-update briefs can cite the same signal — nothing marks a signal used
+  on accept — so this is reachable, and it restores a guard the retired
+  `claimReleaseFromAtomicUpdates` had (`EmptyClaimError`). A partial link
+  proceeds but is logged.
 - A signal whose atomic update belongs to another tenant contributes nothing.
 - `generationStep` advances through the pipeline and is **null** after success,
   after failure, and after the interrupted-generation write.
