@@ -1,7 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
 import { ProgressChecklist, type StepStatus } from "@/components/draft-progress-checklist";
 import { DRAFT_STEPS, type DraftStepKey } from "@/lib/drafting/draft-progress";
 // Type-only: GenerationProgress lives in a module with a top-level `db`
@@ -10,6 +12,11 @@ import { DRAFT_STEPS, type DraftStepKey } from "@/lib/drafting/draft-progress";
 // ever reaches the client.
 import type { GenerationProgress } from "@/lib/content/generation-progress";
 import { pollGenerationProgress } from "@/app/(dashboard)/progress-actions";
+// A "use server" export, like `pollGenerationProgress` above — what crosses
+// the boundary is a Server Function reference, not a runtime value out of a
+// server module, so the `db` its module imports at top level never reaches
+// the client graph. Same pattern board/card.tsx already uses.
+import { generateDraft } from "@/app/(dashboard)/briefs/actions";
 
 const POLL_INTERVAL_MS = 3000;
 
@@ -119,6 +126,30 @@ export function statusesForGaveUp(
 }
 
 /**
+ * Whether the give-up branch should offer a Retry control rather than only
+ * reporting the stall.
+ *
+ * A wedged piece is recoverable without an operator and without a
+ * `generationStartedAt`: it is still `status = 'brief'` with `bodyEditedAt`
+ * null, which is exactly what `queueGeneration`'s WHERE asks for, so
+ * `generateDraft` will claim it and schedule a fresh run. That is what this
+ * control is for — before it, the give-up branch told the user to reload the
+ * page, which for a piece wedged by a dead `after()` does nothing at all:
+ * `generationStep` is still non-null, so every surface hides its Generate
+ * button and re-renders this same checklist.
+ *
+ * `terminal === null` is the guard that matters. A run that LANDED must never
+ * be offered a retry — "complete" in particular falls through to the checklist
+ * rather than returning early (only "failed" and "gone" return), so without
+ * this a finished draft could be offered a button that would regenerate over
+ * it. `generateDraftForPiece` would refuse that piece anyway, but offering the
+ * click at all is the bug.
+ */
+export function shouldOfferRetry(gaveUp: boolean, terminal: TerminalOutcome | null): boolean {
+  return gaveUp && terminal === null;
+}
+
+/**
  * Whether the poll loop should stop calling the server again: a completed
  * generation (`generatedAt` set), a failure that has already cleared its
  * in-flight step (`generationError` set with a null step — that combination
@@ -162,6 +193,16 @@ export function GenerationChecklist({ contentPieceId }: { contentPieceId: string
   const [step, setStep] = useState<ChecklistDisplayState>(null);
   const [terminal, setTerminal] = useState<TerminalOutcome | null>(null);
   const [gaveUp, setGaveUp] = useState(false);
+  const [retrying, startRetry] = useTransition();
+  // Bumped by a successful retry. It is in the effect's dependency list, so
+  // incrementing it tears the stopped loop down and starts a fresh one —
+  // which is what resets `attempts`, since that lives in the effect closure.
+  //
+  // This is what makes the budget per-CYCLE rather than per-component: a
+  // piece that genuinely never starts will exhaust the new cycle and give up
+  // again (offering Retry again), instead of either polling forever or being
+  // permanently stuck after one stall.
+  const [cycle, setCycle] = useState(0);
 
   useEffect(() => {
     let stopped = false;
@@ -222,7 +263,35 @@ export function GenerationChecklist({ contentPieceId }: { contentPieceId: string
       stopped = true;
       clearInterval(intervalId);
     };
-  }, [contentPieceId, router]);
+  }, [contentPieceId, router, cycle]);
+
+  /**
+   * Re-queues a wedged piece and resumes polling. Both state resets are
+   * load-bearing: clearing `gaveUp` without resetting `step` would poll a
+   * fresh cycle while still rendering the previous one's frozen "stalled"
+   * row, and bumping `cycle` without clearing `gaveUp` would leave the
+   * give-up text and its Retry button on screen while a run was genuinely
+   * under way again.
+   */
+  function retry() {
+    startRetry(async () => {
+      const result = await generateDraft(contentPieceId);
+      // Meaningful here, not boilerplate: a refusal means `queueGeneration`
+      // no longer matches the piece — something else already moved it on
+      // (published, rejected, hand-edited), so there is nothing to resume.
+      if (!result.ok) {
+        toast.error(result.error);
+        return;
+      }
+      toast.success("Generation restarted");
+      setStep(null);
+      setGaveUp(false);
+      setCycle((c) => c + 1);
+      // The piece is marked "collecting" again before the action returned, so
+      // the parent's own gate stays satisfied and re-renders in sync.
+      router.refresh();
+    });
+  }
 
   // A landed failure or a disappeared piece — router.refresh() (above) is
   // already on its way to replace this whole component with the parent's
@@ -246,10 +315,22 @@ export function GenerationChecklist({ contentPieceId }: { contentPieceId: string
         statuses={gaveUp ? statusesForGaveUp(statuses) : statuses}
         className="text-xs"
       />
-      {gaveUp && (
-        <p className="mt-1 text-xs text-muted-foreground">
-          This is taking longer than expected. Reload the page to check for an update.
-        </p>
+      {/* The frozen steps above still render (stalled, not spinning) — the
+          point is that the checklist stops lying about being in motion, not
+          that it stops showing how far the run got. What changed is the
+          advice underneath it: "reload the page" was dead for the case that
+          actually produces this state. A piece wedged by a dead `after()`
+          keeps a non-null `generationStep` across any number of reloads, so
+          every surface keeps hiding its Generate button and re-rendering this
+          checklist. Retry re-queues the piece instead, which works because a
+          wedged piece still satisfies `queueGeneration`'s WHERE. */}
+      {shouldOfferRetry(gaveUp, terminal) && (
+        <div className="mt-1 flex items-center gap-2">
+          <p className="text-xs text-muted-foreground">This is taking longer than expected.</p>
+          <Button type="button" size="sm" variant="outline" onClick={retry} disabled={retrying}>
+            {retrying ? "Retrying…" : "Retry"}
+          </Button>
+        </div>
       )}
     </div>
   );

@@ -4,6 +4,7 @@ import {
   statusesForStep,
   statusesForGaveUp,
   shouldStopPolling,
+  shouldOfferRetry,
   hasExceededPollLimit,
   terminalOutcome,
   MAX_POLL_ATTEMPTS,
@@ -113,6 +114,46 @@ describe("hasExceededPollLimit", () => {
     // bounds the loop in both cases.
     expect(hasExceededPollLimit(MAX_POLL_ATTEMPTS)).toBe(true);
     expect(hasExceededPollLimit(MAX_POLL_ATTEMPTS + 1)).toBe(true);
+  });
+
+  it("is a per-cycle budget, so a retry can poll — and stall — again", () => {
+    // The shape the Retry control depends on: bounded per attempt, not
+    // bounded overall. A successful retry bumps the component's `cycle`,
+    // which restarts the effect and with it the `attempts` counter that
+    // lives in its closure — so the budget below is spent afresh.
+    expect(hasExceededPollLimit(MAX_POLL_ATTEMPTS)).toBe(true);
+    // A new cycle starts from zero and is allowed to poll…
+    expect(hasExceededPollLimit(0)).toBe(false);
+    // …and is allowed to give up again, rather than either polling forever
+    // or leaving the piece permanently stuck after one stall.
+    expect(hasExceededPollLimit(MAX_POLL_ATTEMPTS)).toBe(true);
+  });
+});
+
+describe("shouldOfferRetry", () => {
+  // The give-up branch used to say "Reload the page to check for an update",
+  // which is dead advice for the state that produces it: a piece wedged by a
+  // dead `after()` keeps a non-null generationStep across every reload, so
+  // each one hides the Generate button and re-renders this checklist. Retry
+  // re-queues the piece instead — a wedged piece is still status "brief" with
+  // a null bodyEditedAt, exactly what queueGeneration's WHERE matches.
+  it("offers a retry once the poll has given up with nothing terminal", () => {
+    expect(shouldOfferRetry(true, null)).toBe(true);
+  });
+
+  it("offers nothing while the poll is still running", () => {
+    expect(shouldOfferRetry(false, null)).toBe(false);
+  });
+
+  it("never offers a retry on a run that LANDED", () => {
+    // "complete" is the one that matters: unlike "failed" and "gone" it does
+    // not return early, so it reaches the same render branch. Offering a
+    // retry there would put a regenerate-over-a-finished-draft button on
+    // screen — generateDraftForPiece would refuse the piece, but the click
+    // should never have been offered.
+    expect(shouldOfferRetry(true, "complete")).toBe(false);
+    expect(shouldOfferRetry(true, "failed")).toBe(false);
+    expect(shouldOfferRetry(true, "gone")).toBe(false);
   });
 });
 
