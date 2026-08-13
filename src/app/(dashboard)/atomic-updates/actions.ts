@@ -6,6 +6,7 @@ import { db } from "@/db";
 import { atomicUpdates, changeEvents } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { reassignChangeEvent, type ReassignResult } from "@/lib/change-events/reassign";
+import { eventLabel } from "@/lib/change-events/event-label";
 
 export type AtomicUpdateEvent = {
   id: string;
@@ -16,27 +17,6 @@ export type AtomicUpdateEvent = {
   label: string;
   externalUrl: string | null;
 };
-
-/**
- * The display label for a piece of evidence, mirroring the title fallback in
- * `listChangeEvents` (prTitle → commit first line → taskTitle → "Untitled").
- *
- * A Notion task keeps its title in `taskTitle`, NOT `prTitle` (see
- * ingest-notion-task.ts), so a chain that stops at `prTitle` renders task
- * evidence as an empty string — which used to leave nothing but a "Task" chip
- * on the row. `"Untitled"` closes the last gap: an empty label would now be an
- * invisible, unclickable evidence row.
- */
-function eventLabel(event: {
-  type: "commit" | "pull_request" | "task";
-  prTitle: string | null;
-  commitMessage: string | null;
-  taskTitle: string | null;
-}): string {
-  const firstLine = event.commitMessage?.split("\n")[0]?.trim();
-  if (event.type === "commit") return firstLine || event.prTitle || "Untitled";
-  return event.prTitle || event.taskTitle || firstLine || "Untitled";
-}
 
 export type AtomicUpdateRow = {
   id: string;
