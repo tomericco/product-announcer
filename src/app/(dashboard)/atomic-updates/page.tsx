@@ -6,7 +6,8 @@ import {
   EmptyStateTitle,
   EmptyStateDescription,
 } from "@/components/ui/empty-state";
-import { listAtomicUpdates, hasCuratableAtomicUpdates, type AtomicUpdateListFilters } from "./actions";
+import { listAtomicUpdates, hasCuratableAtomicUpdates } from "./actions";
+import type { AtomicUpdateListFilters } from "@/lib/atomic-updates/list";
 import { listImportRepos } from "../change-events/actions";
 import { isNotionConnected } from "../change-events/import-actions";
 import { AtomicUpdatesList } from "./atomic-updates-list";

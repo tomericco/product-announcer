@@ -35,9 +35,8 @@ import {
   removeEventFromAtomicUpdate,
   setAtomicUpdateCategory,
   setAtomicUpdateSize,
-  type AtomicUpdateEvent,
-  type AtomicUpdateRow,
 } from "./actions";
+import type { AtomicUpdateEvent, AtomicUpdateRow } from "@/lib/atomic-updates/list";
 import type { ImportRepo } from "../change-events/actions";
 import { AddEventPicker } from "./add-event-picker";
 import { SelectionCheckbox } from "../_components/selection-checkbox";

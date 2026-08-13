@@ -15,7 +15,7 @@ import {
 import { groupByMonth } from "@/lib/group-by-month";
 import { AtomicUpdateCard } from "./atomic-update-card";
 import { bulkHideAtomicUpdates, bulkDeleteAtomicUpdates } from "./actions";
-import type { AtomicUpdateRow } from "./actions";
+import type { AtomicUpdateRow } from "@/lib/atomic-updates/list";
 import type { ImportRepo } from "../change-events/actions";
 
 // Selection lives here rather than in the (async, server) page component: it's
