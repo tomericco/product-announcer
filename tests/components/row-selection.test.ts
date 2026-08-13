@@ -8,10 +8,10 @@ import {
 
 /**
  * Pure reducer core behind `useRowSelection`, tested directly rather than
- * through the hook — this project's vitest config runs `environment: "node"`
- * (no jsdom, none may be added), so there is no way to render a hook here.
- * See `tests/components/generation-checklist.test.tsx` for the same pattern
- * applied to a component.
+ * through the hook. Lives under `tests/components/` (the jsdom project's
+ * glob) so a `renderHook` test that pins the hook's wiring to this reducer
+ * can live alongside it; see `tests/components/generation-checklist.test.tsx`
+ * for the same pure-function pattern applied to a component.
  */
 
 describe("applySelectionChange", () => {
