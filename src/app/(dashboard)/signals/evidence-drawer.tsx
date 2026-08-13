@@ -23,6 +23,18 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { ArrowRightLeft, Ban, Split } from "lucide-react";
+// A client-safe module by construction — its only import is the `Badge`
+// primitive, precisely so a "use client" file can pull a value from it.
+import { CATEGORY_LABEL } from "../company/atomic-update-badges";
 // Type-only. `@/lib/signals/evidence` has a top-level `db` import (it's
 // `readSignalEvidence`'s home) — Next does not tree-shake an unused runtime
 // import out of a client bundle, so pulling any *value* export from that
@@ -36,10 +48,12 @@ import type { SignalEvidence, EvidenceEvent } from "@/lib/signals/evidence";
 import type { ReassignResult } from "@/lib/change-events/reassign";
 import {
   loadSignalEvidence,
+  loadEvidenceReassignTargets,
   saveEvidenceEdit,
   saveEvidenceSize,
   saveEvidenceCategory,
   hideEvidenceAtomicUpdate,
+  reassignEvidenceEvent,
   removeEvidenceEvent,
 } from "./evidence-actions";
 
@@ -52,18 +66,21 @@ const CATEGORY_OPTIONS: Array<NonNullable<SignalEvidence["category"]>> = [
   "announcement",
 ];
 
-// Duplicated locally rather than imported from `../atomic-updates/page` (the
-// only other place this table exists): that page backs the "Atomic updates"
-// tab the design doc marks for retirement, and this drawer is meant to
-// outlive it, so it doesn't lean on that module staying around.
-const CATEGORY_LABEL: Record<string, string> = {
-  new: "New",
-  improvement: "Improvement",
-  fix: "Fix",
-  announcement: "Announcement",
-};
-
 export type EmptiedAtomicUpdate = { id: string; title: string; inDraft: boolean };
+
+/** One of the drawer's reassign destinations (`openAtomicUpdatesForReassign`). */
+export type EvidenceReassignTarget = { id: string; title: string };
+
+/**
+ * What a per-event control does. Both outcomes look the same to the drawer —
+ * the event leaves THIS atomic update's evidence list either way — but they
+ * are different core calls: "remove" detaches with `forceRegenerate`, while
+ * "reassign" moves the event onto another open update (or splits it into a
+ * new one) and leaves a hand-edited summary frozen.
+ */
+export type EventMutation =
+  | { kind: "remove" }
+  | { kind: "reassign"; target: { kind: "existing"; atomicUpdateId: string } | { kind: "new" } };
 
 /**
  * What the drawer body renders. `"idle"` is the closed/not-yet-opened state;
@@ -95,7 +112,7 @@ export function loadStateFromResult(evidence: SignalEvidence | null): EvidenceLo
  * from `"idle"`, so a re-render while already `"loading"`/`"loaded"`/`"empty"`
  * never double-fires the request. `handleOpenChange` resets state back to
  * `"idle"` on every close, so the NEXT open fetches fresh — curation done
- * from another drawer, or the Atomic updates tab, in between opens should be
+ * from another drawer, or the Company page, in between opens should be
  * visible rather than showing a stale snapshot from the first open.
  */
 export function shouldFetchOnOpen(open: boolean, state: EvidenceLoadState): boolean {
@@ -144,34 +161,56 @@ export function draftsFromEvidence(evidence: SignalEvidence): EvidenceDrafts {
 }
 
 /**
- * What `removeEvent` should do with a `ReassignResult`, extracted out of the
- * component so the three-way fork — success, needs-confirmation, rejection —
- * is directly testable. `removeEventFromAtomicUpdate`'s `needsConfirmation`
- * branch doesn't carry the `eventId` that triggered it (only the atomic
- * update it would empty), so this takes it as a separate argument and folds
- * it into the outcome for the caller.
+ * What a per-event mutation (remove OR reassign) should do with its
+ * `ReassignResult`, extracted out of the component so the three-way fork —
+ * success, needs-confirmation, rejection — is directly testable. The core's
+ * `needsConfirmation` branch doesn't carry the `eventId` that triggered it
+ * (only the atomic update it would empty), so this takes it as a separate
+ * argument and folds it into the outcome for the caller, which has to re-post
+ * the same mutation for that same event once confirmed.
  */
-export type RemoveEventOutcome =
-  | { kind: "removed" }
+export type EventMutationOutcome =
+  | { kind: "applied" }
   | { kind: "needs_confirmation"; eventId: string; emptiedAtomicUpdate: EmptiedAtomicUpdate }
   | { kind: "rejected"; reason: string };
 
-export function classifyRemoveEventResult(result: ReassignResult, eventId: string): RemoveEventOutcome {
-  if (result.ok) return { kind: "removed" };
+export function classifyEventMutationResult(result: ReassignResult, eventId: string): EventMutationOutcome {
+  if (result.ok) return { kind: "applied" };
   if ("needsConfirmation" in result && result.needsConfirmation) {
     return { kind: "needs_confirmation", eventId, emptiedAtomicUpdate: result.emptiedAtomicUpdate };
   }
   return { kind: "rejected", reason: result.reason };
 }
 
+/** The success toast for a mutation, so the wording is testable too. */
+export function eventMutationSuccessMessage(mutation: EventMutation): string {
+  if (mutation.kind === "remove") return "Change event removed";
+  return mutation.target.kind === "new" ? "Split into a new atomic update" : "Change event reassigned";
+}
+
+/**
+ * One change event: its label (linked to the provider when there's a url),
+ * plus the two per-event actions the design calls for — reassign (move to
+ * another open atomic update, or split into a new one) and remove from this
+ * update. Reassign is the one that was missing: without it, moving an event
+ * between two atomic updates meant remove → /company → "Show hidden" →
+ * reassign, and the remove leg additionally forced a regeneration of the
+ * source update's summary on the way past.
+ */
 function EventRow({
   event,
+  targets,
+  onReassign,
   onRemove,
-  removing,
+  disabled,
+  pending,
 }: {
   event: EvidenceEvent;
+  targets: EvidenceReassignTarget[];
+  onReassign: (target: { kind: "existing"; atomicUpdateId: string } | { kind: "new" }) => void;
   onRemove: () => void;
-  removing: boolean;
+  disabled: boolean;
+  pending: boolean;
 }) {
   return (
     <div className="flex items-center justify-between gap-2 text-sm">
@@ -189,18 +228,45 @@ function EventRow({
           <span className="block truncate text-muted-foreground">{event.label}</span>
         )}
       </div>
-      <Button variant="ghost" size="sm" disabled={removing} onClick={onRemove}>
-        {removing ? "Removing…" : "Remove"}
-      </Button>
+      <DropdownMenu>
+        <DropdownMenuTrigger render={<Button variant="ghost" size="sm" disabled={disabled || pending} />}>
+          {pending ? "Working…" : "Reassign"}
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-56">
+          {targets.length > 0 && (
+            <>
+              <DropdownMenuLabel>Move to</DropdownMenuLabel>
+              {targets.map((target) => (
+                <DropdownMenuItem
+                  key={target.id}
+                  onClick={() => onReassign({ kind: "existing", atomicUpdateId: target.id })}
+                >
+                  <ArrowRightLeft />
+                  <span className="truncate">{target.title}</span>
+                </DropdownMenuItem>
+              ))}
+              <DropdownMenuSeparator />
+            </>
+          )}
+          <DropdownMenuItem onClick={() => onReassign({ kind: "new" })}>
+            <Split />
+            Split to new
+          </DropdownMenuItem>
+          <DropdownMenuItem variant="destructive" onClick={onRemove}>
+            <Ban />
+            Remove from this update
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
     </div>
   );
 }
 
 /**
  * The evidence drawer behind a `shipped_work` signal: the atomic update it
- * mirrors, plus the change events behind that update, with the same curation
- * actions the (soon-to-be-retired) Atomic updates tab offers — edit
- * title/summary, set size/category, hide, remove a change event.
+ * mirrors, plus the change events behind that update, with the curation
+ * actions the retired Atomic updates tab used to offer — edit title/summary,
+ * set size/category, hide, and per change event reassign or remove.
  *
  * Evidence loads on open via a server action, not embedded in the signals
  * list payload — most rows never get expanded, so the list page must not pay
@@ -222,9 +288,11 @@ export function EvidenceDrawer({ signalId, title }: { signalId: string; title: s
   const [state, setState] = useState<EvidenceLoadState>({ status: "idle" });
   const [loadPending, startLoadTransition] = useTransition();
   const [savePending, startSaveTransition] = useTransition();
-  const [removingId, setRemovingId] = useState<string | null>(null);
-  const [removeConfirm, setRemoveConfirm] = useState<{
+  const [targets, setTargets] = useState<EvidenceReassignTarget[]>([]);
+  const [mutatingId, setMutatingId] = useState<string | null>(null);
+  const [mutationConfirm, setMutationConfirm] = useState<{
     eventId: string;
+    mutation: EventMutation;
     emptiedAtomicUpdate: EmptiedAtomicUpdate;
   } | null>(null);
 
@@ -263,11 +331,18 @@ export function EvidenceDrawer({ signalId, title }: { signalId: string; title: s
       const requestToken = ++requestTokenRef.current;
       setState({ status: "loading" });
       startLoadTransition(async () => {
-        const result = await loadSignalEvidence(signalId);
+        // The reassign targets are fetched with the evidence, not ahead of it:
+        // like the evidence itself, most signal rows are never expanded, so
+        // the list page must not pay for either.
+        const [result, reassignTargets] = await Promise.all([
+          loadSignalEvidence(signalId),
+          loadEvidenceReassignTargets(),
+        ]);
         if (!shouldApplyResponse(requestToken, requestTokenRef.current)) return;
 
         const nextState = loadStateFromResult(result);
         setState(nextState);
+        setTargets(reassignTargets);
         if (nextState.status === "loaded") {
           const drafts = draftsFromEvidence(nextState.evidence);
           setDraftTitle(drafts.title);
@@ -285,7 +360,7 @@ export function EvidenceDrawer({ signalId, title }: { signalId: string; title: s
       // fetches fresh instead of being silently overwritten later.
       requestTokenRef.current += 1;
       setState({ status: "idle" });
-      setRemoveConfirm(null);
+      setMutationConfirm(null);
     }
     setOpen(next);
   }
@@ -297,7 +372,20 @@ export function EvidenceDrawer({ signalId, title }: { signalId: string; title: s
 
     startSaveTransition(async () => {
       try {
-        await saveEvidenceEdit(evidence.atomicUpdateId, { title: draftTitle, summary: draftSummary });
+        // All three writes carry the same `status='open'` guard, so a refused
+        // edit means the size/category calls would be refused too — bail
+        // instead of reporting a half-applied save (the shape this used to
+        // have: the title silently written while size/category toasted a
+        // failure).
+        const edited = await saveEvidenceEdit(evidence.atomicUpdateId, {
+          title: draftTitle,
+          summary: draftSummary,
+        });
+        if (!edited.ok) {
+          if (!shouldApplyResponse(requestToken, requestTokenRef.current)) return;
+          toast.error("Could not save this atomic update");
+          return;
+        }
 
         if (draftSize && draftSize !== evidence.size) {
           const result = await saveEvidenceSize(evidence.atomicUpdateId, draftSize);
@@ -344,33 +432,46 @@ export function EvidenceDrawer({ signalId, title }: { signalId: string; title: s
     });
   }
 
-  function removeEvent(eventId: string, confirmEmptyDeletion: boolean) {
+  /**
+   * The one path behind both per-event controls. Either way the event leaves
+   * this atomic update's evidence list, so the local state update and the
+   * empty-source confirmation are shared; only the action called and the
+   * success wording differ.
+   */
+  function mutateEvent(eventId: string, mutation: EventMutation, confirmEmptyDeletion: boolean) {
     if (state.status !== "loaded") return;
     const evidence = state.evidence;
     const requestToken = ++requestTokenRef.current;
 
-    setRemovingId(eventId);
+    setMutatingId(eventId);
     startLoadTransition(async () => {
-      const result = await removeEvidenceEvent(evidence.atomicUpdateId, eventId, confirmEmptyDeletion);
+      const result =
+        mutation.kind === "remove"
+          ? await removeEvidenceEvent(evidence.atomicUpdateId, eventId, confirmEmptyDeletion)
+          : await reassignEvidenceEvent(eventId, mutation.target, confirmEmptyDeletion);
       // Always cleared, even for a stale response: this only clears THIS
       // click's own spinner, not the shared `state` the guard below protects
-      // — left set, it would show "Removing…" forever on a row whose remove
+      // — left set, it would show "Working…" forever on a row whose mutation
       // actually failed after the drawer had already moved on.
-      setRemovingId(null);
+      setMutatingId(null);
       if (!shouldApplyResponse(requestToken, requestTokenRef.current)) return;
 
-      const outcome = classifyRemoveEventResult(result, eventId);
+      const outcome = classifyEventMutationResult(result, eventId);
       switch (outcome.kind) {
-        case "removed":
-          setRemoveConfirm(null);
+        case "applied":
+          setMutationConfirm(null);
           setState({
             status: "loaded",
             evidence: { ...evidence, events: evidence.events.filter((event) => event.id !== eventId) },
           });
-          toast.success("Change event removed");
+          toast.success(eventMutationSuccessMessage(mutation));
           break;
         case "needs_confirmation":
-          setRemoveConfirm({ eventId: outcome.eventId, emptiedAtomicUpdate: outcome.emptiedAtomicUpdate });
+          setMutationConfirm({
+            eventId: outcome.eventId,
+            mutation,
+            emptiedAtomicUpdate: outcome.emptiedAtomicUpdate,
+          });
           break;
         case "rejected":
           toast.error(outcome.reason);
@@ -407,24 +508,30 @@ export function EvidenceDrawer({ signalId, title }: { signalId: string; title: s
 
           {state.status === "loaded" && (
             <div className="flex flex-col gap-3">
+              {/* `editable` is `status === 'open'`. The drawer opens on rows
+                  the curation list excludes — `syncShippedWorkSignals` leaves
+                  a signal behind for a released atomic update — and every
+                  curation mutation behind these controls is guarded on that
+                  status, so a released (or hidden) update renders read-only
+                  rather than offering a Save that would be silently refused. */}
               <Input
                 value={draftTitle}
                 onChange={(e) => setDraftTitle(e.target.value)}
                 aria-label="Title"
-                disabled={state.evidence.hidden || savePending}
+                disabled={!state.evidence.editable || savePending}
               />
               <Textarea
                 value={draftSummary}
                 onChange={(e) => setDraftSummary(e.target.value)}
                 aria-label="Summary"
-                disabled={state.evidence.hidden || savePending}
+                disabled={!state.evidence.editable || savePending}
               />
 
               <div className="flex gap-2">
                 <Select
                   value={draftSize ?? undefined}
                   onValueChange={(value) => setDraftSize(value as SignalEvidence["size"])}
-                  disabled={state.evidence.hidden || savePending}
+                  disabled={!state.evidence.editable || savePending}
                 >
                   <SelectTrigger className="w-24" aria-label="Size">
                     <SelectValue placeholder="Size">
@@ -443,7 +550,7 @@ export function EvidenceDrawer({ signalId, title }: { signalId: string; title: s
                 <Select
                   value={draftCategory ?? undefined}
                   onValueChange={(value) => setDraftCategory(value as SignalEvidence["category"])}
-                  disabled={state.evidence.hidden || savePending}
+                  disabled={!state.evidence.editable || savePending}
                 >
                   <SelectTrigger className="w-40" aria-label="Category">
                     <SelectValue placeholder="Category">
@@ -469,8 +576,13 @@ export function EvidenceDrawer({ signalId, title }: { signalId: string; title: s
                   <EventRow
                     key={event.id}
                     event={event}
-                    removing={removingId === event.id}
-                    onRemove={() => removeEvent(event.id, false)}
+                    // The event's CURRENT update is this drawer's own, so it
+                    // is never a useful destination.
+                    targets={targets.filter((target) => target.id !== state.evidence.atomicUpdateId)}
+                    pending={mutatingId === event.id}
+                    disabled={!state.evidence.editable}
+                    onReassign={(target) => mutateEvent(event.id, { kind: "reassign", target }, false)}
+                    onRemove={() => mutateEvent(event.id, { kind: "remove" }, false)}
                   />
                 ))}
               </div>
@@ -479,8 +591,8 @@ export function EvidenceDrawer({ signalId, title }: { signalId: string; title: s
 
           <DialogFooter showCloseButton>
             {state.status === "loaded" &&
-              (state.evidence.hidden ? (
-                <Badge variant="outline">Hidden</Badge>
+              (!state.evidence.editable ? (
+                <Badge variant="outline">{state.evidence.hidden ? "Hidden" : "Released"}</Badge>
               ) : (
                 <>
                   <Button variant="ghost" disabled={savePending} onClick={hide}>
@@ -496,18 +608,19 @@ export function EvidenceDrawer({ signalId, title }: { signalId: string; title: s
       </Dialog>
 
       <Dialog
-        open={removeConfirm !== null}
-        onOpenChange={(next) => !next && !loadPending && setRemoveConfirm(null)}
+        open={mutationConfirm !== null}
+        onOpenChange={(next) => !next && !loadPending && setMutationConfirm(null)}
       >
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>Delete emptied atomic update?</DialogTitle>
             <DialogDescription>
-              {removeConfirm && (
+              {mutationConfirm && (
                 <>
-                  Removing this change event will leave &quot;{removeConfirm.emptiedAtomicUpdate.title}&quot; with no
-                  change events, so it will be deleted.
-                  {removeConfirm.emptiedAtomicUpdate.inDraft
+                  {mutationConfirm.mutation.kind === "remove" ? "Removing" : "Moving"} this change event will leave
+                  &quot;{mutationConfirm.emptiedAtomicUpdate.title}&quot; with no change events, so it will be
+                  deleted.
+                  {mutationConfirm.emptiedAtomicUpdate.inDraft
                     ? " It's part of a draft release; deleting it removes a member the draft's body still describes."
                     : null}
                 </>
@@ -519,9 +632,12 @@ export function EvidenceDrawer({ signalId, title }: { signalId: string; title: s
             <Button
               variant="destructive"
               disabled={loadPending}
-              onClick={() => removeConfirm && removeEvent(removeConfirm.eventId, true)}
+              onClick={() =>
+                mutationConfirm &&
+                mutateEvent(mutationConfirm.eventId, mutationConfirm.mutation, true)
+              }
             >
-              {loadPending ? "Deleting…" : "Delete and remove"}
+              {loadPending ? "Deleting…" : "Delete and continue"}
             </Button>
           </DialogFooter>
         </DialogContent>

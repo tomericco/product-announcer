@@ -21,6 +21,18 @@ export type SignalEvidence = {
   category: (typeof atomicUpdates.$inferSelect)["category"];
   size: (typeof atomicUpdates.$inferSelect)["size"];
   hidden: boolean;
+  /**
+   * `status = 'open'` — whether the curation mutations behind the drawer will
+   * actually apply. This read applies no status filter (unlike
+   * `listAtomicUpdates`, which shows open+unclaimed only), because
+   * `syncShippedWorkSignals` leaves a signal in place for a released atomic
+   * update: the row is still in the feed, so the drawer still opens on it.
+   * What must not happen is the drawer offering a Save that the
+   * `status='open'` guard on `editAtomicUpdate`/`setAtomicUpdateSize`/
+   * `setAtomicUpdateCategory` will silently refuse — so it renders read-only
+   * instead, the same treatment `hidden` already gets.
+   */
+  editable: boolean;
   events: EvidenceEvent[];
 };
 
@@ -91,6 +103,7 @@ export async function readSignalEvidence(
     category: atomic.category,
     size: atomic.size,
     hidden: atomic.status === "hidden",
+    editable: atomic.status === "open",
     events: events.map((e) => ({
       id: e.id,
       type: e.type,

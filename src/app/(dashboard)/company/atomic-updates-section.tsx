@@ -1,33 +1,15 @@
 import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
-import {
-  listAtomicUpdates,
-  hasCuratableAtomicUpdates,
-  type AtomicUpdateListFilters,
-} from "@/lib/atomic-updates/list";
+import { listAtomicUpdates, hasCuratableAtomicUpdates } from "@/lib/atomic-updates/list";
 import { listImportRepos } from "@/lib/change-events/list";
 import { isNotionConnected } from "../integrations/import-actions";
 import { AtomicUpdatesFilters } from "./atomic-updates-filters";
 import { AtomicUpdatesList } from "./atomic-updates-list";
-
-const CATEGORY_VALUES = ["new", "improvement", "fix", "announcement"] as const;
-const SIZE_VALUES = ["s", "m", "l", "xl"] as const;
-
-function single(value: string | string[] | undefined): string | undefined {
-  return Array.isArray(value) ? value[0] : value;
-}
-
-function parseCategory(value: string | undefined): AtomicUpdateListFilters["category"] {
-  return (CATEGORY_VALUES as readonly string[]).includes(value ?? "")
-    ? (value as AtomicUpdateListFilters["category"])
-    : undefined;
-}
-
-function parseSize(value: string | undefined): AtomicUpdateListFilters["size"] {
-  return (SIZE_VALUES as readonly string[]).includes(value ?? "")
-    ? (value as AtomicUpdateListFilters["size"])
-    : undefined;
-}
+import {
+  atomicUpdatesFiltersAreDefault,
+  readAtomicUpdatesFilters,
+  type SearchParamsRecord,
+} from "./filter-params";
 
 /**
  * The Company page's "Atomic updates" section: the all-time ledger, lifted
@@ -38,29 +20,36 @@ function parseSize(value: string | undefined): AtomicUpdateListFilters["size"] {
  * update" trigger) has moved to /integrations along with the rest of the
  * manual import subsystem; this section only curates what already exists.
  *
+ * "Show hidden" is load-bearing, not a nicety: `listAtomicUpdates` returns
+ * only `status='open'` without it, so this filter is the ONLY way to list a
+ * hidden atomic update anywhere in the product — and therefore the only entry
+ * point to Unhide. The drawer on /signals can hide, and hiding also marks the
+ * signal stale so the row leaves the feed.
+ *
  * Reads take `tenantId` directly from the caller (`CompanyPage`'s own
- * `requireSession()`) rather than going through the atomic-updates route's
- * "use server" wrappers — safe here because, unlike the old
- * `atomic-updates/page.tsx`, nothing "use client" imports a runtime value
- * FROM this file (the `CategoryBadge`/`SizeBadge`/`CATEGORY_LABEL` that
- * `atomic-update-card.tsx` needs live in the standalone `atomic-update-badges`
- * module instead, specifically so this file's server-only imports never have
- * to cross into a client bundle).
+ * `requireSession()`) rather than going through a "use server" wrapper — safe
+ * here because nothing "use client" imports a runtime value FROM this file
+ * (the `CategoryBadge`/`SizeBadge`/`CATEGORY_LABEL` that `atomic-update-card.tsx`
+ * needs live in the standalone `atomic-update-badges` module instead,
+ * specifically so this file's server-only imports never have to cross into a
+ * client bundle).
  */
 export async function AtomicUpdatesSection({
   tenantId,
   searchParams,
 }: {
   tenantId: string;
-  searchParams: { [key: string]: string | string[] | undefined };
+  searchParams: SearchParamsRecord;
 }) {
-  const category = parseCategory(single(searchParams.auCategory));
-  const size = parseSize(single(searchParams.auSize));
-  const showHidden = single(searchParams.auShowHidden) === "1";
-  const hasActiveFilter = category !== undefined || size !== undefined || showHidden;
+  const state = readAtomicUpdatesFilters(searchParams);
+  const hasActiveFilter = !atomicUpdatesFiltersAreDefault(state);
 
   const [rows, anyCuratable, importRepos, notionConnected] = await Promise.all([
-    listAtomicUpdates(tenantId, { category, size, showHidden }),
+    listAtomicUpdates(tenantId, {
+      category: state.category === "all" ? undefined : state.category,
+      size: state.size === "all" ? undefined : state.size,
+      showHidden: state.showHidden,
+    }),
     hasCuratableAtomicUpdates(tenantId),
     listImportRepos(tenantId),
     isNotionConnected(),
@@ -89,11 +78,10 @@ export async function AtomicUpdatesSection({
         <Badge variant="secondary">{rows.length}</Badge>
       </div>
       <AtomicUpdatesFilters
-        category={category ?? "all"}
-        size={size ?? "all"}
-        showHidden={showHidden}
+        category={state.category}
+        size={state.size}
+        showHidden={state.showHidden}
         basePath="/company"
-        paramPrefix="au"
       />
       <AtomicUpdatesList rows={rows} repos={importRepos} notionConnected={notionConnected} />
     </div>

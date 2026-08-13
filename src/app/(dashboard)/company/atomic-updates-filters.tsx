@@ -11,6 +11,13 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import {
+  atomicUpdatesFiltersAreDefault,
+  toQuerySuffix,
+  writeAtomicUpdatesFilters,
+  ATOMIC_UPDATES_DEFAULTS,
+  type AtomicUpdatesFilterState,
+} from "./filter-params";
 
 const CATEGORY_OPTIONS = [
   { value: "all", label: "All categories" },
@@ -32,70 +39,55 @@ function labelFor(options: { value: string; label: string }[], value: string) {
   return options.find((o) => o.value === value)?.label ?? value;
 }
 
-type FilterState = {
-  category: string;
-  size: string;
-  showHidden: boolean;
-};
-
 /**
- * Filter bar shared by /atomic-updates and the Company page's atomic-updates
- * ledger section, mirroring `ChangeEventsFilters`: current values arrive as
- * props from the server-rendered page/section (search params are the source
- * of truth), and on change it pushes a new URL built from them. Next
- * re-renders the Server Component against the new params, which re-runs
- * `listAtomicUpdates` — this component holds no update data and never
- * imports `db`.
+ * Filter bar for the Company page's atomic-updates ledger section, mirroring
+ * `ChangeEventsFilters`: current values arrive as props from the
+ * server-rendered section (search params are the source of truth), and on
+ * change it pushes a new URL built from them. Next re-renders the Server
+ * Component against the new params, which re-runs `listAtomicUpdates` — this
+ * component holds no update data and never imports `db`.
  *
- * `basePath` and `paramPrefix` exist for the same reason as in
- * `ChangeEventsFilters`: on /company this bar shares a page with the
- * change-events section, both of which use "showHidden" as a concept, so
- * pushes must merge against the CURRENT search params (not start empty) and
- * this bar's own keys must be prefixed to avoid colliding with the other
- * section's. The standalone /atomic-updates route these defaults used to
- * reproduce is retired (Task 6); every remaining caller passes `basePath`
- * explicitly, so these just avoid an undefined navigation if that ever stops
- * being true.
+ * The keys it writes come from `./filter-params`, the same module the section
+ * reads them back with; pushes merge against the CURRENT search params so the
+ * change-events section's filters on this same page survive. "Show hidden" is
+ * the load-bearing one: `listAtomicUpdates` returns only `status='open'`
+ * without it, so it is the ONLY way to reach a hidden atomic update, and
+ * therefore the only entry point to Unhide anywhere in the product.
+ *
+ * `scroll: false` on every push, for the same reason as the change-events bar
+ * — both sit at the bottom of a long settings page.
  */
 export function AtomicUpdatesFilters({
   category,
   size,
   showHidden,
   basePath = "/company",
-  paramPrefix = "",
-}: FilterState & { basePath?: string; paramPrefix?: string }) {
+}: AtomicUpdatesFilterState & { basePath?: string }) {
   const router = useRouter();
   const searchParams = useSearchParams();
 
-  const key = (name: string) => `${paramPrefix}${name}`;
+  const state: AtomicUpdatesFilterState = { category, size, showHidden };
+  const hasActiveFilters = !atomicUpdatesFiltersAreDefault(state);
 
-  const hasActiveFilters = category !== "all" || size !== "all" || showHidden;
+  function pushState(next: AtomicUpdatesFilterState) {
+    const params = writeAtomicUpdatesFilters(new URLSearchParams(searchParams.toString()), next);
+    router.push(`${basePath}${toQuerySuffix(params)}`, { scroll: false });
+  }
 
-  function push(next: Partial<FilterState>) {
-    const merged: FilterState = { category, size, showHidden, ...next };
-    const params = new URLSearchParams(searchParams.toString());
-    params.delete(key("category"));
-    params.delete(key("size"));
-    params.delete(key("showHidden"));
-    if (merged.category !== "all") params.set(key("category"), merged.category);
-    if (merged.size !== "all") params.set(key("size"), merged.size);
-    if (merged.showHidden) params.set(key("showHidden"), "1");
-    const qs = params.toString();
-    router.push(qs ? `${basePath}?${qs}` : basePath);
+  function push(next: Partial<AtomicUpdatesFilterState>) {
+    pushState({ ...state, ...next });
   }
 
   function clearFilters() {
-    const params = new URLSearchParams(searchParams.toString());
-    params.delete(key("category"));
-    params.delete(key("size"));
-    params.delete(key("showHidden"));
-    const qs = params.toString();
-    router.push(qs ? `${basePath}?${qs}` : basePath);
+    pushState(ATOMIC_UPDATES_DEFAULTS);
   }
 
   return (
     <div className="flex flex-wrap items-center gap-3">
-      <Select value={category} onValueChange={(value) => push({ category: value as string })}>
+      <Select
+        value={category}
+        onValueChange={(value) => push({ category: value as AtomicUpdatesFilterState["category"] })}
+      >
         <SelectTrigger className="w-44">
           <SelectValue>{labelFor(CATEGORY_OPTIONS, category)}</SelectValue>
         </SelectTrigger>
@@ -108,7 +100,7 @@ export function AtomicUpdatesFilters({
         </SelectContent>
       </Select>
 
-      <Select value={size} onValueChange={(value) => push({ size: value as string })}>
+      <Select value={size} onValueChange={(value) => push({ size: value as AtomicUpdatesFilterState["size"] })}>
         <SelectTrigger className="w-32">
           <SelectValue>{labelFor(SIZE_OPTIONS, size)}</SelectValue>
         </SelectTrigger>

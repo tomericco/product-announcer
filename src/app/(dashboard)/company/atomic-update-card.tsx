@@ -185,10 +185,17 @@ export function AtomicUpdateCard({
   // always, plus size/category only when they actually changed (each has its
   // own dedicated action — setAtomicUpdateSize also stamps the size freeze —
   // so they can't be folded into editAtomicUpdate's title/summary write).
+  // All three carry the same `status='open'` guard, so a refused edit means
+  // the size/category calls would be refused too: bail rather than reporting
+  // a half-applied save.
   function save() {
     startTransition(async () => {
       try {
-        await editAtomicUpdate(row.id, { title, summary });
+        const edited = await editAtomicUpdate(row.id, { title, summary });
+        if (!edited.ok) {
+          toast.error("Could not save this atomic update");
+          return;
+        }
         if (size && size !== row.size) {
           const result = await setAtomicUpdateSize(row.id, size);
           if (!result.ok) toast.error("Could not update size");
@@ -256,8 +263,9 @@ export function AtomicUpdateCard({
     <div
       className={cn(
         "group rounded-lg border p-4",
-        // Same dashed grey treatment hidden change events get on
-        // /change-events, so "set aside" reads identically on both pages.
+        // Same dashed grey treatment hidden change events get in the
+        // change-events section above, so "set aside" reads identically in
+        // both halves of the page.
         row.hidden && "dashed-outline border-transparent opacity-85"
       )}
     >

@@ -32,7 +32,7 @@ import { AddSignalDialog } from "./add-signal-dialog";
  * ("Rendering with search params": the `searchParams` prop is a `Promise`,
  * must be awaited, and reading it opts the page into dynamic rendering, which
  * is exactly what's wanted here — the list must reflect the latest filter on
- * every request), mirroring `/change-events`.
+ * every request), mirroring the Company page's pipeline sections.
  *
  * The 60-day window is deliberately NOT one of these filters: `listSignals`
  * applies `signalWindowCondition()` unconditionally, before any filter below,

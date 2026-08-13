@@ -84,11 +84,71 @@ describe("atomic update actions", () => {
       .values({ tenantId: tenant.id, title: "Before", summary: "Before summary." })
       .returning();
 
-    await editAtomicUpdate(tenant.id, atomic.id, { title: "After", summary: "After summary." });
+    const result = await editAtomicUpdate(tenant.id, atomic.id, {
+      title: "After",
+      summary: "After summary.",
+    });
 
     const [after] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, atomic.id));
+    expect(result).toEqual({ ok: true });
     expect(after.title).toBe("After");
     expect(after.summaryEditedAt).not.toBeNull();
+  });
+
+  // The Save behind both the curation card and the evidence drawer is three
+  // calls — edit, then setAtomicUpdateSize/setAtomicUpdateCategory when those
+  // changed — and the two setters have always been `status='open'` guarded.
+  // Without the same guard here, saving a released atomic update rewrote its
+  // title and summary while the size/category half came back `{ok:false}` and
+  // toasted a failure: a half-applied Save with no coherent account of what
+  // happened. All three must refuse together.
+  it("refuses to edit a released atomic update, matching the size/category guards", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const [released] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "Shipped", summary: "Shipped summary.", status: "released" })
+      .returning();
+
+    const editResult = await editAtomicUpdate(tenant.id, released.id, {
+      title: "Rewritten",
+      summary: "Rewritten summary.",
+    });
+    const sizeResult = await setAtomicUpdateSize(tenant.id, released.id, "l");
+    const categoryResult = await setAtomicUpdateCategory(tenant.id, released.id, "fix");
+
+    expect(editResult).toEqual({ ok: false });
+    // The point of the test: one verdict for the whole Save.
+    expect(sizeResult.ok).toBe(editResult.ok);
+    expect(categoryResult.ok).toBe(editResult.ok);
+
+    const [after] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, released.id));
+    expect(after.title).toBe("Shipped");
+    expect(after.summary).toBe("Shipped summary.");
+    expect(after.summaryEditedAt).toBeNull();
+  });
+
+  // NOT guarded on `contentPieceId IS NULL`, unlike hideAtomicUpdate: an
+  // atomic update claimed into an unpublished draft is still open, and this
+  // codebase treats open-and-claimed as live (openAtomicUpdatesForReassign
+  // offers them as reassign targets for the same reason). The updatedAt bump
+  // is what fires the draft's catch-up evidence delta, so the edit surfaces
+  // on the draft rather than being lost.
+  it("allows editing an open atomic update already claimed into a draft", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const [piece] = await db
+      .insert(contentPieces)
+      .values({ tenantId: tenant.id, title: "Draft", body: "B" })
+      .returning();
+    const [claimed] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "Before", summary: "S", contentPieceId: piece.id })
+      .returning();
+
+    const result = await editAtomicUpdate(tenant.id, claimed.id, { title: "After", summary: "S2" });
+
+    const [after] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, claimed.id));
+    expect(result).toEqual({ ok: true });
+    expect(after.title).toBe("After");
   });
 
   it("refuses to edit another tenant's atomic update", async () => {
@@ -99,9 +159,10 @@ describe("atomic update actions", () => {
       .values({ tenantId: other.id, title: "Foreign", summary: "S" })
       .returning();
 
-    await editAtomicUpdate(tenant.id, foreign.id, { title: "Hacked", summary: "Hacked." });
+    const result = await editAtomicUpdate(tenant.id, foreign.id, { title: "Hacked", summary: "Hacked." });
 
     const [after] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, foreign.id));
+    expect(result).toEqual({ ok: false });
     expect(after.title).toBe("Foreign");
   });
 

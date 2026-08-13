@@ -4,7 +4,8 @@ import {
   shouldFetchOnOpen,
   shouldApplyResponse,
   draftsFromEvidence,
-  classifyRemoveEventResult,
+  classifyEventMutationResult,
+  eventMutationSuccessMessage,
   type EvidenceLoadState,
 } from "../../src/app/(dashboard)/signals/evidence-drawer";
 import type { SignalEvidence } from "../../src/lib/signals/evidence";
@@ -24,6 +25,7 @@ function fakeEvidence(overrides: Partial<SignalEvidence> = {}): SignalEvidence {
     category: "improvement",
     size: "m",
     hidden: false,
+    editable: true,
     events: [
       {
         id: "ev-1",
@@ -107,20 +109,22 @@ describe("draftsFromEvidence", () => {
   });
 });
 
-describe("classifyRemoveEventResult", () => {
-  // The three-way fork removeEvent acts on: success, needs-confirmation
-  // (removing this event would empty its atomic update), and an outright
-  // rejection (e.g. the event no longer belongs to this atomic update).
-  it("classifies a success as removed", () => {
+describe("classifyEventMutationResult", () => {
+  // The three-way fork both per-event controls act on — remove AND reassign,
+  // which share this path because either way the event leaves this atomic
+  // update: success, needs-confirmation (the mutation would empty its atomic
+  // update), and an outright rejection (e.g. the event no longer belongs to
+  // this atomic update, or its source is already released).
+  it("classifies a success as applied", () => {
     const result: ReassignResult = { ok: true };
-    expect(classifyRemoveEventResult(result, "ev-1")).toEqual({ kind: "removed" });
+    expect(classifyEventMutationResult(result, "ev-1")).toEqual({ kind: "applied" });
   });
 
-  it("classifies a success that also deleted the emptied source atomic update as removed", () => {
+  it("classifies a success that also deleted the emptied source atomic update as applied", () => {
     // `deletedAtomicUpdate` is present but irrelevant to this fork — the
     // caller only branches on ok/needsConfirmation, not on this extra field.
     const result: ReassignResult = { ok: true, deletedAtomicUpdate: { id: "au-2", title: "Old thing" } };
-    expect(classifyRemoveEventResult(result, "ev-1")).toEqual({ kind: "removed" });
+    expect(classifyEventMutationResult(result, "ev-1")).toEqual({ kind: "applied" });
   });
 
   it("classifies a needs-confirmation result, folding in the eventId that triggered it", () => {
@@ -133,7 +137,7 @@ describe("classifyRemoveEventResult", () => {
       needsConfirmation: true,
       emptiedAtomicUpdate: { id: "au-1", title: "Faster CSV export", inDraft: false },
     };
-    expect(classifyRemoveEventResult(result, "ev-1")).toEqual({
+    expect(classifyEventMutationResult(result, "ev-1")).toEqual({
       kind: "needs_confirmation",
       eventId: "ev-1",
       emptiedAtomicUpdate: { id: "au-1", title: "Faster CSV export", inDraft: false },
@@ -142,9 +146,27 @@ describe("classifyRemoveEventResult", () => {
 
   it("classifies an outright rejection with its reason, not as a needs-confirmation", () => {
     const result: ReassignResult = { ok: false, reason: "Change event does not belong to this atomic update." };
-    expect(classifyRemoveEventResult(result, "ev-1")).toEqual({
+    expect(classifyEventMutationResult(result, "ev-1")).toEqual({
       kind: "rejected",
       reason: "Change event does not belong to this atomic update.",
     });
+  });
+});
+
+describe("eventMutationSuccessMessage", () => {
+  // Reassign was missing from the drawer entirely (design line 68 asks for
+  // per-event reassign AND remove), so moving an event between two atomic
+  // updates meant remove → /company → "Show hidden" → reassign — and the
+  // remove leg fires forceRegenerate on the source update on the way past.
+  // The two mutations now share one code path, so the wording is the only
+  // thing that distinguishes them to the user.
+  it("distinguishes a remove from a move and from a split", () => {
+    expect(eventMutationSuccessMessage({ kind: "remove" })).toBe("Change event removed");
+    expect(
+      eventMutationSuccessMessage({ kind: "reassign", target: { kind: "existing", atomicUpdateId: "au-2" } })
+    ).toBe("Change event reassigned");
+    expect(eventMutationSuccessMessage({ kind: "reassign", target: { kind: "new" } })).toBe(
+      "Split into a new atomic update"
+    );
   });
 });

@@ -30,7 +30,7 @@ export type AtomicUpdateRow = {
   // `status = 'hidden'`. Only ever true when the caller asked for hidden rows;
   // the list renders these inline with the open ones, set apart by a dashed
   // outline and offering nothing but "Unhide" — same treatment hidden change
-  // events get on /change-events.
+  // events get in the Company page's change-events section.
   hidden: boolean;
 };
 
@@ -291,15 +291,37 @@ export async function unhideAtomicUpdate(
   return { ok: rows.length > 0 };
 }
 
+/**
+ * Rewrites an OPEN atomic update's title and summary.
+ *
+ * The `status = 'open'` guard matches `setAtomicUpdateSize` and
+ * `setAtomicUpdateCategory` exactly, and that symmetry is the point: both the
+ * curation card and the evidence drawer save title/summary and size/category
+ * as one "Save", through three separate actions (size stamps its own freeze
+ * column, so they can't be folded into one statement). Without the guard here
+ * that Save half-succeeded on a released update — the title was rewritten
+ * while the size/category calls came back `{ok:false}` and toasted a failure,
+ * leaving the user with no coherent account of what happened. All three now
+ * refuse together.
+ *
+ * NOT guarded on `contentPieceId IS NULL`, unlike `hideAtomicUpdate`: an
+ * atomic update claimed into an unpublished draft is still `open`, and this
+ * codebase treats those as live and editable (`openAtomicUpdatesForReassign`
+ * deliberately offers them as reassign targets for the same reason). The
+ * `updatedAt` bump here is what fires the draft's catch-up "evidence delta",
+ * so the edit surfaces on the draft rather than being lost. Hiding is the odd
+ * one out because a hidden title mid-draft is a different, unhandled concern.
+ *
+ * Tenant scoping is enforced per-query in this codebase, not by RLS — the
+ * where clause is the security boundary.
+ */
 export async function editAtomicUpdate(
   tenantId: string,
   id: string,
   patch: { title: string; summary: string },
   database: Database = defaultDb
-): Promise<void> {
-  // Tenant scoping is enforced per-query in this codebase, not by RLS — the
-  // where clause is the security boundary.
-  await database
+): Promise<{ ok: boolean }> {
+  const rows = await database
     .update(atomicUpdates)
     .set({
       title: patch.title,
@@ -308,7 +330,16 @@ export async function editAtomicUpdate(
       summaryEditedAt: new Date(),
       updatedAt: new Date(),
     })
-    .where(and(eq(atomicUpdates.id, id), eq(atomicUpdates.tenantId, tenantId)));
+    .where(
+      and(
+        eq(atomicUpdates.id, id),
+        eq(atomicUpdates.tenantId, tenantId),
+        eq(atomicUpdates.status, "open")
+      )
+    )
+    .returning({ id: atomicUpdates.id });
+
+  return { ok: rows.length > 0 };
 }
 
 /**

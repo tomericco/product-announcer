@@ -41,7 +41,7 @@ function assignmentLabel(row: ChangeEventRowData): string {
 }
 
 /**
- * One row in the /change-events list. Everything here — the event, its
+ * One row in the Company page's change-events list. Everything here — the event, its
  * current atomic update (or lack of one), and the list of valid reassign
  * targets — arrives as props from the server-rendered page; this component
  * (and `ReassignControl` beneath it) never imports `db`/pg.

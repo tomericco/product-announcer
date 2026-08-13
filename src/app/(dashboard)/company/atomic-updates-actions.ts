@@ -44,10 +44,11 @@ export async function unhideAtomicUpdate(id: string): Promise<{ ok: boolean }> {
 export async function editAtomicUpdate(
   id: string,
   patch: { title: string; summary: string }
-): Promise<void> {
+): Promise<{ ok: boolean }> {
   const session = await requireSession();
-  await curation.editAtomicUpdate(session.user.tenantId, id, patch);
+  const result = await curation.editAtomicUpdate(session.user.tenantId, id, patch);
   revalidatePath("/company");
+  return result;
 }
 
 export async function removeEventFromAtomicUpdate(

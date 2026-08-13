@@ -215,5 +215,56 @@ describe("readSignalEvidence", () => {
 
     const evidence = await readSignalEvidence(tenant.id, signal.id);
     expect(evidence!.hidden).toBe(true);
+    expect(evidence!.editable).toBe(false);
+  });
+
+  // The drawer opens on rows `listAtomicUpdates` deliberately excludes:
+  // `syncShippedWorkSignals` leaves the signal in place once its atomic
+  // update is released, and this read applies no status filter. Every
+  // curation mutation behind the drawer is guarded on `status='open'`, so the
+  // drawer needs to know which of those rows it may offer a Save on — without
+  // this flag, editing a released update rewrote the title while the
+  // size/category half of the same Save came back `{ok:false}` and toasted a
+  // failure.
+  it("marks an open atomic update editable and a released one not", async () => {
+    const tenant = await seedTenant(TENANT);
+    const [open] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "Open one", summary: "S" })
+      .returning();
+    const [released] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "Released one", summary: "S", status: "released" })
+      .returning();
+    const inserted = await db
+      .insert(signals)
+      .values([
+        {
+          tenantId: tenant.id,
+          kind: "shipped_work" as const,
+          externalId: open.id,
+          title: "Open one",
+          occurredAt: new Date(),
+          atomicUpdateId: open.id,
+        },
+        {
+          tenantId: tenant.id,
+          kind: "shipped_work" as const,
+          externalId: released.id,
+          title: "Released one",
+          occurredAt: new Date(),
+          atomicUpdateId: released.id,
+        },
+      ])
+      .returning();
+
+    const openEvidence = await readSignalEvidence(tenant.id, inserted[0].id);
+    const releasedEvidence = await readSignalEvidence(tenant.id, inserted[1].id);
+
+    expect(openEvidence!.editable).toBe(true);
+    expect(releasedEvidence!.editable).toBe(false);
+    // Not the same thing as hidden — a released update is reachable and
+    // readable, just frozen.
+    expect(releasedEvidence!.hidden).toBe(false);
   });
 });

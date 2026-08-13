@@ -16,7 +16,9 @@ import type { CommitSelection } from "@/lib/change-events/import-commits";
 import type { PullRequestSelection } from "@/lib/change-events/import-pull-requests";
 
 /**
- * "New atomic update" on `/atomic-updates`. Shows the EXACT same change-event
+ * "New atomic update" on `/integrations`, where creation moved when the
+ * standalone tab was retired (the /company ledger only curates what already
+ * exists). Shows the EXACT same change-event
  * selector as the change-events import modal (`ImportDialog`) — repo tabs,
  * search, the type dropdown, After/Before, GitHub commits/PRs, Notion tasks —
  * differing only in the CTA: instead of importing the selected events into the

@@ -194,11 +194,11 @@ export default async function CompanyPage({
         </CardContent>
       </Card>
 
-      {/* Absorbed from the standalone /change-events and /atomic-updates
-          pages (curation + bulk actions half; the view half moved into the
-          Signals evidence drawer). Both routes still exist and still work
-          until they're deleted — these sections reuse the same components,
-          re-pointed here, rather than duplicating them. */}
+      {/* Absorbed from the retired /change-events and /atomic-updates pages
+          (curation + bulk actions half; the single-item view half moved into
+          the Signals evidence drawer). Both routes are now redirect stubs
+          pointing here — these sections reuse the same components, re-pointed,
+          rather than duplicating them. */}
       <Card>
         <CardHeader>
           <CardTitle>Change events</CardTitle>
