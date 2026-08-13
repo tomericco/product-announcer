@@ -66,7 +66,7 @@ function atomicUpdateCategories(items: { category: string | null }[]): string[] 
 /**
  * The atomic updates a brief's `shipped_work` signals stand for, re-derived
  * server-side from the brief's own citations. No id reaches this path from a
- * client — the retiring `/api/atomic-updates/draft` route took a list of ids
+ * client — the now-retired `/api/atomic-updates/draft` route took a list of ids
  * from the browser and had to intersect it with `getOpenAtomicUpdates` to make
  * it safe; deriving from `brief_signals` removes the untrusted input entirely.
  *

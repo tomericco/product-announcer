@@ -120,7 +120,7 @@ export async function applyResolutionInTx(
       // tenant's change event to another tenant's atomic update. If the target
       // isn't this tenant's, the WHERE simply matches nothing and the event
       // stays unassigned rather than throwing.
-      // Also re-check `status = 'open'`: a claim (`claimReleaseFromAtomicUpdates`)
+      // Also re-check `status = 'open'`: a draft link (`linkAtomicUpdatesToPiece`)
       // does not take the tenant lock this resolver runs under, so the target
       // atomic update can flip to `released` while the resolver's LLM call is
       // in flight. If that happened, the EXISTS fails, the event stays

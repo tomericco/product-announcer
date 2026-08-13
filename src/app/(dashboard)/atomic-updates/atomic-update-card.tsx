@@ -158,7 +158,7 @@ export function AtomicUpdateCard({
   repos: ImportRepo[];
   notionConnected?: boolean;
   // Controlled by the page: only rendered/enabled when the page is in
-  // selection mode for drafting a release.
+  // selection mode for the bulk hide/delete actions.
   selectable?: boolean;
   selected?: boolean;
   // True when any card in the list is selected — reveals this card's checkbox

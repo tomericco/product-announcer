@@ -51,7 +51,7 @@ async function loadPromptContext(tenantId: string) {
  * moment earlier, so between that read and this call another draft could have
  * claimed one, or it could have been published. Only rows still tenant-owned,
  * `status = 'open'`, and `contentPieceId IS NULL` are linked (same guard as
- * `claimReleaseFromAtomicUpdates`) — a row that no longer matches is dropped
+ * `linkAtomicUpdatesToPiece`) — a row that no longer matches is dropped
  * from this catch-up, not force-stolen. Stays `status = 'open'`; publish still
  * owns the `released` transition.
  */

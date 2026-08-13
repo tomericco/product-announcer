@@ -14,14 +14,13 @@ import {
 } from "@/components/ui/dialog";
 import { groupByMonth } from "@/lib/group-by-month";
 import { AtomicUpdateCard } from "./atomic-update-card";
-import { DraftReleaseDialog } from "./draft-release-dialog";
 import { bulkHideAtomicUpdates, bulkDeleteAtomicUpdates } from "./actions";
 import type { AtomicUpdateRow } from "./actions";
 import type { ImportRepo } from "../change-events/actions";
 
 // Selection lives here rather than in the (async, server) page component: it's
-// pure client-side UI state driving which atomic updates go into the next
-// release draft, scoped to the list so the page itself stays a server component.
+// pure client-side UI state driving the bulk hide/delete actions below, scoped
+// to the list so the page itself stays a server component.
 export function AtomicUpdatesList({
   rows,
   repos,
@@ -147,10 +146,6 @@ export function AtomicUpdatesList({
                   </Button>
                 </div>
               )}
-
-              <div className="ml-auto">
-                <DraftReleaseDialog atomicUpdateIds={[...selected]} />
-              </div>
             </div>
           )}
           {monthGroups.map((group) => (

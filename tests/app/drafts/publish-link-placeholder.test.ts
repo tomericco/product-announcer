@@ -9,7 +9,7 @@ vi.mock("next/headers", () => ({ cookies: vi.fn(async () => ({ get: () => undefi
 import { getServerSession } from "next-auth";
 import { db } from "../../../src/db";
 import { tenants, atomicUpdates, contentPieces, users, tenantMembers } from "../../../src/db/schema";
-import { claimReleaseFromAtomicUpdates } from "../../../src/lib/change-events/release-claim";
+import { linkAtomicUpdatesToPiece } from "../../../src/lib/change-events/release-claim";
 import { approveDraft, publishDraft, checkDraftLinks } from "../../../src/app/(dashboard)/drafts/actions";
 
 const TENANT_NAME = "Publish Invalid Links Test Tenant";
@@ -25,12 +25,9 @@ async function seed() {
 
 async function seedDraft(tenantId: string, body: string) {
   const [au] = await db.insert(atomicUpdates).values({ tenantId, title: "A", summary: "S" }).returning();
-  const release = await claimReleaseFromAtomicUpdates({
-    tenantId,
-    atomicUpdateIds: [au.id],
-    draft: { title: "R", body },
-  });
-  return { release: release!, atomicUpdateId: au.id };
+  const [release] = await db.insert(contentPieces).values({ tenantId, title: "R", body }).returning();
+  await linkAtomicUpdatesToPiece({ tenantId, contentPieceId: release.id, atomicUpdateIds: [au.id] });
+  return { release, atomicUpdateId: au.id };
 }
 
 function formDataFor(releaseId: string, body: string) {

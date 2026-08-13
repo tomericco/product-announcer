@@ -64,7 +64,7 @@ export function terminalOutcome(progress: GenerationProgress | null): TerminalOu
 
 /**
  * Snapshot derivation, not the incremental start/done reducer
- * draft-release-dialog.tsx uses: the poll only ever reports the CURRENT
+ * agent-edit-dialog.tsx uses: the poll only ever reports the CURRENT
  * step, never a stream of individual step events, so every step before it
  * is inferred done rather than tracked one event at a time. The generic
  * brief path has no review pass of its own, so `generating` jumps straight
@@ -149,7 +149,7 @@ export function shouldStopPolling(progress: GenerationProgress | null): boolean 
 /**
  * Live checklist for a card whose draft is generating. Draft generation runs
  * in an `after()` callback with no open response to stream into, so unlike
- * draft-release-dialog.tsx's SSE-driven ProgressChecklist, this one polls
+ * agent-edit-dialog.tsx's stream-driven ProgressChecklist, this one polls
  * the persisted `generationStep` column every 3s instead of consuming an
  * event stream.
  *
