@@ -6,6 +6,7 @@ import {
   draftsFromEvidence,
   classifyEventMutationResult,
   eventMutationSuccessMessage,
+  evidenceAfterHide,
   type EvidenceLoadState,
 } from "../../src/app/(dashboard)/signals/evidence-drawer";
 import type { SignalEvidence } from "../../src/lib/signals/evidence";
@@ -168,5 +169,41 @@ describe("eventMutationSuccessMessage", () => {
     expect(eventMutationSuccessMessage({ kind: "reassign", target: { kind: "new" } })).toBe(
       "Split into a new atomic update"
     );
+  });
+});
+
+describe("evidenceAfterHide", () => {
+  // The regression this exists for: the drawer's read-only gates were moved
+  // from `hidden` to `!editable`, but hide() went on setting only
+  // `hidden: true`. A just-hidden update therefore kept enabled inputs and a
+  // Hide/Save footer — and both then FAILED, because every curation write is
+  // guarded on `status='open'`. The fixture above only ever had
+  // `hidden: false, editable: true`, so nothing caught it.
+  it("flips editable off together with hidden — they cannot move apart", () => {
+    const after = evidenceAfterHide(fakeEvidence({ hidden: false, editable: true }));
+    expect(after.hidden).toBe(true);
+    expect(after.editable).toBe(false);
+  });
+
+  it("leaves everything else about the evidence alone", () => {
+    const before = fakeEvidence({ title: "Bulk export", size: "l", category: "new" });
+    const after = evidenceAfterHide(before);
+    expect(after.atomicUpdateId).toBe(before.atomicUpdateId);
+    expect(after.title).toBe("Bulk export");
+    expect(after.size).toBe("l");
+    expect(after.category).toBe("new");
+    expect(after.events).toEqual(before.events);
+    // A new object, not a mutation of the state React is still holding.
+    expect(before.hidden).toBe(false);
+    expect(before.editable).toBe(true);
+  });
+
+  // What the component reads off the post-hide state, spelled out: this is
+  // the footer's badge branch and every input's `disabled` prop.
+  it("puts the drawer in exactly the read-only state a freshly loaded hidden update would", () => {
+    const hiddenFromServer = fakeEvidence({ hidden: true, editable: false });
+    const hiddenLocally = evidenceAfterHide(fakeEvidence());
+    expect(hiddenLocally.hidden).toBe(hiddenFromServer.hidden);
+    expect(hiddenLocally.editable).toBe(hiddenFromServer.editable);
   });
 });

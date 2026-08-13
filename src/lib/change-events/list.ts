@@ -185,7 +185,8 @@ export async function bulkReassignChangeEvents(input: {
  * This intentionally does NOT prune an atomic update left empty by the delete:
  * silently deleting one that a draft release still references would be more
  * destructive than the request implies. An emptied open atomic update simply
- * remains on the atomic-updates page for the user to hide or handle there.
+ * remains in the Company page's atomic-updates ledger for the user to hide or
+ * handle there.
  */
 export async function bulkDeleteChangeEvents(
   tenantId: string,

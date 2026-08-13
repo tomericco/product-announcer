@@ -1,9 +1,11 @@
 "use server";
 
-// This file currently handles commit import only. It's the seam for future
-// import sources (PRs, Notion tasks) — new sources get their own
-// list/import actions here (or alongside), fanning into the same
-// `ImportDialog` UI.
+// Every manual import source: GitHub commits, GitHub pull requests, and Notion
+// tasks. Each has a list action (what's importable) and an import action, and
+// each import comes in three flavours fanning into the same `ImportDialog` UI —
+// plain (into the ungrouped pool, for the resolver to cluster), create-one-
+// atomic-update, and add-to-an-existing-one. A future source gets the same set
+// here.
 
 import { and, eq, inArray, ne } from "drizzle-orm";
 import { revalidatePath } from "next/cache";

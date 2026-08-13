@@ -37,6 +37,9 @@ import {
   setAtomicUpdateSize,
 } from "./atomic-updates-actions";
 import type { AtomicUpdateEvent, AtomicUpdateRow } from "@/lib/atomic-updates/list";
+// A value import, safe because `save-outcome` is pure — no `db`, unlike its
+// `@/lib/atomic-updates/list` neighbour, which is why it is its own module.
+import { saveOutcomeMessage, type SavePart } from "@/lib/atomic-updates/save-outcome";
 import type { ImportRepo } from "@/lib/change-events/list";
 import { AddEventPicker } from "./add-event-picker";
 import { SelectionCheckbox } from "../_components/selection-checkbox";
@@ -196,16 +199,22 @@ export function AtomicUpdateCard({
           toast.error("Could not save this atomic update");
           return;
         }
+        // Failures are collected rather than toasted inline: one Save gets one
+        // outcome. Reporting "Could not update size" and then "Atomic update
+        // saved" for the same click was two contradictory toasts.
+        const failedParts: SavePart[] = [];
         if (size && size !== row.size) {
           const result = await setAtomicUpdateSize(row.id, size);
-          if (!result.ok) toast.error("Could not update size");
+          if (!result.ok) failedParts.push("size");
         }
         if (category && category !== row.category) {
           const result = await setAtomicUpdateCategory(row.id, category);
-          if (!result.ok) toast.error("Could not update category");
+          if (!result.ok) failedParts.push("category");
         }
         setEditing(false);
-        toast.success("Atomic update saved");
+        const outcome = saveOutcomeMessage(failedParts, "Atomic update saved");
+        if (outcome.ok) toast.success(outcome.message);
+        else toast.error(outcome.message);
       } catch (error) {
         // Server actions reject with an opaque digest in production; surface
         // what we can rather than leaving the form silently stuck.

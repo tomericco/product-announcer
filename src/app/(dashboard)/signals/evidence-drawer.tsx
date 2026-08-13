@@ -46,6 +46,10 @@ import type { SignalEvidence, EvidenceEvent } from "@/lib/signals/evidence";
 // Type-only, same reasoning: `@/lib/change-events/reassign` also has a
 // top-level `db` import.
 import type { ReassignResult } from "@/lib/change-events/reassign";
+// A VALUE import, and safe: `save-outcome` is a pure module with no `db` (or
+// React) import of its own, kept that way precisely so both this drawer and
+// the curation card on /company can derive one Save outcome the same way.
+import { saveOutcomeMessage, type SavePart } from "@/lib/atomic-updates/save-outcome";
 import {
   loadSignalEvidence,
   loadEvidenceReassignTargets,
@@ -180,6 +184,21 @@ export function classifyEventMutationResult(result: ReassignResult, eventId: str
     return { kind: "needs_confirmation", eventId, emptiedAtomicUpdate: result.emptiedAtomicUpdate };
   }
   return { kind: "rejected", reason: result.reason };
+}
+
+/**
+ * The evidence a successful Hide leaves behind.
+ *
+ * `hidden` and `editable` must move together: hiding sets `status='hidden'`,
+ * and every curation write behind this drawer is guarded on `status='open'`,
+ * so a hidden update is no longer editable. Extracted because getting that
+ * wrong is invisible in the drawer's own code — when the read-only gates moved
+ * from `hidden` to `!editable`, `hide()` kept setting only `hidden: true`, so
+ * a just-hidden update went on rendering enabled inputs and a Hide/Save
+ * footer, both of which the server then refused.
+ */
+export function evidenceAfterHide(evidence: SignalEvidence): SignalEvidence {
+  return { ...evidence, hidden: true, editable: false };
 }
 
 /** The success toast for a mutation, so the wording is testable too. */
@@ -387,13 +406,28 @@ export function EvidenceDrawer({ signalId, title }: { signalId: string; title: s
           return;
         }
 
+        // A size/category call can still come back `{ok:false}` for a reason
+        // that isn't the shared guard (a concurrent hide, a deleted row), so
+        // the failures are collected rather than toasted as they happen — one
+        // Save, one outcome. Reporting each failure inline and then a blanket
+        // "Saved" produced two contradictory toasts for a single click.
+        const failedParts: SavePart[] = [];
+        let savedSize = evidence.size;
+        let savedCategory = evidence.category;
+
         if (draftSize && draftSize !== evidence.size) {
           const result = await saveEvidenceSize(evidence.atomicUpdateId, draftSize);
-          if (!result.ok) toast.error("Could not update size");
+          if (result.ok) savedSize = draftSize;
+          else failedParts.push("size");
+        } else {
+          savedSize = draftSize ?? evidence.size;
         }
         if (draftCategory && draftCategory !== evidence.category) {
           const result = await saveEvidenceCategory(evidence.atomicUpdateId, draftCategory);
-          if (!result.ok) toast.error("Could not update category");
+          if (result.ok) savedCategory = draftCategory;
+          else failedParts.push("category");
+        } else {
+          savedCategory = draftCategory ?? evidence.category;
         }
 
         if (!shouldApplyResponse(requestToken, requestTokenRef.current)) return;
@@ -401,12 +435,22 @@ export function EvidenceDrawer({ signalId, title }: { signalId: string; title: s
         // Reflects the edit in the drawer's own state immediately — the
         // signal row this drawer hangs off never re-fetches (see the
         // docstring above), so this local update is the only thing that
-        // makes the save visible before the next page load.
+        // makes the save visible before the next page load. Only the parts
+        // that actually persisted are applied, so a failed size doesn't leave
+        // the drawer displaying a value the database never took.
         setState({
           status: "loaded",
-          evidence: { ...evidence, title: draftTitle, summary: draftSummary, size: draftSize, category: draftCategory },
+          evidence: {
+            ...evidence,
+            title: draftTitle,
+            summary: draftSummary,
+            size: savedSize,
+            category: savedCategory,
+          },
         });
-        toast.success("Saved");
+        const outcome = saveOutcomeMessage(failedParts);
+        if (outcome.ok) toast.success(outcome.message);
+        else toast.error(outcome.message);
       } catch (error) {
         if (!shouldApplyResponse(requestToken, requestTokenRef.current)) return;
         toast.error(error instanceof Error ? error.message : "Something went wrong");
@@ -424,7 +468,7 @@ export function EvidenceDrawer({ signalId, title }: { signalId: string; title: s
       if (!shouldApplyResponse(requestToken, requestTokenRef.current)) return;
 
       if (result.ok) {
-        setState({ status: "loaded", evidence: { ...evidence, hidden: true } });
+        setState({ status: "loaded", evidence: evidenceAfterHide(evidence) });
         toast.success("Atomic update hidden");
       } else {
         toast.error("Could not hide this atomic update");
