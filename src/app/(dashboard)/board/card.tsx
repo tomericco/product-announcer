@@ -88,18 +88,34 @@ export function BoardCardItem({ card, members, draggable, onGenerated, onAssigne
       }
     : undefined;
 
-  const [generating, startGenerate] = useTransition();
+  const [starting, startGenerate] = useTransition();
+  // Covers the window between "the action queued the work" and "a board
+  // refetch can see `generationStep`": `generateDraft` returns before
+  // `generateDraftForPiece` has written its first step, so `onGenerated()`
+  // can land on a row that still reads null.
+  const [startedLocally, setStartedLocally] = useState(false);
   const [assigning, setAssigning] = useState(false);
   const hydrated = useHydrated();
 
+  // Generating RIGHT NOW — which changes how the rest of this card reads.
+  // `generationError` is non-null for the whole run (the
+  // interrupted-generation marker `generateDraftForPiece` writes BEFORE the
+  // model call, deliberately), so it describes a previous attempt's worst
+  // case, not the current one. Badging or printing it as a landed failure
+  // beside a live checklist reported a running generation as broken.
+  const generating = card.status === "brief" && (card.generationStep !== null || startedLocally);
+
   function handleGenerate() {
     startGenerate(async () => {
-      const result = await generateDraft(card.id);
-      // Refresh either way: a failure still writes `generationError` to the
-      // row (status stays "brief"), and the card must pick that up — not
-      // just flash a toast that then leaves the card looking untouched.
+      await generateDraft(card.id);
+      // "Started", not "done". `generateDraft` is fire-and-forget now — it
+      // returns as soon as the work is queued, so there is no outcome to
+      // report here and no error to toast. The checklist below reports both.
+      setStartedLocally(true);
+      toast.success("Generation started");
+      // Picks up `generationStep` so the card renders the checklist from
+      // server state rather than from `startedLocally` alone.
       onGenerated();
-      if (!result.ok) toast.error(result.error);
     });
   }
 
@@ -151,10 +167,17 @@ export function BoardCardItem({ card, members, draggable, onGenerated, onAssigne
             <Badge variant="secondary">{CONTENT_TYPE_LABEL[card.type]}</Badge>
 
             {/* A "brief" card with generationError is a failed generation —
-                the scaffold body is intact and Generate below offers a retry. */}
+                the scaffold body is intact and Generate below offers a retry.
+                Unless it is generating right now, in which case that error is
+                the pre-model marker and not a failure at all (see
+                `generating`). */}
             {card.status === "brief" && (
-              <Badge variant={card.generationError ? "destructive" : "outline"}>
-                {card.generationError ? "Generation failed" : "Awaiting generation"}
+              <Badge variant={!generating && card.generationError ? "destructive" : "outline"}>
+                {generating
+                  ? "Generating…"
+                  : card.generationError
+                    ? "Generation failed"
+                    : "Awaiting generation"}
               </Badge>
             )}
 
@@ -172,7 +195,7 @@ export function BoardCardItem({ card, members, draggable, onGenerated, onAssigne
             )}
           </div>
 
-          {card.status === "brief" && card.generationError && (
+          {card.status === "brief" && card.generationError && !generating && (
             <p className="text-xs text-destructive">{card.generationError}</p>
           )}
           {card.status === "draft" && card.generationError && (
@@ -182,10 +205,10 @@ export function BoardCardItem({ card, members, draggable, onGenerated, onAssigne
           {/* Only while a generation is actually in flight — a brief that
               hasn't been generated yet (generationStep null, no error) shows
               just the "Awaiting generation" badge above, not a half-lit
-              checklist. */}
-          {card.status === "brief" && card.generationStep !== null && (
-            <GenerationChecklist contentPieceId={card.id} />
-          )}
+              checklist. `startedLocally` folds in the run this card just
+              kicked off, whose first step write may not have landed before
+              onGenerated() refetched the board. */}
+          {generating && <GenerationChecklist contentPieceId={card.id} />}
 
           <Select
             value={card.assignedTo ?? "unassigned"}
@@ -205,9 +228,19 @@ export function BoardCardItem({ card, members, draggable, onGenerated, onAssigne
             </SelectContent>
           </Select>
 
-          {card.status === "brief" && (
-            <Button type="button" size="sm" className="w-full" disabled={generating} onClick={handleGenerate}>
-              {generating ? "Generating…" : card.generationError ? "Retry generation" : "Generate draft"}
+          {/* Hidden, not merely disabled, while a run is in flight. The action
+              resolves in milliseconds now that it only queues the work, so
+              `disabled={starting}` alone would leave the button live for the
+              whole generation and invite a second click. A click after the run
+              lands is refused by `generateDraftForPiece`'s status guard (the
+              piece is "draft" by then, and the generator is never called); a
+              click DURING the run is the weaker case, since that guard is a
+              read-then-act and two overlapping runs can both pass it. Removing
+              the control is what makes the second one unreachable from here.
+              The checklist above stands in for it. */}
+          {card.status === "brief" && !generating && (
+            <Button type="button" size="sm" className="w-full" disabled={starting} onClick={handleGenerate}>
+              {starting ? "Starting…" : card.generationError ? "Retry generation" : "Generate draft"}
             </Button>
           )}
         </CardContent>

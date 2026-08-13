@@ -49,6 +49,18 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
   // config — are meaningful for a piece that has never been drafted, so this
   // returns before any of them run.
   if (update.status === "brief") {
+    // A step in flight means this piece is generating RIGHT NOW, which
+    // changes how everything below reads. `generationError` is non-null for
+    // the whole run — `generateDraftForPiece` writes the
+    // interrupted-generation marker BEFORE calling the model, deliberately, so
+    // a process that dies mid-callback still leaves a visible error rather
+    // than nothing. That marker describes a *previous* attempt's worst case,
+    // not the current one, so presenting it as a landed failure while the run
+    // is under way is simply wrong. The checklist replaces it, and it comes
+    // back — honestly this time — the moment the step clears with the error
+    // still set.
+    const generating = update.generationStep !== null;
+
     return (
       <div className="mx-auto w-full max-w-3xl space-y-6">
         <div className="sticky top-0 z-20 -mx-4 flex items-center justify-between bg-background px-4 py-3">
@@ -65,8 +77,12 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
           <h1 className="font-heading text-3xl leading-[1.15] tracking-[0.015em]">
             {update.title || "Untitled draft"}
           </h1>
-          <Badge variant={update.generationError ? "destructive" : "outline"}>
-            {update.generationError ? "Generation failed" : "Awaiting generation"}
+          <Badge variant={!generating && update.generationError ? "destructive" : "outline"}>
+            {generating
+              ? "Generating…"
+              : update.generationError
+                ? "Generation failed"
+                : "Awaiting generation"}
           </Badge>
         </div>
 
@@ -79,9 +95,9 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
             generation. Without it they watched a static "Awaiting generation"
             badge for the whole run. The row already selects every column, so
             `generationStep` is present and tenant-scoped by the query above. */}
-        {update.generationStep !== null && <GenerationChecklist contentPieceId={update.id} />}
-
-        {update.generationError ? (
+        {generating ? (
+          <GenerationChecklist contentPieceId={update.id} />
+        ) : update.generationError ? (
           <div className="space-y-1 rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
             <p className="font-medium">The last generation attempt failed.</p>
             <p>{update.generationError}</p>
@@ -95,7 +111,15 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
 
         <pre className="rounded-md border bg-muted/30 p-4 text-sm whitespace-pre-wrap">{update.body}</pre>
 
-        <GenerateDraftButton contentPieceId={update.id} isRetry={Boolean(update.generationError)} />
+        {/* isRetry reads the error only when it is a REAL landed failure —
+            mid-run the marker is always set, and "Retry generation" on a
+            first attempt that is still running would be nonsense. The button
+            renders nothing at all while `generating`. */}
+        <GenerateDraftButton
+          contentPieceId={update.id}
+          isRetry={!generating && Boolean(update.generationError)}
+          inFlight={generating}
+        />
       </div>
     );
   }

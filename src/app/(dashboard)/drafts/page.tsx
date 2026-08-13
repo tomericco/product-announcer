@@ -104,9 +104,25 @@ export default async function DraftsPage() {
                   distinctly so it never reads as a finished draft. Mutually
                   exclusive with the review-status badge below: reviewStatus is
                   only ever set once a real draft has been generated. */}
+              {/* While a step is in flight this row is generating NOW, so the
+                  `generationError` on it is the interrupted-generation marker
+                  `generateDraftForPiece` writes BEFORE the model call — a
+                  description of a previous attempt's worst case, not a landed
+                  failure. Badging it "Generation failed" directly above a live
+                  checklist reported the run as broken while it was still
+                  running. The failed badge returns once the step clears with
+                  the error still set, which is the honest state. */}
               {d.status === "brief" && (
-                <Badge variant={d.generationError ? "destructive" : "outline"}>
-                  {d.generationError ? "Generation failed" : "Awaiting generation"}
+                <Badge
+                  variant={
+                    d.generationStep === null && d.generationError ? "destructive" : "outline"
+                  }
+                >
+                  {d.generationStep !== null
+                    ? "Generating…"
+                    : d.generationError
+                      ? "Generation failed"
+                      : "Awaiting generation"}
                 </Badge>
               )}
               {reviewStatusLabel(d.reviewStatus) && (

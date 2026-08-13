@@ -161,11 +161,44 @@ export async function dismissBrief(
  * arrives from a URL), so tenant scoping is not optional here — it's enforced
  * inside `generateDraftForPiece`, which re-reads the piece scoped to the
  * caller's own tenant rather than trusting the id alone.
+ *
+ * FIRE-AND-FORGET, exactly like `acceptBrief` above: it schedules the
+ * generation in `after()` and returns as soon as the work is queued. `{ ok:
+ * true }` means "generation started", NOT "draft ready" — both callers render
+ * the shared `GenerationChecklist` for the run itself.
+ *
+ * It used to `await generateDraftForPiece` inline. That held the server action
+ * open for the entire generate + review round trip, so nothing re-rendered
+ * mid-flight and the persisted-progress checklist — the whole point of
+ * `generationStep` — could never mount on this path. The user got a spinner on
+ * a button and no idea which step was running.
+ *
+ * The trade this makes, stated so it isn't rediscovered: the three early
+ * refusals inside `generateDraftForPiece` (piece not found, not at "brief",
+ * body hand-edited) can no longer be toasted, because nobody is waiting on
+ * them. They are logged instead. Two of the three are already unreachable from
+ * either caller — both only render the button for a `brief`-status piece — and
+ * recording them on the row is not an option: writing failure text onto a
+ * non-"brief" piece is exactly what that guard's own docstring warns makes the
+ * UI render it as the amber competitor-name warning. Every real generation
+ * failure still lands in `generationError` and reaches the user through the
+ * checklist and the page's own error panel.
  */
-export async function generateDraft(contentPieceId: string): Promise<{ ok: true } | { ok: false; error: string }> {
+export async function generateDraft(contentPieceId: string): Promise<{ ok: true }> {
   const session = await requireSession();
-  const result = await generateDraftForPiece(contentPieceId, session.user.tenantId);
-  revalidatePath("/drafts");
-  revalidatePath(`/drafts/${contentPieceId}`);
-  return result;
+  const tenantId = session.user.tenantId;
+
+  // Same shape as acceptBrief's: revalidate again from inside the callback,
+  // because the pages the user is sitting on were rendered before generation
+  // even started and nothing else tells them the run landed.
+  after(async () => {
+    const result = await generateDraftForPiece(contentPieceId, tenantId);
+    if (!result.ok) {
+      console.error(`[briefs] generateDraft failed for piece ${contentPieceId}: ${result.error}`);
+    }
+    revalidatePath("/drafts");
+    revalidatePath(`/drafts/${contentPieceId}`);
+  });
+
+  return { ok: true };
 }

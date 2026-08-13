@@ -78,7 +78,7 @@ vi.mock("../../src/lib/ai/review-draft", () => ({
 }));
 
 import { revalidatePath } from "next/cache";
-import { acceptBrief, dismissBrief } from "../../src/app/(dashboard)/briefs/actions";
+import { acceptBrief, dismissBrief, generateDraft } from "../../src/app/(dashboard)/briefs/actions";
 import { scaffoldBody } from "../../src/lib/briefs/scaffold";
 import { runIdeation } from "../../src/lib/briefs/run";
 
@@ -269,6 +269,107 @@ describe("acceptBrief", () => {
     expect(result.ok).toBe(true);
     const [after] = await db.select().from(briefs).where(eq(briefs.id, brief.id));
     expect(after.status).toBe("accepted");
+  });
+});
+
+/**
+ * `generateDraft` is fire-and-forget, exactly like `acceptBrief`: it schedules
+ * `generateDraftForPiece` in `after()` and returns as soon as the work is
+ * queued. It used to await the whole generate + review round trip inline,
+ * which held the server action open for the entire run — so nothing
+ * re-rendered mid-flight and the persisted-progress checklist could never
+ * mount on the manual-Generate path.
+ *
+ * The `after` mock at the top of this file stores callbacks rather than
+ * running them inline, and `afterEach` drains and awaits them. That is what
+ * makes "has not generated yet" observable here: during a test body the
+ * scheduled callback genuinely has not run.
+ */
+describe("generateDraft", () => {
+  async function seedAcceptedPiece(tenantId: string) {
+    const [piece] = await db
+      .insert(contentPieces)
+      .values({
+        tenantId,
+        type: "blog_post",
+        title: "Scaffold title",
+        body: "SCAFFOLD BODY",
+        status: "brief",
+      })
+      .returning();
+    const brief = await seedBrief(tenantId, { status: "accepted", contentPieceId: piece.id });
+    return { piece, brief };
+  }
+
+  it("returns before generating anything, then generates when the callback runs", async () => {
+    const tenant = await seedTenant();
+    const { piece } = await seedAcceptedPiece(tenant.id);
+
+    const result = await generateDraft(piece.id);
+    // "Generation started", not "draft ready".
+    expect(result.ok).toBe(true);
+
+    // The whole point: the action is already done while the piece is
+    // untouched. An awaited generation would have promoted it by now.
+    const [duringFlight] = await db.select().from(contentPieces).where(eq(contentPieces.id, piece.id));
+    expect(duringFlight.status).toBe("brief");
+    expect(duringFlight.body).toBe("SCAFFOLD BODY");
+    expect(duringFlight.generatedAt).toBeNull();
+    expect(generateBriefDraft).not.toHaveBeenCalled();
+
+    // Draining the scheduled callback is what actually generates — same
+    // mechanism acceptBrief uses.
+    await Promise.all(pendingAfterCallbacks.splice(0).map((fn) => fn()));
+
+    const [landed] = await db.select().from(contentPieces).where(eq(contentPieces.id, piece.id));
+    expect(landed.status).toBe("draft");
+    expect(landed.body).toBe("Mock generated body.");
+    expect(generateBriefDraft).toHaveBeenCalledTimes(1);
+    // The pages the user is sitting on were rendered before generation even
+    // started, so the callback has to revalidate them itself.
+    expect(revalidatePath).toHaveBeenCalledWith("/drafts");
+    expect(revalidatePath).toHaveBeenCalledWith(`/drafts/${piece.id}`);
+  });
+
+  it("refuses a piece belonging to another tenant, and generates nothing", async () => {
+    await seedTenant();
+    const [other] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const { piece } = await seedAcceptedPiece(other.id);
+
+    // currentTenantId is the first tenant. The id arrives from a URL, so the
+    // scoping inside generateDraftForPiece is the security boundary — the
+    // action never trusts the id alone.
+    await generateDraft(piece.id);
+    await Promise.all(pendingAfterCallbacks.splice(0).map((fn) => fn()));
+
+    expect(generateBriefDraft).not.toHaveBeenCalled();
+    const [untouched] = await db.select().from(contentPieces).where(eq(contentPieces.id, piece.id));
+    expect(untouched.status).toBe("brief");
+    expect(untouched.body).toBe("SCAFFOLD BODY");
+  });
+
+  it("does not regenerate on a second run once the first has landed", async () => {
+    const tenant = await seedTenant();
+    const { piece } = await seedAcceptedPiece(tenant.id);
+
+    await generateDraft(piece.id);
+    await Promise.all(pendingAfterCallbacks.splice(0).map((fn) => fn()));
+    expect(generateBriefDraft).toHaveBeenCalledTimes(1);
+
+    // The re-entrancy case the fire-and-forget action opens up: the button is
+    // clickable again the moment the action returns. Both callers now hide it
+    // for the duration of a run, but the server-side guard is what makes a
+    // click that still gets through harmless — the piece is "draft" by now,
+    // and `generateDraftForPiece` refuses anything not at "brief" before the
+    // generator is ever called.
+    const second = await generateDraft(piece.id);
+    expect(second.ok).toBe(true);
+    await Promise.all(pendingAfterCallbacks.splice(0).map((fn) => fn()));
+
+    expect(generateBriefDraft).toHaveBeenCalledTimes(1);
+    const [landed] = await db.select().from(contentPieces).where(eq(contentPieces.id, piece.id));
+    expect(landed.status).toBe("draft");
+    expect(landed.body).toBe("Mock generated body.");
   });
 });
 
