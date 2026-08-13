@@ -92,9 +92,107 @@ describe("readSignalEvidence", () => {
       })
       .returning();
 
-    // Asserted by id, not by an empty result: a query that forgot the tenant
-    // filter would still return this row.
+    // A bare null check: this covers the ordinary case where the signal AND
+    // its atomic update both belong to the other tenant, but it does not pin
+    // either individual guard — either guard alone already stops this case.
+    // See the two tests below for fixtures that isolate one guard at a time.
     expect(await readSignalEvidence(stranger.id, signal.id)).toBeNull();
+  });
+
+  it("refuses a signal owned by another tenant even when it points at this tenant's own atomic update", async () => {
+    const tenantA = await seedTenant(TENANT);
+    const tenantB = await seedTenant(OTHER_TENANT);
+    const [atomicOwnedByA] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenantA.id, title: "A's update", summary: "S" })
+      .returning();
+    // Nothing at the DB level enforces that a signal's atomicUpdateId points
+    // at an atomic update owned by the same tenant, so this cross-wiring is
+    // constructible: a signal owned by B, wired to A's atomic update.
+    const [signal] = await db
+      .insert(signals)
+      .values({
+        tenantId: tenantB.id,
+        kind: "shipped_work",
+        externalId: atomicOwnedByA.id,
+        title: "A's update",
+        occurredAt: new Date(),
+        atomicUpdateId: atomicOwnedByA.id,
+      })
+      .returning();
+
+    // Queried as tenant A: the atomic update genuinely is A's, so the
+    // atomic-update guard alone would let this through. Only the signal
+    // lookup's own tenant guard keeps this null.
+    expect(await readSignalEvidence(tenantA.id, signal.id)).toBeNull();
+  });
+
+  it("refuses a signal whose atomic update belongs to another tenant, even though the signal is this tenant's own", async () => {
+    const tenantA = await seedTenant(TENANT);
+    const tenantB = await seedTenant(OTHER_TENANT);
+    const [atomicOwnedByB] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenantB.id, title: "B's update", summary: "S" })
+      .returning();
+    const [signal] = await db
+      .insert(signals)
+      .values({
+        tenantId: tenantA.id,
+        kind: "shipped_work",
+        externalId: atomicOwnedByB.id,
+        title: "B's update",
+        occurredAt: new Date(),
+        atomicUpdateId: atomicOwnedByB.id,
+      })
+      .returning();
+
+    // Queried as tenant A: the signal lookup alone would pass (it's A's own
+    // signal), so only the atomic-update guard stops B's data from leaking to
+    // A — the serious direction, since this is the query that actually
+    // returns the sensitive fields.
+    expect(await readSignalEvidence(tenantA.id, signal.id)).toBeNull();
+  });
+
+  it("excludes a change event belonging to another tenant, even if it shares the atomicUpdateId", async () => {
+    const tenantA = await seedTenant(TENANT);
+    const tenantB = await seedTenant(OTHER_TENANT);
+    const [atomic] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenantA.id, title: "SAML SSO", summary: "S" })
+      .returning();
+    await db.insert(changeEvents).values({
+      tenantId: tenantA.id,
+      type: "pull_request",
+      provider: "github",
+      externalId: "pr-own",
+      prTitle: "Own event",
+      atomicUpdateId: atomic.id,
+    });
+    // Cross-tenant event sharing the same atomicUpdateId — again, nothing at
+    // the DB level prevents this from being seeded.
+    await db.insert(changeEvents).values({
+      tenantId: tenantB.id,
+      type: "pull_request",
+      provider: "github",
+      externalId: "pr-cross-tenant",
+      prTitle: "Should not appear",
+      atomicUpdateId: atomic.id,
+    });
+    const [signal] = await db
+      .insert(signals)
+      .values({
+        tenantId: tenantA.id,
+        kind: "shipped_work",
+        externalId: atomic.id,
+        title: "SAML SSO",
+        occurredAt: new Date(),
+        atomicUpdateId: atomic.id,
+      })
+      .returning();
+
+    const evidence = await readSignalEvidence(tenantA.id, signal.id);
+    expect(evidence!.events).toHaveLength(1);
+    expect(evidence!.events[0].label).toBe("Own event");
   });
 
   it("returns a hidden atomic update with hidden set", async () => {
