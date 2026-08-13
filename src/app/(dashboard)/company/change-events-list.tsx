@@ -22,6 +22,7 @@ import {
   DialogClose,
 } from "@/components/ui/dialog";
 import { groupByMonth } from "@/lib/group-by-month";
+import { useRowSelection } from "../_components/use-row-selection";
 import { ChangeEventRow } from "./change-event-row";
 import type { ReassignTargetOption } from "./reassign-control";
 import type { ChangeEventRow as ChangeEventRowData } from "@/lib/change-events/list";
@@ -46,27 +47,16 @@ export function ChangeEventsList({
   rows: ChangeEventRowData[];
   targets: ReassignTargetOption[];
 }) {
-  const [selected, setSelected] = useState<Set<string>>(new Set());
   const [pending, startTransition] = useTransition();
   const [confirmDelete, setConfirmDelete] = useState(false);
 
-  function onSelectChange(id: string, isSelected: boolean) {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (isSelected) {
-        next.add(id);
-      } else {
-        next.delete(id);
-      }
-      return next;
-    });
-  }
-
+  // See `AtomicUpdatesList` for why this hook exists and what the
+  // retain-visible effect inside it fixes: this list's filter bar
+  // (`change-events-filters.tsx`) navigates the same soft `router.push` way,
+  // so without it a selection made before a filter change would survive with
+  // no row left on screen to show or deselect it.
+  const { selected, onSelectChange, toggleAll, clear } = useRowSelection(rows);
   const allSelected = rows.length > 0 && selected.size === rows.length;
-
-  function toggleAll(checked: boolean) {
-    setSelected(checked ? new Set(rows.map((r) => r.id)) : new Set());
-  }
 
   function reassignSelected(target: { kind: "existing"; atomicUpdateId: string } | { kind: "detach" }) {
     const ids = [...selected];
@@ -80,7 +70,7 @@ export function ChangeEventsList({
             `Deleted ${deletedAtomicUpdates} emptied atomic ${deletedAtomicUpdates === 1 ? "update" : "updates"}`
           );
         }
-        setSelected(new Set());
+        clear();
       }
       if (failed > 0) {
         toast.error(`${failed} ${failed === 1 ? "event" : "events"} couldn't be reassigned`);
@@ -101,7 +91,7 @@ export function ChangeEventsList({
       if (count < ids.length) {
         toast.warning(`${ids.length - count} couldn't be deleted (part of a published release)`);
       }
-      setSelected(new Set());
+      clear();
     });
   }
 

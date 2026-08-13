@@ -13,6 +13,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { groupByMonth } from "@/lib/group-by-month";
+import { useRowSelection } from "../_components/use-row-selection";
 import { AtomicUpdateCard } from "./atomic-update-card";
 import { bulkHideAtomicUpdates, bulkDeleteAtomicUpdates } from "./atomic-updates-actions";
 import type { AtomicUpdateRow } from "@/lib/atomic-updates/list";
@@ -34,33 +35,20 @@ export function AtomicUpdatesList({
   repos: ImportRepo[];
   notionConnected?: boolean;
 }) {
-  const [selected, setSelected] = useState<Set<string>>(new Set());
   const [hiding, startHiding] = useTransition();
   const [deleting, startDeleting] = useTransition();
   const [confirmDelete, setConfirmDelete] = useState(false);
 
-  function onSelectChange(id: string, isSelected: boolean) {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (isSelected) {
-        next.add(id);
-      } else {
-        next.delete(id);
-      }
-      return next;
-    });
-  }
-
   // Hidden cards are read-only, so they're not selectable and must stay out of
   // both the select-all set and its "are they all selected?" test — otherwise
   // select-all could never reach `allSelected`, and every bulk action would
-  // report the hidden ids as failures the server refused.
+  // report the hidden ids as failures the server refused. Also what
+  // `useRowSelection`'s retain-visible effect treats as "currently on
+  // screen": a filter change that drops a selected row out of `rows` (or
+  // hides it) drops its id from `selected` too.
   const selectableRows = rows.filter((row) => !row.hidden);
+  const { selected, onSelectChange, toggleAll, clear } = useRowSelection(selectableRows);
   const allSelected = selectableRows.length > 0 && selected.size === selectableRows.length;
-
-  function toggleAll(checked: boolean) {
-    setSelected(checked ? new Set(selectableRows.map((r) => r.id)) : new Set());
-  }
 
   // Bulk-hide the current selection. The action skips any id that isn't an
   // open, unlinked update (released / already in a draft), so `count` may be
@@ -78,7 +66,7 @@ export function AtomicUpdatesList({
       if (count < ids.length) {
         toast.warning(`${ids.length - count} couldn't be hidden and were left as-is`);
       }
-      setSelected(new Set());
+      clear();
     });
   }
 
@@ -98,7 +86,7 @@ export function AtomicUpdatesList({
       if (count < ids.length) {
         toast.warning(`${ids.length - count} couldn't be deleted and were left as-is`);
       }
-      setSelected(new Set());
+      clear();
     });
   }
 
