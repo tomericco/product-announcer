@@ -16,7 +16,7 @@ import { groupByMonth } from "@/lib/group-by-month";
 import { AtomicUpdateCard } from "./atomic-update-card";
 import { bulkHideAtomicUpdates, bulkDeleteAtomicUpdates } from "./actions";
 import type { AtomicUpdateRow } from "@/lib/atomic-updates/list";
-import type { ImportRepo } from "../change-events/actions";
+import type { ImportRepo } from "@/lib/change-events/list";
 
 // Selection lives here rather than in the (async, server) page component: it's
 // pure client-side UI state driving the bulk hide/delete actions below, scoped

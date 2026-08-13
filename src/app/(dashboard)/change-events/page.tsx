@@ -8,7 +8,8 @@ import {
 } from "@/components/ui/empty-state";
 import { requireSession } from "@/lib/workspace/session";
 import { openAtomicUpdatesForReassign } from "@/lib/change-events/reassign";
-import { listChangeEvents, listImportRepos, type ChangeEventFilters } from "./actions";
+import { listChangeEvents, listImportRepos } from "./actions";
+import type { ChangeEventFilters } from "@/lib/change-events/list";
 import { isNotionConnected } from "./import-actions";
 import { ChangeEventsFilters } from "./change-events-filters";
 import { ChangeEventsList } from "./change-events-list";

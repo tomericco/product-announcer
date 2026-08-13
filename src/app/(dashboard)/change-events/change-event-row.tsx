@@ -2,7 +2,7 @@
 
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import type { ChangeEventRow as ChangeEventRowData } from "./actions";
+import type { ChangeEventRow as ChangeEventRowData } from "@/lib/change-events/list";
 import { ReassignControl, type ReassignTargetOption } from "./reassign-control";
 import { SelectionCheckbox } from "../_components/selection-checkbox";
 

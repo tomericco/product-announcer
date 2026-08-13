@@ -14,7 +14,7 @@ import {
   type ImportableTask,
   type TaskSelection,
 } from "./import-actions";
-import type { ImportRepo } from "./actions";
+import type { ImportRepo } from "@/lib/change-events/list";
 import type { CommitSelection } from "@/lib/change-events/import-commits";
 import type { PullRequestSelection } from "@/lib/change-events/import-pull-requests";
 import { Button } from "@/components/ui/button";

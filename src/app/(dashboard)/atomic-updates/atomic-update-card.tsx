@@ -37,7 +37,7 @@ import {
   setAtomicUpdateSize,
 } from "./actions";
 import type { AtomicUpdateEvent, AtomicUpdateRow } from "@/lib/atomic-updates/list";
-import type { ImportRepo } from "../change-events/actions";
+import type { ImportRepo } from "@/lib/change-events/list";
 import { AddEventPicker } from "./add-event-picker";
 import { SelectionCheckbox } from "../_components/selection-checkbox";
 import { CategoryBadge, CATEGORY_LABEL, SizeBadge } from "./page";

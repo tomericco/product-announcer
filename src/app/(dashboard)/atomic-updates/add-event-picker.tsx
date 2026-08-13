@@ -5,7 +5,7 @@ import { Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { DisabledHint } from "../_components/disabled-hint";
 import { ImportDialog } from "../change-events/import-dialog";
-import type { ImportRepo } from "../change-events/actions";
+import type { ImportRepo } from "@/lib/change-events/list";
 import {
   addCommitsToAtomicUpdate,
   addPullRequestsToAtomicUpdate,
