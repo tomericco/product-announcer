@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -31,6 +31,9 @@ import {
 // a "use server" action below — a Server Function reference, not a runtime
 // value out of a server module.
 import type { SignalEvidence, EvidenceEvent } from "@/lib/signals/evidence";
+// Type-only, same reasoning: `@/lib/change-events/reassign` also has a
+// top-level `db` import.
+import type { ReassignResult } from "@/lib/change-events/reassign";
 import {
   loadSignalEvidence,
   saveEvidenceEdit,
@@ -60,7 +63,7 @@ const CATEGORY_LABEL: Record<string, string> = {
   announcement: "Announcement",
 };
 
-type EmptiedAtomicUpdate = { id: string; title: string; inDraft: boolean };
+export type EmptiedAtomicUpdate = { id: string; title: string; inDraft: boolean };
 
 /**
  * What the drawer body renders. `"idle"` is the closed/not-yet-opened state;
@@ -97,6 +100,68 @@ export function loadStateFromResult(evidence: SignalEvidence | null): EvidenceLo
  */
 export function shouldFetchOnOpen(open: boolean, state: EvidenceLoadState): boolean {
   return open && state.status === "idle";
+}
+
+/**
+ * The request-generation guard. Every async path (load, save, hide, remove)
+ * captures `requestTokenRef.current` as `requestToken` right before firing;
+ * the ref is bumped both whenever a NEW request starts and whenever the
+ * dialog closes. A response is safe to apply only if its captured token still
+ * equals the ref's current value — i.e. nothing newer has started and the
+ * dialog hasn't been closed since.
+ *
+ * Without this, a request left in flight when the drawer closes resolves
+ * into a component that has already reset to `"idle"`: the callback would
+ * silently overwrite that reset (suppressing the documented "always fetch
+ * fresh on reopen" behaviour) and, worse, a stale `save` resolving after a
+ * reopen-and-re-edit would clobber the freshly loaded evidence with the
+ * closed session's stale draft values.
+ */
+export function shouldApplyResponse(requestToken: number, currentToken: number): boolean {
+  return requestToken === currentToken;
+}
+
+/**
+ * The editable draft fields seeded from a freshly loaded atomic update.
+ * Extracted so the seeding itself — which fields come from where — is
+ * testable without jsdom, independent of when/how the component decides to
+ * call it.
+ */
+export type EvidenceDrafts = {
+  title: string;
+  summary: string;
+  size: SignalEvidence["size"];
+  category: SignalEvidence["category"];
+};
+
+export function draftsFromEvidence(evidence: SignalEvidence): EvidenceDrafts {
+  return {
+    title: evidence.title,
+    summary: evidence.summary,
+    size: evidence.size,
+    category: evidence.category,
+  };
+}
+
+/**
+ * What `removeEvent` should do with a `ReassignResult`, extracted out of the
+ * component so the three-way fork — success, needs-confirmation, rejection —
+ * is directly testable. `removeEventFromAtomicUpdate`'s `needsConfirmation`
+ * branch doesn't carry the `eventId` that triggered it (only the atomic
+ * update it would empty), so this takes it as a separate argument and folds
+ * it into the outcome for the caller.
+ */
+export type RemoveEventOutcome =
+  | { kind: "removed" }
+  | { kind: "needs_confirmation"; eventId: string; emptiedAtomicUpdate: EmptiedAtomicUpdate }
+  | { kind: "rejected"; reason: string };
+
+export function classifyRemoveEventResult(result: ReassignResult, eventId: string): RemoveEventOutcome {
+  if (result.ok) return { kind: "removed" };
+  if ("needsConfirmation" in result && result.needsConfirmation) {
+    return { kind: "needs_confirmation", eventId, emptiedAtomicUpdate: result.emptiedAtomicUpdate };
+  }
+  return { kind: "rejected", reason: result.reason };
 }
 
 function EventRow({
@@ -168,28 +233,57 @@ export function EvidenceDrawer({ signalId, title }: { signalId: string; title: s
   const [draftSize, setDraftSize] = useState<SignalEvidence["size"]>(null);
   const [draftCategory, setDraftCategory] = useState<SignalEvidence["category"]>(null);
 
+  // The request-generation token (see `shouldApplyResponse`'s docstring).
+  // Bumped whenever a new request starts (invalidating whatever was already
+  // in flight) and whenever the dialog closes or the drawer unmounts
+  // (invalidating anything in flight with nothing new to replace it). A ref,
+  // not state: it never needs to trigger a render on its own — it only gates
+  // what an already-scheduled render does.
+  const requestTokenRef = useRef(0);
+
+  // Belt-and-suspenders alongside the close-time bump in `handleOpenChange`:
+  // a drawer can also leave the tree without an explicit close (e.g. its row
+  // scrolls out via a filter change that unmounts the list). Nothing here
+  // calls setState — only a ref mutation — so this isn't the
+  // set-state-in-effect pattern the lint rule flags.
+  useEffect(() => {
+    return () => {
+      requestTokenRef.current += 1;
+    };
+  }, []);
+
   // Seeds the draft fields the moment a fresh load lands — set here, at the
   // point the new "loaded" state is computed, rather than in an effect keyed
   // on `state`: setting state synchronously inside an effect body is exactly
   // the cascading-render pattern the react-hooks lint rule (and React's own
   // docs) warn against, and there's no external system to synchronize with
-  // here, just two pieces of local state that change together.
+  // here, just local state that changes together.
   function handleOpenChange(next: boolean) {
     if (shouldFetchOnOpen(next, state)) {
+      const requestToken = ++requestTokenRef.current;
       setState({ status: "loading" });
       startLoadTransition(async () => {
         const result = await loadSignalEvidence(signalId);
+        if (!shouldApplyResponse(requestToken, requestTokenRef.current)) return;
+
         const nextState = loadStateFromResult(result);
         setState(nextState);
         if (nextState.status === "loaded") {
-          setDraftTitle(nextState.evidence.title);
-          setDraftSummary(nextState.evidence.summary);
-          setDraftSize(nextState.evidence.size);
-          setDraftCategory(nextState.evidence.category);
+          const drafts = draftsFromEvidence(nextState.evidence);
+          setDraftTitle(drafts.title);
+          setDraftSummary(drafts.summary);
+          setDraftSize(drafts.size);
+          setDraftCategory(drafts.category);
         }
       });
     }
     if (!next) {
+      // Invalidates any request still in flight from this open (a load that
+      // hasn't resolved, or a save/hide/remove issued just before closing) —
+      // its resolution will find a mismatched token and skip touching state,
+      // so the reset to "idle" below sticks, and the next open reliably
+      // fetches fresh instead of being silently overwritten later.
+      requestTokenRef.current += 1;
       setState({ status: "idle" });
       setRemoveConfirm(null);
     }
@@ -199,6 +293,7 @@ export function EvidenceDrawer({ signalId, title }: { signalId: string; title: s
   function save() {
     if (state.status !== "loaded") return;
     const evidence = state.evidence;
+    const requestToken = ++requestTokenRef.current;
 
     startSaveTransition(async () => {
       try {
@@ -213,6 +308,8 @@ export function EvidenceDrawer({ signalId, title }: { signalId: string; title: s
           if (!result.ok) toast.error("Could not update category");
         }
 
+        if (!shouldApplyResponse(requestToken, requestTokenRef.current)) return;
+
         // Reflects the edit in the drawer's own state immediately — the
         // signal row this drawer hangs off never re-fetches (see the
         // docstring above), so this local update is the only thing that
@@ -223,6 +320,7 @@ export function EvidenceDrawer({ signalId, title }: { signalId: string; title: s
         });
         toast.success("Saved");
       } catch (error) {
+        if (!shouldApplyResponse(requestToken, requestTokenRef.current)) return;
         toast.error(error instanceof Error ? error.message : "Something went wrong");
       }
     });
@@ -231,9 +329,12 @@ export function EvidenceDrawer({ signalId, title }: { signalId: string; title: s
   function hide() {
     if (state.status !== "loaded") return;
     const evidence = state.evidence;
+    const requestToken = ++requestTokenRef.current;
 
     startSaveTransition(async () => {
       const result = await hideEvidenceAtomicUpdate(evidence.atomicUpdateId);
+      if (!shouldApplyResponse(requestToken, requestTokenRef.current)) return;
+
       if (result.ok) {
         setState({ status: "loaded", evidence: { ...evidence, hidden: true } });
         toast.success("Atomic update hidden");
@@ -246,28 +347,35 @@ export function EvidenceDrawer({ signalId, title }: { signalId: string; title: s
   function removeEvent(eventId: string, confirmEmptyDeletion: boolean) {
     if (state.status !== "loaded") return;
     const evidence = state.evidence;
+    const requestToken = ++requestTokenRef.current;
 
     setRemovingId(eventId);
     startLoadTransition(async () => {
       const result = await removeEvidenceEvent(evidence.atomicUpdateId, eventId, confirmEmptyDeletion);
+      // Always cleared, even for a stale response: this only clears THIS
+      // click's own spinner, not the shared `state` the guard below protects
+      // — left set, it would show "Removing…" forever on a row whose remove
+      // actually failed after the drawer had already moved on.
       setRemovingId(null);
+      if (!shouldApplyResponse(requestToken, requestTokenRef.current)) return;
 
-      if (result.ok) {
-        setRemoveConfirm(null);
-        setState({
-          status: "loaded",
-          evidence: { ...evidence, events: evidence.events.filter((event) => event.id !== eventId) },
-        });
-        toast.success("Change event removed");
-        return;
+      const outcome = classifyRemoveEventResult(result, eventId);
+      switch (outcome.kind) {
+        case "removed":
+          setRemoveConfirm(null);
+          setState({
+            status: "loaded",
+            evidence: { ...evidence, events: evidence.events.filter((event) => event.id !== eventId) },
+          });
+          toast.success("Change event removed");
+          break;
+        case "needs_confirmation":
+          setRemoveConfirm({ eventId: outcome.eventId, emptiedAtomicUpdate: outcome.emptiedAtomicUpdate });
+          break;
+        case "rejected":
+          toast.error(outcome.reason);
+          break;
       }
-
-      if ("needsConfirmation" in result && result.needsConfirmation) {
-        setRemoveConfirm({ eventId, emptiedAtomicUpdate: result.emptiedAtomicUpdate });
-        return;
-      }
-
-      toast.error(result.reason);
     });
   }
 
