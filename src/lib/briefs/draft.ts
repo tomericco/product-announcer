@@ -195,8 +195,10 @@ export function findNamedCompanies(text: string, names: string[]): string[] {
  *   5. generation/review failure    — cleared in the generationError write
  *   6. success, generic branch      — cleared in the body write
  *   7. success, release branch      — same `draftWrite` literal, inside the tx
- *   8. outer catch                  — explicit clear
+ *   8. outer catch                  — cleared in its generationError write
  * The interrupted-generation marker is not an exit: it SETS "generating".
+ * The release branch's zero-link throw (see the transaction) is not a ninth
+ * exit — it rolls the transaction back and lands in 8 like any other throw.
  *
  * Never throws: every code path — the lookups, context prep, the generator
  * call, and both writes — is covered by an outer `try`/`catch`, so any DB or
@@ -469,7 +471,7 @@ export async function generateDraftForPiece(
           })
           .where(eq(contentPieces.id, contentPieceId));
 
-        await linkAtomicUpdatesToPiece(
+        const linked = await linkAtomicUpdatesToPiece(
           {
             tenantId,
             contentPieceId,
@@ -478,6 +480,40 @@ export async function generateDraftForPiece(
           },
           tx
         );
+
+        // Zero linked rows means EVERY atomic update this draft was composed
+        // from was claimed by somebody else between the derivation at the top
+        // of this function and this write — a window of tens of seconds, the
+        // whole generate + review round trip. The competing writers are real:
+        // `runIdeationUnsafe` feeds the same in-window signal to every run and
+        // nothing marks a signal `used` on accept, so two accepted
+        // product_update briefs can cite the same `shipped_work` signal; and
+        // `catch-up.ts`'s `linkNewAtomicUpdates` claims the same rows with the
+        // same drop-don't-steal predicates.
+        //
+        // Saving anyway would leave a finished-looking product update
+        // announcing shipped work it does not own — the same work announced
+        // twice — and `markReleaseAtomicUpdatesReleased` (which matches on
+        // `contentPieceId`) would hit 0 rows at publish, stranding those atomic
+        // updates in `open` forever. This throw rolls the whole transaction
+        // back, which is what the retired `claimReleaseFromAtomicUpdates`'s
+        // `EmptyClaimError` did. The piece stays at "brief" with its scaffold
+        // and is retriable; a retry re-derives nothing (the rows now fail
+        // `contentPieceId IS NULL`) and falls through to the generic branch.
+        if (linked === 0) {
+          throw new Error("No changes were available to draft.");
+        }
+
+        // A PARTIAL link is not the same failure and must not throw: the rows
+        // that did link are legitimately this piece's, and rolling them back
+        // would throw away a good draft over work that was never ours. But it
+        // must not be silent either — the draft now announces fewer changes
+        // than it was composed from.
+        if (linked < releaseItems.length) {
+          console.error(
+            `[briefs/draft] piece ${contentPieceId}: only ${linked} of ${releaseItems.length} atomic updates linked; the rest were claimed elsewhere mid-generation`
+          );
+        }
       });
     } else {
       await database.update(contentPieces).set(draftWrite).where(eq(contentPieces.id, contentPieceId));
@@ -487,7 +523,28 @@ export async function generateDraftForPiece(
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     console.error(`[briefs/draft] generateDraftForPiece failed for piece ${contentPieceId}:`, e);
-    await setStep(database, contentPieceId, null);
+    // Write the REAL reason, exactly as the inner catch does. Everything
+    // outside the inner try — `listCompetitors`, the final write, the
+    // transaction and its zero-link throw — lands here, and the piece is still
+    // carrying the interrupted-generation marker written before the model call.
+    // Leaving that in place told the user "Generation was interrupted before it
+    // finished" for a failure that was nothing of the sort, while the actual
+    // cause went only to the console. Still clears `generationStep` — every
+    // exit must, this one included.
+    //
+    // Wrapped, like the inner one: if this write itself fails, that second
+    // failure must not escape in place of the first.
+    try {
+      await database
+        .update(contentPieces)
+        .set({ generationError: message, generationStep: null })
+        .where(eq(contentPieces.id, contentPieceId));
+    } catch (writeError) {
+      console.error(
+        `[briefs/draft] failed to record generation error for piece ${contentPieceId}:`,
+        writeError
+      );
+    }
     return { ok: false, error: message };
   }
 }

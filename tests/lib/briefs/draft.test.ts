@@ -829,6 +829,157 @@ describe("generateDraftForPiece — release fork", () => {
     expect(untouched.contentPieceId).toBeNull();
   });
 
+  /**
+   * The race the drop-don't-steal predicate creates and nothing else closed.
+   * `releaseItems` is derived at the top of `generateDraftForPiece`, then the
+   * function spends a full generate + review round trip — tens of seconds —
+   * before the link runs. A competing writer (another accepted product_update
+   * brief citing the same `shipped_work` signal, or `catch-up.ts`'s
+   * `linkNewAtomicUpdates`) can claim every one of those rows in that window.
+   * The link then matches nothing and returns 0.
+   *
+   * Stealing the row from inside the generator mock is what puts the theft
+   * INSIDE that window, using the real `linkAtomicUpdatesToPiece` rather than
+   * a mocked return value — the guard has to hold against the actual query's
+   * `status = 'open' AND contentPieceId IS NULL` WHERE, not against a stub.
+   */
+  async function stealDuringGeneration(tenantId: string, atomicUpdateId: string) {
+    const [thief] = await db
+      .insert(contentPieces)
+      .values({ tenantId, title: "Claimed first", body: "B" })
+      .returning();
+    await db
+      .update(atomicUpdates)
+      .set({ contentPieceId: thief.id })
+      .where(eq(atomicUpdates.id, atomicUpdateId));
+    return thief;
+  }
+
+  it("rolls back and records the real reason when the link claims ZERO atomic updates", async () => {
+    const tenant = await seedTenant();
+    const { piece, brief } = await seedProductUpdate(tenant.id);
+    const { atomicUpdate } = await seedShippedWork({ tenantId: tenant.id, briefId: brief.id });
+
+    let thiefId = "";
+    const generateRelease = vi.fn(async () => {
+      thiefId = (await stealDuringGeneration(tenant.id, atomicUpdate.id)).id;
+      return { title: "Release title", body: "Release body." };
+    });
+
+    const result = await generateDraftForPiece(piece.id, tenant.id, {
+      database: db,
+      generate: vi.fn(async () => ({ title: "Brief title", body: "Brief body." })),
+      generateRelease,
+      review: passingReview,
+    });
+
+    // Saving anyway would leave a finished-looking product update announcing
+    // shipped work it does not own — the same work announced twice — and
+    // `markReleaseAtomicUpdatesReleased` would hit 0 rows at publish.
+    expect(result.ok).toBe(false);
+    expect(result).toMatchObject({ error: "No changes were available to draft." });
+
+    const [after] = await db.select().from(contentPieces).where(eq(contentPieces.id, piece.id));
+    // The whole transaction rolled back: no body, no promotion, no timestamps.
+    expect(after.status).toBe("brief");
+    expect(after.body).toBe("SCAFFOLD BODY");
+    expect(after.generatedAt).toBeNull();
+    expect(after.reviewStatus).toBeNull();
+    // The outer catch writes the REAL reason, not the interrupted-generation
+    // marker that was sitting there from before the model call.
+    expect(after.generationError).toBe("No changes were available to draft.");
+    expect(after.generationStep).toBeNull();
+
+    // The thief keeps what it claimed — this path drops, it never steals back.
+    const [stolen] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, atomicUpdate.id));
+    expect(stolen.contentPieceId).toBe(thiefId);
+    expect(stolen.status).toBe("open");
+  });
+
+  it("retries into the GENERIC branch after a lost race, rather than wedging", async () => {
+    const tenant = await seedTenant();
+    const { piece, brief } = await seedProductUpdate(tenant.id);
+    const { atomicUpdate } = await seedShippedWork({ tenantId: tenant.id, briefId: brief.id });
+
+    const failing = await generateDraftForPiece(piece.id, tenant.id, {
+      database: db,
+      generate: vi.fn(async () => ({ title: "Brief title", body: "Brief body." })),
+      generateRelease: vi.fn(async () => {
+        await stealDuringGeneration(tenant.id, atomicUpdate.id);
+        return { title: "Release title", body: "Release body." };
+      }),
+      review: passingReview,
+    });
+    expect(failing.ok).toBe(false);
+
+    // The piece is still "brief" with its scaffold, so the Generate button
+    // works — and `loadShippedWorkAtomicUpdates` now returns [] (the row fails
+    // `contentPieceId IS NULL`), so the retry takes the generic branch instead
+    // of composing the same lost work again. A sane landing, not a dead end.
+    const generate = vi.fn(async () => ({ title: "Brief title", body: "Brief body." }));
+    const generateRelease = vi.fn(async () => ({ title: "Release title", body: "Release body." }));
+    const retry = await generateDraftForPiece(piece.id, tenant.id, {
+      database: db,
+      generate,
+      generateRelease,
+      review: passingReview,
+    });
+    expect(retry.ok).toBe(true);
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(generateRelease).not.toHaveBeenCalled();
+
+    const [after] = await db.select().from(contentPieces).where(eq(contentPieces.id, piece.id));
+    expect(after.status).toBe("draft");
+    expect(after.body).toBe("Brief body.");
+    expect(after.generationError).toBeNull();
+    expect(after.generationStep).toBeNull();
+  });
+
+  it("saves but LOGS when only some of the atomic updates link", async () => {
+    const tenant = await seedTenant();
+    const { piece, brief } = await seedProductUpdate(tenant.id);
+    const { atomicUpdate: kept } = await seedShippedWork({
+      tenantId: tenant.id,
+      briefId: brief.id,
+      title: "Kept thing",
+    });
+    const { atomicUpdate: lost } = await seedShippedWork({
+      tenantId: tenant.id,
+      briefId: brief.id,
+      title: "Lost thing",
+    });
+
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const result = await generateDraftForPiece(piece.id, tenant.id, {
+      database: db,
+      generate: vi.fn(async () => ({ title: "Brief title", body: "Brief body." })),
+      generateRelease: vi.fn(async () => {
+        await stealDuringGeneration(tenant.id, lost.id);
+        return { title: "Release title", body: "Release body." };
+      }),
+      review: passingReview,
+    });
+
+    // A partial link must NOT throw: the row that did link is legitimately
+    // this piece's, and rolling back would discard a good draft over work that
+    // was never ours.
+    expect(result.ok).toBe(true);
+
+    const [after] = await db.select().from(contentPieces).where(eq(contentPieces.id, piece.id));
+    expect(after.status).toBe("draft");
+    expect(after.body).toBe("Release body.");
+
+    const [linked] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, kept.id));
+    expect(linked.contentPieceId).toBe(piece.id);
+
+    // …but it must not be silent either: the draft announces fewer changes
+    // than it was composed from, and only the log says so.
+    const logged = errors.mock.calls.map((call) => String(call[0])).join("\n");
+    expect(logged).toContain(piece.id);
+    expect(logged).toContain("only 1 of 2");
+  });
+
   it("does not re-derive an atomic update already linked to another piece", async () => {
     const tenant = await seedTenant();
     const { piece, brief } = await seedProductUpdate(tenant.id);

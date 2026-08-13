@@ -28,7 +28,9 @@ function toPromptItem(row: AtomicUpdateRow): AtomicUpdateForPrompt {
 
 /** Distinct non-null categories among a set of atomic updates, used to bias
  * example selection toward examples about the same kinds of changes — mirrors
- * `atomicUpdateCategories` in `src/lib/drafting/compose-draft.ts`. */
+ * `atomicUpdateCategories` in `src/lib/briefs/draft.ts` (which is where it moved
+ * when `src/lib/drafting/compose-draft.ts` retired with the atomic-updates
+ * drafting path). */
 function distinctCategories(items: { category: string | null }[]): string[] {
   const seen = new Set<string>();
   for (const item of items) {

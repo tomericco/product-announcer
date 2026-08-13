@@ -8,6 +8,7 @@ import { requireSession } from "@/lib/workspace/session";
 import { reviewStatusLabel } from "@/lib/ai/review-status";
 import { Badge } from "@/components/ui/badge";
 import { GenerateDraftButton } from "./generate-draft-button";
+import { GenerationChecklist } from "@/components/generation-checklist";
 import { containsCodeBlock } from "@/lib/publishing/markdown-to-html";
 import { computeReleaseDelta } from "@/lib/change-events/release-deltas";
 import { saveDraft } from "../actions";
@@ -68,6 +69,17 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
             {update.generationError ? "Generation failed" : "Awaiting generation"}
           </Badge>
         </div>
+
+        {/* Same gate as the board card (card.tsx) and the drafts list
+            (drafts/page.tsx), and the same shared component — a generation is
+            actually in flight, not merely un-run. This page needs it MORE than
+            either of them: accepting a brief redirects straight here
+            (briefs/brief-card.tsx), so this is the page the author is sitting
+            on during the one flow that reliably kicks off a background
+            generation. Without it they watched a static "Awaiting generation"
+            badge for the whole run. The row already selects every column, so
+            `generationStep` is present and tenant-scoped by the query above. */}
+        {update.generationStep !== null && <GenerationChecklist contentPieceId={update.id} />}
 
         {update.generationError ? (
           <div className="space-y-1 rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
