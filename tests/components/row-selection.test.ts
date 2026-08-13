@@ -1,10 +1,12 @@
 import { describe, it, expect } from "vitest";
+import { renderHook, act } from "@testing-library/react";
 import {
   applySelectionChange,
   applyToggleAll,
   retainVisible,
   reconcileSelection,
 } from "../../src/app/(dashboard)/_components/row-selection";
+import { useRowSelection } from "../../src/app/(dashboard)/_components/use-row-selection";
 
 /**
  * Pure reducer core behind `useRowSelection`, tested directly rather than
@@ -118,5 +120,31 @@ describe("reconcileSelection (the reconciliation useRowSelection's effect runs o
     const prev = new Set(["a", "b"]);
     const result = reconcileSelection(prev, [{ id: "a" }]);
     expect(result).not.toBe(prev);
+  });
+});
+
+// Pins the wiring itself, not just reconcileSelection's own logic: renders
+// the actual hook (possible now that this file lives in the jsdom project),
+// selects ids, then re-renders with a narrower `rows` and asserts the effect
+// actually dropped the now-invisible id from `selected`. Every assertion
+// above this one exercises the pure functions directly and would keep
+// passing even if useRowSelection's effect were replaced with
+// `setSelected((prev) => prev)` — see task report for the mutation drill
+// that confirms this test, specifically, does not.
+describe("useRowSelection (the hook's wiring to reconcileSelection)", () => {
+  it("drops a selected id that is no longer present after rows narrows", () => {
+    const { result, rerender } = renderHook(({ rows }) => useRowSelection(rows), {
+      initialProps: { rows: [{ id: "a" }, { id: "b" }, { id: "c" }] },
+    });
+
+    act(() => {
+      result.current.onSelectChange("a", true);
+      result.current.onSelectChange("b", true);
+    });
+    expect(result.current.selected).toEqual(new Set(["a", "b"]));
+
+    rerender({ rows: [{ id: "a" }] });
+
+    expect(result.current.selected).toEqual(new Set(["a"]));
   });
 });
