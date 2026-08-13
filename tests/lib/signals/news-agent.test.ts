@@ -14,18 +14,14 @@ import {
   RECENCY_WINDOW_DAYS,
 } from "../../../src/lib/signals/news-agent";
 import type { PageResult } from "../../../src/lib/workspace/fetch-page";
+import { seedTenant, dropTenant } from "../../helpers/fixtures";
 
 const TENANT = "News Agent Test Tenant";
 
 afterEach(async () => {
-  await db.delete(tenants).where(eq(tenants.name, TENANT));
+  await dropTenant(TENANT);
   vi.restoreAllMocks();
 });
-
-async function seedTenant() {
-  const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
-  return tenant;
-}
 
 function page(text: string, html = `<p>${text}</p>`): PageResult {
   return { text, html, finalUrl: "https://news.example.com/a", contentType: "text/html", truncated: false };
@@ -54,7 +50,7 @@ const hit = (url: string, title = "A headline", score = 0.9) => ({
 
 describe("runNewsSource", () => {
   it("writes a market_news signal keyed on the article url", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const source = await seedNewsSource(tenant.id, ["localization"]);
 
     const result = await runNewsSource(source, {
@@ -82,7 +78,7 @@ describe("runNewsSource", () => {
   });
 
   it("uses the run time as occurredAt only when the article has no date", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const source = await seedNewsSource(tenant.id, ["localization"]);
     const before = new Date();
 
@@ -104,7 +100,7 @@ describe("runNewsSource", () => {
   });
 
   it("falls back to Tavily's extract when our own fetch fails, rather than dropping the signal", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const source = await seedNewsSource(tenant.id, ["localization"]);
 
     const result = await runNewsSource(source, {
@@ -123,7 +119,7 @@ describe("runNewsSource", () => {
   });
 
   it("deduplicates one article returned by two different topic searches", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const source = await seedNewsSource(tenant.id, ["localization", "translation"]);
     const fetchPage = vi.fn().mockResolvedValue(page("body"));
     const select = vi.fn().mockResolvedValue({ selections: [{ index: 0, score: 0.8, rationale: "r", topics: [] }] });
@@ -147,7 +143,7 @@ describe("runNewsSource", () => {
   });
 
   it("keeps the dated copy when the same article arrives dated from one topic and undated from another", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const source = await seedNewsSource(tenant.id, ["localization", "translation"]);
 
     await runNewsSource(source, {
@@ -173,7 +169,7 @@ describe("runNewsSource", () => {
   });
 
   it("caps how much article text reaches the selector while the excerpt keeps using the full body", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const source = await seedNewsSource(tenant.id, ["localization"]);
     // Longer than SCORING_EXCERPT_CHARS. Uncapped, a full run's worth —
     // MAX_CANDIDATES_PER_RUN (20) bodies — is paid for on every tenant every
@@ -200,7 +196,7 @@ describe("runNewsSource", () => {
   });
 
   it("fetches articles in bounded batches rather than all at once", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const source = await seedNewsSource(tenant.id, ["localization"]);
 
     let inFlight = 0;
@@ -231,7 +227,7 @@ describe("runNewsSource", () => {
   });
 
   it("skips articles already held as signals without refetching or rescoring them", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const source = await seedNewsSource(tenant.id, ["localization"]);
 
     await db.insert(signals).values({
@@ -260,7 +256,7 @@ describe("runNewsSource", () => {
   });
 
   it("skips a remembered article before fetching or scoring it", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const source = await seedNewsSource(tenant.id, ["localization"]);
     await db.insert(rejectedArticles).values({
       tenantId: tenant.id,
@@ -289,7 +285,7 @@ describe("runNewsSource", () => {
   });
 
   it("records that every candidate had already been judged rather than reporting a clean run", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const source = await seedNewsSource(tenant.id, ["localization"]);
     await db.insert(rejectedArticles).values([
       { tenantId: tenant.id, url: "https://news.example.com/known1", title: "Known 1", reason: "not_selected" },
@@ -320,7 +316,7 @@ describe("runNewsSource", () => {
   });
 
   it("does not let one tenant's rejection hide an article from another", async () => {
-    const mine = await seedTenant();
+    const mine = await seedTenant(TENANT);
     const [other] = await db.insert(tenants).values({ name: TENANT }).returning();
     const source = await seedNewsSource(mine.id, ["localization"]);
     await db.insert(rejectedArticles).values({
@@ -343,7 +339,7 @@ describe("runNewsSource", () => {
   });
 
   it("records a search failure on the source without throwing, and marks it failing when every search failed", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const source = await seedNewsSource(tenant.id, ["localization"]);
 
     const result = await runNewsSource(source, {
@@ -363,7 +359,7 @@ describe("runNewsSource", () => {
   });
 
   it("stays active when only some searches failed, matching the competitor agent's ruling", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const source = await seedNewsSource(tenant.id, ["localization", "translation"]);
 
     const result = await runNewsSource(source, {
@@ -387,7 +383,7 @@ describe("runNewsSource", () => {
   });
 
   it("stays active on a clean run that simply found nothing new", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const source = await seedNewsSource(tenant.id, ["localization"]);
 
     await runNewsSource(source, {
@@ -404,7 +400,7 @@ describe("runNewsSource", () => {
   });
 
   it("does nothing and records a clear reason when the tenant has no topics", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const source = await seedNewsSource(tenant.id, []);
     const search = vi.fn();
 
@@ -421,7 +417,7 @@ describe("runNewsSource", () => {
   });
 
   it("bounds how many topic searches one run performs", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     // Derived from the constant, never hardcoded. The previous fixture seeded
     // seven topics and asserted five searches, which silently encoded "the cap
     // is at most 7" — raising the cap to 10 broke it. Both numbers now move
@@ -439,7 +435,7 @@ describe("runNewsSource", () => {
   });
 
   it("writes at most MAX_SIGNALS_PER_RUN signals however many clear the bar", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const source = await seedNewsSource(tenant.id, ["localization"]);
     const hits = Array.from({ length: 12 }, (_, i) => hit(`https://news.example.com/a${i}`));
 
@@ -467,7 +463,7 @@ describe("runNewsSource", () => {
   });
 
   it("writes nothing and marks the source failing when selection fails", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const source = await seedNewsSource(tenant.id, ["localization"]);
 
     const result = await runNewsSource(source, {
@@ -490,7 +486,7 @@ describe("runNewsSource", () => {
   });
 
   it("drops candidates below the Tavily score floor before fetching them", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const source = await seedNewsSource(tenant.id, ["localization"]);
     const fetchPage = vi.fn().mockResolvedValue(page("body"));
     const select = vi.fn().mockResolvedValue({ selections: [] });
@@ -514,7 +510,7 @@ describe("runNewsSource", () => {
   });
 
   it("caps how many candidates reach the fetch stage, keeping the highest scored", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const source = await seedNewsSource(tenant.id, ["localization"]);
     const fetchPage = vi.fn().mockResolvedValue(page("body"));
     // 30 candidates, all above the floor, with ascending scores. Derived from
@@ -538,7 +534,7 @@ describe("runNewsSource", () => {
   });
 
   it("passes recently-held titles to the selector so novelty can be judged", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const source = await seedNewsSource(tenant.id, ["localization"]);
 
     await db.insert(signals).values({
@@ -563,7 +559,7 @@ describe("runNewsSource", () => {
   });
 
   it("maps a selection index to the candidate at that RANK, not its arrival order", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const source = await seedNewsSource(tenant.id, ["localization"]);
 
     // `fresh` is sorted by score before `candidates` is built, so
@@ -613,7 +609,7 @@ describe("runNewsSource", () => {
   });
 
   it("keeps a scoreless hit past the floor but ranks it last", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const source = await seedNewsSource(tenant.id, ["localization"]);
     const select = vi.fn().mockResolvedValue({ selections: [] });
 
@@ -640,7 +636,7 @@ describe("runNewsSource", () => {
   });
 
   it("records that every candidate was filtered out rather than reporting a clean run", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const source = await seedNewsSource(tenant.id, ["localization"]);
     const select = vi.fn();
 
@@ -667,7 +663,7 @@ describe("runNewsSource", () => {
   });
 
   it("dates a signal from the article's own HTML when the index gave none", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const source = await seedNewsSource(tenant.id, ["localization"]);
 
     await runNewsSource(source, {
@@ -694,7 +690,7 @@ describe("runNewsSource", () => {
   });
 
   it("drops an article whose page date is older than the recency window", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const source = await seedNewsSource(tenant.id, ["localization"]);
     const select = vi.fn().mockResolvedValue({ selections: [] });
 
@@ -718,7 +714,7 @@ describe("runNewsSource", () => {
   });
 
   it("records why a run that found only stale articles produced nothing", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const source = await seedNewsSource(tenant.id, ["localization"]);
 
     await runNewsSource(source, {
@@ -738,7 +734,7 @@ describe("runNewsSource", () => {
   });
 
   it("keeps an undated article rather than dropping it", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const source = await seedNewsSource(tenant.id, ["localization"]);
     const select = vi.fn().mockResolvedValue({ selections: [] });
 
@@ -760,7 +756,7 @@ describe("runNewsSource", () => {
   });
 
   it("ranks dated articles ahead of undated ones for the selector", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const source = await seedNewsSource(tenant.id, ["localization"]);
     const select = vi.fn().mockResolvedValue({ selections: [] });
     const recent = new Date(Date.now() - 86_400_000).toISOString();
@@ -790,7 +786,7 @@ describe("runNewsSource", () => {
   });
 
   it("writes the article the selector actually chose after the dated-first sort reorders them", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const source = await seedNewsSource(tenant.id, ["localization"]);
     const recent = new Date(Date.now() - 86_400_000).toISOString();
 
@@ -840,7 +836,7 @@ describe("runNewsSource", () => {
   });
 
   it("keeps a stale article whose only date came from a bare <time> element", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const source = await seedNewsSource(tenant.id, ["localization"]);
     const select = vi.fn().mockResolvedValue({ selections: [] });
 
@@ -865,7 +861,7 @@ describe("runNewsSource", () => {
   });
 
   it("still drops a stale article the page itself dates in a meta tag", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const source = await seedNewsSource(tenant.id, ["localization"]);
     const select = vi.fn().mockResolvedValue({ selections: [] });
 
@@ -887,7 +883,7 @@ describe("runNewsSource", () => {
   });
 
   it("records partial staleness, not only the all-stale case", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const source = await seedNewsSource(tenant.id, ["localization"]);
     const recent = new Date(Date.now() - 86_400_000).toISOString();
 
@@ -919,7 +915,7 @@ describe("runNewsSource", () => {
   });
 
   it("records the articles the selector turned down", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const source = await seedNewsSource(tenant.id, ["localization"]);
 
     await runNewsSource(source, {
@@ -945,7 +941,7 @@ describe("runNewsSource", () => {
   });
 
   it("records an article dropped for being outside the recency window", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const source = await seedNewsSource(tenant.id, ["localization"]);
     const old = new Date(Date.now() - (RECENCY_WINDOW_DAYS + 5) * 24 * 60 * 60 * 1000).toISOString();
 
@@ -970,7 +966,7 @@ describe("runNewsSource", () => {
   });
 
   it("still records a stale drop when selection fails, but records NOTHING from the failed selection itself", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const source = await seedNewsSource(tenant.id, ["localization"]);
     const old = new Date(Date.now() - (RECENCY_WINDOW_DAYS + 5) * 24 * 60 * 60 * 1000).toISOString();
 
@@ -1008,7 +1004,7 @@ describe("runNewsSource", () => {
   });
 
   it("does not record candidates that lost the truncation, only those judged", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const source = await seedNewsSource(tenant.id, ["localization"]);
     // More candidates than the cap, so some are cut by the slice rather than
     // by any judgement. Derived from the constant, never hardcoded.
@@ -1030,7 +1026,7 @@ describe("runNewsSource", () => {
   });
 
   it("asks Tavily to exclude the company's own domain", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const source = await seedNewsSource(tenant.id, ["ux writing"], "https://www.frontitude.com");
     const search = vi.fn().mockResolvedValue({ hits: [], credits: 1 });
 
@@ -1040,7 +1036,7 @@ describe("runNewsSource", () => {
   });
 
   it("drops the company's own article even when the search returns it", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const source = await seedNewsSource(tenant.id, ["ux writing"], "https://frontitude.com");
     const fetchPage = vi.fn().mockResolvedValue(page("body"));
 
@@ -1063,7 +1059,7 @@ describe("runNewsSource", () => {
   });
 
   it("excludes nothing when the profile has no website url", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const source = await seedNewsSource(tenant.id, ["ux writing"]);
     const search = vi.fn().mockResolvedValue({ hits: [hit("https://a.example.com/x")], credits: 1 });
     const fetchPage = vi.fn().mockResolvedValue(page("body"));
@@ -1117,7 +1113,7 @@ describe("normalizeArticleUrl", () => {
   });
 
   it("searches the bare topic, without a literal 'news' suffix", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const source = await seedNewsSource(tenant.id, ["developer cli"]);
     const search = vi.fn().mockResolvedValue({ hits: [], credits: 1 });
 
@@ -1132,7 +1128,7 @@ describe("normalizeArticleUrl", () => {
   });
 
   it("keeps hits Tavily scored below the old 0.2 floor", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const source = await seedNewsSource(tenant.id, ["localization"]);
     const fetchPage = vi.fn().mockResolvedValue(page("body"));
 

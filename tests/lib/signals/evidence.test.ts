@@ -1,21 +1,16 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, atomicUpdates, changeEvents, signals } from "../../../src/db/schema";
+import { atomicUpdates, changeEvents, signals } from "../../../src/db/schema";
 import { readSignalEvidence } from "../../../src/lib/signals/evidence";
+import { seedTenant, dropTenant } from "../../helpers/fixtures";
 
 const TENANT = "Signal Evidence Test Tenant";
 const OTHER_TENANT = "Signal Evidence Other Tenant";
 
-async function seedTenant(name: string) {
-  const [tenant] = await db.insert(tenants).values({ name }).returning();
-  return tenant;
-}
-
 describe("readSignalEvidence", () => {
   afterEach(async () => {
-    await db.delete(tenants).where(eq(tenants.name, TENANT));
-    await db.delete(tenants).where(eq(tenants.name, OTHER_TENANT));
+    await dropTenant(TENANT);
+    await dropTenant(OTHER_TENANT);
   });
 
   it("returns the atomic update and its change events", async () => {

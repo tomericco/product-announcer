@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
 import { tenants, companyProfiles, systemPersonas, systemContentExamples } from "../../../src/db/schema";
 import { prepareGenerationContext } from "../../../src/lib/ai/generation-context";
+import { seedTenant } from "../../helpers/fixtures";
 
 const TENANT_NAME = "Generation Context Test Tenant";
 
@@ -17,11 +18,6 @@ const PERSONA_NAME = "Generation Context Test Persona";
 const EXAMPLE_INDUSTRY = "Generation Context Test Industry";
 const EXAMPLE_KEY_NEW = "generation-context-test-example-new";
 const EXAMPLE_KEY_FIX = "generation-context-test-example-fix";
-
-async function seedTenant() {
-  const [tenant] = await db.insert(tenants).values({ name: TENANT_NAME }).returning();
-  return tenant;
-}
 
 describe("prepareGenerationContext", () => {
   afterEach(async () => {
@@ -38,7 +34,7 @@ describe("prepareGenerationContext", () => {
   });
 
   it("creates the brand profile on first use and returns personas and examples", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT_NAME);
 
     const context = await prepareGenerationContext(tenant.id, db);
 
@@ -52,7 +48,7 @@ describe("prepareGenerationContext", () => {
   });
 
   it("resolves the tenant's configured personas", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT_NAME);
 
     try {
       await db.insert(systemPersonas).values({
@@ -80,7 +76,7 @@ describe("prepareGenerationContext", () => {
   });
 
   it("passes categories through to example selection", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT_NAME);
 
     try {
       // Both rows share an industry unique to this test, so both score

@@ -1,19 +1,14 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
 import { tenants, briefs, briefSignals, signals, briefRuns } from "../../../src/db/schema";
 import { listBriefs, latestBriefRun } from "../../../src/lib/briefs/query";
+import { seedTenant, dropTenant } from "../../helpers/fixtures";
 
 const TENANT = "Brief Query Test Tenant";
 
 afterEach(async () => {
-  await db.delete(tenants).where(eq(tenants.name, TENANT));
+  await dropTenant(TENANT);
 });
-
-async function seedTenant() {
-  const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
-  return tenant;
-}
 
 async function seedBrief(
   tenantId: string,
@@ -40,7 +35,7 @@ async function seedBrief(
 
 describe("listBriefs", () => {
   it("returns only the calling tenant's briefs", async () => {
-    const mine = await seedTenant();
+    const mine = await seedTenant(TENANT);
     const [other] = await db.insert(tenants).values({ name: TENANT }).returning();
     await seedBrief(mine.id, { title: "Mine" });
     await seedBrief(other.id, { title: "Theirs" });
@@ -50,7 +45,7 @@ describe("listBriefs", () => {
   });
 
   it("defaults to new briefs only", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     await seedBrief(tenant.id, { title: "Open", status: "new" });
     await seedBrief(tenant.id, { title: "Gone", status: "dismissed" });
 
@@ -59,7 +54,7 @@ describe("listBriefs", () => {
   });
 
   it("reaches decided briefs through the status filter", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     await seedBrief(tenant.id, { title: "Open", status: "new" });
     await seedBrief(tenant.id, { title: "Gone", status: "dismissed" });
 
@@ -68,7 +63,7 @@ describe("listBriefs", () => {
   });
 
   it("orders by score, then recency", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     // Two briefs share a score. The spike measured scores clustering at
     // 0.66-0.92, so score alone cannot order a real backlog — recency is what
     // breaks the ties, and this fixture is the tie.
@@ -83,7 +78,7 @@ describe("listBriefs", () => {
   });
 
   it("attaches the cited signals", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const brief = await seedBrief(tenant.id);
     const [signal] = await db
       .insert(signals)
@@ -107,7 +102,7 @@ describe("listBriefs", () => {
   });
 
   it("returns an empty signal list rather than omitting an uncited brief", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     await seedBrief(tenant.id, { title: "Uncited" });
 
     const rows = await listBriefs(tenant.id, {}, db);
@@ -119,7 +114,7 @@ describe("listBriefs", () => {
 
 describe("latestBriefRun", () => {
   it("returns the most recent run for the tenant", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     await db.insert(briefRuns).values({
       tenantId: tenant.id,
       assessment: "old",
@@ -132,12 +127,12 @@ describe("latestBriefRun", () => {
   });
 
   it("returns null when the agent has never run", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     expect(await latestBriefRun(tenant.id, db)).toBeNull();
   });
 
   it("does not read another tenant's run", async () => {
-    const mine = await seedTenant();
+    const mine = await seedTenant(TENANT);
     const [other] = await db.insert(tenants).values({ name: TENANT }).returning();
     await db.insert(briefRuns).values({ tenantId: other.id, assessment: "theirs" });
 

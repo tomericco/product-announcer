@@ -1,16 +1,11 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, competitors, signals } from "../../../src/db/schema";
+import { competitors, signals } from "../../../src/db/schema";
 import { listSignals } from "../../../src/lib/signals/query";
+import { seedTenant, dropTenant } from "../../helpers/fixtures";
 
 const TENANT = "Signals Query Test Tenant";
 const OTHER = "Signals Query Other Tenant";
-
-async function seedTenant(name: string) {
-  const [tenant] = await db.insert(tenants).values({ name }).returning();
-  return tenant;
-}
 
 let counter = 0;
 async function seedSignal(tenantId: string, overrides: Partial<typeof signals.$inferInsert> = {}) {
@@ -34,8 +29,8 @@ function daysAgo(days: number): Date {
 
 describe("listSignals", () => {
   afterEach(async () => {
-    await db.delete(tenants).where(eq(tenants.name, TENANT));
-    await db.delete(tenants).where(eq(tenants.name, OTHER));
+    await dropTenant(TENANT);
+    await dropTenant(OTHER);
   });
 
   it("returns only the caller's tenant's signals", async () => {

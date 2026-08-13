@@ -10,17 +10,13 @@ import {
   moveContentPiece,
   assignContentPiece,
 } from "../../../src/lib/content/board";
+import { seedTenant, dropTenant } from "../../helpers/fixtures";
 
 const TENANT = "Board Read Test Tenant";
 
 afterEach(async () => {
-  await db.delete(tenants).where(eq(tenants.name, TENANT));
+  await dropTenant(TENANT);
 });
-
-async function seedTenant() {
-  const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
-  return tenant;
-}
 
 async function seedPiece(tenantId: string, overrides: Partial<typeof contentPieces.$inferInsert> = {}) {
   const [piece] = await db
@@ -32,7 +28,7 @@ async function seedPiece(tenantId: string, overrides: Partial<typeof contentPiec
 
 describe("readBoard", () => {
   it("returns every column, empty ones included", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const board = await readBoard(tenant.id, db);
     // A column missing from the object would render as a missing column, not
     // an empty one — the board must always show the whole pipeline.
@@ -41,7 +37,7 @@ describe("readBoard", () => {
   });
 
   it("groups pieces by status", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     await seedPiece(tenant.id, { title: "B", status: "brief" });
     await seedPiece(tenant.id, { title: "D", status: "draft" });
     await seedPiece(tenant.id, { title: "R", status: "review" });
@@ -54,7 +50,7 @@ describe("readBoard", () => {
   });
 
   it("caps the published column", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     for (let i = 0; i < PUBLISHED_COLUMN_LIMIT + 4; i++) {
       await seedPiece(tenant.id, { title: `P${i}`, status: "published" });
     }
@@ -65,7 +61,7 @@ describe("readBoard", () => {
   });
 
   it("does not cap the working columns", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     for (let i = 0; i < PUBLISHED_COLUMN_LIMIT + 4; i++) {
       await seedPiece(tenant.id, { title: `D${i}`, status: "draft" });
     }
@@ -75,7 +71,7 @@ describe("readBoard", () => {
   });
 
   it("returns only the calling tenant's pieces", async () => {
-    const mine = await seedTenant();
+    const mine = await seedTenant(TENANT);
     const [other] = await db.insert(tenants).values({ name: TENANT }).returning();
     await seedPiece(mine.id, { title: "Mine", status: "draft" });
     await seedPiece(other.id, { title: "Theirs", status: "draft" });
@@ -85,7 +81,7 @@ describe("readBoard", () => {
   });
 
   it("carries the fields a card renders", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const when = new Date("2026-09-01T09:00:00Z");
     await seedPiece(tenant.id, {
       status: "scheduled",
@@ -101,7 +97,7 @@ describe("readBoard", () => {
   });
 
   it("filters by assignee BEFORE capping the published column, not after", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const [member] = await db.insert(users).values({ email: `board-filter-${Date.now()}@example.com`, name: "M" }).returning();
     await db.insert(tenantMembers).values({ tenantId: tenant.id, userId: member.id, role: "member" });
 
@@ -121,7 +117,7 @@ describe("readBoard", () => {
   });
 
   it("filters to unassigned pieces with the \"unassigned\" sentinel", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const [member] = await db.insert(users).values({ email: `board-unassigned-${Date.now()}@example.com`, name: "M" }).returning();
     await db.insert(tenantMembers).values({ tenantId: tenant.id, userId: member.id, role: "member" });
     await seedPiece(tenant.id, { title: "Assigned", status: "draft", assignedTo: member.id });
@@ -174,7 +170,7 @@ describe("canMove", () => {
 
 describe("moveContentPiece", () => {
   it("moves a draft into review", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const piece = await seedPiece(tenant.id, { status: "draft" });
 
     expect(await moveContentPiece(piece.id, tenant.id, "review", {}, db)).toEqual({ ok: true });
@@ -183,7 +179,7 @@ describe("moveContentPiece", () => {
   });
 
   it("refuses a move the rules forbid and changes nothing", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const piece = await seedPiece(tenant.id, { status: "draft" });
 
     // The client renders no such drop target. That is not a guarantee.
@@ -194,7 +190,7 @@ describe("moveContentPiece", () => {
   });
 
   it("refuses to drag an ungenerated piece into draft", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const piece = await seedPiece(tenant.id, { status: "brief", body: "SCAFFOLD" });
 
     const result = await moveContentPiece(piece.id, tenant.id, "draft", {}, db);
@@ -205,7 +201,7 @@ describe("moveContentPiece", () => {
   });
 
   it("requires a scheduled time when entering scheduled", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const piece = await seedPiece(tenant.id, { status: "review" });
 
     expect((await moveContentPiece(piece.id, tenant.id, "scheduled", {}, db)).ok).toBe(false);
@@ -217,7 +213,7 @@ describe("moveContentPiece", () => {
   });
 
   it("clears the scheduled time on the way out", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const piece = await seedPiece(tenant.id, {
       status: "scheduled",
       scheduledFor: new Date("2026-09-01T09:00:00Z"),
@@ -231,7 +227,7 @@ describe("moveContentPiece", () => {
   });
 
   it("refuses a piece belonging to another tenant", async () => {
-    const mine = await seedTenant();
+    const mine = await seedTenant(TENANT);
     const [other] = await db.insert(tenants).values({ name: TENANT }).returning();
     const theirs = await seedPiece(other.id, { status: "draft" });
 
@@ -241,7 +237,7 @@ describe("moveContentPiece", () => {
   });
 
   it("refuses a move whose source status is \"archived\" — no board column to leave from", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const piece = await seedPiece(tenant.id, { status: "archived" });
 
     const result = await moveContentPiece(piece.id, tenant.id, "review", {}, db);
@@ -259,7 +255,7 @@ describe("assignContentPiece", () => {
   }
 
   it("assigns a workspace member, and unassigns with null", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const member = await seedMember(tenant.id, `m${Date.now()}@example.com`);
     const piece = await seedPiece(tenant.id, { status: "draft" });
 
@@ -273,7 +269,7 @@ describe("assignContentPiece", () => {
   });
 
   it("refuses a user who is not in the workspace", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const [other] = await db.insert(tenants).values({ name: TENANT }).returning();
     const outsider = await seedMember(other.id, `o${Date.now()}@example.com`);
     const piece = await seedPiece(tenant.id, { status: "draft" });

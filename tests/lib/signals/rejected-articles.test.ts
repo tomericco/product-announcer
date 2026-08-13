@@ -2,21 +2,17 @@ import { describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
 import { tenants, rejectedArticles } from "../../../src/db/schema";
+import { seedTenant, dropTenant } from "../../helpers/fixtures";
 
 const TENANT = "Rejected Articles Test Tenant";
 
 afterEach(async () => {
-  await db.delete(tenants).where(eq(tenants.name, TENANT));
+  await dropTenant(TENANT);
 });
-
-async function seedTenant() {
-  const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
-  return tenant;
-}
 
 describe("rejectedArticles", () => {
   it("treats a repeat rejection of the same url as a no-op", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const row = { tenantId: tenant.id, url: "https://a.example.com/x", title: "X", reason: "stale" as const };
 
     await db.insert(rejectedArticles).values(row);
@@ -34,7 +30,7 @@ describe("rejectedArticles", () => {
   });
 
   it("scopes a rejection to one tenant", async () => {
-    const a = await seedTenant();
+    const a = await seedTenant(TENANT);
     const [b] = await db.insert(tenants).values({ name: TENANT }).returning();
 
     await db.insert(rejectedArticles).values([
@@ -49,7 +45,7 @@ describe("rejectedArticles", () => {
   });
 
   it("drops a tenant's rejections when the tenant is deleted", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     await db
       .insert(rejectedArticles)
       .values({ tenantId: tenant.id, url: "https://a.example.com/y", title: "Y", reason: "not_selected" });

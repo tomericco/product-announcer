@@ -1,9 +1,10 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, companyProfiles, competitors } from "../../../src/db/schema";
+import { companyProfiles, competitors } from "../../../src/db/schema";
 import { bootstrapCompanyContext } from "../../../src/lib/workspace/company-bootstrap";
 import { EMPTY_COMPANY_CONTEXT } from "../../../src/lib/workspace/analyze-company-context";
+import { seedTenant, dropTenant } from "../../helpers/fixtures";
 
 const TENANT = "Company Bootstrap Test Tenant";
 
@@ -15,18 +16,13 @@ const FULL = {
   competitors: [{ name: "Jira", websiteUrl: "https://atlassian.com/jira" }],
 };
 
-async function seedTenant() {
-  const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
-  return tenant;
-}
-
 describe("bootstrapCompanyContext", () => {
   afterEach(async () => {
-    await db.delete(tenants).where(eq(tenants.name, TENANT));
+    await dropTenant(TENANT);
   });
 
   it("persists the drafted context, the url, and the competitors", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const result = await bootstrapCompanyContext(tenant.id, "https://acme.com", {
       crawl: async () => ({ text: "site text", pages: ["https://acme.com"] }),
       analyze: async () => FULL,
@@ -45,7 +41,7 @@ describe("bootstrapCompanyContext", () => {
   });
 
   it("returns the crawl error and writes nothing", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const result = await bootstrapCompanyContext(tenant.id, "https://acme.com", {
       crawl: async () => ({ error: "blocked" as const }),
       analyze: async () => FULL,
@@ -56,7 +52,7 @@ describe("bootstrapCompanyContext", () => {
   });
 
   it("reports an empty analysis without writing", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const result = await bootstrapCompanyContext(tenant.id, "https://acme.com", {
       crawl: async () => ({ text: "site text", pages: ["https://acme.com"] }),
       analyze: async () => EMPTY_COMPANY_CONTEXT,
@@ -65,7 +61,7 @@ describe("bootstrapCompanyContext", () => {
   });
 
   it("never overwrites a hand-written field with a null derivation", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     await db.insert(companyProfiles).values({ tenantId: tenant.id, positioning: "written by a human" });
 
     await bootstrapCompanyContext(tenant.id, "https://acme.com", {
@@ -79,7 +75,7 @@ describe("bootstrapCompanyContext", () => {
   });
 
   it("is idempotent on competitors across two runs", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const deps = {
       crawl: async () => ({ text: "site text", pages: ["https://acme.com"] }),
       analyze: async () => FULL,

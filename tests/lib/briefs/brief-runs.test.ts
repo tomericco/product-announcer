@@ -2,21 +2,17 @@ import { describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
 import { tenants, briefs, briefRuns, contentPieces } from "../../../src/db/schema";
+import { seedTenant, dropTenant } from "../../helpers/fixtures";
 
 const TENANT = "Brief Runs Test Tenant";
 
 afterEach(async () => {
-  await db.delete(tenants).where(eq(tenants.name, TENANT));
+  await dropTenant(TENANT);
 });
-
-async function seedTenant() {
-  const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
-  return tenant;
-}
 
 describe("briefRuns", () => {
   it("records a run that produced nothing and explains why", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     await db.insert(briefRuns).values({
       tenantId: tenant.id,
       assessment: "A quiet week — only maintenance work shipped.",
@@ -33,7 +29,7 @@ describe("briefRuns", () => {
   });
 
   it("records a failed run with its error and no assessment", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     await db.insert(briefRuns).values({ tenantId: tenant.id, error: "model timeout" });
 
     const [row] = await db.select().from(briefRuns).where(eq(briefRuns.tenantId, tenant.id));
@@ -42,7 +38,7 @@ describe("briefRuns", () => {
   });
 
   it("drops a tenant's runs when the tenant is deleted", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     await db.insert(briefRuns).values({ tenantId: tenant.id });
     await db.delete(tenants).where(eq(tenants.id, tenant.id));
 
@@ -53,7 +49,7 @@ describe("briefRuns", () => {
 
 describe("briefs.contentPieceId", () => {
   it("nulls the link when the content piece is deleted, keeping the brief", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const [piece] = await db
       .insert(contentPieces)
       .values({ tenantId: tenant.id, type: "blog_post", title: "P", body: "b" })

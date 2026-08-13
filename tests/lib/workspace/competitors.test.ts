@@ -3,21 +3,17 @@ import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
 import { tenants } from "../../../src/db/schema";
 import { addCompetitor, listCompetitors } from "../../../src/lib/workspace/competitors";
+import { seedTenant, dropTenant } from "../../helpers/fixtures";
 
 const TENANT = "Competitors Lib Test Tenant";
 
-async function seedTenant() {
-  const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
-  return tenant;
-}
-
 describe("addCompetitor", () => {
   afterEach(async () => {
-    await db.delete(tenants).where(eq(tenants.name, TENANT));
+    await dropTenant(TENANT);
   });
 
   it("dedupes case-insensitively, keeping the first-seen spelling", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
 
     await addCompetitor(tenant.id, { name: "GitHub", websiteUrl: null });
     await addCompetitor(tenant.id, { name: "Github", websiteUrl: null });
@@ -29,7 +25,7 @@ describe("addCompetitor", () => {
   });
 
   it("backfills a null websiteUrl on a case-insensitive re-run that now knows one", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
 
     await addCompetitor(tenant.id, { name: "Jira", websiteUrl: null });
     const updated = await addCompetitor(tenant.id, { name: "jira", websiteUrl: "https://atlassian.com/jira" });
@@ -43,7 +39,7 @@ describe("addCompetitor", () => {
   });
 
   it("never overwrites an already-set websiteUrl with a different one", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
 
     await addCompetitor(tenant.id, { name: "Jira", websiteUrl: "https://atlassian.com/jira" });
     await addCompetitor(tenant.id, { name: "Jira", websiteUrl: "https://some-other-url.example" });
@@ -54,7 +50,7 @@ describe("addCompetitor", () => {
   });
 
   it("still adds distinct competitors normally", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
 
     await addCompetitor(tenant.id, { name: "Jira", websiteUrl: null });
     await addCompetitor(tenant.id, { name: "Linear", websiteUrl: null });
@@ -64,7 +60,7 @@ describe("addCompetitor", () => {
   });
 
   it("scopes the case-insensitive dedupe by tenant", async () => {
-    const mine = await seedTenant();
+    const mine = await seedTenant(TENANT);
     const [other] = await db.insert(tenants).values({ name: TENANT + " Other" }).returning();
     try {
       await addCompetitor(mine.id, { name: "GitHub", websiteUrl: null });

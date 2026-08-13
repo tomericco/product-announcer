@@ -3,21 +3,17 @@ import { eq, and } from "drizzle-orm";
 import { db } from "../../../src/db";
 import { tenants, signals } from "../../../src/db/schema";
 import { createManualSignal } from "../../../src/lib/signals/manual";
+import { seedTenant, dropTenant } from "../../helpers/fixtures";
 
 const TENANT = "Manual Signal Test Tenant";
 
 afterEach(async () => {
-  await db.delete(tenants).where(eq(tenants.name, TENANT));
+  await dropTenant(TENANT);
 });
-
-async function seedTenant() {
-  const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
-  return tenant;
-}
 
 describe("createManualSignal", () => {
   it("writes a manual signal keyed on the normalised url", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const result = await createManualSignal(
       tenant.id,
       { title: "A webinar", url: "https://Example.com/talk/?utm_source=x", excerpt: "Notes." },
@@ -35,7 +31,7 @@ describe("createManualSignal", () => {
   });
 
   it("generates an id when there is no url, so two untitled-source signals never collide", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     await createManualSignal(tenant.id, { title: "A conference talk" }, db);
     const second = await createManualSignal(tenant.id, { title: "A conference talk" }, db);
     expect(second.ok).toBe(true);
@@ -46,7 +42,7 @@ describe("createManualSignal", () => {
   });
 
   it("reports a duplicate url instead of writing a second row", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     await createManualSignal(tenant.id, { title: "First", url: "https://example.com/a" }, db);
     const second = await createManualSignal(tenant.id, { title: "Second", url: "https://example.com/a/" }, db);
 
@@ -57,14 +53,14 @@ describe("createManualSignal", () => {
   });
 
   it("refuses a blank title", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const result = await createManualSignal(tenant.id, { title: "   " }, db);
     expect(result.ok).toBe(false);
     expect(await db.select().from(signals).where(eq(signals.tenantId, tenant.id))).toHaveLength(0);
   });
 
   it("scopes the signal to the calling tenant", async () => {
-    const mine = await seedTenant();
+    const mine = await seedTenant(TENANT);
     const [other] = await db.insert(tenants).values({ name: TENANT }).returning();
     await createManualSignal(mine.id, { title: "Mine" }, db);
 

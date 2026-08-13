@@ -1,16 +1,12 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { eq, and } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, atomicUpdates, changeEvents, signals } from "../../../src/db/schema";
+import { atomicUpdates, changeEvents, signals } from "../../../src/db/schema";
 import { syncShippedWorkSignals } from "../../../src/lib/signals/shipped-work";
 import { listSignals } from "../../../src/lib/signals/query";
+import { seedTenant, dropTenant } from "../../helpers/fixtures";
 
 const TENANT = "Shipped Work Signals Test Tenant";
-
-async function seedTenant() {
-  const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
-  return tenant;
-}
 
 async function shippedSignals(tenantId: string) {
   return db.select().from(signals).where(and(eq(signals.tenantId, tenantId), eq(signals.kind, "shipped_work")));
@@ -22,11 +18,11 @@ function daysAgo(days: number): Date {
 
 describe("syncShippedWorkSignals", () => {
   afterEach(async () => {
-    await db.delete(tenants).where(eq(tenants.name, TENANT));
+    await dropTenant(TENANT);
   });
 
   it("projects an open atomic update into a signal", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const [atomic] = await db
       .insert(atomicUpdates)
       .values({ tenantId: tenant.id, title: "SAML SSO", summary: "Teams can log in with SAML." })
@@ -47,7 +43,7 @@ describe("syncShippedWorkSignals", () => {
   });
 
   it("is idempotent across runs", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     await db.insert(atomicUpdates).values({ tenantId: tenant.id, title: "A", summary: "S" });
     await syncShippedWorkSignals();
     const [first] = await shippedSignals(tenant.id);
@@ -64,7 +60,7 @@ describe("syncShippedWorkSignals", () => {
   });
 
   it("refreshes title and excerpt when the atomic update changes", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const [atomic] = await db.insert(atomicUpdates).values({ tenantId: tenant.id, title: "Old", summary: "Old summary" }).returning();
     await syncShippedWorkSignals();
 
@@ -78,7 +74,7 @@ describe("syncShippedWorkSignals", () => {
   });
 
   it("marks the signal stale (not deleted) when the atomic update is hidden, and restores it to new when unhidden", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const [atomic] = await db.insert(atomicUpdates).values({ tenantId: tenant.id, title: "A", summary: "S" }).returning();
     await syncShippedWorkSignals();
     const [created] = await shippedSignals(tenant.id);
@@ -109,7 +105,7 @@ describe("syncShippedWorkSignals", () => {
   });
 
   it("keeps relevanceScore, relevanceRationale and topics through a hide/unhide toggle", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const [atomic] = await db.insert(atomicUpdates).values({ tenantId: tenant.id, title: "A", summary: "S" }).returning();
     await syncShippedWorkSignals();
     const [created] = await shippedSignals(tenant.id);
@@ -140,7 +136,7 @@ describe("syncShippedWorkSignals", () => {
   });
 
   it("does not clobber a `used` signal on a routine re-sync (the atomic update is still visible)", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const [atomic] = await db.insert(atomicUpdates).values({ tenantId: tenant.id, title: "A", summary: "S" }).returning();
     await syncShippedWorkSignals();
     const [created] = await shippedSignals(tenant.id);
@@ -157,14 +153,14 @@ describe("syncShippedWorkSignals", () => {
   });
 
   it("projects released atomic updates too — shipping is exactly what makes them signal", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     await db.insert(atomicUpdates).values({ tenantId: tenant.id, title: "A", summary: "S", status: "released" });
     await syncShippedWorkSignals();
     expect(await shippedSignals(tenant.id)).toHaveLength(1);
   });
 
   it("does not project an atomic update created outside the 60-day signal window", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     await db.insert(atomicUpdates).values({ tenantId: tenant.id, title: "Old", summary: "S", createdAt: daysAgo(70) });
 
     await syncShippedWorkSignals();
@@ -173,7 +169,7 @@ describe("syncShippedWorkSignals", () => {
   });
 
   it("leaves a shipped_work signal outside the window untouched instead of stale-marking it", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     // Simulates a signal from a prior run whose atomic update is now gone or
     // hidden, and which has aged out of the window. It must not be touched:
     // it's already invisible to every reader, and churning it every run buys
@@ -198,7 +194,7 @@ describe("syncShippedWorkSignals", () => {
   });
 
   it("derives occurredAt from the linked change event's real date, not from when the atomic update was created", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const [atomic] = await db.insert(atomicUpdates).values({ tenantId: tenant.id, title: "A", summary: "S" }).returning();
     const mergedAt = new Date();
     mergedAt.setFullYear(mergedAt.getFullYear() - 1);
@@ -221,7 +217,7 @@ describe("syncShippedWorkSignals", () => {
   });
 
   it("takes the most recent date across multiple linked change events", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const [atomic] = await db.insert(atomicUpdates).values({ tenantId: tenant.id, title: "A", summary: "S" }).returning();
     const earlier = new Date("2025-01-01T00:00:00.000Z");
     const later = new Date("2025-06-01T00:00:00.000Z");

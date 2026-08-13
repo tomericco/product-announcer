@@ -1,22 +1,17 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, sources, type Source } from "../../../src/db/schema";
+import { sources, type Source } from "../../../src/db/schema";
 import { sweepNewsSources } from "../../../src/lib/signals/news-sweep";
+import { seedTenant, dropTenant } from "../../helpers/fixtures";
 
 const TENANT = "News Sweep Test Tenant";
 const OTHER = "News Sweep Other Test Tenant";
 
 afterEach(async () => {
-  await db.delete(tenants).where(eq(tenants.name, TENANT));
-  await db.delete(tenants).where(eq(tenants.name, OTHER));
+  await dropTenant(TENANT);
+  await dropTenant(OTHER);
   vi.restoreAllMocks();
 });
-
-async function seedTenant(name: string) {
-  const [tenant] = await db.insert(tenants).values({ name }).returning();
-  return tenant;
-}
 
 async function seedNews(tenantId: string, status: "active" | "failing" | "disabled" = "active"): Promise<Source> {
   const [row] = await db

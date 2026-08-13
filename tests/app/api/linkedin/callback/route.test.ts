@@ -2,7 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { NextRequest } from "next/server";
 import { db } from "../../../../../src/db";
-import { tenants, linkedinConnections } from "../../../../../src/db/schema";
+import { linkedinConnections } from "../../../../../src/db/schema";
+import { seedTenant, dropTenant } from "../../../../helpers/fixtures";
 
 vi.mock("../../../../../src/lib/workspace/session", () => ({ requireSession: vi.fn() }));
 vi.mock("../../../../../src/lib/integrations/linkedin/client", async (importOriginal) => {
@@ -14,11 +15,6 @@ import { exchangeCode } from "../../../../../src/lib/integrations/linkedin/clien
 import { GET } from "../../../../../src/app/api/linkedin/callback/route";
 
 const TENANT = "LinkedIn Callback Test Tenant";
-
-async function seedTenant() {
-  const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
-  return tenant.id;
-}
 
 function request(params: Record<string, string>, cookieNonce?: string) {
   const url = new URL("https://app/api/linkedin/callback");
@@ -35,11 +31,11 @@ describe("GET /api/linkedin/callback", () => {
     vi.mocked(exchangeCode).mockReset();
   });
   afterEach(async () => {
-    await db.delete(tenants).where(eq(tenants.name, TENANT));
+    await dropTenant(TENANT);
   });
 
   it("rejects a state whose tenant does not match the session", async () => {
-    const tenantId = await seedTenant();
+    const tenantId = (await seedTenant(TENANT)).id;
     vi.mocked(requireSession).mockResolvedValue({ user: { tenantId } } as never);
     const nonce = "li-nonce-123";
     const req = request({ code: "c", state: `other|integrations|${nonce}` }, nonce);
@@ -48,7 +44,7 @@ describe("GET /api/linkedin/callback", () => {
   });
 
   it("exchanges the code and stores the connection when the nonce matches the cookie", async () => {
-    const tenantId = await seedTenant();
+    const tenantId = (await seedTenant(TENANT)).id;
     vi.mocked(requireSession).mockResolvedValue({ user: { tenantId } } as never);
     vi.mocked(exchangeCode).mockResolvedValue({ accessToken: "at", refreshToken: "rt", expiresInSeconds: 3600 });
     const nonce = "li-nonce-456";
@@ -68,7 +64,7 @@ describe("GET /api/linkedin/callback", () => {
   });
 
   it("redirects with error and does NOT store a connection when the nonce does not match the cookie", async () => {
-    const tenantId = await seedTenant();
+    const tenantId = (await seedTenant(TENANT)).id;
     vi.mocked(requireSession).mockResolvedValue({ user: { tenantId } } as never);
     const req = request(
       { code: "c", state: `${tenantId}|integrations|state-nonce` },
@@ -81,7 +77,7 @@ describe("GET /api/linkedin/callback", () => {
   });
 
   it("redirects with error and does NOT store a connection when there is no state cookie", async () => {
-    const tenantId = await seedTenant();
+    const tenantId = (await seedTenant(TENANT)).id;
     vi.mocked(requireSession).mockResolvedValue({ user: { tenantId } } as never);
     const req = request({ code: "c", state: `${tenantId}|integrations|state-nonce` });
     const res = await GET(req);
@@ -91,7 +87,7 @@ describe("GET /api/linkedin/callback", () => {
   });
 
   it("surfaces a LinkedIn OAuth error via the reason param and stores nothing", async () => {
-    const tenantId = await seedTenant();
+    const tenantId = (await seedTenant(TENANT)).id;
     vi.mocked(requireSession).mockResolvedValue({ user: { tenantId } } as never);
     const nonce = "li-nonce-err";
     const req = request(
@@ -112,7 +108,7 @@ describe("GET /api/linkedin/callback", () => {
   });
 
   it("does not write any row when code is missing", async () => {
-    const tenantId = await seedTenant();
+    const tenantId = (await seedTenant(TENANT)).id;
     vi.mocked(requireSession).mockResolvedValue({ user: { tenantId } } as never);
     const nonce = "li-nonce-789";
     const req = request({ state: `${tenantId}|integrations|${nonce}` }, nonce);
@@ -123,7 +119,7 @@ describe("GET /api/linkedin/callback", () => {
   });
 
   it("redirects to error, not a 500, when the code exchange throws", async () => {
-    const tenantId = await seedTenant();
+    const tenantId = (await seedTenant(TENANT)).id;
     vi.mocked(requireSession).mockResolvedValue({ user: { tenantId } } as never);
     vi.mocked(exchangeCode).mockRejectedValue(new Error("upstream failure"));
     const nonce = "li-nonce-abc";

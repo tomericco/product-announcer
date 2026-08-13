@@ -3,21 +3,17 @@ import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
 import { tenants, competitors, sources } from "../../../src/db/schema";
 import { listCompetitorSources } from "../../../src/lib/signals/sources";
+import { seedTenant, dropTenant } from "../../helpers/fixtures";
 
 const TENANT = "Sources Lib Test Tenant";
 
-async function seedTenant() {
-  const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
-  return tenant;
-}
-
 describe("listCompetitorSources", () => {
   afterEach(async () => {
-    await db.delete(tenants).where(eq(tenants.name, TENANT));
+    await dropTenant(TENANT);
   });
 
   it("returns only this tenant's competitor_web sources", async () => {
-    const mine = await seedTenant();
+    const mine = await seedTenant(TENANT);
     const [other] = await db.insert(tenants).values({ name: TENANT + " Other" }).returning();
     try {
       const [rival] = await db.insert(competitors).values({ tenantId: mine.id, name: "Rival" }).returning();
@@ -46,7 +42,7 @@ describe("listCompetitorSources", () => {
   });
 
   it("excludes news sources, which have no competitor to attach to in this view", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const [rival] = await db.insert(competitors).values({ tenantId: tenant.id, name: "Rival" }).returning();
     await db.insert(sources).values({
       tenantId: tenant.id,
@@ -68,7 +64,7 @@ describe("listCompetitorSources", () => {
   });
 
   it("groups sources for the same competitor together, ordered by label", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     const [rival] = await db.insert(competitors).values({ tenantId: tenant.id, name: "Rival" }).returning();
     await db.insert(sources).values({
       tenantId: tenant.id,

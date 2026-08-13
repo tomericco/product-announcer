@@ -1,5 +1,4 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
 import { tenants, contentPieces } from "../../../src/db/schema";
 import { single } from "../../../src/lib/signals/params";
@@ -18,17 +17,13 @@ import {
   shiftMonth,
   CALENDAR_TYPES,
 } from "../../../src/lib/content/calendar-view";
+import { seedTenant, dropTenant } from "../../helpers/fixtures";
 
 const TENANT = "Calendar Test Tenant";
 
 afterEach(async () => {
-  await db.delete(tenants).where(eq(tenants.name, TENANT));
+  await dropTenant(TENANT);
 });
-
-async function seedTenant() {
-  const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
-  return tenant;
-}
 
 async function seedPiece(tenantId: string, overrides: Partial<typeof contentPieces.$inferInsert> = {}) {
   const [piece] = await db
@@ -50,7 +45,7 @@ describe("monthRangeUtc", () => {
 
 describe("readMonth", () => {
   it("returns scheduled pieces by scheduledFor and published by publishedAt", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     await seedPiece(tenant.id, {
       title: "S", status: "scheduled", scheduledFor: new Date("2026-09-10T09:00:00Z"),
     });
@@ -65,7 +60,7 @@ describe("readMonth", () => {
   });
 
   it("ignores every other status", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     for (const status of ["brief", "draft", "review", "archived"] as const) {
       await seedPiece(tenant.id, { status, scheduledFor: new Date("2026-09-10T09:00:00Z") });
     }
@@ -76,7 +71,7 @@ describe("readMonth", () => {
   });
 
   it("counts a published piece with no publishedAt instead of dropping it", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     await seedPiece(tenant.id, { status: "published", publishedAt: null });
 
     const { pieces, undatedPublished } = await readMonth(tenant.id, "2026-09", db);
@@ -87,7 +82,7 @@ describe("readMonth", () => {
   });
 
   it("does not use a scheduled piece's publishedAt, or the reverse", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     await seedPiece(tenant.id, {
       title: "S", status: "scheduled",
       scheduledFor: new Date("2026-09-10T09:00:00Z"),
@@ -99,7 +94,7 @@ describe("readMonth", () => {
   });
 
   it("excludes a piece outside the padded range", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT);
     await seedPiece(tenant.id, {
       status: "scheduled", scheduledFor: new Date("2026-07-15T09:00:00Z"),
     });
@@ -107,7 +102,7 @@ describe("readMonth", () => {
   });
 
   it("returns only the calling tenant's pieces", async () => {
-    const mine = await seedTenant();
+    const mine = await seedTenant(TENANT);
     const [other] = await db.insert(tenants).values({ name: TENANT }).returning();
     await seedPiece(mine.id, { title: "Mine", status: "scheduled", scheduledFor: new Date("2026-09-10T09:00:00Z") });
     await seedPiece(other.id, { title: "Theirs", status: "scheduled", scheduledFor: new Date("2026-09-10T09:00:00Z") });
