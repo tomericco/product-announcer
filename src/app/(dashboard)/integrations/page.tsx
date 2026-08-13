@@ -18,6 +18,7 @@ import { NotionForm } from "./notion-form";
 import { LinkedinForm } from "./linkedin-form";
 import { ConnectedIndicator } from "./connected-indicator";
 import { NewAtomicUpdateDialog } from "./new-atomic-update-dialog";
+import { ImportDialog } from "./import-dialog";
 import { isNotionConnected } from "./import-actions";
 
 const COMING_SOON = ["Customer.io", "Mailchimp", "HubSpot"];
@@ -130,9 +131,11 @@ export default async function IntegrationsPage({
     branches: branchesByFullName.get(r.fullName) ?? [],
   }));
 
-  // The manual "New atomic update" import flow lives here now (moved with
-  // the rest of the import subsystem — `import-dialog.tsx`/`import-actions.ts`
-  // — because this is where the connected repos it acts on already live).
+  // The manual import flows live here now (moved with the rest of the import
+  // subsystem — `import-dialog.tsx`/`import-actions.ts` — because this is
+  // where the connected repos they act on already live). Both the plain
+  // "Import change events" card below and the "New atomic update" trigger
+  // read from these two.
   const [importRepos, notionConnected] = await Promise.all([
     listImportRepos(session.user.tenantId),
     isNotionConnected(),
@@ -223,6 +226,38 @@ export default async function IntegrationsPage({
                 <AddRepoDialog availableRepos={availableRepos} />
               </div>
             )}
+          </CardContent>
+        </Card>
+
+        {/* The plain import path: the bare `ImportDialog`, defaults and all.
+            Its default submit handlers (importCommits / importPullRequests /
+            importTasks) put the selected events straight into the UNGROUPED
+            pool and let the resolver cluster them — the backfill flow. They
+            became unreachable when /change-events was retired, because it was
+            the only surface that rendered this dialog bare and both surviving
+            callers (`NewAtomicUpdateDialog` here, `AddEventPicker` on the
+            Company ledger) override all three handlers to target ONE atomic
+            update instead.
+
+            Rendered with no `trigger` and no submit overrides on purpose: the
+            overrides are exactly what made the defaults dead, and the default
+            trigger is also what carries the `DisabledHint` for a workspace
+            with neither GitHub nor Notion connected — supplying a trigger
+            would opt out of that handling. Sits after the GitHub and Notion
+            cards because it acts on what they connect. */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Import change events</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              Pull past commits, pull requests, or completed tasks in as change events and let the resolver
+              cluster them into atomic updates — use this to backfill work that shipped before these
+              integrations were connected. Anything the resolver can&apos;t place stays in the ungrouped queue on
+              the Company page. To group a specific set into one update yourself, use{" "}
+              <span className="font-medium text-foreground">New atomic update</span> above instead.
+            </p>
+            <ImportDialog repos={importRepos} enableTasks={notionConnected} notionConnected={notionConnected} />
           </CardContent>
         </Card>
       </section>
