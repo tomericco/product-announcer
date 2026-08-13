@@ -7,7 +7,7 @@ import { db } from "@/db";
 import { briefs, contentPieces, type Brief } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { scaffoldBody } from "@/lib/briefs/scaffold";
-import { generateDraftForPiece } from "@/lib/briefs/draft";
+import { generateDraftForPiece, queueGeneration, GENERATION_QUEUED_STEP } from "@/lib/briefs/draft";
 
 export type DismissReason = NonNullable<Brief["dismissReason"]>;
 export type AcceptResult = { ok: true; contentPieceId: string } | { ok: false; error: string };
@@ -52,6 +52,17 @@ export async function acceptBrief(briefId: string): Promise<AcceptResult> {
           // the scaffold. Do NOT set "draft" here — that would present an
           // ungenerated scaffold as a finished draft.
           status: "brief",
+          // Born already marked as generating, in the same INSERT — the
+          // `after()` callback below is unconditional, so this piece IS
+          // generating from the moment it exists. Writing it here rather than
+          // as a follow-up `queueGeneration` call leaves no window at all:
+          // this action redirects the client straight to /drafts/[id], and
+          // that render used to race the callback's first step write roughly
+          // fifty-fifty. Losing the race showed "Awaiting generation" next to
+          // a live Generate button for the whole run — one click from a second
+          // overlapping generation, since nothing on that page re-renders on
+          // its own (revalidatePath invalidates cache, it does not push).
+          generationStep: GENERATION_QUEUED_STEP,
         })
         .returning({ id: contentPieces.id });
 
@@ -173,20 +184,30 @@ export async function dismissBrief(
  * `generationStep` — could never mount on this path. The user got a spinner on
  * a button and no idea which step was running.
  *
- * The trade this makes, stated so it isn't rediscovered: the three early
- * refusals inside `generateDraftForPiece` (piece not found, not at "brief",
- * body hand-edited) can no longer be toasted, because nobody is waiting on
- * them. They are logged instead. Two of the three are already unreachable from
- * either caller — both only render the button for a `brief`-status piece — and
- * recording them on the row is not an option: writing failure text onto a
- * non-"brief" piece is exactly what that guard's own docstring warns makes the
- * UI render it as the amber competitor-name warning. Every real generation
- * failure still lands in `generationError` and reaches the user through the
- * checklist and the page's own error panel.
+ * The claim is what makes this safe to fire and forget. `queueGeneration`
+ * re-checks eligibility under the caller's own tenant and marks the piece in
+ * one statement, so:
+ *
+ *   - the step is already non-null when this returns, and the caller's refresh
+ *     always renders the checklist rather than racing the first step write;
+ *   - a refusal is known synchronously and can still be reported to the user,
+ *     rather than disappearing into a background log the way it briefly did.
  */
-export async function generateDraft(contentPieceId: string): Promise<{ ok: true }> {
+export async function generateDraft(
+  contentPieceId: string
+): Promise<{ ok: true } | { ok: false; error: string }> {
   const session = await requireSession();
   const tenantId = session.user.tenantId;
+
+  // Deliberately BEFORE `after()`: this is the write that makes the server
+  // state true the moment this action returns. A piece that is not this
+  // tenant's, not at "brief", or hand-edited matches nothing and is never
+  // marked — so no ineligible piece is left displaying a step, and there is
+  // nothing to schedule either.
+  const queued = await queueGeneration(contentPieceId, tenantId);
+  if (!queued) {
+    return { ok: false, error: "This piece is not awaiting generation." };
+  }
 
   // Same shape as acceptBrief's: revalidate again from inside the callback,
   // because the pages the user is sitting on were rendered before generation

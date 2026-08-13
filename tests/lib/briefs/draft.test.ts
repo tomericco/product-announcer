@@ -32,7 +32,12 @@ import {
   signals,
   atomicUpdates,
 } from "../../../src/db/schema";
-import { generateDraftForPiece, findNamedCompanies, MIN_COMPETITOR_NAME_LENGTH } from "../../../src/lib/briefs/draft";
+import {
+  generateDraftForPiece,
+  queueGeneration,
+  findNamedCompanies,
+  MIN_COMPETITOR_NAME_LENGTH,
+} from "../../../src/lib/briefs/draft";
 import { computeReleaseDelta } from "../../../src/lib/change-events/release-deltas";
 import { getOpenAtomicUpdates } from "../../../src/lib/change-events/release-claim";
 import type { ReviewOutcome } from "../../../src/lib/ai/review-draft";
@@ -201,7 +206,104 @@ describe("findNamedCompanies", () => {
   });
 });
 
+/**
+ * The synchronous claim that runs BEFORE generation is scheduled. Its WHERE is
+ * `generateDraftForPiece`'s own first three guards, and that is the point: a
+ * blind pre-write would stamp a step onto a piece the generator then refuses
+ * without clearing, stranding it displaying progress nothing is making.
+ */
+describe("queueGeneration", () => {
+  it("claims a brief-status piece and marks it with the first step", async () => {
+    const tenant = await seedTenant();
+    const piece = await seedPiece(tenant.id);
+
+    expect(await queueGeneration(piece.id, tenant.id, db)).toBe(true);
+
+    const [after] = await db.select().from(contentPieces).where(eq(contentPieces.id, piece.id));
+    expect(after.generationStep).toBe("collecting");
+    // Claiming is not generating: nothing else about the piece moves.
+    expect(after.status).toBe("brief");
+    expect(after.body).toBe("SCAFFOLD BODY");
+  });
+
+  it("refuses another tenant's piece and leaves it unmarked", async () => {
+    const tenant = await seedTenant();
+    const [other] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const piece = await seedPiece(other.id);
+
+    // The id arrives from a URL. This predicate is the security boundary.
+    expect(await queueGeneration(piece.id, tenant.id, db)).toBe(false);
+
+    const [after] = await db.select().from(contentPieces).where(eq(contentPieces.id, piece.id));
+    expect(after.generationStep).toBeNull();
+  });
+
+  it("refuses a piece that is no longer awaiting generation", async () => {
+    const tenant = await seedTenant();
+    const piece = await seedPiece(tenant.id, { status: "published" });
+
+    // `generateDraftForPiece` would refuse this piece and return without
+    // generating. Marking it here would leave a published piece displaying a
+    // generation step forever.
+    expect(await queueGeneration(piece.id, tenant.id, db)).toBe(false);
+
+    const [after] = await db.select().from(contentPieces).where(eq(contentPieces.id, piece.id));
+    expect(after.generationStep).toBeNull();
+  });
+
+  it("refuses a piece whose body was hand-edited", async () => {
+    const tenant = await seedTenant();
+    const piece = await seedPiece(tenant.id, { bodyEditedAt: new Date() });
+
+    expect(await queueGeneration(piece.id, tenant.id, db)).toBe(false);
+
+    const [after] = await db.select().from(contentPieces).where(eq(contentPieces.id, piece.id));
+    expect(after.generationStep).toBeNull();
+  });
+});
+
 describe("generateDraftForPiece", () => {
+  /**
+   * The two guards that used to return before any step existed to clear.
+   * `queueGeneration` normally refuses these pieces outright, so this covers
+   * the narrow case where the piece changed status between that write and
+   * this read — and holds the "every exit clears the step" invariant
+   * literally rather than by argument. It has been broken twice in this plan.
+   */
+  it("clears a pre-set step when the piece is no longer at brief", async () => {
+    const tenant = await seedTenant();
+    const piece = await seedPiece(tenant.id, {
+      status: "published",
+      generationStep: "collecting",
+    });
+
+    const generate = vi.fn(async () => ({ title: "T", body: "B" }));
+    const result = await generateDraftForPiece(piece.id, tenant.id, { database: db, generate });
+    expect(result.ok).toBe(false);
+    expect(generate).not.toHaveBeenCalled();
+
+    const [after] = await db.select().from(contentPieces).where(eq(contentPieces.id, piece.id));
+    expect(after.generationStep).toBeNull();
+    expect(after.status).toBe("published");
+  });
+
+  it("clears a pre-set step when the body was hand-edited", async () => {
+    const tenant = await seedTenant();
+    const piece = await seedPiece(tenant.id, {
+      bodyEditedAt: new Date(),
+      generationStep: "collecting",
+    });
+
+    const generate = vi.fn(async () => ({ title: "T", body: "B" }));
+    const result = await generateDraftForPiece(piece.id, tenant.id, { database: db, generate });
+    expect(result.ok).toBe(false);
+    expect(generate).not.toHaveBeenCalled();
+
+    const [after] = await db.select().from(contentPieces).where(eq(contentPieces.id, piece.id));
+    expect(after.generationStep).toBeNull();
+    expect(after.body).toBe("SCAFFOLD BODY");
+  });
+
   it("writes the generated draft and promotes the piece to draft", async () => {
     const tenant = await seedTenant();
     const { piece } = await seedPieceWithBrief(tenant.id);

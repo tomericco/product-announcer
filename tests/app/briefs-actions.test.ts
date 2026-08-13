@@ -169,7 +169,7 @@ describe("acceptBrief", () => {
     expect(revalidatePath).toHaveBeenCalledWith("/drafts");
   });
 
-  it("leaves generation state empty on a freshly accepted brief", async () => {
+  it("leaves generation unrun but already MARKED on a freshly accepted brief", async () => {
     const tenant = await seedTenant();
     const brief = await seedBrief(tenant.id);
 
@@ -186,6 +186,19 @@ describe("acceptBrief", () => {
     expect(piece.status).toBe("brief");
     expect(piece.generatedAt).toBeNull();
     expect(piece.generationError).toBeNull();
+
+    // But the step is ALREADY set, in the same INSERT that created the piece
+    // and before this action returned — the `after()` callback below it has
+    // not run yet (this file's mock stores callbacks and drains them in
+    // afterEach), and `generateBriefDraft` confirms it.
+    //
+    // This is what closes the accept race. acceptBrief redirects the client
+    // straight to /drafts/[id], and that render used to be a coin flip
+    // against the callback's first step write: losing it meant "Awaiting
+    // generation" plus a live Generate button for the whole run, one click
+    // from a second overlapping generation.
+    expect(piece.generationStep).toBe("collecting");
+    expect(generateBriefDraft).not.toHaveBeenCalled();
   });
 
   it("refuses a brief belonging to another tenant and creates nothing", async () => {
@@ -316,6 +329,11 @@ describe("generateDraft", () => {
     expect(duringFlight.body).toBe("SCAFFOLD BODY");
     expect(duringFlight.generatedAt).toBeNull();
     expect(generateBriefDraft).not.toHaveBeenCalled();
+    // …but the STEP is already written, before the callback has run at all.
+    // This is what removes the race: every surface gates its checklist on
+    // `generationStep !== null`, so the caller's refresh can no longer land
+    // in a window where the run is scheduled but invisible.
+    expect(duringFlight.generationStep).toBe("collecting");
 
     // Draining the scheduled callback is what actually generates — same
     // mechanism acceptBrief uses.
@@ -337,15 +355,18 @@ describe("generateDraft", () => {
     const { piece } = await seedAcceptedPiece(other.id);
 
     // currentTenantId is the first tenant. The id arrives from a URL, so the
-    // scoping inside generateDraftForPiece is the security boundary — the
-    // action never trusts the id alone.
-    await generateDraft(piece.id);
+    // tenant predicate in `queueGeneration`'s WHERE is the security boundary.
+    const result = await generateDraft(piece.id);
+    expect(result.ok).toBe(false);
     await Promise.all(pendingAfterCallbacks.splice(0).map((fn) => fn()));
 
     expect(generateBriefDraft).not.toHaveBeenCalled();
     const [untouched] = await db.select().from(contentPieces).where(eq(contentPieces.id, piece.id));
     expect(untouched.status).toBe("brief");
     expect(untouched.body).toBe("SCAFFOLD BODY");
+    // Never marked. A blind pre-write would have stranded somebody else's
+    // piece displaying a step with nothing behind it.
+    expect(untouched.generationStep).toBeNull();
   });
 
   it("does not regenerate on a second run once the first has landed", async () => {
@@ -357,19 +378,57 @@ describe("generateDraft", () => {
     expect(generateBriefDraft).toHaveBeenCalledTimes(1);
 
     // The re-entrancy case the fire-and-forget action opens up: the button is
-    // clickable again the moment the action returns. Both callers now hide it
-    // for the duration of a run, but the server-side guard is what makes a
-    // click that still gets through harmless — the piece is "draft" by now,
-    // and `generateDraftForPiece` refuses anything not at "brief" before the
-    // generator is ever called.
+    // clickable again the moment the action returns. Both callers hide it for
+    // the duration of a run, but this is the server-side backstop — the piece
+    // is "draft" by now, so `queueGeneration` matches nothing and the work is
+    // never even scheduled.
     const second = await generateDraft(piece.id);
-    expect(second.ok).toBe(true);
-    await Promise.all(pendingAfterCallbacks.splice(0).map((fn) => fn()));
+    expect(second.ok).toBe(false);
+    expect(pendingAfterCallbacks).toHaveLength(0);
 
     expect(generateBriefDraft).toHaveBeenCalledTimes(1);
     const [landed] = await db.select().from(contentPieces).where(eq(contentPieces.id, piece.id));
     expect(landed.status).toBe("draft");
     expect(landed.body).toBe("Mock generated body.");
+    // The refused call must not have re-marked a finished draft as generating.
+    expect(landed.generationStep).toBeNull();
+  });
+
+  /**
+   * The regression this wave exists to kill. Both surfaces drive their
+   * "generating" state — badge, suppressed error, hidden Generate button —
+   * purely from `generationStep`, so a failed run MUST leave it null or the
+   * user who started it is stuck on "Generating…" with no way to retry short
+   * of a full browser reload.
+   */
+  it("leaves a failed generation retryable, with the step cleared", async () => {
+    const tenant = await seedTenant();
+    const { piece } = await seedAcceptedPiece(tenant.id);
+
+    generateBriefDraft.mockRejectedValueOnce(new Error("model unavailable"));
+
+    await generateDraft(piece.id);
+    await Promise.all(pendingAfterCallbacks.splice(0).map((fn) => fn()));
+
+    const [failed] = await db.select().from(contentPieces).where(eq(contentPieces.id, piece.id));
+    // Step cleared -> `generating` is false on every surface -> the failure
+    // badge and error text render, and the Generate/Retry button comes back.
+    expect(failed.generationStep).toBeNull();
+    expect(failed.generationError).toContain("model unavailable");
+    expect(failed.status).toBe("brief");
+    expect(failed.body).toBe("SCAFFOLD BODY");
+
+    // And the retry that button offers actually works — the piece is still
+    // eligible, so a second run is claimed rather than refused.
+    const retry = await generateDraft(piece.id);
+    expect(retry.ok).toBe(true);
+    await Promise.all(pendingAfterCallbacks.splice(0).map((fn) => fn()));
+
+    const [landed] = await db.select().from(contentPieces).where(eq(contentPieces.id, piece.id));
+    expect(landed.status).toBe("draft");
+    expect(landed.body).toBe("Mock generated body.");
+    expect(landed.generationStep).toBeNull();
+    expect(landed.generationError).toBeNull();
   });
 });
 

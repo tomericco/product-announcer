@@ -89,11 +89,6 @@ export function BoardCardItem({ card, members, draggable, onGenerated, onAssigne
     : undefined;
 
   const [starting, startGenerate] = useTransition();
-  // Covers the window between "the action queued the work" and "a board
-  // refetch can see `generationStep`": `generateDraft` returns before
-  // `generateDraftForPiece` has written its first step, so `onGenerated()`
-  // can land on a row that still reads null.
-  const [startedLocally, setStartedLocally] = useState(false);
   const [assigning, setAssigning] = useState(false);
   const hydrated = useHydrated();
 
@@ -103,18 +98,31 @@ export function BoardCardItem({ card, members, draggable, onGenerated, onAssigne
   // model call, deliberately), so it describes a previous attempt's worst
   // case, not the current one. Badging or printing it as a landed failure
   // beside a live checklist reported a running generation as broken.
-  const generating = card.status === "brief" && (card.generationStep !== null || startedLocally);
+  //
+  // Server state ONLY. This briefly also OR'd in a local "I just started one"
+  // flag to cover the gap before the first step write landed; because nothing
+  // ever reset it, a FAILED generation left the card stuck on "Generating…"
+  // with its real error suppressed and no Generate button, recoverable only by
+  // a full browser reload (router.refresh() keeps client state — the card
+  // never remounts). `queueGeneration` now writes the step before the action
+  // returns, so there is no gap left to cover and no flag to get stuck.
+  const generating = card.status === "brief" && card.generationStep !== null;
 
   function handleGenerate() {
     startGenerate(async () => {
-      await generateDraft(card.id);
-      // "Started", not "done". `generateDraft` is fire-and-forget now — it
-      // returns as soon as the work is queued, so there is no outcome to
-      // report here and no error to toast. The checklist below reports both.
-      setStartedLocally(true);
+      const result = await generateDraft(card.id);
+      // A refusal is knowable synchronously — `queueGeneration` checks
+      // eligibility in the same statement that claims the piece.
+      if (!result.ok) {
+        toast.error(result.error);
+        return;
+      }
+      // "Started", not "done". `generateDraft` is fire-and-forget: it returns
+      // as soon as the work is queued, so there is no completion to report
+      // here. The checklist reports that, and the failure too.
       toast.success("Generation started");
-      // Picks up `generationStep` so the card renders the checklist from
-      // server state rather than from `startedLocally` alone.
+      // The step is already written, so this refetch reliably sees it and the
+      // card swaps the button for the checklist.
       onGenerated();
     });
   }
@@ -205,9 +213,8 @@ export function BoardCardItem({ card, members, draggable, onGenerated, onAssigne
           {/* Only while a generation is actually in flight — a brief that
               hasn't been generated yet (generationStep null, no error) shows
               just the "Awaiting generation" badge above, not a half-lit
-              checklist. `startedLocally` folds in the run this card just
-              kicked off, whose first step write may not have landed before
-              onGenerated() refetched the board. */}
+              checklist. A run this card just kicked off is already covered:
+              the step is written before the action returns. */}
           {generating && <GenerationChecklist contentPieceId={card.id} />}
 
           <Select

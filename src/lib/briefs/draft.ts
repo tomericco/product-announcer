@@ -142,6 +142,65 @@ async function setStep(
 }
 
 /**
+ * The step a piece carries between "generation was scheduled" and
+ * "`generateDraftForPiece` actually started running". It is the first real
+ * step, not a synthetic one, so the checklist renders it exactly as it would
+ * a moment later.
+ */
+export const GENERATION_QUEUED_STEP: DraftStepKey = "collecting";
+
+/**
+ * Marks a piece as generating BEFORE the work is scheduled, so the server
+ * state is already true by the time the scheduling action returns.
+ *
+ * Without this there is a window — the whole of it a coin flip — between an
+ * action returning and `generateDraftForPiece` writing its first step inside
+ * `after()`. Any render that lands in that window reads `generationStep` as
+ * null and shows an ungenerated brief: on `/drafts/[id]` after an accept, that
+ * meant "Awaiting generation" plus a live Generate button for the entire run,
+ * one click away from a second overlapping generation. Closing it here rather
+ * than with a client-side "I just started one" flag is what makes the fix
+ * survive a reload, apply to every surface at once, and keep the narrow
+ * `generationStep !== null` mount gate sufficient.
+ *
+ * The predicates are `generateDraftForPiece`'s own first three guards, and
+ * they are why this is an UPDATE with a WHERE rather than a blind write:
+ *
+ *   - `tenantId` — the security boundary, in the WHERE as always. The id
+ *     arrives from a URL.
+ *   - `status = 'brief'` — the only legitimate generation target.
+ *   - `bodyEditedAt IS NULL` — a hand-edited body is never regenerated.
+ *
+ * A blind write would stamp "collecting" onto a published or hand-edited piece
+ * that `generateDraftForPiece` then refuses without clearing, stranding it
+ * displaying a step nothing is running. Matching zero rows instead means an
+ * ineligible piece is never marked at all, and the caller learns it was
+ * refused synchronously — which is also what lets `generateDraft` report the
+ * refusal to the user again instead of swallowing it into a background log.
+ *
+ * Returns whether the piece was claimed.
+ */
+export async function queueGeneration(
+  contentPieceId: string,
+  tenantId: string,
+  database: Database = defaultDb
+): Promise<boolean> {
+  const queued = await database
+    .update(contentPieces)
+    .set({ generationStep: GENERATION_QUEUED_STEP })
+    .where(
+      and(
+        eq(contentPieces.id, contentPieceId),
+        eq(contentPieces.tenantId, tenantId),
+        eq(contentPieces.status, "brief"),
+        isNull(contentPieces.bodyEditedAt)
+      )
+    )
+    .returning({ id: contentPieces.id });
+  return queued.length > 0;
+}
+
+/**
  * Scans `text` for any of `names` with no adjacent word character on either
  * side, case-insensitively. Used to warn (never to block — see
  * `generateDraftForPiece`) when a generated draft slips a competitor's name
@@ -188,9 +247,9 @@ export function findNamedCompanies(text: string, names: string[]): string[] {
  * because atomic updates are signals, including for drafting.
  *
  * `generationStep` is cleared on EVERY exit. There are eight:
- *   1. piece not found              — returns before the first step write
- *   2. piece not at "brief"         — likewise
- *   3. body hand-edited             — likewise
+ *   1. piece not found              — no row exists to carry a step
+ *   2. piece not at "brief"         — explicit clear (see `queueGeneration`)
+ *   3. body hand-edited             — explicit clear (same reason)
  *   4. no brief linked              — explicit clear ("collecting" is already set)
  *   5. generation/review failure    — cleared in the generationError write
  *   6. success, generic branch      — cleared in the body write
@@ -258,13 +317,24 @@ export async function generateDraftForPiece(
     // also closes a second bug: a retry that throws on a "draft" piece would
     // otherwise write a failure message into a row whose status makes the UI
     // render it as the amber competitor-name warning.
+    //
+    // Clears the step on the way out. These two guards used to return before
+    // any step had been written, so there was nothing to clear — that stopped
+    // being true when `queueGeneration` started marking the piece BEFORE this
+    // function runs. `queueGeneration`'s WHERE already refuses an ineligible
+    // piece, so in practice it never marks one that lands here; this covers
+    // the narrow case where the piece changed status (a publish, a reject)
+    // between that write and this read, and the standing invariant that every
+    // exit clears the step is worth holding literally rather than by argument.
     if (piece.status !== "brief") {
+      await setStep(database, contentPieceId, null);
       return { ok: false, error: `This piece is not awaiting generation (status: ${piece.status}).` };
     }
 
     // Must happen before the generator is ever invoked — a retry must never
     // clobber words a human already typed.
     if (piece.bodyEditedAt) {
+      await setStep(database, contentPieceId, null);
       return { ok: false, error: "This draft has been edited by hand." };
     }
 
