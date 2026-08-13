@@ -14,7 +14,7 @@ import {
 } from "@/components/ui/dialog";
 import { groupByMonth } from "@/lib/group-by-month";
 import { AtomicUpdateCard } from "./atomic-update-card";
-import { bulkHideAtomicUpdates, bulkDeleteAtomicUpdates } from "./actions";
+import { bulkHideAtomicUpdates, bulkDeleteAtomicUpdates } from "../atomic-updates/actions";
 import type { AtomicUpdateRow } from "@/lib/atomic-updates/list";
 import type { ImportRepo } from "@/lib/change-events/list";
 

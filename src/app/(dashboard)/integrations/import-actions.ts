@@ -117,8 +117,7 @@ export async function importCommits(input: {
 
   // Imported commits can resolve straight into atomic updates, and the
   // trigger now lives on /change-events — revalidate both surfaces.
-  revalidatePath("/atomic-updates");
-  revalidatePath("/change-events");
+  revalidatePath("/company");
   return result;
 }
 
@@ -199,8 +198,7 @@ export async function importPullRequests(input: {
 }): Promise<{ importedCount: number }> {
   const session = await requireSession();
   const result = await importSelectedPullRequests({ tenantId: session.user.tenantId, selections: input.selections });
-  revalidatePath("/atomic-updates");
-  revalidatePath("/change-events");
+  revalidatePath("/company");
   return result;
 }
 
@@ -216,8 +214,7 @@ export async function createAtomicUpdateFromCommits(input: {
     userId: session.user.id,
     selections: input.selections,
   });
-  revalidatePath("/atomic-updates");
-  revalidatePath("/change-events");
+  revalidatePath("/company");
   return result;
 }
 
@@ -230,8 +227,7 @@ export async function createAtomicUpdateFromPullRequests(input: {
     userId: session.user.id,
     selections: input.selections,
   });
-  revalidatePath("/atomic-updates");
-  revalidatePath("/change-events");
+  revalidatePath("/company");
   return result;
 }
 
@@ -250,8 +246,7 @@ export async function createAtomicUpdateFromTasks(input: {
     { tenantId: session.user.tenantId, userId: session.user.id, selections: input.selections },
     getBody
   );
-  revalidatePath("/atomic-updates");
-  revalidatePath("/change-events");
+  revalidatePath("/company");
   return result;
 }
 
@@ -269,8 +264,7 @@ export async function addCommitsToAtomicUpdate(input: {
     atomicUpdateId: input.atomicUpdateId,
     selections: input.selections,
   });
-  revalidatePath("/atomic-updates");
-  revalidatePath("/change-events");
+  revalidatePath("/company");
   return result;
 }
 
@@ -285,8 +279,7 @@ export async function addPullRequestsToAtomicUpdate(input: {
     atomicUpdateId: input.atomicUpdateId,
     selections: input.selections,
   });
-  revalidatePath("/atomic-updates");
-  revalidatePath("/change-events");
+  revalidatePath("/company");
   return result;
 }
 
@@ -308,8 +301,7 @@ export async function addTasksToAtomicUpdate(input: {
     },
     getBody
   );
-  revalidatePath("/atomic-updates");
-  revalidatePath("/change-events");
+  revalidatePath("/company");
   return result;
 }
 
@@ -410,7 +402,6 @@ export async function importTasks(input: {
     getBody
   );
 
-  revalidatePath("/change-events");
-  revalidatePath("/atomic-updates");
+  revalidatePath("/company");
   return { importedCount };
 }

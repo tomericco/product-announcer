@@ -10,10 +10,10 @@ import { requireSession } from "@/lib/workspace/session";
 import { openAtomicUpdatesForReassign } from "@/lib/change-events/reassign";
 import { listChangeEvents, listImportRepos } from "./actions";
 import type { ChangeEventFilters } from "@/lib/change-events/list";
-import { isNotionConnected } from "./import-actions";
-import { ChangeEventsFilters } from "./change-events-filters";
-import { ChangeEventsList } from "./change-events-list";
-import { ImportDialog } from "./import-dialog";
+import { isNotionConnected } from "../integrations/import-actions";
+import { ChangeEventsFilters } from "../company/change-events-filters";
+import { ChangeEventsList } from "../company/change-events-list";
+import { ImportDialog } from "../integrations/import-dialog";
 
 const TYPE_VALUES = ["commit", "pull_request", "task"] as const;
 const PROVIDER_VALUES = ["github", "notion"] as const;

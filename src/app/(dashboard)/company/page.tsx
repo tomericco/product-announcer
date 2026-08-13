@@ -12,11 +12,27 @@ import { IndustrySelect } from "./industry-select";
 import { NewsToggle } from "./news-toggle";
 import { PersonasEditor } from "./personas-editor";
 import { GuidelinesEditor } from "./guidelines-editor";
+import { ChangeEventsSection } from "./change-events-section";
+import { AtomicUpdatesSection } from "./atomic-updates-section";
 import { ToastForm } from "../settings/toast-form";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
-export default async function CompanyPage() {
+/**
+ * Reading `searchParams` (a Next.js 16 async Server Component prop, per
+ * `node_modules/next/dist/docs/01-app/01-getting-started/03-layouts-and-pages.md`)
+ * opts this page into dynamic rendering, which both new sections below rely
+ * on: `ChangeEventsSection`/`AtomicUpdatesSection` filter on it, and their
+ * client-side filter bars (`ChangeEventsFilters`/`AtomicUpdatesFilters`) call
+ * `useSearchParams()`, which needs the route to already be dynamic rather
+ * than statically prerendered.
+ */
+export default async function CompanyPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
+}) {
+  const params = await searchParams;
   const session = await requireSession();
   const brandProfile = await getOrCreateCompanyProfile(session.user.tenantId);
   const competitors = await listCompetitors(session.user.tenantId);
@@ -175,6 +191,37 @@ export default async function CompanyPage() {
               Save
             </Button>
           </ToastForm>
+        </CardContent>
+      </Card>
+
+      {/* Absorbed from the standalone /change-events and /atomic-updates
+          pages (curation + bulk actions half; the view half moved into the
+          Signals evidence drawer). Both routes still exist and still work
+          until they're deleted — these sections reuse the same components,
+          re-pointed here, rather than duplicating them. */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Change events</CardTitle>
+          <CardDescription>
+            Commits, pull requests, and tasks the resolver hasn&apos;t grouped into an atomic update yet. An
+            ungrouped event has no atomic update, so it has no signal — this is the only place to reach it.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <ChangeEventsSection tenantId={session.user.tenantId} searchParams={params} />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Atomic updates</CardTitle>
+          <CardDescription>
+            Every atomic update ever produced. Unlike the Signals feed, this isn&apos;t limited to the last 60 days
+            — it&apos;s the only place to reach one older than that.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <AtomicUpdatesSection tenantId={session.user.tenantId} searchParams={params} />
         </CardContent>
       </Card>
     </div>

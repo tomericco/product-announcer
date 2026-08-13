@@ -1,19 +1,19 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { db } from "../../src/db";
-import { tenants, notionConnections, changeEvents } from "../../src/db/schema";
-import { encryptSecret } from "../../src/lib/credentials/encryption";
+import { db } from "../../../src/db";
+import { tenants, notionConnections, changeEvents } from "../../../src/db/schema";
+import { encryptSecret } from "../../../src/lib/credentials/encryption";
 
 const TENANT = "Import Tasks Actions Test Tenant";
 let currentTenantId = "";
 process.env.CREDENTIALS_ENCRYPTION_KEY = process.env.CREDENTIALS_ENCRYPTION_KEY ?? "a".repeat(64);
 
-vi.mock("../../src/lib/workspace/session", () => ({
+vi.mock("../../../src/lib/workspace/session", () => ({
   requireSession: vi.fn(async () => ({ user: { tenantId: currentTenantId, id: "user-1" } })),
 }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
-vi.mock("../../src/lib/integrations/notion/client", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../src/lib/integrations/notion/client")>();
+vi.mock("../../../src/lib/integrations/notion/client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../src/lib/integrations/notion/client")>();
   return {
     ...actual,
     resolveDataSourceId: vi.fn(async () => "ds-1"),
@@ -24,7 +24,7 @@ vi.mock("../../src/lib/integrations/notion/client", async (importOriginal) => {
     getPageBodyText: vi.fn(async () => "Body detail."),
   };
 });
-vi.mock("../../src/lib/change-events/import-notion-tasks", () => ({
+vi.mock("../../../src/lib/change-events/import-notion-tasks", () => ({
   importSelectedTasks: vi.fn(async () => ({ importedCount: 0, eventIds: [] })),
 }));
 
@@ -32,8 +32,8 @@ import {
   listImportableTasks,
   importTasks,
   isNotionConnected,
-} from "../../src/app/(dashboard)/change-events/import-actions";
-import { importSelectedTasks } from "../../src/lib/change-events/import-notion-tasks";
+} from "../../../src/app/(dashboard)/integrations/import-actions";
+import { importSelectedTasks } from "../../../src/lib/change-events/import-notion-tasks";
 
 async function seedConnection(overrides: Partial<typeof notionConnections.$inferInsert> = {}) {
   const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning({ id: tenants.id });

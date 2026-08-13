@@ -4,14 +4,14 @@ import { toast } from "sonner";
 import { Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { DisabledHint } from "../_components/disabled-hint";
-import { ImportDialog } from "../change-events/import-dialog";
+import { ImportDialog } from "../integrations/import-dialog";
 import type { ImportRepo } from "@/lib/change-events/list";
 import {
   addCommitsToAtomicUpdate,
   addPullRequestsToAtomicUpdate,
   addTasksToAtomicUpdate,
   type TaskSelection,
-} from "../change-events/import-actions";
+} from "../integrations/import-actions";
 import type { CommitSelection } from "@/lib/change-events/import-commits";
 import type { PullRequestSelection } from "@/lib/change-events/import-pull-requests";
 

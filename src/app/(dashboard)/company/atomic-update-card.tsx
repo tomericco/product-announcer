@@ -35,12 +35,12 @@ import {
   removeEventFromAtomicUpdate,
   setAtomicUpdateCategory,
   setAtomicUpdateSize,
-} from "./actions";
+} from "../atomic-updates/actions";
 import type { AtomicUpdateEvent, AtomicUpdateRow } from "@/lib/atomic-updates/list";
 import type { ImportRepo } from "@/lib/change-events/list";
 import { AddEventPicker } from "./add-event-picker";
 import { SelectionCheckbox } from "../_components/selection-checkbox";
-import { CategoryBadge, CATEGORY_LABEL, SizeBadge } from "./page";
+import { CategoryBadge, CATEGORY_LABEL, SizeBadge } from "./atomic-update-badges";
 
 const SIZE_OPTIONS: Array<"s" | "m" | "l" | "xl"> = ["s", "m", "l", "xl"];
 

@@ -4,6 +4,7 @@ import { db } from "@/db";
 import { repos, tenants, webhookConfigs } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { getGithubApp, listAccessibleRepos, listRepoBranches } from "@/lib/integrations/github/github";
+import { listImportRepos } from "@/lib/change-events/list";
 import { removeRepo } from "./actions";
 import { AddRepoDialog } from "./add-repo-dialog";
 import { RepoBranchSelect } from "./repo-branch-select";
@@ -16,6 +17,8 @@ import { WebflowForm } from "./webflow-form";
 import { NotionForm } from "./notion-form";
 import { LinkedinForm } from "./linkedin-form";
 import { ConnectedIndicator } from "./connected-indicator";
+import { NewAtomicUpdateDialog } from "./new-atomic-update-dialog";
+import { isNotionConnected } from "./import-actions";
 
 const COMING_SOON = ["Customer.io", "Mailchimp", "HubSpot"];
 
@@ -127,10 +130,21 @@ export default async function IntegrationsPage({
     branches: branchesByFullName.get(r.fullName) ?? [],
   }));
 
+  // The manual "New atomic update" import flow lives here now (moved with
+  // the rest of the import subsystem — `import-dialog.tsx`/`import-actions.ts`
+  // — because this is where the connected repos it acts on already live).
+  const [importRepos, notionConnected] = await Promise.all([
+    listImportRepos(session.user.tenantId),
+    isNotionConnected(),
+  ]);
+
   return (
     <div className="space-y-10">
       <section className="space-y-4">
-        <h1 className="font-heading text-3xl leading-[1.15] tracking-[0.015em]">Integrations</h1>
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <h1 className="font-heading text-3xl leading-[1.15] tracking-[0.015em]">Integrations</h1>
+          <NewAtomicUpdateDialog repos={importRepos} notionConnected={notionConnected} />
+        </div>
         <Card>
           <CardHeader className="flex flex-row items-center justify-between gap-2">
             <CardTitle>Webhook</CardTitle>

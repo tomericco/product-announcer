@@ -21,7 +21,7 @@ import {
   DialogFooter,
   DialogClose,
 } from "@/components/ui/dialog";
-import { reassign } from "./actions";
+import { reassign } from "../change-events/actions";
 
 export type ReassignTargetOption = { id: string; title: string };
 

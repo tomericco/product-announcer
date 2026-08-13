@@ -9,10 +9,10 @@ import {
 import { listAtomicUpdates, hasCuratableAtomicUpdates } from "./actions";
 import type { AtomicUpdateListFilters } from "@/lib/atomic-updates/list";
 import { listImportRepos } from "../change-events/actions";
-import { isNotionConnected } from "../change-events/import-actions";
-import { AtomicUpdatesList } from "./atomic-updates-list";
-import { AtomicUpdatesFilters } from "./atomic-updates-filters";
-import { NewAtomicUpdateDialog } from "./new-atomic-update-dialog";
+import { isNotionConnected } from "../integrations/import-actions";
+import { AtomicUpdatesList } from "../company/atomic-updates-list";
+import { AtomicUpdatesFilters } from "../company/atomic-updates-filters";
+import { NewAtomicUpdateDialog } from "../integrations/new-atomic-update-dialog";
 
 const CATEGORY_VALUES = ["new", "improvement", "fix", "announcement"] as const;
 const SIZE_VALUES = ["s", "m", "l", "xl"] as const;
@@ -99,21 +99,4 @@ export default async function AtomicUpdatesPage({
       <AtomicUpdatesList rows={rows} repos={importRepos} notionConnected={notionConnected} />
     </div>
   );
-}
-
-export const CATEGORY_LABEL: Record<string, string> = {
-  new: "New",
-  improvement: "Improvement",
-  fix: "Fix",
-  announcement: "Announcement",
-};
-
-export function CategoryBadge({ category }: { category: string | null }) {
-  if (!category) return null;
-  return <Badge variant="secondary">{CATEGORY_LABEL[category] ?? category}</Badge>;
-}
-
-export function SizeBadge({ size }: { size: string | null }) {
-  if (!size) return null;
-  return <Badge variant="outline">{size.toUpperCase()}</Badge>;
 }

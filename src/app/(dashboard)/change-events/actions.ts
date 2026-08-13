@@ -67,6 +67,11 @@ export async function reassign(formData: FormData): Promise<ReassignResult> {
   }
 
   const result = await reassignChangeEvent({ tenantId, userId, eventId, target, confirmEmptyDeletion });
+  // The reassign control's primary home is now the Company page's ungrouped
+  // queue (this action is invoked from `company/reassign-control.tsx`); the
+  // still-live /change-events route is revalidated too so it doesn't show a
+  // stale row until Task 6 removes it.
+  revalidatePath("/company");
   revalidatePath("/change-events");
   return result;
 }
