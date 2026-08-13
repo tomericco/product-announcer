@@ -3,6 +3,7 @@ import {
   applySelectionChange,
   applyToggleAll,
   retainVisible,
+  reconcileSelection,
 } from "../../src/app/(dashboard)/_components/row-selection";
 
 /**
@@ -81,5 +82,41 @@ describe("retainVisible (reused by useRowSelection to close the stale-selection 
     const selected = new Set(["a", "b"]);
     const result = retainVisible(selected, [{ id: "a" }, { id: "b" }]);
     expect(result).toEqual(new Set(["a", "b"]));
+  });
+});
+
+// `reconcileSelection` is the exact function `useRowSelection`'s effect
+// calls on every `rows` change — its body is nothing but
+// `setSelected((prev) => reconcileSelection(prev, rows))`. It's tested here
+// directly, not just through `retainVisible` above, because a prior version
+// of this task had the effect call `retainVisible` inline, with no exported
+// name for the composition itself: a reviewer deleted that effect entirely
+// and all the (then-existing) tests still passed, since none of them
+// exercised anything the effect actually ran. Testing this exact composition
+// is what makes a regression in the wiring itself — not just in
+// `retainVisible`'s own logic — fail a test.
+describe("reconcileSelection (the reconciliation useRowSelection's effect runs on every `rows` change)", () => {
+  it("drops ids no longer present in rows", () => {
+    const prev = new Set(["a", "b"]);
+    const result = reconcileSelection(prev, [{ id: "a" }]);
+    expect(result).toEqual(new Set(["a"]));
+  });
+
+  it("keeps ids still present in rows", () => {
+    const prev = new Set(["a", "b"]);
+    const result = reconcileSelection(prev, [{ id: "a" }, { id: "b" }]);
+    expect(result).toEqual(new Set(["a", "b"]));
+  });
+
+  it("returns the same Set reference when nothing was dropped", () => {
+    const prev = new Set(["a", "b"]);
+    const result = reconcileSelection(prev, [{ id: "a" }, { id: "b" }, { id: "c" }]);
+    expect(result).toBe(prev);
+  });
+
+  it("returns a new Set reference when something was dropped", () => {
+    const prev = new Set(["a", "b"]);
+    const result = reconcileSelection(prev, [{ id: "a" }]);
+    expect(result).not.toBe(prev);
   });
 });

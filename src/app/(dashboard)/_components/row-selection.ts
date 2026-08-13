@@ -40,3 +40,25 @@ export function applyToggleAll(rows: { id: string }[], checked: boolean): Set<st
 // bug, same fix, one function. Re-exported so `useRowSelection` and its test
 // have a single import for the whole reducer surface.
 export { retainVisible };
+
+/**
+ * The exact reconciliation `useRowSelection`'s effect runs on every `rows`
+ * change. Extracted as its own named export, rather than left inline in the
+ * effect body, specifically so this composition — not just `retainVisible`
+ * in isolation — is what a test exercises directly: with no jsdom, a hook
+ * can't be rendered, so a test can never observe whether the effect actually
+ * calls this. Making the hook's effect nothing but
+ * `setSelected((prev) => reconcileSelection(prev, rows))` shrinks the
+ * untestable surface down to that one line, and puts everything that could
+ * regress — including "does this still call `retainVisible`" — inside a
+ * function a test does call.
+ *
+ * Preserves `prev`'s reference when nothing was dropped, so a `rows` prop
+ * that changes identity without changing membership (a re-render handing
+ * down a new-but-equivalent array) doesn't churn `selected`'s identity and
+ * cause a needless re-render downstream.
+ */
+export function reconcileSelection(prev: Set<string>, rows: { id: string }[]): Set<string> {
+  const next = retainVisible(prev, rows);
+  return next.size === prev.size ? prev : next;
+}

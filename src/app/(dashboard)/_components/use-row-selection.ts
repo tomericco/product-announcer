@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { applySelectionChange, applyToggleAll, retainVisible } from "./row-selection";
+import { applySelectionChange, applyToggleAll, reconcileSelection } from "./row-selection";
 
 /**
  * Row-selection state shared by the Company page's two bulk-action lists —
@@ -32,14 +32,13 @@ export function useRowSelection(rows: { id: string }[]) {
     // (the server-rendered filter result) it must stay synchronized against —
     // the same intentional shape `signals-list.tsx`'s identical effect uses,
     // which is why the newer react-hooks lint rule needs the same suppression
-    // here. Skips the `setSelected` call when nothing was dropped, so an
-    // unrelated re-render that hands down a new-but-equivalent `rows` array
-    // doesn't churn state.
+    // here. All the actual reconciliation logic (including the skip-if-
+    // nothing-dropped optimization) lives in `reconcileSelection`, tested
+    // directly in `tests/app/row-selection.test.ts` — this effect does
+    // nothing but call it, so there's as little unrendered/untested logic
+    // sitting in here as possible.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setSelected((prev) => {
-      const next = retainVisible(prev, rows);
-      return next.size === prev.size ? prev : next;
-    });
+    setSelected((prev) => reconcileSelection(prev, rows));
   }, [rows]);
 
   function onSelectChange(id: string, isSelected: boolean) {
