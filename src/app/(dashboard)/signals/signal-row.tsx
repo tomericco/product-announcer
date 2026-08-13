@@ -4,6 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import type { Signal } from "@/db/schema";
+import { EvidenceDrawer } from "./evidence-drawer";
 
 const KIND_LABEL: Record<Signal["kind"], string> = {
   shipped_work: "Shipped work",
@@ -149,6 +150,10 @@ export function SignalRow({
         <span className="text-xs text-muted-foreground">{DATE_FORMAT.format(row.occurredAt)}</span>
         <ScoreBadge score={row.relevanceScore} rationale={row.relevanceRationale} />
         {row.status !== "new" && <Badge variant="outline">{STATUS_LABEL[row.status]}</Badge>}
+        {/* Only `shipped_work` signals mirror an atomic update — every other
+            kind has no evidence behind it, so the control would open a
+            drawer that can only ever render the empty state. */}
+        {row.kind === "shipped_work" && <EvidenceDrawer signalId={row.id} title={row.title} />}
       </div>
     </div>
   );
