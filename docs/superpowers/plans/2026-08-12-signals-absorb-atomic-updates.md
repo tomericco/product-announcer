@@ -8,15 +8,21 @@
 
 **Tech Stack:** Next.js 16.2.10 App Router, Drizzle ORM 0.45.2, Postgres, Base UI (`@base-ui/react/dialog`), Vitest.
 
-## Dependency — Task 6 is blocked on spec 11
+## Dependency on spec 11 — RESOLVED 2026-08-13
 
-Two components in the dying folders were not accounted for in spec 10.
+**Spec 11 ([Unified Drafting](../specs/2026-08-12-unified-drafting-design.md)) is implemented.** Task 6's blocker is gone.
 
-1. **`atomic-updates/draft-release-dialog.tsx`** posts to `/api/atomic-updates/draft` — the "select shipped work → compose a product update" flow. It **retires**, and its composition logic moves into the unified drafting path: see [Unified Drafting](../specs/2026-08-12-unified-drafting-design.md), spec 11. Atomic updates get drafted like any other signal, with `brief.contentType === "product_update"` selecting the release composition inside `generateDraftForPiece`.
+`atomic-updates/draft-release-dialog.tsx` and `/api/atomic-updates/draft` were **already deleted by spec 11's Task 6** — drafting a product update now runs through `generateDraftForPiece`, forking on `brief.contentType === "product_update"`. So this plan no longer has to delete them, and the Atomic updates tab currently has no compose button. Do not go looking for one.
 
-   **Tasks 1–5 here do not depend on that. Task 6 does** — deleting the tab before spec 11 lands would remove the only way to draft a product update from shipped work. Do not run Task 6 until spec 11 is implemented.
+**`change-events/import-dialog.tsx` + `import-actions.ts`** — the manual GitHub/Notion import subsystem, rendered by *both* dying pages via `listImportRepos`. The spec said repo import "stays where it is" under Integrations; that was wrong, it lives in the change-events folder today. Task 5 gives it an explicit home. No decision needed.
 
-2. **`change-events/import-dialog.tsx` + `import-actions.ts`** — the manual GitHub/Notion import subsystem, rendered by *both* dying pages via `listImportRepos`. The spec said repo import "stays where it is" under Integrations; that was wrong, it lives in the change-events folder today. Task 5 gives it an explicit home. No decision needed.
+## Pre-flight corrections, 2026-08-13
+
+Checked against the live code before execution. Three things in this plan were wrong:
+
+1. **`revalidatePath("/atomic-updates")` appears THREE times** in `src/app/(dashboard)/settings/actions.ts` — lines 45, 75 **and 90**. Task 6 below said two. Retarget all three.
+2. **`atomic-updates/new-atomic-update-dialog.tsx` was missing from Task 5's component list.** It is not a stray: it is the wrapper that hosts `ImportDialog` and imports from `change-events/import-actions`, so it is central to the import relocation, not incidental to it.
+3. `draft-release-dialog.tsx` is already gone (see above); ignore any reference to it below.
 
 ## Global Constraints
 
@@ -720,7 +726,7 @@ The all-time ledger: `listAtomicUpdates(tenantId, filters)` with the `category`,
 
 This section is deliberately **not** windowed to 60 days — it is the only surface where an atomic update older than `SIGNAL_WINDOW_DAYS` is reachable, because `syncShippedWorkSignals` never created a signal for it.
 
-Components to move rather than rewrite, from `src/app/(dashboard)/atomic-updates/`: `atomic-update-card.tsx`, `atomic-updates-filters.tsx`, `atomic-updates-list.tsx`, `add-event-picker.tsx`. Re-point their action imports at the Task 2 wrapper.
+Components to move rather than rewrite, from `src/app/(dashboard)/atomic-updates/`: `atomic-update-card.tsx`, `atomic-updates-filters.tsx`, `atomic-updates-list.tsx`, `add-event-picker.tsx`, and **`new-atomic-update-dialog.tsx`** (see pre-flight correction 2 — it hosts `ImportDialog`, so it moves with the import subsystem in step 2b, not with the ledger). Re-point their action imports at the Task 2 wrapper.
 
 - [ ] **Step 2b: Relocate the manual import subsystem to Integrations**
 
@@ -778,7 +784,7 @@ Delete the `/change-events` (line 22) and `/atomic-updates` (line 27) entries fr
 
 - [ ] **Step 3: Retarget the stale revalidate calls**
 
-`src/app/(dashboard)/settings/actions.ts` lines 45 and 75 call `revalidatePath("/atomic-updates")`. Both become `revalidatePath("/company")`.
+`src/app/(dashboard)/settings/actions.ts` calls `revalidatePath("/atomic-updates")` at lines **45, 75 and 90 — three, not two** (see pre-flight correction 1). All three become `revalidatePath("/company")`. Grep rather than trusting these line numbers; they drift.
 
 - [ ] **Step 4: Replace the route folders with redirect stubs**
 
