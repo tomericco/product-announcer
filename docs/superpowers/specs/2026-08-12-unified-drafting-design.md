@@ -56,6 +56,21 @@ Only `shipped_work` signals supply atomic updates to the composition. Other
 evidence on the same brief still reaches the prompt as context, through the
 existing `BriefEvidenceForPrompt` list. Nothing is silently dropped.
 
+### The brief's commission does not steer a release draft
+
+Decided 2026-08-13, after review raised it. On the release branch the brief's
+`angle`, `whyNow` and `keyPoints` do **not** reach the prompt, and the generated
+title overwrites the brief's.
+
+A product update is composed from what actually shipped; the brief is the trigger
+and the signal selection, not the commission. This matches the behaviour of the
+changelog path being retired, and it is the deliberate difference from blog and
+social briefs, where the commission is the whole input.
+
+The practical consequence, stated so nobody rediscovers it as a bug: editing a
+product-update brief's angle before accepting it changes nothing about the draft.
+Revisit only if authors start expecting otherwise.
+
 ### The atomic updates are re-derived, never trusted
 
 The retiring API route re-derived the tenant's open atomic updates server-side
@@ -72,12 +87,34 @@ piece until it made one.
 
 The brief path already created the piece at accept time. So the function splits:
 the piece-creating half is dropped, and what remains links a given set of atomic
-updates to an **existing** `contentPieceId` and flips them to `released`, in one
-transaction.
+updates to an **existing** `contentPieceId`, in one transaction.
 
-This must stay transactional with the draft write. A piece saved with a body but
-with its atomic updates left `open` would offer the same shipped work to the next
-compose run, producing a duplicate.
+### Linking does not release — corrected 2026-08-13
+
+An earlier draft of this spec said the link should also flip the atomic updates
+to `released`. **It should not**, and the code was changed back.
+
+`catch-up.ts:56` states the invariant the rest of the change-events subsystem
+holds: *"Stays `status = 'open'`; publish still owns the `released` transition."*
+Releasing at draft time breaks it — an editor can no longer regroup or delete the
+change events behind a piece that was merely drafted, and `reassign.ts`'s refusal
+message calls an unpublished draft "published".
+
+The flip also bought nothing. Duplicate-compose is prevented by `contentPieceId`
+alone, because every compose-candidate query — `getOpenAtomicUpdates`,
+`computeReleaseDelta`, and the release branch's own derivation — requires **both**
+`status = 'open'` **and** `contentPieceId IS NULL`. Setting the link already
+removes the row from every one of them.
+
+What the link *must* still do is refuse to steal: its WHERE carries
+`status = 'open' AND contentPieceId IS NULL`, so an atomic update already claimed
+by another piece is dropped rather than moved. Every other writer in the
+subsystem does the same; this one must not be the exception. The window is real —
+derivation and link are separated by a full generate-and-review round trip.
+
+The link must stay transactional with the draft body write. A piece saved with a
+body while its atomic updates stay unlinked would offer the same shipped work to
+the next compose run, producing a duplicate.
 
 ## Progress for every content type
 
