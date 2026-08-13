@@ -25,7 +25,7 @@ import { groupByMonth } from "@/lib/group-by-month";
 import { ChangeEventRow } from "./change-event-row";
 import type { ReassignTargetOption } from "./reassign-control";
 import type { ChangeEventRow as ChangeEventRowData } from "@/lib/change-events/list";
-import { bulkReassignChangeEvents, bulkDeleteChangeEvents } from "../change-events/actions";
+import { bulkReassignChangeEvents, bulkDeleteChangeEvents } from "./change-events-actions";
 
 /**
  * Client wrapper around the change-events list that owns row selection and the

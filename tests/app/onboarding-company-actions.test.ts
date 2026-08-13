@@ -126,7 +126,7 @@ describe("bootstrapOnboardingCompany", () => {
     await bootstrapOnboardingCompany(form);
 
     expect(bootstrap).not.toHaveBeenCalled();
-    expect(redirect).toHaveBeenCalledWith("/atomic-updates");
+    expect(redirect).toHaveBeenCalledWith("/briefs");
     const [profile] = await db.select().from(companyProfiles).where(eq(companyProfiles.tenantId, tenant.id));
     expect(profile).toBeUndefined();
   });
@@ -159,7 +159,7 @@ describe("saveOnboardingCompany", () => {
 
     await saveOnboardingCompany(form);
 
-    expect(redirect).toHaveBeenCalledWith("/atomic-updates");
+    expect(redirect).toHaveBeenCalledWith("/briefs");
     const [profile] = await db.select().from(companyProfiles).where(eq(companyProfiles.tenantId, tenant.id));
     expect(profile).toBeUndefined();
   });
@@ -221,7 +221,7 @@ describe("importBrandStyle", () => {
     await importBrandStyle(form);
 
     expect(importBrandStyleForTenant).not.toHaveBeenCalled();
-    expect(redirect).toHaveBeenCalledWith("/atomic-updates");
+    expect(redirect).toHaveBeenCalledWith("/briefs");
     expect(await storedStep(tenant.id)).toBe(2);
   });
 });

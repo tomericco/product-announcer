@@ -14,7 +14,7 @@ export default async function OnboardingPage({
 }) {
   const session = await requireSession();
   const { completed, storedStep } = await getOnboardingState(session.user.tenantId);
-  if (completed) redirect("/atomic-updates");
+  if (completed) redirect("/briefs");
 
   // GitHub's connect/setup routes land here with ?github_connect=error|success.
   // Carry that query string through to the step page — otherwise a real signal

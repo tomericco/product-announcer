@@ -42,7 +42,7 @@ export async function addRepo(formData: FormData) {
   await addSelectedRepos(session.user.tenantId, tenant.githubInstallationId, [{ fullName, branch }]);
 
   revalidatePath("/integrations");
-  revalidatePath("/atomic-updates");
+  revalidatePath("/company");
 }
 
 export async function updateRepoBranch(formData: FormData) {
@@ -72,7 +72,7 @@ export async function updateRepoBranch(formData: FormData) {
     .where(and(eq(repos.id, repoId), eq(repos.tenantId, session.user.tenantId)));
 
   revalidatePath("/integrations");
-  revalidatePath("/atomic-updates");
+  revalidatePath("/company");
 }
 
 export async function saveWorkspaceSchedule(formData: FormData) {
@@ -87,7 +87,7 @@ export async function saveWorkspaceSchedule(formData: FormData) {
     .onConflictDoUpdate({ target: scheduleConfigs.tenantId, set: { hour } });
 
   revalidatePath("/settings");
-  revalidatePath("/atomic-updates");
+  revalidatePath("/company");
 }
 
 export async function generateInviteLink(): Promise<{ url: string; expiresAt: string }> {

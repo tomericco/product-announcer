@@ -70,7 +70,7 @@ export default async function DraftsPage() {
             accept a brief.
           </EmptyStateDescription>
           <EmptyStateActions>
-            <Button render={<Link href="/atomic-updates" />}>
+            <Button render={<Link href="/company" />}>
               Review atomic updates
               <ArrowRight />
             </Button>

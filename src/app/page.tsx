@@ -5,5 +5,5 @@ import { isOnboardingComplete } from "@/lib/workspace/onboarding";
 export default async function HomePage() {
   const session = await requireSession();
   const complete = await isOnboardingComplete(session.user.tenantId);
-  redirect(complete ? "/atomic-updates" : "/onboarding");
+  redirect(complete ? "/briefs" : "/onboarding");
 }

@@ -57,16 +57,17 @@ type FilterState = {
  * /company must preserve the OTHER section's query params on every push, and
  * the two sections' filters must not collide under the same key — hence
  * reading `useSearchParams()` as the base to mutate rather than starting
- * empty, and prefixing this bar's own keys. Both default to the values that
- * reproduce the original /change-events-only behavior exactly, so the
- * standalone route needs no prop changes.
+ * empty, and prefixing this bar's own keys. The standalone /change-events
+ * route these defaults used to reproduce is retired (Task 6); every
+ * remaining caller passes `basePath` explicitly, so these just avoid an
+ * undefined navigation if that ever stops being true.
  */
 export function ChangeEventsFilters({
   type,
   provider,
   assignment,
   showHidden,
-  basePath = "/change-events",
+  basePath = "/company",
   paramPrefix = "",
   showAssignmentFilter = true,
 }: FilterState & { basePath?: string; paramPrefix?: string; showAssignmentFilter?: boolean }) {

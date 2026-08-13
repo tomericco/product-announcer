@@ -35,7 +35,7 @@ import {
   removeEventFromAtomicUpdate,
   setAtomicUpdateCategory,
   setAtomicUpdateSize,
-} from "../atomic-updates/actions";
+} from "./atomic-updates-actions";
 import type { AtomicUpdateEvent, AtomicUpdateRow } from "@/lib/atomic-updates/list";
 import type { ImportRepo } from "@/lib/change-events/list";
 import { AddEventPicker } from "./add-event-picker";

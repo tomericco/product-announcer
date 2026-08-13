@@ -23,7 +23,7 @@ vi.mock("../../src/lib/change-events/reassign", () => ({
   reassignChangeEvent: vi.fn(async () => ({ ok: true })),
 }));
 
-import { reassign } from "../../src/app/(dashboard)/change-events/actions";
+import { reassign } from "../../src/app/(dashboard)/company/change-events-actions";
 import { reassignChangeEvent } from "../../src/lib/change-events/reassign";
 import { revalidatePath } from "next/cache";
 
@@ -57,7 +57,7 @@ describe("reassign", () => {
       confirmEmptyDeletion: false,
     });
     expect(result).toEqual({ ok: true });
-    expect(revalidatePath).toHaveBeenCalledWith("/change-events");
+    expect(revalidatePath).toHaveBeenCalledWith("/company");
   });
 
   it("parses a 'detach' target with no atomicUpdateId", async () => {

@@ -52,14 +52,16 @@ type FilterState = {
  * change-events section, both of which use "showHidden" as a concept, so
  * pushes must merge against the CURRENT search params (not start empty) and
  * this bar's own keys must be prefixed to avoid colliding with the other
- * section's. Both default to the values that reproduce the original
- * /atomic-updates-only behavior exactly.
+ * section's. The standalone /atomic-updates route these defaults used to
+ * reproduce is retired (Task 6); every remaining caller passes `basePath`
+ * explicitly, so these just avoid an undefined navigation if that ever stops
+ * being true.
  */
 export function AtomicUpdatesFilters({
   category,
   size,
   showHidden,
-  basePath = "/atomic-updates",
+  basePath = "/company",
   paramPrefix = "",
 }: FilterState & { basePath?: string; paramPrefix?: string }) {
   const router = useRouter();

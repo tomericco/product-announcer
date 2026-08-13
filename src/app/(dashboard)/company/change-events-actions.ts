@@ -3,13 +3,15 @@
 import { revalidatePath } from "next/cache";
 import { requireSession } from "@/lib/workspace/session";
 import * as list from "@/lib/change-events/list";
-import type { ChangeEventFilters } from "@/lib/change-events/list";
 import { reassignChangeEvent, type ReassignResult, type ReassignTarget } from "@/lib/change-events/reassign";
 
-export async function listChangeEvents(filters: ChangeEventFilters) {
-  const session = await requireSession();
-  return list.listChangeEvents(session.user.tenantId, filters);
-}
+// Mutations behind the Company page's ungrouped-queue section (moved here
+// from the retired standalone /change-events route in Task 6 of the
+// signals-absorb-atomic-updates spec). `listChangeEvents` and
+// `listImportRepos` didn't come with them — every surviving caller
+// (`change-events-section.tsx`, the /integrations page) already reads
+// `@/lib/change-events/list` directly rather than through this "use server"
+// wrapper, so re-exporting the read paths here would just be dead code.
 
 function parseTarget(formData: FormData): ReassignTarget | null {
   const targetKind = formData.get("targetKind");
@@ -67,12 +69,7 @@ export async function reassign(formData: FormData): Promise<ReassignResult> {
   }
 
   const result = await reassignChangeEvent({ tenantId, userId, eventId, target, confirmEmptyDeletion });
-  // The reassign control's primary home is now the Company page's ungrouped
-  // queue (this action is invoked from `company/reassign-control.tsx`); the
-  // still-live /change-events route is revalidated too so it doesn't show a
-  // stale row until Task 6 removes it.
   revalidatePath("/company");
-  revalidatePath("/change-events");
   return result;
 }
 
@@ -96,12 +93,4 @@ export async function bulkDeleteChangeEvents(eventIds: string[]): Promise<{ coun
   const result = await list.bulkDeleteChangeEvents(session.user.tenantId, eventIds);
   revalidatePath("/company");
   return result;
-}
-
-// Kept in this "use server" module (not queried directly in page.tsx) so the
-// page component's exports stay importable from client components without
-// dragging server-only deps like `db` into the client bundle.
-export async function listImportRepos() {
-  const session = await requireSession();
-  return list.listImportRepos(session.user.tenantId);
 }

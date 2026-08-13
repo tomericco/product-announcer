@@ -3,18 +3,15 @@
 import { revalidatePath } from "next/cache";
 import { requireSession } from "@/lib/workspace/session";
 import * as curation from "@/lib/atomic-updates/list";
-import type { AtomicUpdateListFilters } from "@/lib/atomic-updates/list";
 import type { ReassignResult } from "@/lib/change-events/reassign";
 
-export async function listAtomicUpdates(filters: AtomicUpdateListFilters = {}) {
-  const session = await requireSession();
-  return curation.listAtomicUpdates(session.user.tenantId, filters);
-}
-
-export async function hasCuratableAtomicUpdates(): Promise<boolean> {
-  const session = await requireSession();
-  return curation.hasCuratableAtomicUpdates(session.user.tenantId);
-}
+// Mutations behind the Company page's "Atomic updates" section (moved here
+// from the retired standalone /atomic-updates route in Task 6 of the
+// signals-absorb-atomic-updates spec). `listAtomicUpdates` and
+// `hasCuratableAtomicUpdates` didn't come with them — every surviving caller
+// (`atomic-updates-section.tsx`, the /integrations page) already reads
+// `@/lib/atomic-updates/list` directly rather than through this "use server"
+// wrapper, so re-exporting the read paths here would just be dead code.
 
 export async function hideAtomicUpdate(id: string): Promise<{ ok: boolean }> {
   const session = await requireSession();

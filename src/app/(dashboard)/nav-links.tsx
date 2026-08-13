@@ -3,7 +3,6 @@
 import { GuardedLink } from "./unsaved-changes";
 import { usePathname } from "next/navigation";
 import {
-  Activity,
   Building2,
   CalendarDays,
   Columns3,
@@ -12,19 +11,16 @@ import {
   Inbox,
   Plug,
   Radar,
-  ToyBrick,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 const NAV = [
-  { href: "/change-events", label: "Change events", icon: Activity },
   { href: "/signals", label: "Signals", icon: Radar },
   { href: "/briefs", label: "Briefs", icon: Inbox },
   { href: "/board", label: "Board", icon: Columns3 },
   { href: "/calendar", label: "Calendar", icon: CalendarDays },
-  { href: "/atomic-updates", label: "Atomic updates", icon: ToyBrick },
   { href: "/drafts", label: "Drafts", icon: FilePen },
   { href: "/history", label: "Release history", icon: History },
   { href: "/integrations", label: "Integrations", icon: Plug },
