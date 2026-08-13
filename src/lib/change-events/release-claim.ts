@@ -106,8 +106,9 @@ export async function claimReleaseFromAtomicUpdates(
 }
 
 /**
- * Links already-derived atomic updates to an EXISTING content piece and closes
- * them (`status = 'released'`), tenant-scoped.
+ * Links already-derived atomic updates to an EXISTING content piece,
+ * tenant-scoped. Sets `contentPieceId` and NOTHING else — `status` stays
+ * `open` until the piece is actually published.
  *
  * The half of `claimReleaseFromAtomicUpdates` that survives the unified
  * drafting path. That function had to CREATE the piece because the
@@ -116,11 +117,22 @@ export async function claimReleaseFromAtomicUpdates(
  * in place until its last caller — `compose-draft.ts`, still wired to the live
  * API route — retires.)
  *
+ * This deliberately does NOT flip `status` to `released`, though drafting is
+ * the point at which the work is spoken for. Publish owns that transition
+ * (`catch-up.ts:56`; `markReleaseAtomicUpdatesReleased` below, called from
+ * `approveDraft`/`publishDraft`), and the flip bought nothing the link had not
+ * already bought: every compose-candidate query requires BOTH `status = 'open'`
+ * AND `contentPieceId IS NULL` (see `getOpenAtomicUpdates` and
+ * `computeReleaseDelta`), so `contentPieceId` alone already prevents the
+ * duplicate compose. What it cost was visible — an editor could no longer
+ * regroup or delete change events behind a merely-DRAFTED piece, and
+ * `reassign.ts`'s refusal called an unpublished draft "published".
+ *
  * Takes an `Executor` so the caller can pass a transaction and make the link
  * atomic with its own draft-body write: a piece saved with a body while its
- * atomic updates stayed `open` would offer the same shipped work to the next
- * compose run and ship it twice. Called with the default `database` it is a
- * single UPDATE, atomic on its own.
+ * atomic updates were still unlinked would offer the same shipped work to the
+ * next compose run and ship it twice. Called with the default `database` it is
+ * a single UPDATE, atomic on its own.
  *
  * `at` stamps `updatedAt`. Pass the same Date the caller writes to the piece's
  * `composedAt`, or `computeReleaseDelta`'s strict `updatedAt > composedAt`
@@ -155,7 +167,6 @@ export async function linkAtomicUpdatesToPiece(
     .update(atomicUpdates)
     .set({
       contentPieceId: input.contentPieceId,
-      status: "released",
       updatedAt: input.at ?? new Date(),
     })
     .where(
@@ -176,14 +187,9 @@ export async function linkAtomicUpdatesToPiece(
 
 /**
  * On publish: closes a release's atomic updates. The inverse of leaving them
- * open while the release is a draft.
- *
- * This is the publish-time transition to `released`. It is no longer the only
- * one: the unified drafting path closes them at DRAFT time, through
- * `linkAtomicUpdatesToPiece` above, because a brief-driven piece is drafted
- * once and its shipped work must not be offered again in the meantime. This
- * function still serves the claim-based path, and re-running it over already
- * released rows is a no-op in effect.
+ * open while the release is a draft — this is the only place `status`
+ * transitions to `released`, for both the claim-based path and the unified
+ * drafting path (`linkAtomicUpdatesToPiece` above links without closing).
  */
 export async function markReleaseAtomicUpdatesReleased(
   contentPieceId: string,

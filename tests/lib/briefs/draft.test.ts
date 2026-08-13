@@ -34,6 +34,7 @@ import {
 } from "../../../src/db/schema";
 import { generateDraftForPiece, findNamedCompanies, MIN_COMPETITOR_NAME_LENGTH } from "../../../src/lib/briefs/draft";
 import { computeReleaseDelta } from "../../../src/lib/change-events/release-deltas";
+import { getOpenAtomicUpdates } from "../../../src/lib/change-events/release-claim";
 import type { ReviewOutcome } from "../../../src/lib/ai/review-draft";
 
 const TENANT = "Brief Draft Test Tenant";
@@ -681,7 +682,7 @@ describe("generateDraftForPiece — release fork", () => {
     expect(foreign.contentPieceId).toBeNull();
   });
 
-  it("links its atomic updates to the EXISTING piece, releases them, and creates no second piece", async () => {
+  it("links its atomic updates to the EXISTING piece, and creates no second piece", async () => {
     const tenant = await seedTenant();
     const { piece, brief } = await seedProductUpdate(tenant.id);
     const { atomicUpdate } = await seedShippedWork({ tenantId: tenant.id, briefId: brief.id });
@@ -705,9 +706,13 @@ describe("generateDraftForPiece — release fork", () => {
 
     const [linked] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, atomicUpdate.id));
     expect(linked.contentPieceId).toBe(piece.id);
-    // Released, not left open: an atomic update left `open` would be offered to
-    // the next compose run and shipped twice.
-    expect(linked.status).toBe("released");
+    // Still `open` — publish owns the transition to `released` (catch-up.ts:56).
+    // The link alone is what stops the next compose run offering this work
+    // again: every compose-candidate query requires BOTH `status = 'open'` and
+    // `contentPieceId IS NULL`, so the piece it now belongs to is enough.
+    expect(linked.status).toBe("open");
+    // …which is exactly what getOpenAtomicUpdates reports.
+    expect(await getOpenAtomicUpdates(tenant.id, db)).toHaveLength(0);
   });
 
   it("rolls the body write back when the atomic-update link fails", async () => {

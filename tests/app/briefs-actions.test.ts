@@ -51,13 +51,16 @@ const generateBriefDraft = vi.fn(async (..._args: unknown[]) => ({
 // reads the export unconditionally to resolve its default, and a mocked module
 // throws on an export it doesn't define. Mocked for the same reason as the one
 // above: so nothing in this file can reach a real model.
-const generateReleaseDraft = vi.fn(async (..._args: unknown[]) => ({
+// Takes no parameters, unlike the one above: nothing here calls it, so there
+// are no arguments worth recording — and an unused rest parameter is a lint
+// warning this file has enough of already.
+const generateReleaseDraft = vi.fn(async () => ({
   title: "Mock release title",
   body: "Mock release body.",
 }));
 vi.mock("../../src/lib/ai/generation", () => ({
   generateBriefDraft: (...args: unknown[]) => generateBriefDraft(...args),
-  generateReleaseDraft: (...args: unknown[]) => generateReleaseDraft(...args),
+  generateReleaseDraft: () => generateReleaseDraft(),
 }));
 
 // Pre-emptive, not currently load-bearing: every brief in this file is a

@@ -249,7 +249,7 @@ describe("linkAtomicUpdatesToPiece", () => {
     return piece;
   }
 
-  it("links the atomic updates to the existing piece and marks them released", async () => {
+  it("links the atomic updates to the existing piece and leaves them open", async () => {
     const [t] = await db.insert(tenants).values({ name: TENANT }).returning();
     const [a1, a2] = await seed(t.id, ["A1", "A2"]);
     const piece = await seedPiece(t.id);
@@ -263,7 +263,28 @@ describe("linkAtomicUpdatesToPiece", () => {
 
     const rows = await db.select().from(atomicUpdates).where(eq(atomicUpdates.contentPieceId, piece.id));
     expect(rows).toHaveLength(2);
-    expect(rows.every((a) => a.status === "released")).toBe(true);
+    // Open-until-publish, same as the claim: `markReleaseAtomicUpdatesReleased`
+    // owns the transition to `released`. `contentPieceId` alone is what keeps
+    // these out of the next compose run, so closing them here would buy nothing
+    // and would strand the change events behind a merely-drafted piece.
+    expect(rows.every((a) => a.status === "open")).toBe(true);
+  });
+
+  it("hands its links to the publish path, which is what closes them", async () => {
+    const [t] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const [a1] = await seed(t.id, ["A1"]);
+    const piece = await seedPiece(t.id);
+
+    await linkAtomicUpdatesToPiece({ tenantId: t.id, contentPieceId: piece.id, atomicUpdateIds: [a1.id] });
+    // The end-to-end guarantee behind dropping the flip: an atomic update
+    // linked by the drafting path must still reach `released` when its piece
+    // publishes. `markReleaseAtomicUpdatesReleased` matches on contentPieceId
+    // with no status predicate, so it closes these exactly as it closes a
+    // claim-linked one.
+    expect(await markReleaseAtomicUpdatesReleased(piece.id)).toBe(1);
+
+    const [after] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, a1.id));
+    expect(after.status).toBe("released");
   });
 
   it("creates no content piece", async () => {
@@ -325,7 +346,7 @@ describe("linkAtomicUpdatesToPiece", () => {
 
     const [taken] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, a2.id));
     expect(taken.contentPieceId).toBe(piece.id);
-    expect(taken.status).toBe("released");
+    expect(taken.status).toBe("open");
   });
 
   it("does not relink an atomic update that is no longer open", async () => {
