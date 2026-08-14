@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, act, within } from "@testing-library/react";
+import { render, screen, act, fireEvent, waitFor, within } from "@testing-library/react";
 import type { Board as BoardData, BoardBriefCard, BoardCard } from "../../src/lib/content/board";
 
 /**
@@ -9,6 +9,12 @@ import type { Board as BoardData, BoardBriefCard, BoardCard } from "../../src/li
  * all its tests green — so these tests mount the actual `Board`, let it
  * compute each column's droppability from its own state, and then drop a
  * card the way dnd-kit would.
+ *
+ * The column holds two populations now: briefs awaiting a decision (rows in
+ * `briefs`) and content pieces mid-generation (`status = "brief"`). There is
+ * no Generating column and no drag path to acceptance — accepting is a
+ * button on the brief card — so the drag tests here are about what the board
+ * REFUSES.
  *
  * Mocked, all of them because they are unreachable in jsdom rather than to
  * dodge an assertion:
@@ -27,8 +33,8 @@ import type { Board as BoardData, BoardBriefCard, BoardCard } from "../../src/li
  *
  *     Its collision-detection functions are deliberately NOT stubbed — they
  *     are pure functions of rectangles, so `drag()` below runs the board's
- *     real strategy over a fabricated board geometry. That matters: the
- *     previous stub resolved `over` as "the column you released over, if it
+ *     real strategy over a fabricated board geometry. That matters: an
+ *     earlier stub resolved `over` as "the column you released over, if it
  *     is enabled", which is not what the library does. dnd-kit takes the
  *     first collision the strategy returns, with no requirement that it be
  *     under the pointer, so "disabled" controls candidacy, not hit-testing.
@@ -41,7 +47,7 @@ const { moveCard, assignCard, acceptBriefCard, generateDraft, pollGenerationProg
     moveCard: vi.fn(async () => ({ ok: true as const })),
     assignCard: vi.fn(async () => ({ ok: true as const })),
     acceptBriefCard: vi.fn(async () => ({ ok: true as const, contentPieceId: "piece-new" })),
-    generateDraft: vi.fn(),
+    generateDraft: vi.fn(async () => ({ ok: true as const })),
     pollGenerationProgress: vi.fn(),
     refresh: vi.fn(),
     toast: { success: vi.fn(), error: vi.fn() },
@@ -122,7 +128,9 @@ vi.mock("@dnd-kit/core", async () => {
 import { Board } from "../../src/app/(dashboard)/board/board";
 
 const COLUMNS = ["brief", "draft", "review", "scheduled", "published"] as const;
-const DISPLAY_COLUMNS = ["briefs", ...COLUMNS] as const;
+// `brief` is a status, not a column: a piece mid-generation renders inside
+// the Brief column beside the briefs. This is BOARD_DISPLAY_COLUMNS.
+const DISPLAY_COLUMNS = ["briefs", "draft", "review", "scheduled", "published"] as const;
 // What page.tsx derives server-side from the real `canMove` — restated here
 // because importing `@/lib/content/board` would pull `pg` into jsdom. The
 // real table is pinned by tests/lib/content/board.test.ts.
@@ -138,11 +146,13 @@ const MEMBERS = [
   { userId: "user-1", email: "ada@example.com", name: "Ada", role: "owner" as const, createdAt: new Date() },
 ];
 
+const BRIEF_TITLE = "How localization breaks design systems";
+
 function briefCard(overrides: Partial<BoardBriefCard> = {}): BoardBriefCard {
   return {
     kind: "brief",
     id: "brief-1",
-    title: "How localization breaks design systems",
+    title: BRIEF_TITLE,
     contentType: "blog_post",
     score: 0.82,
     status: "new",
@@ -196,7 +206,18 @@ function renderBoard({
   );
 }
 
-// A fabricated board geometry: the six columns as a left-to-right strip.
+/** The column element (header + card list) whose title starts with `title`. */
+function columnNamed(title: string): HTMLElement {
+  const heading = screen.getByRole("heading", { level: 2, name: new RegExp(`^${title}`) });
+  return heading.closest("div")?.parentElement as HTMLElement;
+}
+
+/** The card element containing the given link, for scoping queries to it. */
+function cardOf(linkName: string): HTMLElement {
+  return screen.getByRole("link", { name: linkName }).closest("[data-slot='card']") as HTMLElement;
+}
+
+// A fabricated board geometry: the five columns as a left-to-right strip.
 // jsdom measures every element as 0×0, so the board's own rects cannot aim
 // a collision strategy — but a strategy is a pure function of rectangles,
 // so a plausible strip is enough to ask the real question.
@@ -228,8 +249,7 @@ const COLUMN_RECTS = new Map<string, Record<string, number>>(
  *
  * So the board's own strategy — captured from the `DndContext` it renders —
  * is run here for real against the geometry above. Returns the id `over`
- * resolved to, which is the whole question: with `closestCenter`, releasing
- * a brief anywhere resolves to the single enabled column.
+ * resolved to, which is the whole question.
  */
 async function drag(cardId: string, columnId: string) {
   act(() => {
@@ -287,26 +307,81 @@ describe("the Brief column", () => {
   it("renders a brief card linking to its editor, with content type and score", () => {
     renderBoard();
 
-    const link = screen.getByRole("link", { name: "How localization breaks design systems" });
+    const link = screen.getByRole("link", { name: BRIEF_TITLE });
     expect(link).toHaveAttribute("href", "/briefs/brief-1");
-    expect(screen.getByText("Blog post")).toBeInTheDocument();
-    expect(screen.getByText("0.82")).toBeInTheDocument();
+    const card = cardOf(BRIEF_TITLE);
+    expect(within(card).getByText("Blog post")).toBeInTheDocument();
+    expect(within(card).getByText("0.82")).toBeInTheDocument();
   });
 
-  // The rename is the load-bearing half of this change: a Brief column added
-  // beside a column still called "Brief" would only relocate the confusion.
-  it("is titled Brief and comes first, and the old brief column is now Generating", () => {
+  // The Generating column is gone: a piece mid-generation belongs beside the
+  // brief it came from, and merging the two removed the drop target that
+  // made acceptance a drag.
+  it("is the only brief-ish column: five columns, none of them Generating", () => {
     renderBoard();
 
     const headings = screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
-    expect(headings).toEqual(["Brief", "Generating", "Draft", "Review", "Scheduled", "Published"]);
+    expect(headings).toEqual(["Brief", "Draft", "Review", "Scheduled", "Published"]);
+  });
+
+  // Two populations, two card kinds, one column.
+  it("holds both a brief and a piece mid-generation, each as its own kind of card", () => {
+    renderBoard({
+      board: boardData({
+        brief: [pieceCard({ id: "piece-generating", title: "Ship notes", status: "brief" })],
+        draft: [],
+      }),
+    });
+
+    const column = columnNamed("Brief");
+    // The brief: links to the brief editor, has a score, has no assignee
+    // picker and no generation controls.
+    const brief = cardOf(BRIEF_TITLE);
+    expect(within(brief).getByRole("link", { name: BRIEF_TITLE })).toHaveAttribute(
+      "href",
+      "/briefs/brief-1"
+    );
+    expect(within(brief).queryByRole("button", { name: /generate draft/i })).not.toBeInTheDocument();
+    expect(within(brief).queryByText("Unassigned")).not.toBeInTheDocument();
+
+    // The piece: links to the draft, keeps its status badge, its assignee
+    // picker and its Generate affordance.
+    const piece = cardOf("Ship notes");
+    expect(within(piece).getByRole("link", { name: "Ship notes" })).toHaveAttribute(
+      "href",
+      "/drafts/piece-generating"
+    );
+    expect(within(piece).getByText("Awaiting generation")).toBeInTheDocument();
+    expect(within(piece).getByRole("button", { name: /generate draft/i })).toBeInTheDocument();
+    expect(within(piece).getByText("Unassigned")).toBeInTheDocument();
+
+    // The count badge covers both.
+    expect(within(column).getByText("2")).toBeInTheDocument();
+  });
+
+  // Pieces first: a piece is work already committed and moving, a brief is
+  // still a proposal. Accepting therefore reads as a promotion to the top of
+  // the same column, and the in-flight cards — the ones whose state changes
+  // while you watch — never sit below an unbounded, score-ordered brief list.
+  it("puts the pieces mid-generation above the briefs", () => {
+    renderBoard({
+      board: boardData({
+        brief: [pieceCard({ id: "piece-generating", title: "Ship notes", status: "brief" })],
+        draft: [],
+      }),
+    });
+
+    const links = within(columnNamed("Brief"))
+      .getAllByRole("link")
+      .map((a) => a.getAttribute("href"));
+    expect(links).toEqual(["/drafts/piece-generating", "/briefs/brief-1"]);
   });
 
   // The `draggable` prop each card is rendered with becomes `disabled` on
   // its `useDraggable`, so this is the rule about which cards can be picked
   // up at all — asserted as the whole map, so a card silently gaining or
   // losing a drag handle shows up here.
-  it("makes brief cards draggable, and Generating and Published pieces not", () => {
+  it("makes brief cards non-draggable, like the generating pieces beside them", () => {
     renderBoard({
       board: boardData({
         brief: [pieceCard({ id: "piece-generating", status: "brief" })],
@@ -315,75 +390,83 @@ describe("the Brief column", () => {
       }),
     });
 
+    // The brief is absent from this map entirely — it does not register a
+    // draggable at all, which is a stronger statement than registering a
+    // disabled one, and the whole map is asserted so a card silently gaining
+    // or losing a drag handle shows up here.
     expect(Object.fromEntries(harness.draggables)).toEqual({
-      // A brief's one drag target is Generating, which accepts it.
-      "brief-1": true,
-      // Generate is the only exit from Generating; Published is terminal.
+      // Generate is the only exit from a generating piece; Published is terminal.
       "piece-generating": false,
       "piece-draft": true,
       "piece-published": false,
     });
-  });
-
-  it("shows no assignee picker or generation controls on a brief card", () => {
-    renderBoard({ board: boardData({ draft: [] }) });
-
-    expect(screen.queryByRole("button", { name: /generate draft/i })).not.toBeInTheDocument();
-    expect(screen.queryByText("Unassigned")).not.toBeInTheDocument();
+    expect(harness.draggables.has("brief-1")).toBe(false);
+    // And no grip either — a handle for a drag that cannot happen.
+    expect(within(cardOf(BRIEF_TITLE)).queryByRole("button", { name: /^Move / })).not.toBeInTheDocument();
   });
 });
 
-describe("dragging a brief", () => {
-  it("accepts it when dropped on Generating", async () => {
+/** Clicks the Accept button on the brief card. */
+function clickAccept() {
+  fireEvent.click(within(cardOf(BRIEF_TITLE)).getByRole("button", { name: /accept/i }));
+}
+
+describe("accepting a brief", () => {
+  it("is a button on the card, and calls acceptBriefCard", async () => {
     renderBoard();
 
-    const { over } = await drag("brief-1", "brief");
+    clickAccept();
 
-    expect(over).toBe("brief");
-    expect(acceptBriefCard).toHaveBeenCalledWith("brief-1");
+    await waitFor(() => expect(acceptBriefCard).toHaveBeenCalledWith("brief-1"));
     expect(moveCard).not.toHaveBeenCalled();
-    // Optimistic: the brief leaves the Brief column at once, and the server
-    // is re-read for the content piece acceptance created.
-    expect(
-      screen.queryByRole("link", { name: "How localization breaks design systems" })
-    ).not.toBeInTheDocument();
+    await waitFor(() => expect(toast.success).toHaveBeenCalled());
+    // Same as the Generate button beside it: the server is re-read, which is
+    // what removes the brief and brings back the piece acceptance created.
     expect(refresh).toHaveBeenCalled();
   });
 
-  it.each(["draft", "review", "scheduled", "published"])(
-    "refuses it on %s — no drop offered, and nothing accepted or moved",
-    async (column) => {
-      renderBoard();
-
-      // Released over a column the board refuses: the drop must resolve to
-      // nothing at all, not to whichever column happens to be enabled.
-      const { over } = await drag("brief-1", column);
-
-      expect(over).toBeNull();
-      expect(acceptBriefCard).not.toHaveBeenCalled();
-      expect(moveCard).not.toHaveBeenCalled();
-      // Still there: a refused drag is a no-op, not a silent removal.
-      expect(
-        screen.getByRole("link", { name: "How localization breaks design systems" })
-      ).toBeInTheDocument();
-    }
-  );
-
-  it("puts the brief back and reports the error when acceptance is refused", async () => {
+  it("reports the error and leaves the card alone when acceptance is refused", async () => {
     acceptBriefCard.mockResolvedValueOnce({ ok: false, error: "This brief was already accepted." } as never);
     renderBoard();
 
-    await drag("brief-1", "brief");
+    clickAccept();
 
-    expect(toast.error).toHaveBeenCalledWith("This brief was already accepted.");
-    expect(
-      screen.getByRole("link", { name: "How localization breaks design systems" })
-    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith("This brief was already accepted.")
+    );
+    expect(refresh).not.toHaveBeenCalled();
+    expect(screen.getByRole("link", { name: BRIEF_TITLE })).toBeInTheDocument();
+  });
+
+  it("reports a thrown rejection rather than leaving the click silent", async () => {
+    acceptBriefCard.mockRejectedValueOnce(new Error("Network down."));
+    renderBoard();
+
+    clickAccept();
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith("Network down."));
+    expect(refresh).not.toHaveBeenCalled();
+    expect(screen.getByRole("link", { name: BRIEF_TITLE })).toBeInTheDocument();
+  });
+
+  // There is no drop target for a brief any more, and the board must not
+  // acquire one by accident: a brief released over ANY column is a no-op.
+  it.each(DISPLAY_COLUMNS)("cannot happen by dragging the brief onto %s", async (column) => {
+    renderBoard();
+
+    const { over } = await drag("brief-1", column);
+
+    expect(over).toBeNull();
+    expect(acceptBriefCard).not.toHaveBeenCalled();
+    expect(moveCard).not.toHaveBeenCalled();
+    expect(screen.getByRole("link", { name: BRIEF_TITLE })).toBeInTheDocument();
   });
 });
 
 describe("dropping into Brief", () => {
-  // A content piece cannot become a brief; the relationship is one-way.
+  // A content piece cannot become a brief; the relationship is one-way. The
+  // `brief` status is still not a drop target either — it is simply not a
+  // column of its own any more.
   it.each(["draft", "review", "scheduled"])(
     "is refused for a %s piece — no drop offered, and no move",
     async (from) => {
@@ -412,27 +495,49 @@ describe("dropping into Brief", () => {
   });
 });
 
+/**
+ * One column, two populations, two filter semantics. `assignedTo` is a
+ * content-piece concept: readBoard filters the pieces by it and deliberately
+ * does not filter the briefs, which have no assignee. So under a filter the
+ * column keeps showing its pieces and hides its briefs — and says so, rather
+ * than presenting a silently partial column.
+ */
 describe("with an assignee filter active", () => {
-  it("explains the Brief column instead of vanishing or ignoring the filter", () => {
-    renderBoard({ assigneeFilter: "user-1" });
+  it("hides the briefs and says why, while the generating pieces stay", () => {
+    renderBoard({
+      board: boardData({
+        brief: [pieceCard({ id: "piece-generating", title: "Ship notes", status: "brief" })],
+      }),
+      assigneeFilter: "user-1",
+    });
 
-    // Not showing the briefs anyway...
-    expect(
-      screen.queryByRole("link", { name: "How localization breaks design systems" })
-    ).not.toBeInTheDocument();
-    // ...and not gone either: the column is still there, saying why.
-    const heading = screen.getByRole("heading", { level: 2, name: /^Brief/ });
-    const column = heading.closest("div")?.parentElement as HTMLElement;
+    const column = columnNamed("Brief");
+    // The briefs are gone...
+    expect(screen.queryByRole("link", { name: BRIEF_TITLE })).not.toBeInTheDocument();
+    // ...the piece, which the server already filtered, is not...
+    expect(within(column).getByRole("link", { name: "Ship notes" })).toBeInTheDocument();
+    // ...and the column explains the difference instead of looking partial.
     expect(within(column).getByText(/assigned to anyone/i)).toBeInTheDocument();
     expect(within(column).queryByText("No cards.")).not.toBeInTheDocument();
+  });
+
+  // Two populations empty for two different reasons, so the column says two
+  // things: nothing is shown here (true of the pieces, which the filter can
+  // and did apply to), and the briefs are excluded wholesale because the
+  // filter cannot apply to them at all. Suppressing either one would leave a
+  // column that looks like it has answered a question it hasn't.
+  it("says both when the pieces are filtered out and the briefs are hidden", () => {
+    renderBoard({ board: boardData({ brief: [], draft: [] }), assigneeFilter: "user-1" });
+
+    const column = columnNamed("Brief");
+    expect(within(column).getByText("No cards.")).toBeInTheDocument();
+    expect(within(column).getByText(/assigned to anyone/i)).toBeInTheDocument();
   });
 
   it("shows the briefs again when the filter is Everyone", () => {
     renderBoard({ assigneeFilter: "all" });
 
-    expect(
-      screen.getByRole("link", { name: "How localization breaks design systems" })
-    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: BRIEF_TITLE })).toBeInTheDocument();
     expect(screen.queryByText(/assigned to anyone/i)).not.toBeInTheDocument();
   });
 });

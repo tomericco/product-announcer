@@ -39,12 +39,13 @@ import type {
   BoardCard as BoardCardType,
   BoardColumn,
   BriefColumn,
+  DisplayColumn,
 } from "@/lib/content/board";
 import type { WorkspaceMember } from "@/lib/workspace/members";
 import { Column } from "./column";
 import { BoardCardItem } from "./card";
 import { boardCollisionDetection } from "./collision";
-import { moveCard, acceptBriefCard } from "./actions";
+import { moveCard } from "./actions";
 
 // The server module's BRIEF_COLUMN, which cannot be imported here as a
 // runtime value for the reason above. The `BriefColumn` annotation is what
@@ -52,18 +53,16 @@ import { moveCard, acceptBriefCard } from "./actions";
 // stops compiling rather than silently addressing a column that isn't there.
 const BRIEF_COLUMN: BriefColumn = "briefs";
 
-/** The rendered columns: the brief column plus the five piece statuses. */
-type DisplayColumn = BriefColumn | BoardColumn;
-
 const COLUMN_LABEL: Record<DisplayColumn, string> = {
-  // "Brief" belongs to the column that actually holds briefs — rows in the
-  // `briefs` table. The one below it is keyed by the `brief` *status*, which
-  // a content piece holds for about the length of one generation, so it is
-  // "Generating". The rename is the load-bearing half of this change:
-  // adding a Brief column without it would leave two columns both plausibly
-  // called "brief" and relocate the confusion rather than end it.
+  // Brief holds two populations, which is why there are five labels for six
+  // statuses. Rows from the `briefs` table — commissions awaiting a decision
+  // — sit here alongside content pieces in the `brief` *status*, the
+  // accept-time scaffold a piece occupies for about the length of one
+  // generation. Both are "this is not written yet", so they share a column
+  // rather than splitting into Brief and Generating; and with no second
+  // column there is no drop target, which is why accepting a brief is a
+  // button on its card rather than a drag.
   briefs: "Brief",
-  brief: "Generating",
   draft: "Draft",
   review: "Review",
   scheduled: "Scheduled",
@@ -71,19 +70,26 @@ const COLUMN_LABEL: Record<DisplayColumn, string> = {
 };
 
 type BoardState = BoardData;
-/** Either kind of card the board renders. */
+/** Either kind of card the board renders. Only in the Brief column do both
+ * kinds appear; every other column is pieces. */
 type AnyCard = BoardCardType | BoardBriefCard;
 
 /** Every display column except Brief is a real `contentPieces.status`. */
-const isPieceColumn = (column: DisplayColumn): column is BoardColumn => column !== BRIEF_COLUMN;
+const isPieceColumn = (column: DisplayColumn): column is Exclude<DisplayColumn, BriefColumn> =>
+  column !== BRIEF_COLUMN;
 
+/**
+ * Content pieces only — the brief column is not searched. A brief is not
+ * draggable, so no brief id can reach here; and if one somehow did, the
+ * right answer is "not found", because everything downstream of this
+ * (`activeCard`, `applyMove`, `moveCard`) is the content-piece path and a
+ * brief id must never enter it.
+ */
 function findCard(
   board: BoardState,
   columns: readonly BoardColumn[],
   id: string
-): { card: AnyCard; column: DisplayColumn } | null {
-  const brief = board[BRIEF_COLUMN].find((c) => c.id === id);
-  if (brief) return { card: brief, column: BRIEF_COLUMN };
+): { card: BoardCardType; column: BoardColumn } | null {
   for (const column of columns) {
     const card = board[column].find((c) => c.id === id);
     if (card) return { card, column };
@@ -116,7 +122,8 @@ export function Board({
   columns: readonly BoardColumn[];
   /** BOARD_DISPLAY_COLUMNS: the render order, Brief first. Kept separate
    * from `columns` because Brief is not a `contentPieces.status` and must
-   * never be handed to anything that treats a column as one. */
+   * never be handed to anything that treats a column as one — and because
+   * the `brief` status has no column of its own, so this is one shorter. */
   displayColumns: readonly DisplayColumn[];
   /** `moveMatrix[from]` is every `to` the real `canMove` permits from `from`,
    * precomputed server-side so the client never needs its own copy of the
@@ -142,15 +149,13 @@ export function Board({
    * enabled column resolve to nothing; `handleDragEnd` checks `canDrop`
    * once more on top.
    */
-  function canDrop(card: AnyCard | null, to: DisplayColumn): boolean {
+  function canDrop(card: BoardCardType | null, to: DisplayColumn): boolean {
     if (!card) return false;
     // Nothing may be dropped INTO Brief. A content piece cannot become a
-    // brief — the relationship is one-way — and a brief is already there.
+    // brief — the relationship is one-way — and the briefs already there
+    // are not draggable, so no card of either kind has business landing
+    // in this column.
     if (!isPieceColumn(to)) return false;
-    // A brief may only be dropped on Generating, which accepts it. Dropping
-    // it further along would mean a content piece with no generated body,
-    // the state approveDraft and publishDraft already refuse.
-    if (card.kind === "brief") return to === "brief";
     return canMove(card.status, to);
   }
 
@@ -166,7 +171,9 @@ export function Board({
     setBoard(initialBoard);
   }
 
-  const [activeCard, setActiveCard] = useState<AnyCard | null>(null);
+  // A piece or nothing: briefs are not draggable (acceptance is a button on
+  // the card), so a brief can never be the card being dragged.
+  const [activeCard, setActiveCard] = useState<BoardCardType | null>(null);
   // A drop onto "scheduled" doesn't move the card immediately — it opens
   // this picker, and the move only happens on confirm. Cancelling (or
   // navigating away) leaves the card exactly where it was, so an
@@ -193,10 +200,6 @@ export function Board({
     const found = findCard(board, columns, id);
     if (!found) return;
     const { card: original, column: from } = found;
-    // The content-piece path only. A brief goes through applyAccept, which
-    // is a different transition against a different table — this guard is
-    // what stops a brief id from ever reaching moveCard.
-    if (original.kind !== "piece" || !isPieceColumn(from)) return;
 
     // Optimistic: the card jumps to its new column right away. A refused
     // move (result.ok === false) reverts it and surfaces result.error via
@@ -238,45 +241,6 @@ export function Board({
     }
   }
 
-  /**
-   * Accepting a brief is NOT a move: it creates a content piece from a
-   * `briefs` row and starts generation, which is why it goes to its own
-   * action (`acceptBriefCard` → `acceptBrief`) instead of being folded into
-   * moveCard. Optimistically the brief leaves the Brief column at once; it
-   * gets no optimistic card in Generating, because the piece acceptance
-   * creates does not exist client-side yet — its id comes back from the
-   * server — and a fabricated one would be a card the generation checklist
-   * then polls for. `router.refresh()` brings the real one.
-   */
-  async function applyAccept(card: BoardBriefCard) {
-    setBoard((prev) => ({
-      ...prev,
-      [BRIEF_COLUMN]: prev[BRIEF_COLUMN].filter((c) => c.id !== card.id),
-    }));
-
-    const revert = () =>
-      setBoard((prev) => ({ ...prev, [BRIEF_COLUMN]: [card, ...prev[BRIEF_COLUMN]] }));
-
-    // Same shape as applyMove: a refused acceptance and a thrown rejection
-    // are both failures, and neither may leave the optimistic patch standing
-    // with no explanation.
-    try {
-      const result = await acceptBriefCard(card.id);
-      if (!result.ok) {
-        toast.error(result.error);
-        revert();
-        return;
-      }
-      toast.success("Brief accepted. Generating the draft…");
-      router.refresh();
-    } catch (err) {
-      toast.error(
-        err instanceof Error ? err.message : "Something went wrong. The brief wasn't accepted."
-      );
-      revert();
-    }
-  }
-
   function handleDragEnd(event: DragEndEvent) {
     const card = activeCard;
     setActiveCard(null);
@@ -290,11 +254,6 @@ export function Board({
     // which of those candidates becomes `over` is the collision strategy's
     // call, not a guarantee this handler should take on trust.
     if (!canDrop(card, to)) return;
-
-    if (card.kind === "brief") {
-      void applyAccept(card);
-      return;
-    }
 
     // Unreachable — canDrop above already refused every non-piece column.
     // Kept so `to` narrows to a status the move path can actually write.
@@ -373,8 +332,10 @@ export function Board({
       <DndContext
         sensors={sensors}
         // Not closestCenter: it ranks every *enabled* droppable and always
-        // returns one, so a release anywhere on the board resolved to the
-        // only column a brief drag leaves enabled. See ./collision.
+        // returns one, so a release anywhere on the board resolves to a
+        // column the pointer was never over — a `draft` released over
+        // Published landed in whichever of Review and Scheduled was nearer.
+        // See ./collision.
         collisionDetection={boardCollisionDetection}
         onDragStart={handleDragStart}
         onDragEnd={handleDragEnd}
@@ -382,14 +343,26 @@ export function Board({
       >
         <div className="flex flex-1 items-start gap-4 overflow-x-auto pb-4">
           {displayColumns.map((column) => {
-            const cards: AnyCard[] = board[column];
             // `assignedTo` is a content-piece concept: a brief has no
             // assignee, and readBoard deliberately does not filter briefs by
             // one. Showing every brief anyway would be a column quietly
-            // ignoring an active filter, and dropping the column would be
-            // one that vanishes — so it stays, empty, and says why.
+            // ignoring an active filter, and dropping the column would be one
+            // that vanishes — so the briefs go and the column says why.
+            //
+            // Only the briefs. The pieces sharing this column DO have an
+            // assignee and were already filtered server-side, so they stay:
+            // one column, two populations, two filter semantics, and the
+            // note below is what stops that from reading as a bug.
             const filterHidesBriefs = column === BRIEF_COLUMN && assigneeFilter !== "all";
-            const visible = filterHidesBriefs ? [] : cards;
+            // Pieces first, then briefs. A piece is work already commissioned
+            // and in motion; a brief is still a proposal. Ordering it this way
+            // makes accepting a brief read as a promotion to the top of the
+            // same column, and keeps the cards whose state changes while you
+            // watch them off the bottom of an unbounded, score-ordered list.
+            const visible: AnyCard[] =
+              column === BRIEF_COLUMN
+                ? [...board.brief, ...(filterHidesBriefs ? [] : board[BRIEF_COLUMN])]
+                : board[column];
             return (
               <Column
                 key={column}
@@ -408,12 +381,7 @@ export function Board({
                   </Link>
                 )}
 
-                {filterHidesBriefs ? (
-                  <p className="px-1 py-2 text-xs text-muted-foreground">
-                    Briefs aren&rsquo;t assigned to anyone, so none are shown while the board is
-                    filtered by assignee. Choose &ldquo;Everyone&rdquo; to see them.
-                  </p>
-                ) : visible.length === 0 ? (
+                {visible.length === 0 ? (
                   <p className="px-1 py-2 text-xs text-muted-foreground">No cards.</p>
                 ) : (
                   visible.map((card) => (
@@ -421,14 +389,32 @@ export function Board({
                       key={card.id}
                       card={card}
                       members={members}
-                      // A brief card drags — onto Generating, which accepts
-                      // it. A Generating piece does not (Generate is its only
-                      // exit) and neither does a published one (terminal).
-                      draggable={column === BRIEF_COLUMN || (column !== "brief" && column !== "published")}
+                      // Per card, not per column, now that one column holds
+                      // both kinds. A brief does not drag (Accept is its only
+                      // exit), nor does a piece mid-generation (Generate is
+                      // its only exit) or a published one (terminal).
+                      draggable={
+                        card.kind === "piece" && card.status !== "brief" && card.status !== "published"
+                      }
                       onGenerated={() => router.refresh()}
+                      onAccepted={() => router.refresh()}
                       onAssigned={(userId) => handleAssigned(card.id, userId)}
                     />
                   ))
+                )}
+
+                {/* Below the cards, not instead of them: the pieces above are
+                    a real answer to the filter, and this note is only about
+                    the briefs it could not be applied to. When nothing is
+                    visible at all, "No cards." above says the pieces found
+                    nothing and this says the briefs were never asked — two
+                    empties, two reasons, both worth stating. */}
+                {filterHidesBriefs && (
+                  <p className="px-1 py-2 text-xs text-muted-foreground">
+                    Briefs aren&rsquo;t assigned to anyone, so none are shown while the board is
+                    filtered by assignee; the pieces generating here still follow it. Choose
+                    &ldquo;Everyone&rdquo; to see the briefs.
+                  </p>
                 )}
 
                 {column === "published" && visible.length >= publishedLimit && (

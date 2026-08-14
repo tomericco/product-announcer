@@ -5,6 +5,7 @@ import { tenants, contentPieces, users, tenantMembers, briefs } from "../../../s
 import {
   readBoard,
   BOARD_COLUMNS,
+  BOARD_DISPLAY_COLUMNS,
   BRIEF_COLUMN,
   PUBLISHED_COLUMN_LIMIT,
   canMove,
@@ -45,6 +46,20 @@ async function seedBrief(tenantId: string, overrides: Partial<typeof briefs.$inf
     .returning();
   return brief;
 }
+
+describe("the display order", () => {
+  // The two lists are deliberately different lengths. `brief` is still a
+  // content-piece STATUS — moveContentPiece writes it, ALLOWED_MOVES is
+  // keyed by it, readBoard groups by it — but it is no longer a column of
+  // its own: a piece mid-generation renders inside the Brief column, beside
+  // the briefs it was accepted from.
+  it("renders Brief once and never as the `brief` status", () => {
+    expect(BOARD_DISPLAY_COLUMNS).toEqual(["briefs", "draft", "review", "scheduled", "published"]);
+    expect(BOARD_DISPLAY_COLUMNS).not.toContain("brief");
+    // Unchanged, and the reason the two lists cannot simply be one.
+    expect(BOARD_COLUMNS).toEqual(["brief", "draft", "review", "scheduled", "published"]);
+  });
+});
 
 describe("readBoard", () => {
   it("returns every column, empty ones included", async () => {
@@ -182,9 +197,10 @@ describe("readBoard — the brief column", () => {
   it("keeps briefs out of the content-piece columns, and pieces out of the brief column", async () => {
     const tenant = await seedTenant(TENANT);
     await seedBrief(tenant.id, { title: "A brief" });
-    // A piece with status "brief" is the accept-time scaffold — the column
-    // labelled Generating. It is a different object from the brief above and
-    // must not land in the brief column.
+    // A piece with status "brief" is the accept-time scaffold. The board
+    // renders it in the same column as the brief above, but it is a
+    // different object from a different table and readBoard keeps the two
+    // keys apart — `board.brief` is pieces, `board.briefs` is briefs.
     const piece = await seedPiece(tenant.id, { title: "Generating", status: "brief" });
 
     const board = await readBoard(tenant.id, db);

@@ -9,9 +9,8 @@ type Database = typeof defaultDb;
 // Every one of these IS a `contentPieces.status` — the type doubles as the
 // status enum for moveContentPiece and ALLOWED_MOVES, so nothing may join it
 // that a piece cannot actually be. `brief` here is the accept-time scaffold a
-// piece sits in while it generates; the board labels that column
-// **Generating**. The column labelled Brief is BRIEF_COLUMN below, and it
-// holds rows from a different table entirely.
+// piece sits in while it generates; it is a status the board groups by, but
+// NOT a column of its own — see BOARD_DISPLAY_COLUMNS.
 export const BOARD_COLUMNS = ["brief", "draft", "review", "scheduled", "published"] as const;
 export type BoardColumn = (typeof BOARD_COLUMNS)[number];
 
@@ -23,9 +22,23 @@ export type BoardColumn = (typeof BOARD_COLUMNS)[number];
 export const BRIEF_COLUMN = "briefs" as const;
 export type BriefColumn = typeof BRIEF_COLUMN;
 
-// Display order, Brief first. The board renders this; the five statuses above
-// remain the move rules' alphabet.
-export const BOARD_DISPLAY_COLUMNS = [BRIEF_COLUMN, ...BOARD_COLUMNS] as const;
+// The `brief` STATUS, which is not a column. A piece holds it for about the
+// length of one generation, and it renders inside the Brief column beside
+// the briefs — so it must be dropped from the display order while staying
+// exactly where it is in BOARD_COLUMNS, which is the move rules' alphabet.
+const GENERATING_STATUS = "brief" satisfies BoardColumn;
+
+/** A rendered column: the brief column, or a piece status that has one. */
+export type DisplayColumn = BriefColumn | Exclude<BoardColumn, typeof GENERATING_STATUS>;
+
+// Display order, Brief first — and Brief is now the only column holding two
+// populations: real briefs, and the pieces generating from accepted ones.
+// Derived from BOARD_COLUMNS rather than written out again, so a new status
+// gets a column without anyone having to remember this line.
+export const BOARD_DISPLAY_COLUMNS: readonly DisplayColumn[] = [
+  BRIEF_COLUMN,
+  ...BOARD_COLUMNS.filter((c): c is Exclude<BoardColumn, typeof GENERATING_STATUS> => c !== GENERATING_STATUS),
+];
 
 // Published grows without bound and would otherwise dominate the board;
 // /history is the full record. The working columns are never capped —
@@ -90,7 +103,10 @@ export async function readBoard(
   // It does NOT filter the brief column: `assignedTo` is a content-piece
   // concept and a brief has no assignee. The briefs come back either way and
   // the board explains the mismatch, rather than a column silently emptying
-  // itself for a filter it cannot honour.
+  // itself for a filter it cannot honour. Note this makes the two populations
+  // the Brief column renders behave differently under a filter — the pieces
+  // in `board.brief` obey it here, the briefs never do — which is exactly
+  // what the column's explanation is for.
   opts: { assignedTo?: string | "unassigned" } = {}
 ): Promise<Board> {
   // Two tables, one board. Fine at this size; the brief column is the natural

@@ -126,13 +126,14 @@ describe("moveCard", () => {
 });
 
 /**
- * `acceptBriefCard` is the drop-into-Generating handler's action. It is a
- * thin wrapper around `acceptBrief` (src/app/(dashboard)/briefs/actions.ts),
- * which is already the authority on accepting a brief — these tests assert
- * the actual outcomes of acceptance (a content piece exists, the brief
- * flipped to `accepted`), not that `acceptBrief` was called. Mocking
- * `acceptBrief` away would only prove this wrapper calls a function, not
- * that dragging a brief onto Generating does what it claims to.
+ * `acceptBriefCard` is the action behind the Accept button on a brief card.
+ * It is a thin wrapper around `acceptBrief`
+ * (src/app/(dashboard)/briefs/actions.ts), which is already the authority on
+ * accepting a brief — these tests assert the actual outcomes of acceptance
+ * (a content piece exists, the brief flipped to `accepted`), not that
+ * `acceptBrief` was called. Mocking `acceptBrief` away would only prove this
+ * wrapper calls a function, not that accepting from the board does what it
+ * claims to.
  */
 describe("acceptBriefCard", () => {
   it("creates a content piece and flips the brief to accepted", async () => {

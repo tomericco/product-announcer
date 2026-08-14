@@ -51,9 +51,9 @@ export async function assignCard(id: string, userId: string | null): Promise<Mov
 }
 
 /**
- * Dropping a brief card onto the Generating column calls this. `briefId`
- * arrives from a drag payload in the browser and is untrusted, exactly like
- * `id` above — but the tenant check is not this function's to make.
+ * The Accept button on a brief card calls this. `briefId` arrives from the
+ * browser and is untrusted, exactly like `id` above — but the tenant check
+ * is not this function's to make.
  * `acceptBrief` (src/app/(dashboard)/briefs/actions.ts) is already the
  * authority for accepting a brief: it re-reads the brief scoped to the
  * caller's own tenant, creates the content piece, seeds its body from the

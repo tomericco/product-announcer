@@ -13,9 +13,11 @@ import { listWorkspaceMembers } from "@/lib/workspace/members";
 import { Board } from "./board";
 
 /**
- * `/board`: Brief → Generating → Draft → Review → Scheduled → Published,
- * alongside (not replacing) /briefs and /drafts. The first column holds real
- * briefs (a different table); the rest are `contentPieces.status` values.
+ * `/board`: Brief → Draft → Review → Scheduled → Published, alongside (not
+ * replacing) /briefs and /drafts. The first column holds two things: real
+ * briefs (a different table) and the pieces generating from accepted ones,
+ * which is why BOARD_DISPLAY_COLUMNS is one shorter than BOARD_COLUMNS. The
+ * rest are one `contentPieces.status` each.
  *
  * `searchParams` is a Promise in this Next.js version — see the "Rendering
  * with search params" note in
@@ -49,10 +51,12 @@ export default async function BoardPage({
     listWorkspaceMembers(session.user.tenantId),
   ]);
 
-  // The sum of what the columns actually show. Briefs count only with no
-  // assignee filter active: a brief has no assignee, so the Brief column
-  // hides its cards under a filter it cannot honour (see board.tsx), and a
-  // total counting hidden cards would disagree with the columns below it.
+  // The sum of what the columns actually show — including the `brief`-status
+  // pieces, which have no column of their own but do render, inside Brief.
+  // Briefs themselves count only with no assignee filter active: a brief has
+  // no assignee, so the Brief column hides them under a filter it cannot
+  // honour (see board.tsx) while keeping its pieces, and a total counting
+  // hidden cards would disagree with the columns below it.
   const total =
     BOARD_COLUMNS.reduce((sum, column) => sum + filteredBoard[column].length, 0) +
     (assigneeFilter === "all" ? filteredBoard[BRIEF_COLUMN].length : 0);
