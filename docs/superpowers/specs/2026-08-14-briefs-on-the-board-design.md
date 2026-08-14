@@ -23,6 +23,34 @@ generation, and it means **"awaiting generation"**. The name collides with the
 object it does not contain, and the collision is what made the expectation
 reasonable.
 
+## Amended 2026-08-14: one Brief column, and acceptance is a button
+
+**The Generating column is removed.** A content piece mid-generation stays in
+the **Brief** column, alongside the briefs. The sections below describing a
+separate Generating column and a drag onto it are superseded by this one; they
+are kept because the reasoning about *why the old column was misnamed* still
+explains what the Brief column now holds.
+
+So the Brief column holds two kinds of card: briefs awaiting a decision, and
+pieces mid-generation. That is the "merged column" shape, chosen after seeing
+the split one.
+
+**Acceptance necessarily stops being a drag.** With no second column there is no
+drop target — you cannot drag within one column to mean "accept". It becomes an
+explicit action on the brief card, which is not a new pattern: `card.tsx` already
+imports `generateDraft` and a `brief`-status piece is already non-draggable with
+Generate as its only exit. A brief card gains the same shape.
+
+This is a simplification, not a compromise. It also deletes the interaction that
+produced this plan's one Critical — a brief drag left exactly one enabled
+droppable, so `closestCenter` accepted the brief wherever the pointer was
+released. **Keep the collision fix regardless**: it also corrected a pre-existing
+content-piece bug where a `draft` released over Published moved to whichever of
+Review or Scheduled was nearer.
+
+Briefs become non-draggable, exactly like the generating pieces they now sit
+beside.
+
 ## Two changes, and the rename is the load-bearing one
 
 1. The column that exists today is renamed **Generating**. It keeps its meaning,
