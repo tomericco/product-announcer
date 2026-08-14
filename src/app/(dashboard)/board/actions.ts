@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { requireSession } from "@/lib/workspace/session";
 import { moveContentPiece, assignContentPiece, type MoveResult, type BoardColumn } from "@/lib/content/board";
+import { acceptBrief, type AcceptResult } from "../briefs/actions";
 
 /**
  * The board's drag-end handler calls this. `id` and `to` arrive from client
@@ -45,6 +46,27 @@ export async function moveCard(id: string, to: BoardColumn, scheduledForIso?: st
 export async function assignCard(id: string, userId: string | null): Promise<MoveResult> {
   const session = await requireSession();
   const result = await assignContentPiece(id, session.user.tenantId, userId);
+  if (result.ok) revalidatePath("/board");
+  return result;
+}
+
+/**
+ * Dropping a brief card onto the Generating column calls this. `briefId`
+ * arrives from a drag payload in the browser and is untrusted, exactly like
+ * `id` above — but the tenant check is not this function's to make.
+ * `acceptBrief` (src/app/(dashboard)/briefs/actions.ts) is already the
+ * authority for accepting a brief: it re-reads the brief scoped to the
+ * caller's own tenant, creates the content piece, seeds its body from the
+ * brief's own document, links the two, and schedules generation in `after()`.
+ * Reimplementing any of that here — even just the tenant check — would be
+ * the second copy of acceptance the design doc says not to build, so this
+ * stays a thin wrapper: resolve the session, delegate, revalidate the board
+ * (acceptBrief already revalidates /briefs and /drafts, but has no reason to
+ * know about /board), return exactly what acceptBrief returned.
+ */
+export async function acceptBriefCard(briefId: string): Promise<AcceptResult> {
+  await requireSession();
+  const result = await acceptBrief(briefId);
   if (result.ok) revalidatePath("/board");
   return result;
 }
