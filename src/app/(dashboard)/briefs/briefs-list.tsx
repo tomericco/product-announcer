@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import type { Brief } from "@/db/schema";
-import type { BriefWithSignals } from "@/lib/briefs/query";
 
 const CONTENT_TYPE_LABEL: Record<Brief["contentType"], string> = {
   product_update: "Product update",
@@ -30,7 +29,7 @@ const STATUS_LABEL: Record<Brief["status"], string> = {
  * let you accept a brief you never opened, which is exactly what this list
  * is meant to stop.
  */
-export function BriefsList({ briefs }: { briefs: BriefWithSignals[] }) {
+export function BriefsList({ briefs }: { briefs: Brief[] }) {
   return (
     <div className="-mx-3">
       {briefs.map((brief) => (

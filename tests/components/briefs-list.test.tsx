@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { BriefsList } from "../../src/app/(dashboard)/briefs/briefs-list";
-import type { BriefWithSignals } from "../../src/lib/briefs/query";
+import type { Brief } from "../../src/db/schema";
 
 /**
  * The row-level Accept/Dismiss removal this task exists for (design doc:
@@ -10,7 +10,7 @@ import type { BriefWithSignals } from "../../src/lib/briefs/query";
  * opening it. Pinning this here means the removal cannot silently regress by
  * a future row growing its own decision buttons back.
  */
-function fakeBrief(overrides: Partial<BriefWithSignals> = {}): BriefWithSignals {
+function fakeBrief(overrides: Partial<Brief> = {}): Brief {
   return {
     id: "brief-1",
     tenantId: "tenant-1",
@@ -40,7 +40,6 @@ function fakeBrief(overrides: Partial<BriefWithSignals> = {}): BriefWithSignals 
     expiresAt: null,
     createdAt: new Date("2026-08-01T00:00:00.000Z"),
     updatedAt: new Date("2026-08-01T00:00:00.000Z"),
-    signals: [],
     ...overrides,
   };
 }

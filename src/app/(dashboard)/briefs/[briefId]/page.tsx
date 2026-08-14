@@ -6,9 +6,11 @@ import { db } from "@/db";
 import { briefs, type Brief } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { briefBody } from "@/lib/briefs/body";
+import { listBriefSignals } from "@/lib/briefs/query";
 import { Badge } from "@/components/ui/badge";
 import { EditorProvider } from "@/components/markdown/editor-context";
 import { BriefWorkspace } from "./brief-workspace";
+import { BriefEvidence } from "./brief-evidence";
 
 const CONTENT_TYPE_LABEL: Record<Brief["contentType"], string> = {
   product_update: "Product update",
@@ -56,6 +58,14 @@ export default async function BriefDetailPage({ params }: { params: Promise<{ br
 
   if (!brief) notFound();
 
+  // The brief's cited evidence, read directly for this one brief rather than
+  // via `listBriefs`'s old join (dropped — nothing on the list row read it).
+  // `listBriefSignals` is tenant-scoped in its own right (see its doc
+  // comment), which matters here because `brief.id` is already known to
+  // belong to this tenant from the query above, but the read must not
+  // *rely* on that.
+  const evidence = await listBriefSignals(brief.id, session.user.tenantId, db);
+
   // Every read of a brief's document body goes through this one accessor: a
   // row created before `briefs.body` existed has a null body and renders from
   // its structured fields on demand, byte-identical to what it would have been
@@ -84,6 +94,7 @@ export default async function BriefDetailPage({ params }: { params: Promise<{ br
           <h1 className="font-heading text-3xl leading-[1.15] tracking-[0.015em]">
             {brief.title || "Untitled brief"}
           </h1>
+          <BriefEvidence signals={evidence} />
         </div>
 
         <p className="text-sm text-muted-foreground">
@@ -116,6 +127,7 @@ export default async function BriefDetailPage({ params }: { params: Promise<{ br
           initialBody={body}
         >
           <BriefBadges brief={brief} />
+          <BriefEvidence signals={evidence} />
         </BriefWorkspace>
       </EditorProvider>
     </div>

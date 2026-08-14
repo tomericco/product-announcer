@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import type { ReactElement, ReactNode } from "react";
 import { eq } from "drizzle-orm";
 import { db } from "../../src/db";
-import { tenants, briefs } from "../../src/db/schema";
+import { tenants, briefs, briefSignals, signals } from "../../src/db/schema";
 
 // Same technique as tests/app/drafts/release-id-page-published-gate.test.ts:
 // call the async Server Component directly and inspect the element tree it
@@ -17,6 +17,7 @@ vi.mock("../../src/lib/workspace/session", () => ({
 
 import BriefDetailPage from "../../src/app/(dashboard)/briefs/[briefId]/page";
 import { BriefWorkspace } from "../../src/app/(dashboard)/briefs/[briefId]/brief-workspace";
+import { BriefEvidence } from "../../src/app/(dashboard)/briefs/[briefId]/brief-evidence";
 import { renderBriefBody } from "../../src/lib/briefs/body";
 
 const TENANT = "Brief Detail Page Test Tenant";
@@ -82,6 +83,40 @@ function editorProps(node: ReactNode): { initialTitle: string; initialBody: stri
   const el = node as ReactElement<{ children?: ReactNode }>;
   if (el.type === BriefWorkspace) return el.props as unknown as { initialTitle: string; initialBody: string };
   return editorProps(el.props?.children);
+}
+
+/** Finds the `signals` the page would render `BriefEvidence` with. */
+function evidenceProps(node: ReactNode): { signals: { id: string; title: string; url: string | null }[] } | null {
+  if (node === null || node === undefined || typeof node === "boolean") return null;
+  if (typeof node === "string" || typeof node === "number") return null;
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const found = evidenceProps(child);
+      if (found) return found;
+    }
+    return null;
+  }
+  const el = node as ReactElement<{ children?: ReactNode }>;
+  if (el.type === BriefEvidence)
+    return el.props as unknown as { signals: { id: string; title: string; url: string | null }[] };
+  return evidenceProps(el.props?.children);
+}
+
+/** Attaches a signal as evidence for `briefId`, tenant-scoped to `tenantId`. */
+async function citeSignal(briefId: string, tenantId: string, title = "The evidence") {
+  const [signal] = await db
+    .insert(signals)
+    .values({
+      tenantId,
+      kind: "market_news",
+      externalId: `https://a.example.com/${title}`,
+      url: `https://a.example.com/${encodeURIComponent(title)}`,
+      title,
+      occurredAt: new Date(),
+    })
+    .returning();
+  await db.insert(briefSignals).values({ briefId, signalId: signal.id });
+  return signal;
 }
 
 describe("BriefDetailPage", () => {
@@ -152,5 +187,57 @@ describe("BriefDetailPage tenant scoping", () => {
     await expect(
       BriefDetailPage({ params: Promise.resolve({ briefId: brief.id }) })
     ).rejects.toThrow(/NEXT_HTTP_ERROR_FALLBACK|NEXT_NOT_FOUND/);
+  });
+});
+
+// Evidence was the only place in the whole UI that showed a brief's cited
+// signals, and it was lost when `brief-card.tsx` was deleted along with the
+// old inbox grid. Restored here rather than reinvented — see
+// `brief-evidence.tsx`'s doc comment for where it was recovered from. Shown
+// on BOTH branches below: a dismissed or accepted brief is exactly when you
+// want to see what it was grounded in.
+describe("BriefDetailPage evidence", () => {
+  it("shows the brief's cited signals on the editable branch", async () => {
+    const { brief, tenant } = await seed({ status: "new" });
+    await citeSignal(brief.id, tenant.id, "The evidence");
+
+    const page = (await BriefDetailPage({ params: Promise.resolve({ briefId: brief.id }) })) as ReactElement;
+
+    const signalProps = evidenceProps(page)?.signals;
+    expect(signalProps).toHaveLength(1);
+    expect(signalProps?.[0].title).toBe("The evidence");
+  });
+
+  it("shows the brief's cited signals on the accepted (read-only) branch", async () => {
+    const { brief, tenant } = await seed({ status: "accepted" });
+    await citeSignal(brief.id, tenant.id, "The accepted brief's evidence");
+
+    const page = (await BriefDetailPage({ params: Promise.resolve({ briefId: brief.id }) })) as ReactElement;
+
+    // The read-only branch never mounts `BriefWorkspace`, so `BriefEvidence`
+    // is rendered directly by the page rather than passed through as
+    // `children` — this technique still finds it either way.
+    const signalProps = evidenceProps(page)?.signals;
+    expect(signalProps).toHaveLength(1);
+    expect(signalProps?.[0].title).toBe("The accepted brief's evidence");
+  });
+
+  it("shows the brief's cited signals on the dismissed (read-only) branch", async () => {
+    const { brief, tenant } = await seed({ status: "dismissed" });
+    await citeSignal(brief.id, tenant.id, "The dismissed brief's evidence");
+
+    const page = (await BriefDetailPage({ params: Promise.resolve({ briefId: brief.id }) })) as ReactElement;
+
+    const signalProps = evidenceProps(page)?.signals;
+    expect(signalProps).toHaveLength(1);
+    expect(signalProps?.[0].title).toBe("The dismissed brief's evidence");
+  });
+
+  it("renders no evidence for an uncited brief", async () => {
+    const { brief } = await seed({ status: "new" });
+
+    const page = (await BriefDetailPage({ params: Promise.resolve({ briefId: brief.id }) })) as ReactElement;
+
+    expect(evidenceProps(page)?.signals).toEqual([]);
   });
 });

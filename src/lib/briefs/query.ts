@@ -1,12 +1,10 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
 import { briefRuns, briefSignals, briefs, signals, type Brief, type BriefRun, type Signal } from "@/db/schema";
 
 export type BriefFilters = { status?: Brief["status"] };
 
 export type CitedSignal = { id: string; title: string; url: string | null; kind: Signal["kind"] };
-
-export type BriefWithSignals = Brief & { signals: CitedSignal[] };
 
 /**
  * Tenant-scoped brief listing for the inbox.
@@ -18,26 +16,39 @@ export type BriefWithSignals = Brief & { signals: CitedSignal[] };
  * Defaults to `new`. Accepted, dismissed and expired briefs are decisions
  * already made and are reachable only by asking for them.
  *
- * Evidence is fetched in a SECOND query rather than joined, so a brief cited by
- * five signals stays one row. It is also a LEFT relationship in effect: a brief
- * with no evidence still appears, with an empty array.
+ * No longer joins evidence: the list row doesn't show it (the editor at
+ * `/briefs/[briefId]` does, via `listBriefSignals` below, scoped to the one
+ * brief being opened rather than every row in the list).
  */
 export async function listBriefs(
   tenantId: string,
   filters: BriefFilters,
   database: typeof defaultDb = defaultDb
-): Promise<BriefWithSignals[]> {
-  const rows = await database
+): Promise<Brief[]> {
+  return database
     .select()
     .from(briefs)
     .where(and(eq(briefs.tenantId, tenantId), eq(briefs.status, filters.status ?? "new")))
     .orderBy(desc(briefs.score), desc(briefs.createdAt));
+}
 
-  if (rows.length === 0) return [];
-
-  const links = await database
+/**
+ * The evidence cited by one brief — the editor's read, not the list's.
+ *
+ * `briefId` arrives from the URL and is untrusted, so this is tenant-scoped in
+ * its own right rather than trusting a prior tenant check on the brief itself:
+ * the join filters on `signals.tenantId`, not `briefs.tenantId`, so a briefId
+ * belonging to another tenant returns no rows even if the caller forgot (or
+ * got wrong) the brief-level check. `brief_signals` carries no `tenantId` of
+ * its own — `signals` is the tenant-scoped side of the join.
+ */
+export async function listBriefSignals(
+  briefId: string,
+  tenantId: string,
+  database: typeof defaultDb = defaultDb
+): Promise<CitedSignal[]> {
+  return database
     .select({
-      briefId: briefSignals.briefId,
       id: signals.id,
       title: signals.title,
       url: signals.url,
@@ -45,21 +56,7 @@ export async function listBriefs(
     })
     .from(briefSignals)
     .innerJoin(signals, eq(signals.id, briefSignals.signalId))
-    .where(
-      inArray(
-        briefSignals.briefId,
-        rows.map((r) => r.id)
-      )
-    );
-
-  const byBrief = new Map<string, CitedSignal[]>();
-  for (const link of links) {
-    const list = byBrief.get(link.briefId) ?? [];
-    list.push({ id: link.id, title: link.title, url: link.url, kind: link.kind });
-    byBrief.set(link.briefId, list);
-  }
-
-  return rows.map((r) => ({ ...r, signals: byBrief.get(r.id) ?? [] }));
+    .where(and(eq(briefSignals.briefId, briefId), eq(signals.tenantId, tenantId)));
 }
 
 /**
