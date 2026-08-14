@@ -4,26 +4,35 @@ import { db } from "../../src/db";
 import { tenants, briefs, briefSignals, signals } from "../../src/db/schema";
 
 const TENANT = "Propose Actions Test Tenant";
-const OTHER_TENANT = "Propose Actions Other Tenant";
 let currentTenantId = "";
 let currentUserId: string | null = null;
 
 vi.mock("../../src/lib/workspace/session", () => ({
   requireSession: vi.fn(async () => ({ user: { tenantId: currentTenantId, id: currentUserId } })),
 }));
-vi.mock("../../src/lib/ai/llm-usage", () => ({ recordLlmUsage: vi.fn(async () => {}) }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 
+// This wrapper is deliberately thin — the tenant-scoped resolution and the
+// model call live in `proposeBriefForSelection` (`src/lib/briefs/propose-selection.ts`,
+// tested directly in `tests/lib/briefs/propose-selection.test.ts`, including
+// the tenant-by-id refusal). Mocking that seam here means these tests never
+// touch the model at all, and stay focused on what this file actually does:
+// resolve the session's tenant, and glue the proposal to `createManualBrief`.
+vi.mock("../../src/lib/briefs/propose-selection", () => ({
+  proposeBriefForSelection: vi.fn(),
+}));
+
 import { proposeAndCreateBrief } from "../../src/app/(dashboard)/signals/propose-actions";
+import { proposeBriefForSelection } from "../../src/lib/briefs/propose-selection";
 
 afterEach(async () => {
   await db.delete(tenants).where(eq(tenants.name, TENANT));
-  await db.delete(tenants).where(eq(tenants.name, OTHER_TENANT));
   vi.clearAllMocks();
 });
 
-async function seedTenant(name = TENANT) {
-  const [tenant] = await db.insert(tenants).values({ name }).returning();
+async function seedTenant() {
+  const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+  currentTenantId = tenant.id;
   return tenant;
 }
 
@@ -35,15 +44,15 @@ async function seedSignal(tenantId: string, title = "Evidence") {
   return row;
 }
 
-const GOOD_PROPOSAL = {
+const GOOD_INPUT = {
   contentType: "blog_post" as const,
   title: "A proposed title",
   angle: "A sharp angle",
   whyNow: "Because of the signal",
-  audience: null,
   keyPoints: ["One.", "Two.", "Three."],
-  targetLength: 700,
   suggestedChannel: "blog",
+  targetLength: 700,
+  audience: null,
   score: 0.7,
   scoreRationale: "Strong evidence, clear angle.",
 };
@@ -51,13 +60,17 @@ const GOOD_PROPOSAL = {
 describe("proposeAndCreateBrief", () => {
   it("creates exactly one brief, linked to the resolved signals, with a non-blank body", async () => {
     const tenant = await seedTenant();
-    currentTenantId = tenant.id;
     currentUserId = null;
     const signal = await seedSignal(tenant.id);
 
-    const generate = vi.fn(async () => ({ object: GOOD_PROPOSAL, usage: {} }));
-    const result = await proposeAndCreateBrief([signal.id], { generate: generate as never });
+    vi.mocked(proposeBriefForSelection).mockResolvedValue({
+      ok: true,
+      input: { ...GOOD_INPUT, signalIds: [signal.id] },
+    });
 
+    const result = await proposeAndCreateBrief([signal.id]);
+
+    expect(proposeBriefForSelection).toHaveBeenCalledWith(tenant.id, [signal.id]);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
@@ -72,50 +85,18 @@ describe("proposeAndCreateBrief", () => {
     expect(links.map((l) => l.signalId)).toEqual([signal.id]);
   });
 
-  it("refuses another tenant's signal ids, asserted by id, and leaks nothing of theirs", async () => {
-    const mine = await seedTenant(TENANT);
-    const theirs = await seedTenant(OTHER_TENANT);
-    currentTenantId = mine.id;
-    currentUserId = null;
-    const theirSignal = await seedSignal(theirs.id, "Their secret title");
-
-    const generate = vi.fn(async () => ({ object: GOOD_PROPOSAL, usage: {} }));
-    const result = await proposeAndCreateBrief([theirSignal.id], { generate: generate as never });
-
-    expect(result.ok).toBe(false);
-
-    const mineBriefs = await db.select().from(briefs).where(eq(briefs.tenantId, mine.id));
-    expect(mineBriefs).toHaveLength(0);
-
-    // Nothing of theirs leaked anywhere under this tenant: no brief exists
-    // whose title, angle, or body mentions their signal's title.
-    const allBriefs = await db.select().from(briefs);
-    for (const brief of allBriefs) {
-      if (brief.tenantId !== mine.id) continue;
-      expect(brief.title).not.toContain("Their secret title");
-    }
-    // The model must never even have been asked, since nothing tenant-scoped
-    // resolved.
-    expect(generate).not.toHaveBeenCalled();
-  });
-
-  it("returns a reason and creates no brief when the proposal fails", async () => {
+  it("returns a reason and creates no brief when the proposal fails, without calling createManualBrief", async () => {
     const tenant = await seedTenant();
-    currentTenantId = tenant.id;
     currentUserId = null;
-    const signal = await seedSignal(tenant.id);
 
     const before = await db.select().from(briefs).where(eq(briefs.tenantId, tenant.id));
     expect(before).toHaveLength(0);
 
-    const generate = vi.fn(async () => {
-      throw new Error("model timeout");
-    });
-    const result = await proposeAndCreateBrief([signal.id], { generate: generate as never });
+    vi.mocked(proposeBriefForSelection).mockResolvedValue({ ok: false, error: "model timeout" });
 
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.error).toContain("model timeout");
+    const result = await proposeAndCreateBrief(["whatever-id"]);
+
+    expect(result).toEqual({ ok: false, error: "model timeout" });
 
     const after = await db.select().from(briefs).where(eq(briefs.tenantId, tenant.id));
     expect(after).toHaveLength(0);
