@@ -4,6 +4,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { db } from "@/db";
 import { briefs, briefSignals, signals, type Brief } from "@/db/schema";
+import { renderBriefBody } from "@/lib/briefs/body";
 import { requireSession } from "@/lib/workspace/session";
 
 /**
@@ -72,6 +73,11 @@ export async function createManualBrief(input: ManualBriefInput): Promise<Create
     }
   }
 
+  const angle = input.angle.trim();
+  const whyNow = input.whyNow.trim();
+  const audience = input.audience?.trim() || null;
+  const keyPoints = input.keyPoints;
+
   const [brief] = await db
     .insert(briefs)
     .values({
@@ -80,11 +86,12 @@ export async function createManualBrief(input: ManualBriefInput): Promise<Create
       createdBy: session.user.id ?? null,
       contentType: input.contentType,
       title,
-      angle: input.angle.trim(),
-      whyNow: input.whyNow.trim(),
+      angle,
+      whyNow,
       suggestedChannel: input.suggestedChannel.trim(),
-      audience: input.audience?.trim() || null,
-      keyPoints: input.keyPoints,
+      audience,
+      keyPoints,
+      body: renderBriefBody({ angle, whyNow, keyPoints, audience }),
       targetLength: input.targetLength ?? null,
       score: input.score,
       scoreRationale: input.scoreRationale?.trim() || null,

@@ -3,6 +3,7 @@ import { db as defaultDb } from "@/db";
 import { briefRuns, briefs, briefSignals, companyProfiles, tenants } from "@/db/schema";
 import { listSignals } from "@/lib/signals/query";
 import type { RelevanceProfile } from "@/lib/signals/relevance";
+import { renderBriefBody } from "./body";
 import {
   ideate,
   type IdeationContext,
@@ -336,6 +337,7 @@ async function runIdeationUnsafe(
         suggestedChannel: b.suggestedChannel,
         audience: b.audience,
         keyPoints: b.keyPoints,
+        body: renderBriefBody({ angle: b.angle, whyNow: b.whyNow, keyPoints: b.keyPoints, audience: b.audience }),
         targetLength: b.targetLength,
         score: b.score,
         scoreRationale: b.scoreRationale,

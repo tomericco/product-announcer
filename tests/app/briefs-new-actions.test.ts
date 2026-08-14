@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../src/db";
 import { tenants, briefs, briefSignals, signals } from "../../src/db/schema";
+import { renderBriefBody } from "../../src/lib/briefs/body";
 
 const TENANT = "New Brief Actions Test Tenant";
 let currentTenantId = "";
@@ -68,6 +69,26 @@ describe("createManualBrief", () => {
 
     const links = await db.select().from(briefSignals).where(eq(briefSignals.briefId, brief.id));
     expect(links.map((l) => l.signalId)).toEqual([signal.id]);
+  });
+
+  it("stores a rendered body equal to renderBriefBody of its own fields", async () => {
+    await seedTenant();
+    currentUserId = null;
+
+    const result = await createManualBrief({ ...FORM, signalIds: [] });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const [brief] = await db.select().from(briefs).where(eq(briefs.id, result.briefId));
+    expect(brief.body).not.toBeNull();
+    expect(brief.body).toBe(
+      renderBriefBody({
+        angle: brief.angle,
+        whyNow: brief.whyNow,
+        keyPoints: brief.keyPoints,
+        audience: brief.audience,
+      })
+    );
   });
 
   it("refuses a signal belonging to another tenant and writes nothing", async () => {

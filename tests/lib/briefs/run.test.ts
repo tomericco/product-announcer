@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
 import { tenants, companyProfiles, signals, briefs, briefSignals, briefRuns } from "../../../src/db/schema";
 import { runIdeation, BRIEF_TTL_DAYS, MAX_IDEATION_SIGNALS } from "../../../src/lib/briefs/run";
+import { renderBriefBody } from "../../../src/lib/briefs/body";
 
 const TENANT = "Ideation Run Test Tenant";
 
@@ -73,6 +74,31 @@ describe("runIdeation", () => {
     expect(joins[0].signalId).toBe(s.id);
     // Null addedBy is what marks agent-attached evidence.
     expect(joins[0].addedBy).toBeNull();
+  });
+
+  it("stores a rendered body equal to renderBriefBody of its own fields", async () => {
+    const tenant = await seedTenant();
+    const s = await seedSignal(tenant.id, "https://n.example.com/a");
+    const brief = proposal([s.id]);
+
+    await runIdeation(tenant.id, {
+      database: db,
+      ideateFn: vi.fn().mockResolvedValue({
+        assessment: "Busy fortnight.",
+        actions: [{ type: "propose", brief }],
+      }),
+    });
+
+    const [row] = await db.select().from(briefs).where(eq(briefs.tenantId, tenant.id));
+    expect(row.body).not.toBeNull();
+    expect(row.body).toBe(
+      renderBriefBody({
+        angle: brief.angle,
+        whyNow: brief.whyNow,
+        keyPoints: brief.keyPoints,
+        audience: brief.audience,
+      })
+    );
   });
 
   it("sets an expiry so the inbox cannot accumulate debt", async () => {
