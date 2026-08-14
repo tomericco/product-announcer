@@ -60,12 +60,19 @@ export async function assignCard(id: string, userId: string | null): Promise<Mov
  * brief's own document, links the two, and schedules generation in `after()`.
  * Reimplementing any of that here — even just the tenant check — would be
  * the second copy of acceptance the design doc says not to build, so this
- * stays a thin wrapper: resolve the session, delegate, revalidate the board
- * (acceptBrief already revalidates /briefs and /drafts, but has no reason to
- * know about /board), return exactly what acceptBrief returned.
+ * stays a thin wrapper: delegate, revalidate the board (acceptBrief already
+ * revalidates /briefs and /drafts, but has no reason to know about /board),
+ * return exactly what acceptBrief returned.
+ *
+ * Note there is deliberately no `requireSession()` here. This function had
+ * one, whose result it discarded — which reads like a guard and is not one:
+ * `acceptBrief` opens with its own `requireSession()` and scopes every read
+ * and write to that session's tenant, so a second call could only ever
+ * agree with it. Keeping it would suggest this wrapper shares the tenant
+ * authority when it has none, exactly the second copy of acceptance the
+ * design doc rules out.
  */
 export async function acceptBriefCard(briefId: string): Promise<AcceptResult> {
-  await requireSession();
   const result = await acceptBrief(briefId);
   if (result.ok) revalidatePath("/board");
   return result;

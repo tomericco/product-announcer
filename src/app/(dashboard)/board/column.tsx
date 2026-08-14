@@ -11,8 +11,14 @@ import { cn } from "@/lib/utils";
  * caller from `canMove(activeCard.status, id)`, so the same rule the server
  * enforces in `moveContentPiece` also decides what the UI offers as a drop
  * target. `useDroppable`'s own `disabled` flag (not just styling) backs
- * this: a disabled droppable never becomes `over`, so a card dragged over a
- * column the mesh does not permit simply does not register a drop there.
+ * this: a disabled droppable is not a candidate for collision at all, so a
+ * card dragged over a column the mesh does not permit cannot land there.
+ *
+ * Note what that does NOT say: it does not say the pointer must be over
+ * this column for it to become `over`. dnd-kit picks the first collision
+ * its strategy returns from among the *enabled* droppables, wherever they
+ * are — see board/collision.ts, which is the half of this that makes a
+ * release over a refused column resolve to nothing.
  */
 export function Column({
   id,

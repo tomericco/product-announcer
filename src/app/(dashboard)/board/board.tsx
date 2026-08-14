@@ -9,7 +9,6 @@ import {
   DndContext,
   KeyboardSensor,
   PointerSensor,
-  closestCenter,
   useSensor,
   useSensors,
   type DragEndEvent,
@@ -44,6 +43,7 @@ import type {
 import type { WorkspaceMember } from "@/lib/workspace/members";
 import { Column } from "./column";
 import { BoardCardItem } from "./card";
+import { boardCollisionDetection } from "./collision";
 import { moveCard, acceptBriefCard } from "./actions";
 
 // The server module's BRIEF_COLUMN, which cannot be imported here as a
@@ -131,10 +131,16 @@ export function Board({
   /**
    * The one predicate deciding whether a drop is offered at all. It is
    * passed to each Column as `droppable`, which becomes `disabled` in
-   * `useDroppable` — and a disabled droppable never becomes `over`, so a
-   * refusal is the *absence* of a drop rather than a second code path that
-   * has to remember to say no. `handleDragEnd` checks it again anyway, on
-   * the same principle the piece rules already followed.
+   * `useDroppable`, removing that column from the set of droppables
+   * dnd-kit will even consider.
+   *
+   * That is necessary but NOT sufficient, and believing otherwise was a
+   * Critical: `disabled` controls *candidacy*, not *hit-testing*. With a
+   * ranking strategy like `closestCenter`, the last remaining enabled
+   * column wins every release no matter where the pointer is. The
+   * collision strategy (./collision) is what makes a release outside every
+   * enabled column resolve to nothing; `handleDragEnd` checks `canDrop`
+   * once more on top.
    */
   function canDrop(card: AnyCard | null, to: DisplayColumn): boolean {
     if (!card) return false;
@@ -278,10 +284,11 @@ export function Board({
     const over = event.over;
     if (!over) return;
     const to = String(over.id) as DisplayColumn;
-    // Belt and suspenders: the column this landed on should already be
-    // `disabled` in useDroppable when canDrop forbids it, so `over` should
-    // never resolve to it. Checked again here anyway, since the visible
-    // column set is a UI convenience, not the actual guarantee.
+    // Belt and suspenders: a column canDrop forbids is `disabled` in
+    // useDroppable and so is never a collision candidate. Checked again
+    // here anyway — the droppable set is what dnd-kit *considers*, and
+    // which of those candidates becomes `over` is the collision strategy's
+    // call, not a guarantee this handler should take on trust.
     if (!canDrop(card, to)) return;
 
     if (card.kind === "brief") {
@@ -365,7 +372,10 @@ export function Board({
 
       <DndContext
         sensors={sensors}
-        collisionDetection={closestCenter}
+        // Not closestCenter: it ranks every *enabled* droppable and always
+        // returns one, so a release anywhere on the board resolved to the
+        // only column a brief drag leaves enabled. See ./collision.
+        collisionDetection={boardCollisionDetection}
         onDragStart={handleDragStart}
         onDragEnd={handleDragEnd}
         onDragCancel={handleDragCancel}

@@ -19,12 +19,21 @@ import type { Board as BoardData, BoardBriefCard, BoardCard } from "../../src/li
  *     no DATABASE_URL. What they actually DO is covered against a real
  *     Postgres in tests/app/board-actions.test.ts.
  *   - `next/navigation`, which has no router outside an app render.
- *   - `@dnd-kit/core`, which cannot be driven in jsdom: every element's
- *     rect is 0×0, so its collision detection has nothing to distinguish
- *     one column from another. The stand-in below keeps the one behaviour
- *     these tests turn on — a droppable registered as `disabled` never
- *     becomes `over` — and records what the real component passed it, so
- *     the assertions are about the board's own wiring, not the stub's.
+ *   - `@dnd-kit/core`'s *context and hooks*, which cannot be driven in
+ *     jsdom: every element's rect is 0×0, so a real drag has nothing to
+ *     aim at. The stand-in below records what the board passed each
+ *     droppable and draggable, so the assertions are about the board's own
+ *     wiring rather than the stub's.
+ *
+ *     Its collision-detection functions are deliberately NOT stubbed — they
+ *     are pure functions of rectangles, so `drag()` below runs the board's
+ *     real strategy over a fabricated board geometry. That matters: the
+ *     previous stub resolved `over` as "the column you released over, if it
+ *     is enabled", which is not what the library does. dnd-kit takes the
+ *     first collision the strategy returns, with no requirement that it be
+ *     under the pointer, so "disabled" controls candidacy, not hit-testing.
+ *     Modelling it the wrong way kept four refusal tests green while the
+ *     board accepted a brief dropped anywhere on it.
  */
 
 const { moveCard, assignCard, acceptBriefCard, generateDraft, pollGenerationProgress, refresh, toast } =
@@ -56,25 +65,37 @@ const harness = vi.hoisted(() => ({
     onDragEnd?: (event: unknown) => void;
     onDragCancel?: () => void;
   },
+  /** The strategy the board handed `DndContext`. Run for real by `drag()`. */
+  collisionDetection: undefined as
+    | undefined
+    | ((args: Record<string, unknown>) => Array<{ id: string | number }>),
   droppables: new Map<string, boolean>(),
   draggables: new Map<string, boolean>(),
 }));
 
 vi.mock("@dnd-kit/core", async () => {
   const { createElement, Fragment } = await import("react");
+  // Everything except the context, the hooks and the sensors is the real
+  // library — in particular the collision-detection functions, which
+  // `drag()` runs for real. See the header comment.
+  const actual = await vi.importActual<Record<string, unknown>>("@dnd-kit/core");
   return {
+    ...actual,
     DndContext: ({
       children,
+      collisionDetection,
       onDragStart,
       onDragEnd,
       onDragCancel,
     }: {
       children: unknown;
+      collisionDetection?: (args: Record<string, unknown>) => Array<{ id: string | number }>;
       onDragStart?: (event: unknown) => void;
       onDragEnd?: (event: unknown) => void;
       onDragCancel?: () => void;
     }) => {
       harness.handlers = { onDragStart, onDragEnd, onDragCancel };
+      harness.collisionDetection = collisionDetection;
       return createElement(Fragment, null, children as never);
     },
     useDroppable: ({ id, disabled }: { id: string; disabled?: boolean }) => {
@@ -91,7 +112,6 @@ vi.mock("@dnd-kit/core", async () => {
         isDragging: false,
       };
     },
-    closestCenter: () => null,
     useSensor: () => ({}),
     useSensors: (...sensors: unknown[]) => sensors,
     PointerSensor: class {},
@@ -176,24 +196,85 @@ function renderBoard({
   );
 }
 
+// A fabricated board geometry: the six columns as a left-to-right strip.
+// jsdom measures every element as 0×0, so the board's own rects cannot aim
+// a collision strategy — but a strategy is a pure function of rectangles,
+// so a plausible strip is enough to ask the real question.
+const COLUMN_W = 200;
+const COLUMN_H = 600;
+const COLUMN_RECTS = new Map<string, Record<string, number>>(
+  DISPLAY_COLUMNS.map((id, i) => [
+    id,
+    {
+      top: 0,
+      bottom: COLUMN_H,
+      height: COLUMN_H,
+      left: i * COLUMN_W,
+      right: (i + 1) * COLUMN_W,
+      width: COLUMN_W,
+    },
+  ])
+);
+
 /**
- * Picks a card up and drops it on a column, the way dnd-kit would: the drop
- * only resolves an `over` if that column's droppable is enabled at the time
- * the card is being dragged — which is the board's actual refusal
- * mechanism, so a refused column arrives here as a drop over nothing.
+ * Picks a card up and releases it with the pointer over `columnId`,
+ * resolving `over` the way dnd-kit actually does rather than the way it
+ * would be convenient for it to work:
+ *
+ *   - `DndContext` passes `droppableContainers.getEnabled()` to the
+ *     strategy, so `disabled` decides which columns are *candidates*;
+ *   - it then takes `getFirstCollision(collisions)` **unconditionally**.
+ *     Nothing requires the winner to be under the pointer.
+ *
+ * So the board's own strategy — captured from the `DndContext` it renders —
+ * is run here for real against the geometry above. Returns the id `over`
+ * resolved to, which is the whole question: with `closestCenter`, releasing
+ * a brief anywhere resolves to the single enabled column.
  */
 async function drag(cardId: string, columnId: string) {
   act(() => {
     harness.handlers.onDragStart?.({ active: { id: cardId } });
   });
-  const enabled = harness.droppables.get(columnId) ?? false;
+
+  const index = DISPLAY_COLUMNS.indexOf(columnId as (typeof DISPLAY_COLUMNS)[number]);
+  const pointer = { x: index * COLUMN_W + COLUMN_W / 2, y: COLUMN_H / 2 };
+  // The dragged card, centred on the pointer: narrower and far shorter
+  // than a column.
+  const collisionRect = {
+    top: pointer.y - 40,
+    bottom: pointer.y + 40,
+    height: 80,
+    left: pointer.x - 90,
+    right: pointer.x + 90,
+    width: 180,
+  };
+  // Exactly what DndContext hands the strategy: the ENABLED droppables
+  // only, but every measured rect.
+  const droppableContainers = [...COLUMN_RECTS.keys()]
+    .filter((id) => harness.droppables.get(id))
+    .map((id) => ({ id, disabled: false, rect: { current: COLUMN_RECTS.get(id) } }));
+
+  const collisions =
+    harness.collisionDetection?.({
+      active: {
+        id: cardId,
+        data: { current: undefined },
+        rect: { current: { initial: collisionRect, translated: collisionRect } },
+      },
+      collisionRect,
+      droppableRects: COLUMN_RECTS,
+      droppableContainers,
+      pointerCoordinates: pointer,
+    }) ?? [];
+  const over = collisions.length > 0 ? String(collisions[0].id) : null;
+
   await act(async () => {
     harness.handlers.onDragEnd?.({
       active: { id: cardId },
-      over: enabled ? { id: columnId } : null,
+      over: over === null ? null : { id: over },
     });
   });
-  return { offered: enabled };
+  return { over };
 }
 
 beforeEach(() => {
@@ -221,6 +302,29 @@ describe("the Brief column", () => {
     expect(headings).toEqual(["Brief", "Generating", "Draft", "Review", "Scheduled", "Published"]);
   });
 
+  // The `draggable` prop each card is rendered with becomes `disabled` on
+  // its `useDraggable`, so this is the rule about which cards can be picked
+  // up at all — asserted as the whole map, so a card silently gaining or
+  // losing a drag handle shows up here.
+  it("makes brief cards draggable, and Generating and Published pieces not", () => {
+    renderBoard({
+      board: boardData({
+        brief: [pieceCard({ id: "piece-generating", status: "brief" })],
+        draft: [pieceCard({ id: "piece-draft" })],
+        published: [pieceCard({ id: "piece-published", status: "published" })],
+      }),
+    });
+
+    expect(Object.fromEntries(harness.draggables)).toEqual({
+      // A brief's one drag target is Generating, which accepts it.
+      "brief-1": true,
+      // Generate is the only exit from Generating; Published is terminal.
+      "piece-generating": false,
+      "piece-draft": true,
+      "piece-published": false,
+    });
+  });
+
   it("shows no assignee picker or generation controls on a brief card", () => {
     renderBoard({ board: boardData({ draft: [] }) });
 
@@ -233,9 +337,9 @@ describe("dragging a brief", () => {
   it("accepts it when dropped on Generating", async () => {
     renderBoard();
 
-    const { offered } = await drag("brief-1", "brief");
+    const { over } = await drag("brief-1", "brief");
 
-    expect(offered).toBe(true);
+    expect(over).toBe("brief");
     expect(acceptBriefCard).toHaveBeenCalledWith("brief-1");
     expect(moveCard).not.toHaveBeenCalled();
     // Optimistic: the brief leaves the Brief column at once, and the server
@@ -251,9 +355,11 @@ describe("dragging a brief", () => {
     async (column) => {
       renderBoard();
 
-      const { offered } = await drag("brief-1", column);
+      // Released over a column the board refuses: the drop must resolve to
+      // nothing at all, not to whichever column happens to be enabled.
+      const { over } = await drag("brief-1", column);
 
-      expect(offered).toBe(false);
+      expect(over).toBeNull();
       expect(acceptBriefCard).not.toHaveBeenCalled();
       expect(moveCard).not.toHaveBeenCalled();
       // Still there: a refused drag is a no-op, not a silent removal.
@@ -288,9 +394,9 @@ describe("dropping into Brief", () => {
         } as Partial<BoardData>),
       });
 
-      const { offered } = await drag("piece-1", "briefs");
+      const { over } = await drag("piece-1", "briefs");
 
-      expect(offered).toBe(false);
+      expect(over).toBeNull();
       expect(moveCard).not.toHaveBeenCalled();
       expect(acceptBriefCard).not.toHaveBeenCalled();
     }
@@ -299,9 +405,9 @@ describe("dropping into Brief", () => {
   it("leaves the ordinary piece moves working", async () => {
     renderBoard();
 
-    const { offered } = await drag("piece-1", "review");
+    const { over } = await drag("piece-1", "review");
 
-    expect(offered).toBe(true);
+    expect(over).toBe("review");
     expect(moveCard).toHaveBeenCalledWith("piece-1", "review", undefined);
   });
 });
