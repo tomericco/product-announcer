@@ -104,6 +104,66 @@ describe("createManualBrief", () => {
     expect(await db.select().from(briefs).where(eq(briefs.tenantId, mine.id))).toHaveLength(0);
   });
 
+  /**
+   * The test above ("stores a rendered body equal to renderBriefBody of its own
+   * fields") cannot catch this: with every rendered field blank both sides of
+   * that assertion are "", and `"" === ""` passes happily. So the invariant has
+   * to be stated as "what is stored survives the prompt", not as "what is
+   * stored equals what the renderer returned".
+   *
+   * Only `title` is validated, and `brief-form.tsx` gates its submit button on
+   * the title alone — so a form with a title and nothing else is reachable, and
+   * `renderBriefBody` returns "" for it. "" is not null, so `briefBody`'s
+   * fallback never fires and `composeBriefPrompt`'s `.filter(Boolean)` drops
+   * it: the model would get a commission with no prose at all, silently.
+   */
+  it("refuses a brief whose body would render empty, and writes nothing", async () => {
+    const tenant = await seedTenant();
+
+    const result = await createManualBrief({
+      ...FORM,
+      angle: "   ",
+      whyNow: "",
+      keyPoints: [],
+      audience: null,
+      signalIds: [],
+    });
+
+    expect(result.ok).toBe(false);
+    expect(await db.select().from(briefs).where(eq(briefs.tenantId, tenant.id))).toHaveLength(0);
+  });
+
+  it("never lets a created brief's body reach the prompt as nothing at all", async () => {
+    // The end the guard exists for, stated as the invariant rather than as a
+    // property of one call — the same pinning `briefs-save-body.test.ts` uses
+    // for the sibling writer. Fails if the guard is removed, whether the
+    // regression stores "" or stores null (the fallback renders "" for these
+    // fields too, which is why refusing is the only coherent answer).
+    const tenant = await seedTenant();
+
+    await createManualBrief({ ...FORM, angle: " ", whyNow: " ", keyPoints: [], audience: " ", signalIds: [] });
+
+    const rows = await db.select().from(briefs).where(eq(briefs.tenantId, tenant.id));
+    const { briefBody } = await import("../../src/lib/briefs/body");
+    for (const row of rows) {
+      expect(briefBody(row).trim().length).toBeGreaterThan(0);
+    }
+  });
+
+  it("still saves a brief with only some sections filled in", async () => {
+    // The gate refuses "nothing at all", not "not everything" — a brief with an
+    // angle and no why-now is a legitimate commission and must still save.
+    await seedTenant();
+    const result = await createManualBrief({
+      ...FORM,
+      whyNow: "",
+      keyPoints: [],
+      audience: null,
+      signalIds: [],
+    });
+    expect(result.ok).toBe(true);
+  });
+
   it("refuses a blank title", async () => {
     const tenant = await seedTenant();
     const signal = await seedSignal(tenant.id);

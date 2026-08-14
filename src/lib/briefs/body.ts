@@ -54,3 +54,30 @@ export function renderBriefBody(fields: BriefBodyFields): string {
 export function briefBody(brief: Pick<Brief, "body"> & BriefBodyFields): string {
   return brief.body ?? renderBriefBody(brief);
 }
+
+/**
+ * THE guard every writer of `briefs.body` shares. It lives here, next to the
+ * accessor it protects, because there is more than one writer and they must not
+ * disagree: `saveBriefBody` (the editor's save) and `createManualBrief` (the
+ * new-brief form, where `renderBriefBody` can return "" because every field it
+ * renders is optional and only `title` is validated).
+ *
+ * "" is the one value the null fallback cannot rescue. It is not null, so
+ * `briefBody` returns it unchanged; `composeBriefPrompt`'s `.filter(Boolean)`
+ * then drops it, and the model receives a commission with a title and format
+ * guidance and no prose at all — silently, with nothing anywhere reporting a
+ * problem.
+ *
+ * The alternative — teaching `briefBody` to treat "" as null — is worse. On the
+ * edit path it would silently resurrect the structured fields a human had just
+ * deleted; on the create path it would fall back to a renderer that produces ""
+ * for exactly these inputs anyway, so it fixes nothing. Refusing at the writer
+ * is the only place the human can still be told.
+ */
+export function isBlankBriefBody(body: string): boolean {
+  return body.trim().length === 0;
+}
+
+/** The message both writers report when {@link isBlankBriefBody} refuses. */
+export const EMPTY_BRIEF_BODY_ERROR =
+  "A brief needs a body — it is the commission the draft is written from.";

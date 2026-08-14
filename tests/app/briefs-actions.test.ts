@@ -79,7 +79,7 @@ vi.mock("../../src/lib/ai/review-draft", () => ({
 
 import { revalidatePath } from "next/cache";
 import { acceptBrief, dismissBrief, generateDraft } from "../../src/app/(dashboard)/briefs/actions";
-import { scaffoldBody } from "../../src/lib/briefs/scaffold";
+import { briefBody, renderBriefBody } from "../../src/lib/briefs/body";
 import { runIdeation } from "../../src/lib/briefs/run";
 
 afterEach(async () => {
@@ -123,18 +123,54 @@ async function seedBrief(tenantId: string, overrides: Partial<typeof briefs.$inf
   return brief;
 }
 
-describe("scaffoldBody", () => {
-  it("includes the angle, the why-now and every key point", () => {
-    const body = scaffoldBody({ angle: "A", whyNow: "W", keyPoints: ["One", "Two"] });
-    expect(body).toContain("A");
-    expect(body).toContain("W");
-    expect(body).toContain("## One");
-    expect(body).toContain("## Two");
+/**
+ * Accept is the SECOND consumer of a brief's content, after drafting. It used
+ * to render its own outline from `angle`/`whyNow`/`keyPoints` (the retired
+ * `scaffoldBody`), which are creation-time provenance and are never updated
+ * when a human rewrites the brief — so accepting an edited brief seeded the
+ * content piece with the pre-edit outline, showed it back to the author as
+ * "the brief it was accepted with", and made it permanent whenever generation
+ * failed (the piece deliberately stays at "brief" with this body intact).
+ */
+describe("acceptBrief seeds the piece from the brief's own document", () => {
+  it("copies the stored body rather than re-rendering the structured fields", async () => {
+    const tenant = await seedTenant();
+    // Exactly what `saveBriefBody` leaves behind: a rewritten `body`, and the
+    // structured fields untouched at what the agent originally proposed.
+    const brief = await seedBrief(tenant.id, {
+      body: "## Angle\nThe author rewrote this entirely.",
+    });
+
+    const result = await acceptBrief(brief.id);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const [piece] = await db
+      .select()
+      .from(contentPieces)
+      .where(eq(contentPieces.id, result.contentPieceId));
+    expect(piece.body).toBe("## Angle\nThe author rewrote this entirely.");
+    // The pre-edit fields must not leak back in. "Point one" is `seedBrief`'s
+    // first key point and appears in every fields-rendered outline.
+    expect(piece.body).not.toContain("Point one");
   });
 
-  it("produces a non-empty body when there are no key points", () => {
-    // contentPieces.body is NOT NULL — an empty scaffold would fail the insert.
-    expect(scaffoldBody({ angle: "A", whyNow: "W", keyPoints: [] }).trim().length).toBeGreaterThan(0);
+  it("renders from the fields for a brief nobody has edited, byte-identically", async () => {
+    const tenant = await seedTenant();
+    // A brief created before `briefs.body` existed: null body, so the accessor
+    // falls back to the renderer. There is no backfill and must not be one.
+    const brief = await seedBrief(tenant.id, { body: null });
+
+    const result = await acceptBrief(brief.id);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const [piece] = await db
+      .select()
+      .from(contentPieces)
+      .where(eq(contentPieces.id, result.contentPieceId));
+    expect(piece.body).toBe(renderBriefBody(brief));
+    expect(piece.body).toBe(briefBody(brief));
   });
 });
 
@@ -154,7 +190,7 @@ describe("acceptBrief", () => {
     expect(pieces[0].id).toBe(result.contentPieceId);
     expect(pieces[0].type).toBe("blog_post");
     expect(pieces[0].status).toBe("brief");
-    expect(pieces[0].body).toContain("## Point one");
+    expect(pieces[0].body).toContain("- Point one");
 
     const [after] = await db.select().from(briefs).where(eq(briefs.id, brief.id));
     expect(after.status).toBe("accepted");

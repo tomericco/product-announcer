@@ -42,8 +42,8 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
   if (!update) notFound();
 
   // A "brief"-status piece is an accepted brief whose draft hasn't been
-  // generated yet — its body is still `scaffoldBody`'s deterministic outline,
-  // not real copy. None of the editor/publish machinery below applies to it
+  // generated yet — its body is still the brief's own document, copied through
+  // `briefBody` at accept time, not real copy. None of the editor/publish machinery below applies to it
   // (assertDraftEditable refuses all of it), and none of its supporting
   // queries — Webflow connection, release delta, publish targets, LinkedIn
   // config — are meaningful for a piece that has never been drafted, so this
@@ -105,8 +105,8 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
           </div>
         ) : (
           <p className="text-sm text-muted-foreground">
-            This brief was accepted, but its draft hasn&apos;t been generated yet. The outline below
-            is the scaffold it was accepted with, not the finished copy.
+            This brief was accepted, but its draft hasn&apos;t been generated yet. What you see below
+            is the brief it was accepted with, not the finished copy.
           </p>
         )}
 

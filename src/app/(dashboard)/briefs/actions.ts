@@ -6,7 +6,7 @@ import { after } from "next/server";
 import { db } from "@/db";
 import { briefs, contentPieces, type Brief } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
-import { scaffoldBody } from "@/lib/briefs/scaffold";
+import { briefBody } from "@/lib/briefs/body";
 import { generateDraftForPiece, queueGeneration, GENERATION_QUEUED_STEP } from "@/lib/briefs/draft";
 
 export type DismissReason = NonNullable<Brief["dismissReason"]>;
@@ -46,11 +46,27 @@ export async function acceptBrief(briefId: string): Promise<AcceptResult> {
           tenantId,
           type: brief.contentType,
           title: brief.title,
-          body: scaffoldBody(brief),
+          // The brief's OWN document, through the accessor — never re-rendered
+          // from `angle`/`whyNow`/`keyPoints`. Those fields are creation-time
+          // provenance and are never updated after a human edits the brief, so
+          // rendering from them here seeded the piece with the pre-edit outline:
+          // the author was redirected to /drafts/[id] and shown, as "the outline
+          // below", content they had just replaced. Worse, a generation failure
+          // deliberately leaves the piece at "brief" with this body intact, so
+          // the stale outline became the permanent thing they went on editing.
+          //
+          // Applied to product_update briefs too, deliberately and with no
+          // fork. `generateDraftForPiece`'s release branch ignores the
+          // commission when it composes from atomic updates — but that is about
+          // what the MODEL reads. This is what the HUMAN sees and may keep, and
+          // on a release brief they are the more likely to keep it: the release
+          // branch is the one that throws on a lost atomic-update claim and
+          // leaves the piece sitting at "brief" with exactly this body.
+          body: briefBody(brief),
           // "brief" = approved, draft not yet generated (schema.ts's own
           // definition). Generation moves it to "draft"; until then the body is
-          // the scaffold. Do NOT set "draft" here — that would present an
-          // ungenerated scaffold as a finished draft.
+          // the brief's. Do NOT set "draft" here — that would present an
+          // ungenerated commission as a finished draft.
           status: "brief",
           // Born already marked as generating, in the same INSERT — the
           // `after()` callback below is unconditional, so this piece IS

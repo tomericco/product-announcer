@@ -4,7 +4,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { db } from "@/db";
 import { briefs, briefSignals, signals, type Brief } from "@/db/schema";
-import { renderBriefBody } from "@/lib/briefs/body";
+import { EMPTY_BRIEF_BODY_ERROR, isBlankBriefBody, renderBriefBody } from "@/lib/briefs/body";
 import { requireSession } from "@/lib/workspace/session";
 
 /**
@@ -77,6 +77,24 @@ export async function createManualBrief(input: ManualBriefInput): Promise<Create
   const whyNow = input.whyNow.trim();
   const audience = input.audience?.trim() || null;
   const keyPoints = input.keyPoints;
+  const body = renderBriefBody({ angle, whyNow, keyPoints, audience });
+
+  // The same guard `saveBriefBody` applies, from the same module — this action
+  // is the OTHER writer of `briefs.body` and was unguarded. Only `title` is
+  // validated above, and the form gates its submit button on the title alone,
+  // so angle/why-now/key-points/audience can all arrive blank; `renderBriefBody`
+  // then returns "" and stored "" — not null — which is the one value
+  // `briefBody`'s fallback cannot rescue (see the module).
+  //
+  // Refused rather than stored as null. Null would only re-run the very
+  // renderer that just produced "" from these same fields, so the fallback
+  // renders "" too — the brief would still reach the model as no prose at all,
+  // just one indirection later. There is no value to store that makes a brief
+  // with nothing in it into a usable commission, so the human is told now,
+  // while they are still looking at the form.
+  if (isBlankBriefBody(body)) {
+    return { ok: false, error: EMPTY_BRIEF_BODY_ERROR };
+  }
 
   const [brief] = await db
     .insert(briefs)
@@ -91,7 +109,7 @@ export async function createManualBrief(input: ManualBriefInput): Promise<Create
       suggestedChannel: input.suggestedChannel.trim(),
       audience,
       keyPoints,
-      body: renderBriefBody({ angle, whyNow, keyPoints, audience }),
+      body,
       targetLength: input.targetLength ?? null,
       score: input.score,
       scoreRationale: input.scoreRationale?.trim() || null,

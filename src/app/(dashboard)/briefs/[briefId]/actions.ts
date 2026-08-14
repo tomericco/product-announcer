@@ -4,6 +4,7 @@ import { and, eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { db } from "@/db";
 import { briefs } from "@/db/schema";
+import { EMPTY_BRIEF_BODY_ERROR, isBlankBriefBody } from "@/lib/briefs/body";
 import { requireSession } from "@/lib/workspace/session";
 
 // NOTHING but async functions may be exported from a "use server" module — no
@@ -58,24 +59,17 @@ export async function saveBriefBody({
     return { ok: false, error: `This brief was already ${brief.status} and can no longer be edited.` };
   }
 
-  // An empty body is refused rather than stored. Two reasons, and the first is
-  // the common one:
-  //
-  //   - A blank submission is usually not a human intention at all. When
-  //     MDXEditor fails to parse the stored markdown it renders blank and then
-  //     emits "" on the next keystroke — `resolveBody` in
-  //     `drafts/actions.ts` exists for exactly that failure. Accepting it here
-  //     would let a parse error erase a commission.
-  //   - The alternative fix — teaching `briefBody` to treat "" as null — is
-  //     worse. It would silently resurrect the structured fields the human had
-  //     just deleted, and leave a stored value that no read ever returns.
-  //
-  // The cost of NOT guarding is silent: "" is not null, so `briefBody`'s
-  // fallback does not fire, and `composeBriefPrompt`'s `.filter(Boolean)`
-  // drops the body — producing a draft commission with no prose in it and no
-  // error anywhere.
-  if (body.trim().length === 0) {
-    return { ok: false, error: "A brief needs a body — it is the commission the draft is written from." };
+  // An empty body is refused rather than stored, through the shared guard in
+  // `@/lib/briefs/body` — `createManualBrief` is the other writer of this
+  // column and calls the same one, because two writers with two opinions about
+  // "" is precisely how this defect got in. Why "" is unrescuable is documented
+  // there; the reason specific to THIS path is that a blank submission here is
+  // usually not a human intention at all: when MDXEditor fails to parse the
+  // stored markdown it renders blank and then emits "" on the next keystroke
+  // (`resolveBody` in `drafts/actions.ts` exists for exactly that failure), and
+  // accepting it would let a parse error erase a commission.
+  if (isBlankBriefBody(body)) {
+    return { ok: false, error: EMPTY_BRIEF_BODY_ERROR };
   }
 
   // `briefs.title` is NOT NULL and is copied onto the content piece at accept
