@@ -13,7 +13,7 @@ import type { Brief } from "@/db/schema";
 // Mirrors `briefStatusEnum` in src/db/schema.ts. Local `as const` array
 // rather than importing the enum object as a runtime value — same reasoning
 // as `KIND_VALUES` in src/lib/signals/params.ts and `DISMISS_REASON_VALUES`
-// in brief-card.tsx: this is a client component, and every other client
+// in brief-decision.tsx: this is a client component, and every other client
 // component in this codebase imports only types from `@/db/schema`, never
 // the (large, comment-heavy) module itself. Changing one of these four
 // values means changing the enum too.

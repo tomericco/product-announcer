@@ -90,11 +90,12 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
             (drafts/page.tsx), and the same shared component — a generation is
             actually in flight, not merely un-run. This page needs it MORE than
             either of them: accepting a brief redirects straight here
-            (briefs/brief-card.tsx), so this is the page the author is sitting
-            on during the one flow that reliably kicks off a background
-            generation. Without it they watched a static "Awaiting generation"
-            badge for the whole run. The row already selects every column, so
-            `generationStep` is present and tenant-scoped by the query above. */}
+            (briefs/[briefId]/brief-workspace.tsx, via brief-decision.tsx), so
+            this is the page the author is sitting on during the one flow that
+            reliably kicks off a background generation. Without it they
+            watched a static "Awaiting generation" badge for the whole run.
+            The row already selects every column, so `generationStep` is
+            present and tenant-scoped by the query above. */}
         {generating ? (
           <GenerationChecklist contentPieceId={update.id} />
         ) : update.generationError ? (

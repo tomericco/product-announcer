@@ -39,15 +39,17 @@ const DISMISS_REASON_OPTIONS = DISMISS_REASON_VALUES.map((value) => ({
 }));
 
 /**
- * Accept/Dismiss, shared by the inbox card and the brief editor's header.
+ * Accept/Dismiss, used by the brief editor's header (`brief-header.tsx`).
  *
- * A hook plus a picker component rather than one all-in-one control, because
- * the two callers lay the same pieces out differently: the card puts the two
- * buttons in its `CardAction` slot and the reason picker in its `CardFooter`,
- * while the editor puts the buttons in its sticky header and the picker in a
- * panel below it. Extracted here — rather than copied into the editor — so
- * there is exactly one implementation of "what dismissing a brief asks for and
- * what accepting it does next".
+ * A hook plus a picker component rather than one all-in-one control. This
+ * used to be shared with the inbox card's own Accept/Dismiss — the card put
+ * the two buttons in its `CardAction` slot and the reason picker in its
+ * `CardFooter`, while the editor puts the buttons in its sticky header and
+ * the picker in a panel below it. The card is gone (row-level decisions were
+ * removed — see `/briefs`'s list rows in `briefs-list.tsx`), but the hook
+ * stayed split out this way rather than folded back into the editor, so
+ * there remains exactly one implementation of "what dismissing a brief asks
+ * for and what accepting it does next" if another caller ever needs it.
  */
 export function useBriefDecision(
   briefId: string,
@@ -67,7 +69,7 @@ export function useBriefDecision(
    *
    * In both cases the brief lands on a status that this page and
    * `saveBriefBody` treat as read-only, so there is no recovering the edits
-   * afterwards. The inbox card passes nothing — it has no editor.
+   * afterwards.
    */
   { beforeDecide }: { beforeDecide?: () => Promise<boolean> } = {}
 ) {

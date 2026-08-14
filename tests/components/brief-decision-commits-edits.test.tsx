@@ -192,9 +192,11 @@ describe("Dismiss from the brief editor", () => {
   });
 });
 
-// The inbox card passes no `beforeDecide` — it has no editor — and must keep
-// working exactly as it did.
-describe("the inbox card's decisions are unaffected", () => {
+// `beforeDecide` is optional — the inbox card used to call the hook without
+// one (it had no editor to commit first) before row-level decisions were
+// removed (Task 5). No current caller omits it, but the hook must not assume
+// one is always supplied.
+describe("useBriefDecision with no beforeDecide", () => {
   it("accepts with no commit step when no beforeDecide is supplied", async () => {
     const { result } = renderHook(() => useBriefDecision("brief-1"));
 
