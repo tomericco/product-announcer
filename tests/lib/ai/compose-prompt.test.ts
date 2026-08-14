@@ -252,9 +252,7 @@ describe("buildSystemPrompt content types", () => {
 describe("composeBriefPrompt", () => {
   const BRIEF = {
     title: "Why localization breaks design systems",
-    angle: "Teams discover it too late",
-    whyNow: "Two vendors shipped multilingual tooling this month",
-    keyPoints: ["Point one", "Point two"],
+    body: "## Angle\nTeams discover it too late\n\n## Key points\n- Point one\n- Point two",
     contentType: "blog_post" as const,
     targetLength: 800,
   };
@@ -268,13 +266,31 @@ describe("composeBriefPrompt", () => {
       examples: [],
     });
 
-    // The angle and key points are INSTRUCTIONS to follow; the signals are
-    // source material to ground against. Merging them makes the model treat the
-    // commission as just more evidence.
+    // The body is the INSTRUCTION to follow; the signals are source material to
+    // ground against. Merging them makes the model treat the commission as just
+    // more evidence.
     expect(prompt).toContain("Teams discover it too late");
     expect(prompt).toContain("Point one");
     expect(prompt).toContain("Phrase ships X");
     expect(prompt.indexOf("Teams discover it too late")).toBeLessThan(prompt.indexOf("Phrase ships X"));
+  });
+
+  it("carries the body verbatim, and keeps the title and shape instructions out of it", () => {
+    const { prompt } = composeBriefPrompt({
+      brief: BRIEF,
+      evidence: [],
+      brandProfile: PROFILE,
+      personas: [],
+      examples: [],
+    });
+
+    // Verbatim: the commission the model reads is the document the human
+    // edited, markdown headings and all — not a re-rendering of it.
+    expect(prompt).toContain(BRIEF.body);
+    // Title, target length and format guidance are instructions about the
+    // piece's shape, not commission prose, and stay as their own lines.
+    expect(prompt).toContain(`Write this piece. Title: "${BRIEF.title}".`);
+    expect(prompt).toContain("Target length: about 800 words.");
   });
 
   it("requires anything said about another company to come from the sources", () => {

@@ -13,7 +13,7 @@ import { recordLlmUsage } from "../../../src/lib/ai/llm-usage";
 
 const PROFILE = { tenantId: "t1", industry: null, guidelines: null, userPersonas: [] } as never;
 const BRIEF = {
-  title: "T", angle: "A", whyNow: "W", keyPoints: ["One"],
+  title: "T", body: "## Angle\nA\n\n## Why now\nW",
   contentType: "blog_post" as const, targetLength: null,
 };
 

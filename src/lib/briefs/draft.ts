@@ -16,6 +16,7 @@ import type {
   BriefEvidenceForPrompt,
 } from "@/lib/ai/compose-prompt";
 import { generateBriefDraft, generateReleaseDraft } from "@/lib/ai/generation";
+import { briefBody } from "@/lib/briefs/body";
 import { prepareGenerationContext } from "@/lib/ai/generation-context";
 import { reviewAndReconcile, type ReviewOutcome } from "@/lib/ai/review-draft";
 import { validateDraftLinks, type LinkCheck } from "@/lib/ai/validate-links";
@@ -358,11 +359,14 @@ export async function generateDraftForPiece(
       return { ok: false, error: "No brief is linked to this piece." };
     }
 
+    // Through the accessor, never from the fields directly: `briefs.body` is
+    // the source of truth once anything has written it, and it is what a human
+    // edits. Re-rendering from `angle`/`whyNow`/`keyPoints` here would look
+    // identical for an unedited brief and silently discard every edit — the
+    // exact failure this indirection exists to prevent.
     const briefForPrompt: BriefForPrompt = {
       title: brief.title,
-      angle: brief.angle,
-      whyNow: brief.whyNow,
-      keyPoints: brief.keyPoints,
+      body: briefBody(brief),
       contentType: brief.contentType,
       targetLength: brief.targetLength,
     };

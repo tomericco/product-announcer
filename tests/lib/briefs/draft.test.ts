@@ -37,7 +37,10 @@ import {
   queueGeneration,
   findNamedCompanies,
   MIN_COMPETITOR_NAME_LENGTH,
+  type DraftGenerator,
 } from "../../../src/lib/briefs/draft";
+import { composeBriefPrompt } from "../../../src/lib/ai/compose-prompt";
+import { renderBriefBody } from "../../../src/lib/briefs/body";
 import { computeReleaseDelta } from "../../../src/lib/change-events/release-deltas";
 import { getOpenAtomicUpdates } from "../../../src/lib/change-events/release-claim";
 import type { ReviewOutcome } from "../../../src/lib/ai/review-draft";
@@ -319,7 +322,7 @@ describe("generateDraftForPiece", () => {
     expect(after.generationError).toBeNull();
   });
 
-  it("sends the brief's own angle, key points, and cited evidence to the generator", async () => {
+  it("sends the brief's own body and cited evidence to the generator", async () => {
     const tenant = await seedTenant();
     const { piece, brief, signal } = await seedPieceWithBrief(tenant.id, undefined, {
       angle: "A very specific angle.",
@@ -334,14 +337,14 @@ describe("generateDraftForPiece", () => {
 
     // The mocked generator ignores its arguments to produce a result — this
     // is the test that actually verifies the commission handed to it is
-    // assembled from the brief, not synthesized from the scaffold.
+    // assembled from the brief, not synthesized from the scaffold. This brief
+    // has no stored body (nothing seeded one), so `briefBody`'s fallback
+    // renders it from the fields — byte-identical to `renderBriefBody`.
     expect(generate).toHaveBeenCalledWith(
       expect.objectContaining({
         brief: expect.objectContaining({
           title: brief.title,
-          angle: "A very specific angle.",
-          whyNow: "A very specific reason.",
-          keyPoints: ["Alpha point.", "Beta point."],
+          body: renderBriefBody(brief),
           contentType: brief.contentType,
           targetLength: 500,
         }),
@@ -354,6 +357,55 @@ describe("generateDraftForPiece", () => {
         ],
       })
     );
+  });
+
+  /**
+   * THE test this whole spec exists for.
+   *
+   * The stored body deliberately says something the fields do not. An
+   * assertion that only checked "the body appears in the prompt" would pass
+   * even if drafting re-rendered the commission from the fields, because for
+   * an unedited brief the stored body and the rendered one are identical — the
+   * difference between them is the only thing that proves a human's edit
+   * actually reaches the model.
+   *
+   * Asserted on the composed prompt rather than on the `BriefForPrompt`
+   * object, so it covers the whole chain: `draft.ts` reading the stored body
+   * AND `composeBriefPrompt` embedding it. `composeBriefPrompt` is pure and
+   * reaches no model; the generator itself is injected, so nothing here
+   * touches the real API.
+   */
+  it("puts the brief's STORED body in the prompt, not its fields re-rendered", async () => {
+    const tenant = await seedTenant();
+    const { piece } = await seedPieceWithBrief(tenant.id, undefined, {
+      angle: "FIELD ANGLE, which the human replaced.",
+      whyNow: "FIELD WHYNOW, which the human replaced.",
+      keyPoints: ["FIELD KEYPOINT, which the human replaced."],
+      body: "## Angle\nHUMAN EDITED ANGLE.\n\n## Why now\nHUMAN EDITED REASON.",
+    });
+
+    let prompt = "";
+    const generate = vi.fn(async (args: Parameters<DraftGenerator>[0]) => {
+      prompt = composeBriefPrompt({
+        brief: args.brief,
+        evidence: args.evidence,
+        brandProfile: args.brandProfile,
+        personas: [],
+        examples: [],
+      }).prompt;
+      return { title: "Real title", body: "Real body." };
+    });
+
+    const result = await generateDraftForPiece(piece.id, tenant.id, { database: db, generate });
+    expect(result.ok).toBe(true);
+
+    expect(prompt).toContain("HUMAN EDITED ANGLE.");
+    expect(prompt).toContain("HUMAN EDITED REASON.");
+    // The point: the structured fields are never re-derived into the
+    // commission once a body exists.
+    expect(prompt).not.toContain("FIELD ANGLE");
+    expect(prompt).not.toContain("FIELD WHYNOW");
+    expect(prompt).not.toContain("FIELD KEYPOINT");
   });
 
   it("keeps the scaffold and records the reason when generation throws", async () => {
@@ -633,6 +685,41 @@ describe("generateDraftForPiece — release fork", () => {
     const [after] = await db.select().from(contentPieces).where(eq(contentPieces.id, piece.id));
     expect(after.status).toBe("draft");
     expect(after.body).toBe("Release body.");
+  });
+
+  /**
+   * The release branch is deliberately unaffected by the body. A
+   * product_update brief's commission already does not steer its draft
+   * (decided 2026-08-13): that fork composes from the atomic updates and their
+   * non-shipped-work context, and `ReleaseDraftGenerator` has no brief
+   * parameter at all. Editing the body must therefore change nothing here —
+   * this pins that so a later "helpful" wiring of the body into the release
+   * prompt fails loudly instead of quietly re-opening a settled decision.
+   */
+  it("ignores an edited body on the release branch", async () => {
+    const tenant = await seedTenant();
+    const { piece, brief } = await seedPieceWithBrief(
+      tenant.id,
+      { type: "product_update" },
+      { contentType: "product_update", body: "## Angle\nHUMAN EDITED ANGLE." }
+    );
+    await seedShippedWork({ tenantId: tenant.id, briefId: brief.id });
+
+    const generate = vi.fn(async () => ({ title: "Brief title", body: "Brief body." }));
+    const generateRelease = vi.fn(async () => ({ title: "Release title", body: "Release body." }));
+
+    const result = await generateDraftForPiece(piece.id, tenant.id, {
+      database: db,
+      generate,
+      generateRelease,
+      review: passingReview,
+    });
+    expect(result.ok).toBe(true);
+
+    expect(generateRelease).toHaveBeenCalledTimes(1);
+    expect(generate).not.toHaveBeenCalled();
+    // Nothing the release generator receives carries the commission.
+    expect(JSON.stringify(generateRelease.mock.calls[0])).not.toContain("HUMAN EDITED ANGLE");
   });
 
   it("falls back to the BRIEF generator for a product_update brief with no shipped work", async () => {

@@ -329,11 +329,16 @@ export function composeExtractPrompt(args: {
   return { system, prompt };
 }
 
+/**
+ * The commission, as the human last left it. `body` is the brief's markdown
+ * document — read through `briefBody` (`@/lib/briefs/body`), never re-rendered
+ * from the structured fields here — which is what makes editing a brief change
+ * the draft it produces. `title`, `contentType` and `targetLength` are not part
+ * of that prose: they are instructions to the model about the piece's shape.
+ */
 export type BriefForPrompt = {
   title: string;
-  angle: string;
-  whyNow: string;
-  keyPoints: string[];
+  body: string;
   contentType: ContentType;
   targetLength: number | null;
 };
@@ -376,11 +381,7 @@ export function composeBriefPrompt(args: {
   const { brief } = args;
   const commission = [
     `Write this piece. Title: "${brief.title}".`,
-    `Angle: ${brief.angle}`,
-    `Why now: ${brief.whyNow}`,
-    brief.keyPoints.length > 0
-      ? `Cover these points, in order:\n${brief.keyPoints.map((p, i) => `${i + 1}. ${p}`).join("\n")}`
-      : null,
+    brief.body,
     brief.targetLength ? `Target length: about ${brief.targetLength} words.` : null,
     FORMAT_GUIDANCE[brief.contentType],
   ]
@@ -388,7 +389,7 @@ export function composeBriefPrompt(args: {
     .join("\n");
 
   // The evidence is source material, NOT part of the commission — the two are
-  // fenced apart because the model otherwise treats the angle as one more
+  // fenced apart because the model otherwise treats the body as one more
   // signal. The naming reminder sits here rather than only in the system
   // prompt because this is where the company names actually appear.
   const evidence =
