@@ -115,7 +115,7 @@ export function buildSystemPrompt(
     );
   }
 
-  return blocks.join("\n\n");
+  return blocks.join("\n");
 }
 
 export type AtomicUpdateForPrompt = {
@@ -379,6 +379,13 @@ export function composeBriefPrompt(args: {
   examples: ExampleRow[];
 }): { system: string; prompt: string } {
   const { brief } = args;
+  // Joined with a BLANK line, not a newline. `brief.body` is multi-line
+  // markdown, so a single "\n" glues whatever follows onto its last line: the
+  // target-length instruction becomes another sentence of the body's closing
+  // section (or, when the body ends in a list, another bullet), and the title
+  // line runs straight into the body's first heading. Instructions absorbed
+  // into commission prose stop reading as instructions — verified against a
+  // rendered prompt, not assumed. Every element here is a self-contained block.
   const commission = [
     `Write this piece. Title: "${brief.title}".`,
     brief.body,
@@ -386,7 +393,7 @@ export function composeBriefPrompt(args: {
     FORMAT_GUIDANCE[brief.contentType],
   ]
     .filter((line): line is string => Boolean(line))
-    .join("\n");
+    .join("\n\n");
 
   // The evidence is source material, NOT part of the commission — the two are
   // fenced apart because the model otherwise treats the body as one more

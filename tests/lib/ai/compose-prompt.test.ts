@@ -308,6 +308,57 @@ describe("composeBriefPrompt", () => {
     expect(prompt).toMatch(/about another company/i);
   });
 
+  /**
+   * The join between commission blocks. Nothing pinned this while every
+   * element was a single line, and a `"\n"` join survived the body landing
+   * among them — so a rendered prompt had `Target length:` sitting directly
+   * beneath the body's closing line and `FORMAT_GUIDANCE` directly beneath
+   * that. Instructions glued onto commission prose stop reading as
+   * instructions; when the body ends in a list they read as another bullet.
+   *
+   * The body here deliberately ends in a list, which is the worst case, and
+   * the negative assertions are the real pin: they fail the moment ANYTHING
+   * is joined onto the body's last line, whatever it happens to be.
+   */
+  const LIST_BODY = "## Angle\nTeams discover it too late\n\n## Key points\n- Point one\n- Point two";
+
+  it("puts a blank line between every commission block", () => {
+    const { prompt } = composeBriefPrompt({
+      brief: { ...BRIEF, body: LIST_BODY },
+      evidence: [],
+      brandProfile: PROFILE,
+      personas: [],
+      examples: [],
+    });
+
+    // Title line -> body: without the blank line the instruction runs straight
+    // into the body's first heading.
+    expect(prompt).toContain(`Write this piece. Title: "${BRIEF.title}".\n\n## Angle`);
+    // Body -> target length: the regression the reviewer caught in a dump.
+    expect(prompt).toContain("- Point two\n\nTarget length: about 800 words.");
+    // Target length -> format guidance.
+    expect(prompt).toMatch(/Target length: about 800 words\.\n\nFormat the body as Markdown/);
+    // Nothing at all is glued onto the body's last line. This is what fails if
+    // the join reverts to "\n", regardless of what follows the body.
+    expect(prompt).not.toMatch(/- Point two\n(?!\n)/);
+  });
+
+  it("still blank-line separates when there is no target length", () => {
+    // The path where FORMAT_GUIDANCE follows the body directly — with a "\n"
+    // join it becomes a third bullet under "## Key points".
+    const { prompt } = composeBriefPrompt({
+      brief: { ...BRIEF, body: LIST_BODY, targetLength: null },
+      evidence: [],
+      brandProfile: PROFILE,
+      personas: [],
+      examples: [],
+    });
+
+    expect(prompt).not.toContain("Target length");
+    expect(prompt).toMatch(/- Point two\n\nFormat the body as Markdown/);
+    expect(prompt).not.toMatch(/- Point two\n(?!\n)/);
+  });
+
   it("uses the brief's own content type for the system prompt", () => {
     const { system } = composeBriefPrompt({
       brief: { ...BRIEF, contentType: "social_post" },
