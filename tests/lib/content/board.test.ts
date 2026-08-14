@@ -1,10 +1,11 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, contentPieces, users, tenantMembers } from "../../../src/db/schema";
+import { tenants, contentPieces, users, tenantMembers, briefs } from "../../../src/db/schema";
 import {
   readBoard,
   BOARD_COLUMNS,
+  BRIEF_COLUMN,
   PUBLISHED_COLUMN_LIMIT,
   canMove,
   moveContentPiece,
@@ -26,14 +27,36 @@ async function seedPiece(tenantId: string, overrides: Partial<typeof contentPiec
   return piece;
 }
 
+async function seedBrief(tenantId: string, overrides: Partial<typeof briefs.$inferInsert> = {}) {
+  const [brief] = await db
+    .insert(briefs)
+    .values({
+      tenantId,
+      origin: "agent",
+      contentType: "blog_post",
+      title: "A brief",
+      angle: "an angle",
+      whyNow: "because",
+      suggestedChannel: "blog",
+      score: 0.8,
+      lastEvidenceAt: new Date(),
+      ...overrides,
+    })
+    .returning();
+  return brief;
+}
+
 describe("readBoard", () => {
   it("returns every column, empty ones included", async () => {
     const tenant = await seedTenant(TENANT);
     const board = await readBoard(tenant.id, db);
     // A column missing from the object would render as a missing column, not
-    // an empty one — the board must always show the whole pipeline.
-    expect(Object.keys(board).sort()).toEqual([...BOARD_COLUMNS].sort());
+    // an empty one — the board must always show the whole pipeline. The brief
+    // column is keyed separately from the five content-piece statuses because
+    // it holds a different object type.
+    expect(Object.keys(board).sort()).toEqual([BRIEF_COLUMN, ...BOARD_COLUMNS].sort());
     for (const c of BOARD_COLUMNS) expect(board[c]).toEqual([]);
+    expect(board[BRIEF_COLUMN]).toEqual([]);
   });
 
   it("groups pieces by status", async () => {
@@ -125,6 +148,113 @@ describe("readBoard", () => {
 
     const board = await readBoard(tenant.id, db, { assignedTo: "unassigned" });
     expect(board.draft.map((c) => c.title)).toEqual(["Unassigned"]);
+  });
+
+  it("excludes archived pieces — there is no board column for them", async () => {
+    const tenant = await seedTenant(TENANT);
+    await seedPiece(tenant.id, { title: "Archived", status: "archived" });
+    await seedPiece(tenant.id, { title: "Live", status: "draft" });
+
+    const board = await readBoard(tenant.id, db);
+    const titles = BOARD_COLUMNS.flatMap((c) => board[c].map((card) => card.title));
+    expect(titles).toEqual(["Live"]);
+  });
+});
+
+describe("readBoard — the brief column", () => {
+  it("returns the tenant's new briefs, highest score first", async () => {
+    const tenant = await seedTenant(TENANT);
+    const low = await seedBrief(tenant.id, { title: "Low", score: 0.4 });
+    const high = await seedBrief(tenant.id, { title: "High", score: 0.9 });
+
+    const board = await readBoard(tenant.id, db);
+    expect(board[BRIEF_COLUMN].map((c) => c.id)).toEqual([high.id, low.id]);
+    expect(board[BRIEF_COLUMN][0]).toEqual({
+      kind: "brief",
+      id: high.id,
+      title: "High",
+      contentType: "blog_post",
+      score: 0.9,
+      status: "new",
+    });
+  });
+
+  it("keeps briefs out of the content-piece columns, and pieces out of the brief column", async () => {
+    const tenant = await seedTenant(TENANT);
+    await seedBrief(tenant.id, { title: "A brief" });
+    // A piece with status "brief" is the accept-time scaffold — the column
+    // labelled Generating. It is a different object from the brief above and
+    // must not land in the brief column.
+    const piece = await seedPiece(tenant.id, { title: "Generating", status: "brief" });
+
+    const board = await readBoard(tenant.id, db);
+    expect(board.brief.map((c) => c.id)).toEqual([piece.id]);
+    expect(board.brief.every((c) => c.kind === "piece")).toBe(true);
+    expect(board[BRIEF_COLUMN].map((c) => c.title)).toEqual(["A brief"]);
+  });
+
+  it("excludes an accepted brief — its content piece is already on the board", async () => {
+    const tenant = await seedTenant(TENANT);
+    const piece = await seedPiece(tenant.id, { title: "The draft", status: "draft" });
+    const accepted = await seedBrief(tenant.id, {
+      title: "Accepted",
+      status: "accepted",
+      contentPieceId: piece.id,
+      acceptedAt: new Date(),
+    });
+    const open = await seedBrief(tenant.id, { title: "Still open" });
+
+    const board = await readBoard(tenant.id, db);
+    const ids = board[BRIEF_COLUMN].map((c) => c.id);
+    // Showing both the accepted brief and the piece it produced would
+    // double-count the same work in two columns.
+    expect(ids).not.toContain(accepted.id);
+    expect(ids).toEqual([open.id]);
+    expect(board.draft.map((c) => c.id)).toEqual([piece.id]);
+  });
+
+  it("excludes dismissed and expired briefs — decisions already made", async () => {
+    const tenant = await seedTenant(TENANT);
+    const dismissed = await seedBrief(tenant.id, {
+      title: "Dismissed",
+      status: "dismissed",
+      dismissReason: "off_topic",
+      dismissedAt: new Date(),
+    });
+    const expired = await seedBrief(tenant.id, { title: "Expired", status: "expired" });
+
+    const board = await readBoard(tenant.id, db);
+    const ids = board[BRIEF_COLUMN].map((c) => c.id);
+    expect(ids).not.toContain(dismissed.id);
+    expect(ids).not.toContain(expired.id);
+    expect(ids).toEqual([]);
+  });
+
+  it("returns only the calling tenant's briefs", async () => {
+    const mine = await seedTenant(TENANT);
+    const [other] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const ours = await seedBrief(mine.id, { title: "Ours" });
+    const theirs = await seedBrief(other.id, { title: "Theirs" });
+
+    const board = await readBoard(mine.id, db);
+    const ids = board[BRIEF_COLUMN].map((c) => c.id);
+    // By id, not by an empty result: an empty column would also "pass" if the
+    // read were broken in a way that returned nothing at all.
+    expect(ids).toContain(ours.id);
+    expect(ids).not.toContain(theirs.id);
+  });
+
+  it("ignores the assignee filter — a brief has no assignee", async () => {
+    const tenant = await seedTenant(TENANT);
+    const [member] = await db.insert(users).values({ email: `board-brief-${Date.now()}@example.com`, name: "M" }).returning();
+    await db.insert(tenantMembers).values({ tenantId: tenant.id, userId: member.id, role: "member" });
+    const brief = await seedBrief(tenant.id, { title: "Unfiltered" });
+
+    // assignedTo is a content-piece concept. The read returns the briefs
+    // either way; the board's UI explains the mismatch rather than silently
+    // emptying the column (see the spec).
+    const board = await readBoard(tenant.id, db, { assignedTo: member.id });
+    expect(board[BRIEF_COLUMN].map((c) => c.id)).toEqual([brief.id]);
   });
 });
 

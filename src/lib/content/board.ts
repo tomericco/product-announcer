@@ -1,13 +1,31 @@
 import { and, desc, eq } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
-import { contentPieces, tenantMembers } from "@/db/schema";
+import { briefs, contentPieces, tenantMembers, type Brief } from "@/db/schema";
 import type { ContentPiece } from "@/lib/publishing/destinations/types";
 import type { DraftStepKey } from "@/lib/drafting/draft-progress";
 
 type Database = typeof defaultDb;
 
+// Every one of these IS a `contentPieces.status` — the type doubles as the
+// status enum for moveContentPiece and ALLOWED_MOVES, so nothing may join it
+// that a piece cannot actually be. `brief` here is the accept-time scaffold a
+// piece sits in while it generates; the board labels that column
+// **Generating**. The column labelled Brief is BRIEF_COLUMN below, and it
+// holds rows from a different table entirely.
 export const BOARD_COLUMNS = ["brief", "draft", "review", "scheduled", "published"] as const;
 export type BoardColumn = (typeof BOARD_COLUMNS)[number];
+
+// The one column that is not a content-piece status. Kept out of
+// BOARD_COLUMNS deliberately: adding it there would widen `BoardColumn`, and
+// `BoardColumn` is what moveContentPiece writes into `contentPieces.status`
+// and what ALLOWED_MOVES is keyed by — a value no piece can hold has no
+// business in either.
+export const BRIEF_COLUMN = "briefs" as const;
+export type BriefColumn = typeof BRIEF_COLUMN;
+
+// Display order, Brief first. The board renders this; the five statuses above
+// remain the move rules' alphabet.
+export const BOARD_DISPLAY_COLUMNS = [BRIEF_COLUMN, ...BOARD_COLUMNS] as const;
 
 // Published grows without bound and would otherwise dominate the board;
 // /history is the full record. The working columns are never capped —
@@ -15,6 +33,11 @@ export type BoardColumn = (typeof BOARD_COLUMNS)[number];
 export const PUBLISHED_COLUMN_LIMIT = 20;
 
 export type BoardCard = {
+  // The discriminant. The board carries two object types now, and this is
+  // what keeps a brief id from ever reaching moveContentPiece or a piece id
+  // from reaching acceptance — the alternative, one card type with nullable
+  // fields, would scatter that distinction across runtime checks in the UI.
+  kind: "piece";
   id: string;
   title: string;
   type: ContentPiece["type"];
@@ -29,6 +52,24 @@ export type BoardCard = {
   generationStep: DraftStepKey | null;
   createdAt: Date;
 };
+
+// A commission, not a draft: no assignee, no schedule, no generation state,
+// and its id belongs to `briefs`, not `contentPieces`. It links to the brief
+// editor at /briefs/[id]; accepting it is a separate transition.
+export type BoardBriefCard = {
+  kind: "brief";
+  id: string;
+  title: string;
+  contentType: Brief["contentType"];
+  score: number;
+  status: Brief["status"];
+};
+
+// The five status columns hold pieces; the brief column holds briefs. Written
+// as two record halves rather than one `Record<…, (BoardCard | BoardBriefCard)[]>`
+// so a consumer reading `board.draft` never has to narrow a card that cannot
+// be a brief in the first place.
+export type Board = Record<BoardColumn, BoardCard[]> & Record<BriefColumn, BoardBriefCard[]>;
 
 // `contentPieces.status` includes `archived`, which is not a board column
 // (see BOARD_COLUMNS). Shared by readBoard (to skip archived rows) and
@@ -45,32 +86,60 @@ export async function readBoard(
   // newest published pieces while the count still reads as if it were a
   // total. `assignedTo` narrows to that exact member; `"unassigned"` narrows
   // to a null assignedTo. Left undefined, every piece for the tenant counts.
+  //
+  // It does NOT filter the brief column: `assignedTo` is a content-piece
+  // concept and a brief has no assignee. The briefs come back either way and
+  // the board explains the mismatch, rather than a column silently emptying
+  // itself for a filter it cannot honour.
   opts: { assignedTo?: string | "unassigned" } = {}
-): Promise<Record<BoardColumn, BoardCard[]>> {
-  const rows = await database
-    .select({
-      id: contentPieces.id,
-      title: contentPieces.title,
-      type: contentPieces.type,
-      status: contentPieces.status,
-      assignedTo: contentPieces.assignedTo,
-      scheduledFor: contentPieces.scheduledFor,
-      generationError: contentPieces.generationError,
-      generatedAt: contentPieces.generatedAt,
-      generationStep: contentPieces.generationStep,
-      createdAt: contentPieces.createdAt,
-    })
-    .from(contentPieces)
-    .where(eq(contentPieces.tenantId, tenantId))
-    // contentPieces has no updatedAt column — an earlier draft of this plan
-    // assumed one. createdAt is the closest ordering available; composedAt
-    // is deliberately not used, since it means when the body was first
-    // composed, not when the row last changed.
-    .orderBy(desc(contentPieces.createdAt));
+): Promise<Board> {
+  // Two tables, one board. Fine at this size; the brief column is the natural
+  // thing to paginate first if it ever isn't.
+  const [rows, briefRows] = await Promise.all([
+    database
+      .select({
+        id: contentPieces.id,
+        title: contentPieces.title,
+        type: contentPieces.type,
+        status: contentPieces.status,
+        assignedTo: contentPieces.assignedTo,
+        scheduledFor: contentPieces.scheduledFor,
+        generationError: contentPieces.generationError,
+        generatedAt: contentPieces.generatedAt,
+        generationStep: contentPieces.generationStep,
+        createdAt: contentPieces.createdAt,
+      })
+      .from(contentPieces)
+      .where(eq(contentPieces.tenantId, tenantId))
+      // contentPieces has no updatedAt column — an earlier draft of this plan
+      // assumed one. createdAt is the closest ordering available; composedAt
+      // is deliberately not used, since it means when the body was first
+      // composed, not when the row last changed.
+      .orderBy(desc(contentPieces.createdAt)),
+    database
+      .select({
+        id: briefs.id,
+        title: briefs.title,
+        contentType: briefs.contentType,
+        score: briefs.score,
+        status: briefs.status,
+      })
+      .from(briefs)
+      // `new` only. An `accepted` brief already has a content piece sitting in
+      // a later column, so showing it here would double-count the same work;
+      // `dismissed` and `expired` are decisions already made. The tenant
+      // filter is the security boundary and lives here, in the WHERE clause,
+      // not in the loop below.
+      .where(and(eq(briefs.tenantId, tenantId), eq(briefs.status, "new")))
+      // Same ordering as the /briefs inbox (see listBriefs): scores cluster
+      // narrowly, so recency breaks the ties score leaves.
+      .orderBy(desc(briefs.score), desc(briefs.createdAt)),
+  ]);
 
   // Seeded with every column so an empty column is `[]` rather than absent —
   // a missing key would render as a missing column, not an empty one.
-  const board: Record<BoardColumn, BoardCard[]> = {
+  const board: Board = {
+    [BRIEF_COLUMN]: briefRows.map((row) => ({ kind: "brief", ...row })),
     brief: [],
     draft: [],
     review: [],
@@ -85,6 +154,7 @@ export async function readBoard(
     if (opts.assignedTo === "unassigned" && row.assignedTo !== null) continue;
     if (opts.assignedTo && opts.assignedTo !== "unassigned" && row.assignedTo !== opts.assignedTo) continue;
     board[row.status].push({
+      kind: "piece",
       ...row,
       status: row.status,
       generationStep: row.generationStep as DraftStepKey | null,
