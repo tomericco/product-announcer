@@ -30,7 +30,12 @@ export function Column({
   const { setNodeRef, isOver } = useDroppable({ id, disabled: !droppable });
 
   return (
-    <div className="flex w-72 shrink-0 flex-col gap-2">
+    // Elastic rather than a fixed w-72: the columns share whatever width the
+    // page has, so all five fit without horizontal scrolling and simply get
+    // roomier on a wide display. min-w-48 is the floor at which a card's
+    // title, meta row and buttons still read; below that (a narrow window)
+    // the track's overflow-x-auto takes over again.
+    <div className="flex min-w-48 flex-1 basis-0 flex-col gap-2">
       <div className="flex items-center gap-2 px-1">
         <h2 className="text-sm font-semibold">{title}</h2>
         <Badge variant="secondary">{count}</Badge>

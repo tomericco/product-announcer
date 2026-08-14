@@ -17,6 +17,7 @@ import {
 import { NavLinks } from "./nav-links";
 import { UserMenu } from "./user-menu";
 import { Logo } from "@/components/brand/logo";
+import { MainContainer } from "./main-container";
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
   const session = await requireSession();
@@ -64,8 +65,8 @@ export default async function DashboardLayout({ children }: { children: React.Re
           <UserMenu email={session.user.email!} name={session.user.name ?? null} />
         </div>
       </aside>
-        <main className="flex flex-1 flex-col p-8">
-          <div className="mx-auto flex w-full max-w-4xl flex-1 flex-col">{children}</div>
+        <main className="flex min-w-0 flex-1 flex-col p-8">
+          <MainContainer>{children}</MainContainer>
         </main>
       </div>
     </UnsavedChangesProvider>
