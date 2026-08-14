@@ -49,7 +49,28 @@ const DISMISS_REASON_OPTIONS = DISMISS_REASON_VALUES.map((value) => ({
  * there is exactly one implementation of "what dismissing a brief asks for and
  * what accepting it does next".
  */
-export function useBriefDecision(briefId: string) {
+export function useBriefDecision(
+  briefId: string,
+  /**
+   * Run before either decision goes to the server; a false return aborts it.
+   * The brief editor passes `saveIfDirty` here, because BOTH decisions leave
+   * unsaved edits unrecoverable and neither goes through the unsaved-changes
+   * guard:
+   *
+   *   - Accept navigates with `router.push`, not a `GuardedLink`, so
+   *     `requestLeave` never fires — and `beforeunload` only covers full page
+   *     loads (see the comment on `GuardedLink` in `unsaved-changes.tsx`).
+   *     `acceptBrief` then scaffolds and generates the draft from the STORED
+   *     row, so the model receives the commission the human did not write.
+   *   - Dismiss refreshes the page into its read-only branch, which drops the
+   *     editor and its state on the floor just as quietly.
+   *
+   * In both cases the brief lands on a status that this page and
+   * `saveBriefBody` treat as read-only, so there is no recovering the edits
+   * afterwards. The inbox card passes nothing — it has no editor.
+   */
+  { beforeDecide }: { beforeDecide?: () => Promise<boolean> } = {}
+) {
   const router = useRouter();
   const [accepting, setAccepting] = useState(false);
   const [dismissing, setDismissing] = useState(false);
@@ -60,6 +81,11 @@ export function useBriefDecision(briefId: string) {
   async function handleAccept() {
     setAccepting(true);
     try {
+      // Commit first, decide second. A refusal (a blank body, say) is already
+      // toasted by the save — accepting anyway would generate the draft from
+      // the stored body and destroy the edits the save just rejected.
+      if (beforeDecide && !(await beforeDecide())) return;
+
       const result = await acceptBrief(briefId);
       if (result.ok) {
         router.push(`/drafts/${result.contentPieceId}`);
@@ -75,6 +101,8 @@ export function useBriefDecision(briefId: string) {
     if (!reason) return;
     setDismissing(true);
     try {
+      if (beforeDecide && !(await beforeDecide())) return;
+
       const result = await dismissBrief(briefId, reason, note);
       if (result.ok) {
         toast.success("Brief dismissed");
@@ -119,7 +147,7 @@ export function DecisionButtons({ decision }: { decision: BriefDecision }) {
         variant="outline"
         size="sm"
         disabled={decision.busy}
-        onClick={() => decision.setDismissOpen(!decision.dismissOpen)}
+        onClick={() => decision.setDismissOpen((v) => !v)}
       >
         Dismiss
       </Button>

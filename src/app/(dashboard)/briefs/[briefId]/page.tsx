@@ -8,8 +8,7 @@ import { requireSession } from "@/lib/workspace/session";
 import { briefBody } from "@/lib/briefs/body";
 import { Badge } from "@/components/ui/badge";
 import { EditorProvider } from "@/components/markdown/editor-context";
-import { BriefHeader } from "./brief-header";
-import { BriefEditor } from "./brief-editor";
+import { BriefWorkspace } from "./brief-workspace";
 
 const CONTENT_TYPE_LABEL: Record<Brief["contentType"], string> = {
   product_update: "Product update",
@@ -107,9 +106,17 @@ export default async function BriefDetailPage({ params }: { params: Promise<{ br
   return (
     <div className="mx-auto w-full max-w-3xl space-y-6">
       <EditorProvider>
-        <BriefHeader briefId={brief.id} canDecide={brief.status === "new"} />
-        <BriefBadges brief={brief} />
-        <BriefEditor briefId={brief.id} initialTitle={brief.title} initialBody={body} />
+        {/* One client owner for the header and the editor both: Accept and
+            Dismiss have to commit unsaved edits before they run, and a
+            sibling component cannot reach the editor's save. */}
+        <BriefWorkspace
+          briefId={brief.id}
+          canDecide={brief.status === "new"}
+          initialTitle={brief.title}
+          initialBody={body}
+        >
+          <BriefBadges brief={brief} />
+        </BriefWorkspace>
       </EditorProvider>
     </div>
   );

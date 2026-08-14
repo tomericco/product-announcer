@@ -125,13 +125,37 @@ export function useBriefEditor({
     }
   }, [briefId, notifySaved, setSectionDirty]);
 
+  const dirty = titleDirty || bodyDirty;
+
+  /**
+   * Commit whatever is unsaved, and report whether it is now safe to do
+   * something that leaves this editor behind. Returns true when there was
+   * nothing to save (so an untouched brief is never stamped with a spurious
+   * `editedAt`) and when a save landed; false when the server refused, in
+   * which case the caller must NOT proceed — the refusal has already been
+   * toasted.
+   *
+   * This exists because Accept navigates away with `router.push`, which is not
+   * a `GuardedLink` and therefore never reaches `requestLeave`. Without it,
+   * "open, edit, Accept" — the natural flow on this page — hands the model the
+   * PRE-edit commission and then flips the brief to `accepted`, which both
+   * this page and `saveBriefBody` treat as read-only. The edits are gone, and
+   * nothing anywhere says so.
+   */
+  const saveIfDirty = useCallback(async () => {
+    if (!dirty) return true;
+    const result = await save();
+    return result.ok;
+  }, [dirty, save]);
+
   return {
     title,
     body,
     setTitle,
     setBody,
     save,
+    saveIfDirty,
     saving,
-    dirty: titleDirty || bodyDirty,
+    dirty,
   };
 }

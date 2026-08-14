@@ -16,8 +16,7 @@ vi.mock("../../src/lib/workspace/session", () => ({
 }));
 
 import BriefDetailPage from "../../src/app/(dashboard)/briefs/[briefId]/page";
-import { BriefEditor } from "../../src/app/(dashboard)/briefs/[briefId]/brief-editor";
-import { BriefHeader } from "../../src/app/(dashboard)/briefs/[briefId]/brief-header";
+import { BriefWorkspace } from "../../src/app/(dashboard)/briefs/[briefId]/brief-workspace";
 import { renderBriefBody } from "../../src/lib/briefs/body";
 
 const TENANT = "Brief Detail Page Test Tenant";
@@ -69,7 +68,7 @@ function containsType(node: ReactNode, target: unknown): boolean {
   return containsType(el.props?.children, target);
 }
 
-/** Finds the props the page would render `BriefEditor` with. */
+/** Finds the props the page would render `BriefWorkspace` with. */
 function editorProps(node: ReactNode): { initialTitle: string; initialBody: string } | null {
   if (node === null || node === undefined || typeof node === "boolean") return null;
   if (typeof node === "string" || typeof node === "number") return null;
@@ -81,7 +80,7 @@ function editorProps(node: ReactNode): { initialTitle: string; initialBody: stri
     return null;
   }
   const el = node as ReactElement<{ children?: ReactNode }>;
-  if (el.type === BriefEditor) return el.props as unknown as { initialTitle: string; initialBody: string };
+  if (el.type === BriefWorkspace) return el.props as unknown as { initialTitle: string; initialBody: string };
   return editorProps(el.props?.children);
 }
 
@@ -91,8 +90,7 @@ describe("BriefDetailPage", () => {
 
     const page = (await BriefDetailPage({ params: Promise.resolve({ briefId: brief.id }) })) as ReactElement;
 
-    expect(containsType(page, BriefEditor)).toBe(true);
-    expect(containsType(page, BriefHeader)).toBe(true);
+    expect(containsType(page, BriefWorkspace)).toBe(true);
     expect(editorProps(page)?.initialBody).toBe("## Angle\nA human rewrote this.");
     expect(editorProps(page)?.initialTitle).toBe("How localization breaks design systems");
   });
@@ -117,8 +115,7 @@ describe("BriefDetailPage read-only gate", () => {
 
     const page = (await BriefDetailPage({ params: Promise.resolve({ briefId: brief.id }) })) as ReactElement;
 
-    expect(containsType(page, BriefEditor)).toBe(false);
-    expect(containsType(page, BriefHeader)).toBe(false);
+    expect(containsType(page, BriefWorkspace)).toBe(false);
     // Still readable, per the drafts editor's published branch.
     expect(textOf(page)).toContain("The accepted commission.");
     expect(textOf(page)).toContain("How localization breaks design systems");
@@ -129,8 +126,7 @@ describe("BriefDetailPage read-only gate", () => {
 
     const page = (await BriefDetailPage({ params: Promise.resolve({ briefId: brief.id }) })) as ReactElement;
 
-    expect(containsType(page, BriefEditor)).toBe(false);
-    expect(containsType(page, BriefHeader)).toBe(false);
+    expect(containsType(page, BriefWorkspace)).toBe(false);
     expect(textOf(page)).toContain("The dismissed commission.");
   });
 
@@ -139,8 +135,7 @@ describe("BriefDetailPage read-only gate", () => {
 
     const page = (await BriefDetailPage({ params: Promise.resolve({ briefId: brief.id }) })) as ReactElement;
 
-    expect(containsType(page, BriefEditor)).toBe(true);
-    expect(containsType(page, BriefHeader)).toBe(true);
+    expect(containsType(page, BriefWorkspace)).toBe(true);
   });
 });
 

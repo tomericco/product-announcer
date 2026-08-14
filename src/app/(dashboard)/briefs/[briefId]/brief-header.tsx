@@ -3,7 +3,7 @@
 import { ArrowLeft } from "lucide-react";
 import { GuardedLink } from "../../unsaved-changes";
 import { SourceToggleButton } from "@/components/markdown/editor-context";
-import { useBriefDecision, DecisionButtons, DismissReasonPicker } from "../brief-decision";
+import { DecisionButtons, DismissReasonPicker, type BriefDecision } from "../brief-decision";
 
 /**
  * The editor's sticky header. Accept and Dismiss live here rather than on the
@@ -14,10 +14,20 @@ import { useBriefDecision, DecisionButtons, DismissReasonPicker } from "../brief
  * `dismissBrief` both refuse anything else, so rendering the buttons for a
  * decided brief would be a guaranteed failed round trip. It is not the
  * read-only gate: that is the page's, and the server's.
+ *
+ * `decision` arrives as a prop rather than from a `useBriefDecision` call
+ * here, because it has to be built with the editor's `saveIfDirty` — see
+ * `brief-workspace.tsx`.
  */
-export function BriefHeader({ briefId, canDecide }: { briefId: string; canDecide: boolean }) {
-  const decision = useBriefDecision(briefId);
-
+export function BriefHeader({
+  briefId,
+  canDecide,
+  decision,
+}: {
+  briefId: string;
+  canDecide: boolean;
+  decision: BriefDecision;
+}) {
   return (
     <>
       <div className="sticky top-0 z-20 -mx-4 flex items-center justify-between gap-3 bg-background px-4 py-3">
