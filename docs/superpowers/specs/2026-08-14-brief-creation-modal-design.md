@@ -108,17 +108,31 @@ export const PROPOSAL_STEPS = [
 `ProgressChecklist` (`src/components/draft-progress-checklist.tsx`) renders it
 unchanged, including the non-spinning `stalled` state added earlier.
 
-**`DraftStepKey` is a closed union** — `"collecting" | "preparing" | "generating"
-| "reviewing" | "saving"`. `resolving` and `proposing` are new members, so this
-is not a free addition, and the consequence is concrete rather than theoretical:
-`drafts/[releaseId]/agent-edit-dialog.tsx:44` and `extract-dialog.tsx:44` both
-hold a `Record<DraftStepKey, StepStatus>`, and a `Record` over a widened union
-requires an entry for every new key. Both initialisers must be updated, or those
-two dialogs stop compiling.
+**`PROPOSAL_STEPS` gets its own key type; `DraftStepKey` is not widened.**
 
-The alternative is to give `PROPOSAL_STEPS` its own key type rather than
-widening the shared one. **Decide this deliberately at implementation time and
-record which you chose** — do not reach for a cast to make the error go away.
+```ts
+export type ProposalStepKey = "resolving" | "proposing" | "saving";
+```
+
+`ProgressChecklist` and `initialStepStatuses` are generic over the key, so each
+flow brings its own.
+
+The reason is that **`DraftStepKey` is a persisted type**, not just a UI one:
+`contentPieces.generationStep` is typed by it and is read and written in
+`generation-progress.ts`, `board.ts` and `briefs/draft.ts`. Widening it would
+make `"resolving"` and `"proposing"` type-check as valid values for a column this
+flow never writes — a semantic leak into the database's contract, in exchange for
+a little UI convenience. Keeping the flows' key types separate also stops a
+fourth flow later from accreting onto a union a DB column trusts.
+
+*An earlier draft of this spec argued against widening on different grounds — that
+`agent-edit-dialog.tsx:44` and `extract-dialog.tsx:44` hold a
+`Record<DraftStepKey, StepStatus>` that would stop compiling. **That was wrong**,
+and the implementer disproved it by widening the union and running `tsc`: both go
+through `initialStepStatuses`, whose declared return type is unconditionally
+`Record<DraftStepKey, StepStatus>` no matter which keys the input array covers —
+already true today, since `EDIT_STEPS` omits `"collecting"`. The conclusion held;
+the argument for it did not.*
 
 ## Testing
 

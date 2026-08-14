@@ -32,13 +32,13 @@
 
 **This task is small but has a trap, which is why it is first and separate.**
 
-`DraftStepKey` is a **closed union**: `"collecting" | "preparing" | "generating" | "reviewing" | "saving"`. `PROPOSAL_STEPS` needs `resolving` and `proposing`, which it does not have.
+`DraftStepKey` is a **closed union**: `"collecting" | "preparing" | "generating" | "reviewing" | "saving"`. `PROPOSAL_STEPS` needs `resolving` and `proposing`.
 
-Widening it is not free: `src/app/(dashboard)/drafts/[releaseId]/agent-edit-dialog.tsx:44` and `extract-dialog.tsx:44` each hold a `Record<DraftStepKey, StepStatus>`, and a `Record` over a widened union requires an entry for **every** new key. Both initialisers stop compiling until updated.
+**Resolved in Task 1 (commit `8c1fec0`): `PROPOSAL_STEPS` got its own `ProposalStepKey`, and `ProgressChecklist`/`initialStepStatuses` became generic over the key.** `DraftStepKey` was NOT widened, because it is a *persisted* type — `contentPieces.generationStep` is typed by it — and widening would make proposal-only keys type-check as valid values for a column this flow never writes.
 
-- [ ] **Step 1: Choose, and record why**
+An earlier version of this plan claimed widening would break the `Record<DraftStepKey, StepStatus>` initialisers in `agent-edit-dialog.tsx:44` and `extract-dialog.tsx:44`. **That was wrong** — the implementer widened the union, ran `tsc`, and it compiled clean, because both go through `initialStepStatuses`, whose return type is unconditionally `Record<DraftStepKey, StepStatus>` regardless of the input keys. The decision stands on the persistence argument alone.
 
-Either widen `DraftStepKey` and fix both `Record` initialisers, or give `PROPOSAL_STEPS` its own key type and let `ProgressChecklist` take a generic key. **Do not cast to make the error go away.** Write the choice and its reasoning in your report — a later reader needs to know this was decided, not stumbled into.
+- [ ] **Step 1: (done in `8c1fec0`)**
 
 - [ ] **Step 2: Add `PROPOSAL_STEPS`**
 
