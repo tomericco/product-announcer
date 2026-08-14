@@ -29,3 +29,22 @@ export const EDIT_STEPS: { key: DraftStepKey; label: string }[] = [
   { key: "reviewing", label: "Reviewing against brand guidelines" },
   { key: "saving", label: "Saving the update" },
 ];
+
+// Deliberately its own type rather than added to DraftStepKey. DraftStepKey
+// isn't just a checklist label key — it's persisted: `generationStep` (the DB
+// column read by generation-progress.ts, board.ts, and briefs/draft.ts) is
+// typed `DraftStepKey | null` and asserted straight from that column's raw
+// value. "resolving" and "proposing" belong to the brief-proposal flow, which
+// never writes that column — widening DraftStepKey to include them would let
+// values that can never actually appear in `generationStep` type-check as if
+// they could. `ProgressChecklist` and `initialStepStatuses` take the step key
+// as a generic parameter for exactly this reason: a fourth flow gets its own
+// key type too, instead of every future flow's steps accreting onto one union
+// that a persisted DB column also happens to use.
+export type ProposalStepKey = "resolving" | "proposing" | "saving";
+
+export const PROPOSAL_STEPS: { key: ProposalStepKey; label: string }[] = [
+  { key: "resolving", label: "Resolving your signals" },
+  { key: "proposing", label: "Proposing an angle" },
+  { key: "saving", label: "Creating the brief" },
+];

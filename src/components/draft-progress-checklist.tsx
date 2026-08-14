@@ -2,7 +2,6 @@
 
 import { Loader2, Check, Circle, CirclePause } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { DraftStepKey } from "@/lib/drafting/draft-progress";
 
 // "stalled" is distinct from "active": both mean "this step was in
 // progress," but "stalled" renders without the spinner because nothing is
@@ -13,10 +12,10 @@ import type { DraftStepKey } from "@/lib/drafting/draft-progress";
 export type StepStatus = "pending" | "active" | "done" | "stalled";
 
 /** Every step pending — the state a checklist starts and resets to. */
-export function initialStepStatuses(
-  steps: { key: DraftStepKey }[]
-): Record<DraftStepKey, StepStatus> {
-  const statuses = {} as Record<DraftStepKey, StepStatus>;
+export function initialStepStatuses<K extends string>(
+  steps: { key: K }[]
+): Record<K, StepStatus> {
+  const statuses = {} as Record<K, StepStatus>;
   for (const step of steps) statuses[step.key] = "pending";
   return statuses;
 }
@@ -24,17 +23,24 @@ export function initialStepStatuses(
 /**
  * The stepped loader shared by every dialog that runs a pipeline route: the
  * compose flow (DRAFT_STEPS), the whole-update agent edit and the extract flow
- * (both EDIT_STEPS). Which step list it renders is the caller's choice; the
- * icons, colors and the active step's `detail` suffix are the same everywhere.
+ * (both EDIT_STEPS), and the brief proposal flow (PROPOSAL_STEPS). Which step
+ * list it renders is the caller's choice; the icons, colors and the active
+ * step's `detail` suffix are the same everywhere.
+ *
+ * Generic over the step key rather than fixed to `DraftStepKey`: different
+ * flows carry different, unrelated key sets (see the comment on
+ * `ProposalStepKey` in draft-progress.ts for why they aren't unioned into one
+ * type), and this renderer has no reason to care which one a caller passes —
+ * `steps` and `statuses` just need to agree with each other.
  */
-export function ProgressChecklist({
+export function ProgressChecklist<K extends string>({
   steps,
   statuses,
   detail,
   className,
 }: {
-  steps: { key: DraftStepKey; label: string }[];
-  statuses: Record<DraftStepKey, StepStatus>;
+  steps: { key: K; label: string }[];
+  statuses: Record<K, StepStatus>;
   detail?: string;
   className?: string;
 }) {
