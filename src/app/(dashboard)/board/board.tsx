@@ -55,13 +55,14 @@ const BRIEF_COLUMN: BriefColumn = "briefs";
 
 const COLUMN_LABEL: Record<DisplayColumn, string> = {
   // Brief holds two populations, which is why there are five labels for six
-  // statuses. Rows from the `briefs` table — commissions awaiting a decision
-  // — sit here alongside content pieces in the `brief` *status*, the
-  // accept-time scaffold a piece occupies for about the length of one
-  // generation. Both are "this is not written yet", so they share a column
-  // rather than splitting into Brief and Generating; and with no second
-  // column there is no drop target, which is why accepting a brief is a
-  // button on its card rather than a drag.
+  // board keys (`Board`'s BoardColumn statuses plus the separate `briefs`
+  // key — see `src/lib/content/board.ts`). Rows from the `briefs` table —
+  // commissions awaiting a decision — sit here alongside content pieces in
+  // the `brief` *status*, the accept-time scaffold a piece occupies for
+  // about the length of one generation. Both are "this is not written yet",
+  // so they share a column rather than splitting into Brief and Generating;
+  // and with no second column there is no drop target, which is why
+  // accepting a brief is a button on its card rather than a drag.
   briefs: "Brief",
   draft: "Draft",
   review: "Review",
@@ -353,7 +354,13 @@ export function Board({
             // assignee and were already filtered server-side, so they stay:
             // one column, two populations, two filter semantics, and the
             // note below is what stops that from reading as a bug.
-            const filterHidesBriefs = column === BRIEF_COLUMN && assigneeFilter !== "all";
+            //
+            // `board.briefs.length > 0` matters: without it, a filter active
+            // over zero `new` briefs still claims briefs are being withheld,
+            // right under a "No cards." that already says nothing is here —
+            // a visible contradiction, not just an inaccuracy nobody sees.
+            const filterHidesBriefs =
+              column === BRIEF_COLUMN && assigneeFilter !== "all" && board.briefs.length > 0;
             // Pieces first, then briefs. A piece is work already commissioned
             // and in motion; a brief is still a proposal. Ordering it this way
             // makes accepting a brief read as a promotion to the top of the

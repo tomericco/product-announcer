@@ -9,6 +9,15 @@ import { useDraggable } from "@dnd-kit/core";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import type { BoardBriefCard, BoardCard as BoardCardType } from "@/lib/content/board";
@@ -105,13 +114,30 @@ export function BoardCardItem({ card, members, draggable, onGenerated, onAccepte
  * It does not drag. It shares the Brief column with the pieces generating
  * from already-accepted briefs, and a drag within one column cannot mean
  * "accept", so Accept is a button here — the same shape as Generate on the
- * piece card below: run the action, report a refusal, and let the board
- * re-read the server rather than guessing at the result. The piece
- * acceptance creates does not exist client-side (its id comes back from the
- * server), so there is nothing honest to render optimistically anyway.
+ * piece card below, except this one is one click away from a model call and
+ * an irreversible status flip with no un-accept path, so it does not fire
+ * on that first click. An earlier plan put Accept directly on this row and a
+ * later spec deliberately moved it into the editor instead, reasoning that
+ * "a row-level Accept lets you accept a brief you never opened" — see
+ * `briefs-list.tsx`. Putting the button back on the board reopens exactly
+ * that hazard unless the click itself asks first, which is what the dialog
+ * below is for: it names the brief, says the action can't be undone, and
+ * only THEN runs the same request-report-refetch shape the piece card's
+ * Generate button uses below (report a refusal, let the board re-read the
+ * server rather than guessing at the result — the piece acceptance creates
+ * does not exist client-side, so there is nothing honest to render
+ * optimistically anyway).
+ *
+ * Reuses the repo's confirm-dialog shape (`draft-row-menu.tsx`'s "Publish
+ * this update?" / "Delete this draft?", the same `Dialog` primitive this
+ * board already uses for its own "Schedule this piece" step below) rather
+ * than `brief-decision.tsx`'s dismiss flow — that one is an inline
+ * open/close panel built to collect a reason, which this action doesn't
+ * take, not a yes/no confirmation.
  */
 function BriefCardItem({ card, onAccepted }: { card: BoardBriefCard; onAccepted: () => void }) {
   const [accepting, startAccept] = useTransition();
+  const [confirmOpen, setConfirmOpen] = useState(false);
 
   function handleAccept() {
     startAccept(async () => {
@@ -126,6 +152,7 @@ function BriefCardItem({ card, onAccepted }: { card: BoardBriefCard; onAccepted:
           return;
         }
         toast.success("Brief accepted. Generating the draft…");
+        setConfirmOpen(false);
         // The brief is gone from readBoard now and the new piece is in this
         // same column; the refetch is what swaps one for the other.
         onAccepted();
@@ -155,16 +182,30 @@ function BriefCardItem({ card, onAccepted }: { card: BoardBriefCard; onAccepted:
           <Badge variant="outline">{card.score.toFixed(2)}</Badge>
         </div>
 
-        <Button
-          type="button"
-          size="sm"
-          className="w-full"
-          disabled={accepting}
-          onClick={handleAccept}
-        >
-          {accepting ? "Accepting…" : "Accept brief"}
+        <Button type="button" size="sm" className="w-full" onClick={() => setConfirmOpen(true)}>
+          Accept brief
         </Button>
       </CardContent>
+
+      <Dialog
+        open={confirmOpen}
+        onOpenChange={(next) => !next && !accepting && setConfirmOpen(false)}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Generate a draft from &ldquo;{card.title}&rdquo;?</DialogTitle>
+            <DialogDescription>This creates a draft and can&apos;t be undone.</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <DialogClose render={<Button type="button" variant="ghost" disabled={accepting} />}>
+              Cancel
+            </DialogClose>
+            <Button type="button" onClick={handleAccept} disabled={accepting}>
+              {accepting ? "Generating…" : "Generate draft"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 }

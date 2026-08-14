@@ -24,10 +24,12 @@ const STATUS_LABEL: Record<Brief["status"], string> = {
  * grid's contract with the same query.
  *
  * No server component here needs `"use client"`: unlike the card grid this
- * replaces, nothing on the row is interactive. Accept and Dismiss now live
- * only in the editor (`brief-decision.tsx`'s header) — a row-level decision
- * let you accept a brief you never opened, which is exactly what this list
- * is meant to stop.
+ * replaces, nothing on the row is interactive. Accept and Dismiss live in the
+ * editor (`brief-decision.tsx`'s header), and Accept also lives on the
+ * board's brief card — behind a confirmation, because a row-level Accept
+ * lets you accept a brief you never opened, which is exactly what this list
+ * is meant to stop. This list deliberately has neither: no Accept, and no
+ * confirmation dialog standing in for one.
  */
 export function BriefsList({ briefs }: { briefs: Brief[] }) {
   return (

@@ -406,18 +406,57 @@ describe("the Brief column", () => {
   });
 });
 
-/** Clicks the Accept button on the brief card. */
+/** Clicks the Accept button on the brief card. Opens the confirmation; calls nothing. */
 function clickAccept() {
-  fireEvent.click(within(cardOf(BRIEF_TITLE)).getByRole("button", { name: /accept/i }));
+  fireEvent.click(within(cardOf(BRIEF_TITLE)).getByRole("button", { name: /accept brief/i }));
+}
+
+/** Confirms the open Accept dialog — the click that actually runs acceptBriefCard. */
+function confirmAccept() {
+  fireEvent.click(screen.getByRole("button", { name: /generate draft/i }));
+}
+
+/** Cancels the open Accept dialog. */
+function cancelAccept() {
+  fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
 }
 
 describe("accepting a brief", () => {
-  it("is a button on the card, and calls acceptBriefCard", async () => {
+  // The row-level-Accept hazard an earlier spec deliberately designed out of
+  // the editor (see briefs-list.tsx) — a row-level Accept lets you accept a
+  // brief you never opened. Putting Accept back on the board's card
+  // reintroduces exactly that risk unless the click itself asks first.
+  it("opens a confirmation naming the brief, and does not call acceptBriefCard yet", async () => {
     renderBoard();
 
     clickAccept();
 
-    await waitFor(() => expect(acceptBriefCard).toHaveBeenCalledWith("brief-1"));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(new RegExp(BRIEF_TITLE))).toBeInTheDocument();
+    expect(within(dialog).getByText(/can.t be undone/i)).toBeInTheDocument();
+    expect(acceptBriefCard).not.toHaveBeenCalled();
+  });
+
+  it("calls nothing when the confirmation is cancelled", async () => {
+    renderBoard();
+
+    clickAccept();
+    await screen.findByRole("dialog");
+    cancelAccept();
+
+    expect(acceptBriefCard).not.toHaveBeenCalled();
+    expect(moveCard).not.toHaveBeenCalled();
+  });
+
+  it("calls acceptBriefCard exactly once with the right brief id once confirmed", async () => {
+    renderBoard();
+
+    clickAccept();
+    await screen.findByRole("dialog");
+    confirmAccept();
+
+    await waitFor(() => expect(acceptBriefCard).toHaveBeenCalledTimes(1));
+    expect(acceptBriefCard).toHaveBeenCalledWith("brief-1");
     expect(moveCard).not.toHaveBeenCalled();
     await waitFor(() => expect(toast.success).toHaveBeenCalled());
     // Same as the Generate button beside it: the server is re-read, which is
@@ -430,12 +469,18 @@ describe("accepting a brief", () => {
     renderBoard();
 
     clickAccept();
+    await screen.findByRole("dialog");
+    confirmAccept();
 
     await waitFor(() =>
       expect(toast.error).toHaveBeenCalledWith("This brief was already accepted.")
     );
     expect(refresh).not.toHaveBeenCalled();
-    expect(screen.getByRole("link", { name: BRIEF_TITLE })).toBeInTheDocument();
+    // The dialog stays open on a refusal, so the underlying brief card is
+    // (correctly) aria-hidden behind it — getByText, not getByRole, so this
+    // assertion isn't just re-testing that the modal is open.
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(screen.getByText(BRIEF_TITLE)).toBeInTheDocument();
   });
 
   it("reports a thrown rejection rather than leaving the click silent", async () => {
@@ -443,10 +488,13 @@ describe("accepting a brief", () => {
     renderBoard();
 
     clickAccept();
+    await screen.findByRole("dialog");
+    confirmAccept();
 
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith("Network down."));
     expect(refresh).not.toHaveBeenCalled();
-    expect(screen.getByRole("link", { name: BRIEF_TITLE })).toBeInTheDocument();
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(screen.getByText(BRIEF_TITLE)).toBeInTheDocument();
   });
 
   // There is no drop target for a brief any more, and the board must not
@@ -532,6 +580,18 @@ describe("with an assignee filter active", () => {
     const column = columnNamed("Brief");
     expect(within(column).getByText("No cards.")).toBeInTheDocument();
     expect(within(column).getByText(/assigned to anyone/i)).toBeInTheDocument();
+  });
+
+  // filterHidesBriefs must consult board.briefs.length: with a filter active
+  // but zero `new` briefs to begin with, there is nothing for the filter to
+  // be withholding, and the explanatory note would contradict the
+  // "No cards." right above it.
+  it("says nothing is being withheld when there were no briefs to filter in the first place", () => {
+    renderBoard({ board: boardData({ briefs: [], brief: [], draft: [] }), assigneeFilter: "user-1" });
+
+    const column = columnNamed("Brief");
+    expect(within(column).getByText("No cards.")).toBeInTheDocument();
+    expect(within(column).queryByText(/assigned to anyone/i)).not.toBeInTheDocument();
   });
 
   it("shows the briefs again when the filter is Everyone", () => {
