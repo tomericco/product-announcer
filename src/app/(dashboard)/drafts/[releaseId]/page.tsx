@@ -15,7 +15,7 @@ import { saveDraft } from "../actions";
 import { ToastForm } from "../../settings/toast-form";
 import { DraftBodyEditor } from "./draft-body-editor";
 import { DraftTitleField } from "./draft-title-field";
-import { DraftEditorProvider, SourceToggleButton } from "./draft-editor-context";
+import { EditorProvider, SourceToggleButton } from "@/components/markdown/editor-context";
 import { AgentEditProvider } from "./agent-edit-context";
 import { AgentEditDialog } from "./agent-edit-dialog";
 import { ExtractDialog } from "./extract-dialog";
@@ -210,7 +210,7 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
 
   return (
     <div className="mx-auto w-full max-w-3xl space-y-6">
-      <DraftEditorProvider>
+      <EditorProvider>
         <AgentEditProvider>
           <div className="sticky top-0 z-20 -mx-4 flex items-center justify-between bg-background px-4 py-3">
             <GuardedLink
@@ -306,7 +306,7 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
           <AgentEditDialog contentPieceId={update.id} />
           <ExtractDialog contentPieceId={update.id} />
         </AgentEditProvider>
-      </DraftEditorProvider>
+      </EditorProvider>
     </div>
   );
 }
