@@ -137,6 +137,26 @@ have on the card today, including the dismiss-reason picker.
 has already been generated would silently diverge the two, and the draft is the
 live document at that point.
 
+## Cited evidence lives on the editor — added 2026-08-14
+
+Turning `/briefs` into a list deleted `brief-card.tsx`, and with it the only
+place in the UI that showed which signals a brief was built from. Evidence still
+reached the drafting prompt, so nothing broke — but a human could no longer see
+what a brief was grounded in, at exactly the point this spec moved the Accept
+decision to, on the argument that reading a brief now means opening it. That was
+an oversight, not a decision, and it is corrected here.
+
+The editor shows the cited signals on **both** branches, editable and read-only:
+a dismissed or accepted brief is precisely when you want to know what it was
+based on. A signal with a URL links out; one without — a manually added signal —
+renders as plain text rather than a dead link.
+
+The read is per-brief and tenant-scoped in its own right, not inheriting the
+page's earlier check. `listBriefs` correspondingly **drops** its signals join:
+it was still running on every `/briefs` load for a list that no longer reads it,
+and keeping an N-brief join alive to serve a one-brief page would be the wrong
+direction.
+
 ## Testing
 
 - `renderBriefBody` omits sections whose field is empty or null, and emits key
