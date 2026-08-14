@@ -11,7 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
-import type { BoardCard as BoardCardType } from "@/lib/content/board";
+import type { BoardBriefCard, BoardCard as BoardCardType } from "@/lib/content/board";
 import type { WorkspaceMember } from "@/lib/workspace/members";
 // `generateDraft` is a "use server" export — importing it here wires the
 // button straight to the server action, the same pattern
@@ -56,25 +56,116 @@ const CONTENT_TYPE_LABEL: Record<BoardCardType["type"], string> = {
 };
 
 type Props = {
-  card: BoardCardType;
+  /** The board carries two object types; this is the branch point. A brief
+   * is a commission with no assignee, schedule or generation state, so it
+   * gets its own component rather than a piece card with everything nulled
+   * out — the discriminant is what keeps the two apart. */
+  card: BoardCardType | BoardBriefCard;
   members: WorkspaceMember[];
-  /** False for `brief` (no drag out — Generate is the only exit) and
-   * `published` (terminal, read-only) cards. */
+  /** False for `brief`/Generating (no drag out — Generate is the only exit)
+   * and `published` (terminal, read-only) cards. True for brief cards, whose
+   * one drag target is Generating. */
   draggable: boolean;
   /** Called after a successful generation so the board can pick up the
    * piece's new status and body — `generateDraft` only revalidates /drafts
-   * and /drafts/[id], not /board. */
+   * and /drafts/[id], not /board. Unused by the brief branch. */
   onGenerated: () => void;
+  /** Unused by the brief branch — a brief has no assignee. */
   onAssigned: (userId: string | null) => void;
 };
 
+/** Dispatches on the card's kind. See `Props.card`. */
+export function BoardCardItem({ card, members, draggable, onGenerated, onAssigned }: Props) {
+  if (card.kind === "brief") {
+    return <BriefCardItem card={card} draggable={draggable} />;
+  }
+  return (
+    <PieceCardItem
+      card={card}
+      members={members}
+      draggable={draggable}
+      onGenerated={onGenerated}
+      onAssigned={onAssigned}
+    />
+  );
+}
+
 /**
- * One card on the board. The drag handle is a small grip icon, not the
- * whole card — the title links to `/drafts/[id]` and the assignee picker is
- * an interactive `<Select>`, and attaching dnd-kit's pointer listeners to
+ * A brief card: a commission that has not been accepted yet. Same chrome as
+ * a piece card (grip, linked title, badge row) rather than a second visual
+ * language — only the badges differ, and the title links to the brief
+ * editor at `/briefs/[briefId]`, not to a draft that does not exist yet.
+ *
+ * Dragging it onto Generating accepts it; every other target is refused by
+ * the board (see `canDrop` in board.tsx). There is no Accept button here on
+ * purpose: row-level Accept is the thing `/briefs` deliberately removed, so
+ * that accepting a brief means having opened it — or, here, deliberately
+ * dragging it into the column that generates from it.
+ */
+function BriefCardItem({ card, draggable }: { card: BoardBriefCard; draggable: boolean }) {
+  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
+    id: card.id,
+    disabled: !draggable,
+  });
+
+  const style = transform
+    ? {
+        transform: `translate3d(${transform.x}px, ${transform.y}px, 0)`,
+        position: "relative" as const,
+        zIndex: 20,
+      }
+    : undefined;
+
+  return (
+    <div ref={setNodeRef} style={style} className={cn(isDragging && "opacity-40")}>
+      <Card size="sm">
+        <CardContent className="space-y-2">
+          <div className="flex items-start gap-1.5">
+            {draggable && (
+              <button
+                type="button"
+                className="mt-0.5 shrink-0 cursor-grab touch-none text-muted-foreground hover:text-foreground active:cursor-grabbing"
+                aria-label={`Move ${card.title}`}
+                {...attributes}
+                {...listeners}
+              >
+                <GripVertical className="size-4" />
+              </button>
+            )}
+            <Link
+              href={`/briefs/${card.id}`}
+              className="min-w-0 flex-1 truncate text-sm font-medium hover:underline"
+            >
+              {card.title}
+            </Link>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-1.5">
+            {/* `briefs.contentType` and `contentPieces.type` are the same
+                pg enum, so the label map above covers both. */}
+            <Badge variant="secondary">{CONTENT_TYPE_LABEL[card.contentType]}</Badge>
+            {/* Same two-decimal form as the /briefs inbox rows. */}
+            <Badge variant="outline">{card.score.toFixed(2)}</Badge>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+/**
+ * One content piece on the board. The drag handle is a small grip icon, not
+ * the whole card — the title links to `/drafts/[id]` and the assignee picker
+ * is an interactive `<Select>`, and attaching dnd-kit's pointer listeners to
  * the entire card would fight both of those for the initial pointerdown.
  */
-export function BoardCardItem({ card, members, draggable, onGenerated, onAssigned }: Props) {
+function PieceCardItem({
+  card,
+  members,
+  draggable,
+  onGenerated,
+  onAssigned,
+}: Omit<Props, "card"> & { card: BoardCardType }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: card.id,
     disabled: !draggable,

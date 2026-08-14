@@ -1,12 +1,21 @@
 import { Badge } from "@/components/ui/badge";
 import { requireSession } from "@/lib/workspace/session";
-import { readBoard, canMove, BOARD_COLUMNS, PUBLISHED_COLUMN_LIMIT, type BoardColumn } from "@/lib/content/board";
+import {
+  readBoard,
+  canMove,
+  BOARD_COLUMNS,
+  BOARD_DISPLAY_COLUMNS,
+  BRIEF_COLUMN,
+  PUBLISHED_COLUMN_LIMIT,
+  type BoardColumn,
+} from "@/lib/content/board";
 import { listWorkspaceMembers } from "@/lib/workspace/members";
 import { Board } from "./board";
 
 /**
- * `/board`: brief → draft → review → scheduled → published, alongside
- * (not replacing) /briefs and /drafts.
+ * `/board`: Brief → Generating → Draft → Review → Scheduled → Published,
+ * alongside (not replacing) /briefs and /drafts. The first column holds real
+ * briefs (a different table); the rest are `contentPieces.status` values.
  *
  * `searchParams` is a Promise in this Next.js version — see the "Rendering
  * with search params" note in
@@ -40,7 +49,13 @@ export default async function BoardPage({
     listWorkspaceMembers(session.user.tenantId),
   ]);
 
-  const total = BOARD_COLUMNS.reduce((sum, column) => sum + filteredBoard[column].length, 0);
+  // The sum of what the columns actually show. Briefs count only with no
+  // assignee filter active: a brief has no assignee, so the Brief column
+  // hides its cards under a filter it cannot honour (see board.tsx), and a
+  // total counting hidden cards would disagree with the columns below it.
+  const total =
+    BOARD_COLUMNS.reduce((sum, column) => sum + filteredBoard[column].length, 0) +
+    (assigneeFilter === "all" ? filteredBoard[BRIEF_COLUMN].length : 0);
 
   // Computed here (server-side, from the real `canMove`) and handed down as
   // plain data — `board.tsx` is a Client Component and must not import
@@ -63,6 +78,7 @@ export default async function BoardPage({
         members={members}
         assigneeFilter={assigneeFilter}
         columns={BOARD_COLUMNS}
+        displayColumns={BOARD_DISPLAY_COLUMNS}
         moveMatrix={moveMatrix}
         publishedLimit={PUBLISHED_COLUMN_LIMIT}
       />
