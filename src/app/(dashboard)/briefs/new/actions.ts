@@ -26,6 +26,16 @@ export type ManualBriefInput = {
   score: number;
   scoreRationale: string | null;
   signalIds: string[];
+  /**
+   * When the sweep may expire this brief, or `null` for never.
+   *
+   * Optional, and omitted by every hand-written caller — `BriefForm` builds a
+   * `ManualBriefInput` and never sets this — so the "a human wrote it, it
+   * never expires" rule holds by construction rather than by remembering to
+   * pass `null`. Only `proposeAndCreateBrief` sets it, because what it saves
+   * is a model's proposal nobody has read yet. See the doc comment below.
+   */
+  expiresAt?: Date | null;
 };
 
 export type CreateManualBriefResult = { ok: true; briefId: string } | { ok: false; error: string };
@@ -42,12 +52,23 @@ export type CreateManualBriefResult = { ok: true; briefId: string } | { ok: fals
  * written on that path, per `loadOwnBrief`'s membership-check convention in
  * `src/app/(dashboard)/briefs/actions.ts`.
  *
- * `expiresAt: null` and `status: "new"` are the difference from an
- * agent-proposed brief: a hand-written brief is a decision the sweep must
- * never expire out from under a human, not a candidate awaiting one. An empty
- * `signalIds` is valid — this is the degradation path for when the proposal
- * agent refused to run at all, and the human may not have selected anything
- * to begin with.
+ * Expiry is the caller's call, and the default is "never". A brief written by
+ * hand is a decision the sweep must not expire out from under a human, so
+ * `BriefForm` omits `expiresAt` and gets `null` — the same invariant this
+ * comment has always stated, now stated for the hand-written path only.
+ *
+ * It is NOT true of every caller anymore. `proposeAndCreateBrief`
+ * (`src/app/(dashboard)/signals/propose-actions.ts`) also lands here, and what
+ * it saves is a model's proposal that no human has seen yet — the brief exists
+ * before the modal has even offered Close. Left never-expiring, three
+ * exploratory clicks would leave three permanent `status = "new"` rows at the
+ * top of an inbox forever, which is precisely the debt `expireStaleBriefs`
+ * exists to prevent. So it passes the agent TTL and its briefs age out like
+ * agent-proposed ones. `status: "new"` is unconditional either way.
+ *
+ * An empty `signalIds` is valid — this is the degradation path for when the
+ * proposal agent refused to run at all, and the human may not have selected
+ * anything to begin with.
  */
 export async function createManualBrief(input: ManualBriefInput): Promise<CreateManualBriefResult> {
   const session = await requireSession();
@@ -114,8 +135,10 @@ export async function createManualBrief(input: ManualBriefInput): Promise<Create
       score: input.score,
       scoreRationale: input.scoreRationale?.trim() || null,
       status: "new",
-      // Never expires — see the doc comment above.
-      expiresAt: null,
+      // `?? null` rather than a default parameter: an omitted field and an
+      // explicit `null` must mean the same thing, since the field crosses a
+      // Server Action boundary where `undefined` is not reliably preserved.
+      expiresAt: input.expiresAt ?? null,
       lastEvidenceAt: new Date(),
     })
     .returning({ id: briefs.id });

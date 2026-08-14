@@ -97,8 +97,10 @@ describe("NewBriefPage", () => {
 
     expect(headerText).toContain("attached as evidence");
     expect(overCapNotice).toBe(false);
-    expect(briefFormProps.proposal).toBeNull();
-    expect(briefFormProps.proposalError).toBeNull();
+    // The proposal props are gone with the proposal branch — the form is
+    // unconditionally blank now, so passing them would be passing nothing.
+    expect(briefFormProps).not.toHaveProperty("proposal");
+    expect(briefFormProps).not.toHaveProperty("proposalError");
     expect(briefFormProps.evidence).toEqual([
       { id: s1.id, title: "Signal one", kind: "market_news" },
       { id: s2.id, title: "Signal two", kind: "market_news" },
@@ -114,8 +116,8 @@ describe("NewBriefPage", () => {
 
     expect(headerText).toContain("Write a brief by hand");
     expect(overCapNotice).toBe(false);
-    expect(briefFormProps.proposal).toBeNull();
-    expect(briefFormProps.proposalError).toBeNull();
+    expect(briefFormProps).not.toHaveProperty("proposal");
+    expect(briefFormProps).not.toHaveProperty("proposalError");
     expect(briefFormProps.evidence).toEqual([]);
     expect(listSignals).not.toHaveBeenCalled();
     expect(proposeBriefFromSignals).not.toHaveBeenCalled();

@@ -112,8 +112,18 @@ export function SignalsList({
             {/* Was a Link to /briefs/new?signals=… , whose server render
                 awaited a model call to pre-fill the form — a frozen
                 navigation with no feedback. The modal creates the brief in
-                place and reports the wait (spec B). */}
-            <CreateBriefModal signalIds={selectedIds} />
+                place and reports the wait (spec B).
+
+                The selection is dropped once a brief has been made from it.
+                The old flow navigated away to `/briefs/new`, which unmounted
+                this component and cleared it; the modal returns here with
+                every row still ticked and the same button still live, so
+                clicking again would commission a second brief from the same
+                evidence. `onBriefCreated` fires when the modal is finished
+                showing the result, not the instant the row exists — clearing
+                sooner would unmount the modal out from under the user (this
+                bar only renders while something is selected). */}
+            <CreateBriefModal signalIds={selectedIds} onBriefCreated={() => setSelected(new Set())} />
           </div>
         </div>
       )}

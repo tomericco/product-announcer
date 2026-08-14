@@ -30,6 +30,22 @@ export const IDEATION_MIN_SCORE = 0.3;
 /** How long a brief waits for a decision before the sweep expires it. */
 export const BRIEF_TTL_DAYS = 14;
 
+/**
+ * When a brief proposed at `now` should fall out of the inbox if nobody
+ * decides on it.
+ *
+ * Exported because the ideation sweep is no longer the only thing that
+ * proposes a brief nobody has read yet: `proposeAndCreateBrief`
+ * (`src/app/(dashboard)/signals/propose-actions.ts`) writes a model-authored
+ * brief straight from the creation modal, and it must age out on exactly the
+ * same clock as this file's. Calling this rather than re-deriving
+ * `BRIEF_TTL_DAYS` there is the point — two call sites computing "now plus the
+ * TTL" independently is how they drift.
+ */
+export function briefExpiryFrom(now: Date): Date {
+  return new Date(now.getTime() + BRIEF_TTL_DAYS * 24 * 60 * 60 * 1000);
+}
+
 /** Caps how much covered/rejected history reaches the prompt. */
 export const MAX_CONTEXT_ITEMS = 20;
 
@@ -279,7 +295,7 @@ async function runIdeationUnsafe(
   }
 
   const now = new Date();
-  const expiresAt = new Date(now.getTime() + BRIEF_TTL_DAYS * 24 * 60 * 60 * 1000);
+  const expiresAt = briefExpiryFrom(now);
   let proposed = 0;
   let extended = 0;
 

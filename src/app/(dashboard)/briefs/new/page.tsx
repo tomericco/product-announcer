@@ -86,11 +86,7 @@ export default async function NewBriefPage({
         </div>
       )}
 
-      <BriefForm
-        proposal={null}
-        proposalError={null}
-        evidence={chosen.map((s) => ({ id: s.id, title: s.title, kind: s.kind }))}
-      />
+      <BriefForm evidence={chosen.map((s) => ({ id: s.id, title: s.title, kind: s.kind }))} />
     </div>
   );
 }

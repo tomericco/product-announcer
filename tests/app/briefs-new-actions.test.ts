@@ -71,6 +71,30 @@ describe("createManualBrief", () => {
     expect(links.map((l) => l.signalId)).toEqual([signal.id]);
   });
 
+  // The expiry is opt-in so the hand-written path keeps "never expires" by
+  // construction — but the option has to actually reach the row, or the modal
+  // path's fix is a no-op.
+  it("stores an expiry when one is asked for, and still defaults to never when it isn't", async () => {
+    await seedTenant();
+    currentUserId = null;
+    const when = new Date(Date.now() + 3 * 86_400_000);
+
+    const withExpiry = await createManualBrief({ ...FORM, signalIds: [], expiresAt: when });
+    expect(withExpiry.ok).toBe(true);
+    if (!withExpiry.ok) return;
+    const [expiring] = await db.select().from(briefs).where(eq(briefs.id, withExpiry.briefId));
+    expect(expiring.expiresAt?.getTime()).toBe(when.getTime());
+
+    // An explicit null and an omitted field must mean the same thing — the
+    // field crosses a Server Action boundary, where `undefined` is not
+    // reliably preserved.
+    const explicitNull = await createManualBrief({ ...FORM, signalIds: [], expiresAt: null });
+    expect(explicitNull.ok).toBe(true);
+    if (!explicitNull.ok) return;
+    const [never] = await db.select().from(briefs).where(eq(briefs.id, explicitNull.briefId));
+    expect(never.expiresAt).toBeNull();
+  });
+
   it("stores a rendered body equal to renderBriefBody of its own fields", async () => {
     await seedTenant();
     currentUserId = null;

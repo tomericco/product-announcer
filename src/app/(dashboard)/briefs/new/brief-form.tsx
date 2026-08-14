@@ -8,7 +8,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Card, CardContent } from "@/components/ui/card";
 import { createManualBrief, type ManualBriefInput } from "./actions";
 
 /**
@@ -80,27 +79,25 @@ function textToKeyPoints(text: string): string[] {
 }
 
 /**
- * The brief form: pre-filled from a proposal when one succeeded, blank with
- * the error shown when it didn't. Every field stays editable either way, and
- * saving never depends on the proposal having worked — that's the whole
- * point of the degradation path (see `page.tsx`'s doc comment).
+ * The brief form: always blank, always hand-written. This is the only path
+ * that reaches it now — the proposal moved to the modal on `/signals`, which
+ * creates the brief outright instead of pre-filling this form, so the
+ * `proposal`/`proposalError` props and the "the agent couldn't propose"
+ * notice they drove are gone. The page's only caller passed `null` for both.
  *
  * `evidence` — the signals chosen on `/signals` and scoped to this tenant by
  * the page — is fixed, not re-editable here; adding or removing evidence is
  * out of this form's scope (it happens on `/signals` itself, per the design
- * doc). It is attached on save regardless of whether the proposal succeeded.
+ * doc). It is attached on save either way, which is what keeps the modal's
+ * "Write it by hand" fallback from costing the user their selection.
+ *
+ * The saved brief never expires: `createManualBrief` defaults `expiresAt` to
+ * null, and nothing here overrides it, because a brief someone typed is a
+ * decision and not a candidate awaiting one.
  */
-export function BriefForm({
-  proposal,
-  proposalError,
-  evidence,
-}: {
-  proposal: BriefProposal | null;
-  proposalError: string | null;
-  evidence: EvidenceSignal[];
-}) {
+export function BriefForm({ evidence }: { evidence: EvidenceSignal[] }) {
   const router = useRouter();
-  const initial = proposal ?? BLANK;
+  const initial = BLANK;
 
   const [contentType, setContentType] = useState<BriefProposal["contentType"]>(initial.contentType);
   const [title, setTitle] = useState(initial.title);
@@ -157,15 +154,6 @@ export function BriefForm({
 
   return (
     <form onSubmit={onSubmit} className="max-w-2xl space-y-5">
-      {proposalError && (
-        <Card className="border-destructive/50">
-          <CardContent className="py-3 text-sm text-destructive">
-            The agent couldn&apos;t propose a brief: {proposalError} Write it yourself below — nothing here is
-            lost.
-          </CardContent>
-        </Card>
-      )}
-
       {evidence.length > 0 && (
         <div className="space-y-1.5">
           <Label>Evidence</Label>

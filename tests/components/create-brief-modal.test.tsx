@@ -41,7 +41,14 @@ import { CreateBriefModal } from "../../src/app/(dashboard)/signals/create-brief
 
 const SIGNAL_IDS = ["sig-1", "sig-2", "sig-3"];
 
-type ActionResult = { ok: true; briefId: string } | { ok: false; error: string };
+type ActionResult =
+  | { ok: true; briefId: string; usedSignalCount: number; droppedSignalCount: number }
+  | { ok: false; error: string };
+
+/** A success with nothing dropped, which is the ordinary case. */
+function created(briefId: string, used = SIGNAL_IDS.length, dropped = 0): ActionResult {
+  return { ok: true, briefId, usedSignalCount: used, droppedSignalCount: dropped };
+}
 
 /** Hands back the resolver so a test can hold the round trip open. */
 function deferred() {
@@ -94,7 +101,7 @@ describe("CreateBriefModal — the run", () => {
     expect(proposeAndCreateBrief).toHaveBeenCalledWith(SIGNAL_IDS);
     expect(screen.getByText("Proposing an angle")).toBeInTheDocument();
 
-    await act(async () => settle({ ok: true, briefId: "brief-9" }));
+    await act(async () => settle(created("brief-9")));
   });
 
   // The step wiring, which is the whole reason this modal exists. Asserted at
@@ -113,30 +120,116 @@ describe("CreateBriefModal — the run", () => {
     expect(statusOf("Proposing an angle")).toBe("active");
     expect(statusOf("Creating the brief")).toBe("pending");
 
-    await act(async () => settle({ ok: true, briefId: "brief-9" }));
+    await act(async () => settle(created("brief-9")));
 
     expect(statusOf("Resolving your signals")).toBe("done");
     expect(statusOf("Proposing an angle")).toBe("done");
     expect(statusOf("Creating the brief")).toBe("done");
   });
 
-  it("offers no way out while the action is in flight — the run can't be cancelled", async () => {
+  it("shows no result controls while the action is in flight", async () => {
     const { promise, settle } = deferred();
     proposeAndCreateBrief.mockReturnValue(promise);
 
     render(<CreateBriefModal signalIds={SIGNAL_IDS} />);
     await clickCreate();
 
-    expect(screen.getByRole("button", { name: "Close" })).toBeDisabled();
     expect(screen.queryByRole("button", { name: "Open brief" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 
-    await act(async () => settle({ ok: true, briefId: "brief-9" }));
+    await act(async () => settle(created("brief-9")));
+  });
+});
+
+/**
+ * A Server Action fetch has no timeout. When Escape was swallowed, the corner
+ * X removed and the footer Close disabled all at once, a stalled connection
+ * left a page reload as the only exit. The run still can't be cancelled — it
+ * can be walked away from, which is safe for exactly the reason Close is safe
+ * after a success: the brief lands in the inbox either way.
+ */
+describe("CreateBriefModal — walking out of a stalled run", () => {
+  it("lets the user close while the action is still in flight", async () => {
+    const { promise, settle } = deferred();
+    proposeAndCreateBrief.mockReturnValue(promise);
+
+    render(<CreateBriefModal signalIds={SIGNAL_IDS} />);
+    await clickCreate();
+
+    const close = screen.getByRole("button", { name: "Close" });
+    expect(close).not.toBeDisabled();
+
+    await act(async () => {
+      fireEvent.click(close);
+    });
+
+    await waitFor(() => expect(screen.queryByText("Proposing an angle")).not.toBeInTheDocument());
+
+    // The request was never cancelled — it simply stopped being watched.
+    await act(async () => settle(created("brief-9")));
+    expect(proposeAndCreateBrief).toHaveBeenCalledTimes(1);
+  });
+
+  it("still dismisses on Escape mid-run — onOpenChange no longer swallows it", async () => {
+    const { promise, settle } = deferred();
+    proposeAndCreateBrief.mockReturnValue(promise);
+
+    render(<CreateBriefModal signalIds={SIGNAL_IDS} />);
+    await clickCreate();
+    expect(screen.getByText("Proposing an angle")).toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape", code: "Escape" });
+    });
+
+    await waitFor(() => expect(screen.queryByText("Proposing an angle")).not.toBeInTheDocument());
+    await act(async () => settle(created("brief-9")));
+  });
+
+  it("survives the action throwing synchronously instead of rejecting", async () => {
+    // The bug: the call sat outside the try, so a synchronous throw escaped as
+    // an unhandled rejection and pinned the modal at `resolving: "active"`
+    // with every exit shut.
+    proposeAndCreateBrief.mockImplementation(() => {
+      throw new Error("dispatch blew up before returning a promise");
+    });
+
+    render(<CreateBriefModal signalIds={SIGNAL_IDS} />);
+    await clickCreate();
+
+    await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
+    expect(statusOf("Resolving your signals")).toBe("done");
+    expect(statusOf("Proposing an angle")).toBe("stalled");
+    expect(screen.getByRole("button", { name: "Close" })).not.toBeDisabled();
+  });
+
+  it("ignores an abandoned run's result once a newer run has started", async () => {
+    const first = deferred();
+    proposeAndCreateBrief.mockReturnValue(first.promise);
+
+    render(<CreateBriefModal signalIds={SIGNAL_IDS} />);
+    await clickCreate();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    });
+
+    const second = deferred();
+    proposeAndCreateBrief.mockReturnValue(second.promise);
+    await clickCreate();
+
+    // The abandoned run lands last, and must not overwrite the live one.
+    await act(async () => first.settle({ ok: false, error: "stale failure" }));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(statusOf("Proposing an angle")).toBe("active");
+
+    await act(async () => second.settle(created("brief-9")));
+    expect(linkButton("Open brief")).toHaveAttribute("href", "/briefs/brief-9");
   });
 });
 
 describe("CreateBriefModal — success", () => {
   it("offers Open brief pointing at the brief that was created", async () => {
-    proposeAndCreateBrief.mockResolvedValue({ ok: true, briefId: "brief-9" });
+    proposeAndCreateBrief.mockResolvedValue(created("brief-9"));
 
     render(<CreateBriefModal signalIds={SIGNAL_IDS} />);
     await clickCreate();
@@ -148,7 +241,7 @@ describe("CreateBriefModal — success", () => {
   // The pivot of the design: Close is safe BECAUSE the brief already exists
   // and nothing undoes it. A delete-on-close would turn Close into a decision.
   it("closing after success destroys nothing — no dismiss, no second action call", async () => {
-    proposeAndCreateBrief.mockResolvedValue({ ok: true, briefId: "brief-9" });
+    proposeAndCreateBrief.mockResolvedValue(created("brief-9"));
 
     render(<CreateBriefModal signalIds={SIGNAL_IDS} />);
     await clickCreate();
@@ -239,7 +332,107 @@ describe("CreateBriefModal — failure", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(statusOf("Proposing an angle")).toBe("active");
 
-    await act(async () => settle({ ok: true, briefId: "brief-9" }));
+    await act(async () => settle(created("brief-9")));
     expect(linkButton("Open brief")).toHaveAttribute("href", "/briefs/brief-9");
+  });
+});
+
+/**
+ * `listSignals` drops stale signals and anything past its 60-day window
+ * before the proposal ever sees them, so a five-signal selection can become a
+ * three-signal brief. Task 4 deleted `/briefs/new`'s notice about that on the
+ * grounds it explained a partial *proposal* — but the condition never went
+ * away, so the modal has to say it instead.
+ */
+describe("CreateBriefModal — partial resolution", () => {
+  it("reports the count the brief was built from, not the count that was selected", async () => {
+    proposeAndCreateBrief.mockResolvedValue(created("brief-9", 3, 2));
+
+    render(<CreateBriefModal signalIds={["a", "b", "c", "d", "e"]} />);
+    await clickCreate();
+
+    await waitFor(() => expect(linkButton("Open brief")).toBeInTheDocument());
+    expect(screen.getByText(/Built from 3 signals/)).toBeInTheDocument();
+  });
+
+  it("surfaces the signals that were dropped rather than swallowing them", async () => {
+    proposeAndCreateBrief.mockResolvedValue(created("brief-9", 3, 2));
+
+    render(<CreateBriefModal signalIds={["a", "b", "c", "d", "e"]} />);
+    await clickCreate();
+
+    await waitFor(() => expect(linkButton("Open brief")).toBeInTheDocument());
+    const notice = screen.getByRole("status");
+    expect(notice).toHaveTextContent("2 of the 5 signals you selected weren't usable");
+  });
+
+  it("says nothing when every selected signal was used", async () => {
+    proposeAndCreateBrief.mockResolvedValue(created("brief-9", 3, 0));
+
+    render(<CreateBriefModal signalIds={SIGNAL_IDS} />);
+    await clickCreate();
+
+    await waitFor(() => expect(linkButton("Open brief")).toBeInTheDocument());
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * The old flow navigated to `/briefs/new`, which unmounted the list and took
+ * the selection with it. The modal comes back to `/signals` with every row
+ * still ticked and the same button still live, so without this a second click
+ * commissions a second brief from the same evidence.
+ */
+describe("CreateBriefModal — handing the selection back", () => {
+  it("reports the creation when the modal is closed, not while it is still on screen", async () => {
+    const onBriefCreated = vi.fn();
+    proposeAndCreateBrief.mockResolvedValue(created("brief-9"));
+
+    render(<CreateBriefModal signalIds={SIGNAL_IDS} onBriefCreated={onBriefCreated} />);
+    await clickCreate();
+    await waitFor(() => expect(linkButton("Open brief")).toBeInTheDocument());
+
+    // Not yet: `SignalsList` renders this modal inside its selection bar, so
+    // clearing now would unmount the result the user is reading.
+    expect(onBriefCreated).not.toHaveBeenCalled();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    });
+
+    expect(onBriefCreated).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports a creation that landed after the user walked out", async () => {
+    const onBriefCreated = vi.fn();
+    const { promise, settle } = deferred();
+    proposeAndCreateBrief.mockReturnValue(promise);
+
+    render(<CreateBriefModal signalIds={SIGNAL_IDS} onBriefCreated={onBriefCreated} />);
+    await clickCreate();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    });
+    expect(onBriefCreated).not.toHaveBeenCalled();
+
+    // Nobody is watching, so no Close will ever fire for this run — the brief
+    // exists all the same and the evidence has been spent.
+    await act(async () => settle(created("brief-9")));
+    expect(onBriefCreated).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the selection when the run failed — Write it by hand still needs it", async () => {
+    const onBriefCreated = vi.fn();
+    proposeAndCreateBrief.mockResolvedValue({ ok: false, error: "No angle." });
+
+    render(<CreateBriefModal signalIds={SIGNAL_IDS} onBriefCreated={onBriefCreated} />);
+    await clickCreate();
+    await waitFor(() => expect(linkButton("Write it by hand")).toBeInTheDocument());
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    });
+
+    expect(onBriefCreated).not.toHaveBeenCalled();
   });
 });
