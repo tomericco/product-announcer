@@ -48,8 +48,13 @@ export function ProgressChecklist<K extends string>({
     <ol className={cn("space-y-2", className)}>
       {steps.map((step) => {
         const st = statuses[step.key];
+        // `data-status` is the only machine-readable trace of a step's state:
+        // everything else about it is an icon swap, reachable from a test only
+        // through Tailwind class names. The brief-creation modal drives this
+        // checklist for real in jsdom
+        // (tests/components/create-brief-modal.test.tsx) and asserts on it.
         return (
-          <li key={step.key} className="flex items-center gap-2 text-sm">
+          <li key={step.key} data-status={st} className="flex items-center gap-2 text-sm">
             {st === "done" ? (
               <Check className="size-4 text-emerald-600" />
             ) : st === "active" ? (

@@ -1,12 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { groupByMonth } from "@/lib/group-by-month";
 import { retainVisible } from "@/lib/signals/selection";
 import type { Signal } from "@/db/schema";
 import { SignalRow } from "./signal-row";
+import { CreateBriefModal } from "./create-brief-modal";
 
 /**
  * The signals browser's list, plus selection (spec 6: turning a chosen set
@@ -44,8 +44,9 @@ export function SignalsList({
   // Filters navigate via `router.push` — a soft navigation — so this
   // component is never remounted when `rows` narrows; without this,
   // `selected` would keep ids that scrolled out of the current filter,
-  // still eating a cap slot and still riding along in the "create brief"
-  // link, with no row left on screen to show or deselect them. See
+  // still eating a cap slot and still riding along into the brief "Create
+  // brief" commissions, with no row left on screen to show or deselect
+  // them. See
   // `retainVisible`'s own comment for the full reasoning. Skips the
   // `setSelected` call when nothing was dropped, so an unrelated re-render
   // that hands down a new-but-equivalent `rows` array doesn't churn state.
@@ -108,9 +109,11 @@ export function SignalsList({
             <Button variant="ghost" size="sm" onClick={() => setSelected(new Set())}>
               Clear
             </Button>
-            <Button size="sm" render={<Link href={`/briefs/new?signals=${selectedIds.join(",")}`} />}>
-              Create brief
-            </Button>
+            {/* Was a Link to /briefs/new?signals=… , whose server render
+                awaited a model call to pre-fill the form — a frozen
+                navigation with no feedback. The modal creates the brief in
+                place and reports the wait (spec B). */}
+            <CreateBriefModal signalIds={selectedIds} />
           </div>
         </div>
       )}
