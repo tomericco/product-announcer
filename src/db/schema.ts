@@ -474,6 +474,15 @@ export const briefs = pgTable(
     // Follows the existing summaryEditedAt/bodyEditedAt convention: a human
     // edit freezes regeneration.
     editedAt: timestamp("edited_at", { withTimezone: true }),
+    // The brief as a markdown document. Null on briefs created before this
+    // existed, and on those `briefBody()` renders the same markdown from the
+    // structured fields on demand — the fallback IS the renderer, so there is
+    // no second code path and no backfill to get wrong. The first save writes a
+    // real body and the fallback stops applying to that row.
+    //
+    // Source of truth once set: the structured fields are NEVER re-derived from
+    // it. There is no markdown-to-fields parse anywhere and there must not be.
+    body: text("body"),
     // Bumped whenever a later run attaches fresh evidence, so a brief that
     // keeps gathering support stays near the top instead of ageing out. The
     // ageing-out half is `expiresAt`'s doing, not this column's: the extend
