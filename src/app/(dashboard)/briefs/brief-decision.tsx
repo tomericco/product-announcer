@@ -59,11 +59,14 @@ export function useBriefDecision(
    * unsaved edits unrecoverable and neither goes through the unsaved-changes
    * guard:
    *
-   *   - Accept navigates with `router.push`, not a `GuardedLink`, so
-   *     `requestLeave` never fires — and `beforeunload` only covers full page
-   *     loads (see the comment on `GuardedLink` in `unsaved-changes.tsx`).
-   *     `acceptBrief` then scaffolds and generates the draft from the STORED
-   *     row, so the model receives the commission the human did not write.
+   *   - Accept never goes through the unsaved-changes guard: it used to
+   *     navigate with `router.push` rather than a `GuardedLink` (so
+   *     `requestLeave` never fired, and `beforeunload` only covers full page
+   *     loads — see the comment on `GuardedLink` in `unsaved-changes.tsx`),
+   *     and it now does not navigate at all, so there is nothing for a guard
+   *     to intercept. Either way `acceptBrief` scaffolds and generates the
+   *     draft from the STORED row, so an unsaved edit means the model
+   *     receives the commission the human did not write.
    *   - Dismiss refreshes the page into its read-only branch, which drops the
    *     editor and its state on the floor just as quietly.
    *
@@ -75,6 +78,9 @@ export function useBriefDecision(
 ) {
   const router = useRouter();
   const [accepting, setAccepting] = useState(false);
+  // The piece a successful accept created, while its generation is being
+  // watched in `GenerationModal`. Non-null IS "the modal is open".
+  const [generatingPieceId, setGeneratingPieceId] = useState<string | null>(null);
   const [dismissing, setDismissing] = useState(false);
   const [dismissOpen, setDismissOpen] = useState(false);
   const [reason, setReason] = useState<DismissReason | "">("");
@@ -90,13 +96,31 @@ export function useBriefDecision(
 
       const result = await acceptBrief(briefId);
       if (result.ok) {
-        router.push(`/drafts/${result.contentPieceId}`);
+        // Watch the generation here instead of navigating to `/drafts/[id]`.
+        // The redirect this replaces threw the author off the brief they had
+        // just read — onto a page showing the accept-time scaffold, for as
+        // long as generation took, with nothing on it saying so.
+        setGeneratingPieceId(result.contentPieceId);
       } else {
         toast.error(result.error);
       }
     } finally {
       setAccepting(false);
     }
+  }
+
+  /**
+   * Dismisses the generation modal. The refresh is the point: the brief is
+   * `accepted` now, so re-reading swaps this page into its read-only branch —
+   * which is why it waits until here rather than firing on acceptance or on
+   * completion. That branch unmounts this hook's owner, and with it the modal.
+   *
+   * Closing does NOT stop the generation. It runs in an `after()` callback
+   * with no abort seam, and the piece is on the board either way.
+   */
+  function closeGeneration() {
+    setGeneratingPieceId(null);
+    router.refresh();
   }
 
   async function handleDismiss() {
@@ -126,6 +150,8 @@ export function useBriefDecision(
 
   return {
     accepting,
+    generatingPieceId,
+    closeGeneration,
     dismissing,
     dismissOpen,
     setDismissOpen,

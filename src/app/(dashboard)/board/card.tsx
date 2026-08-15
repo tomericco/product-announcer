@@ -80,10 +80,12 @@ type Props = {
    * piece's new status and body — `generateDraft` only revalidates /drafts
    * and /drafts/[id], not /board. Unused by the brief branch. */
   onGenerated: () => void;
-  /** Called after a successful acceptance, so the board re-reads and the
-   * brief is replaced by the content piece acceptance created. Unused by
-   * the piece branch. */
-  onAccepted: () => void;
+  /** Called after a successful acceptance with the id of the piece it
+   * created, so the board re-reads (the brief is replaced by that piece) and
+   * opens the generation modal on it. The modal is the BOARD's to render, not
+   * this card's: the re-read removes this card, and a modal mounted here
+   * would be unmounted with it. Unused by the piece branch. */
+  onAccepted: (contentPieceId: string) => void;
   /** Unused by the brief branch — a brief has no assignee. */
   onAssigned: (userId: string | null) => void;
 };
@@ -134,8 +136,20 @@ export function BoardCardItem({ card, members, draggable, onGenerated, onAccepte
  * than `brief-decision.tsx`'s dismiss flow — that one is an inline
  * open/close panel built to collect a reason, which this action doesn't
  * take, not a yes/no confirmation.
+ *
+ * The confirmation now leads into the board's `GenerationModal` rather than
+ * dismissing to an inline checklist. Both still exist and neither is
+ * redundant: the modal is for the person who just clicked Accept, and the
+ * inline checklist on the piece card is for everyone else — another tab, or
+ * the same one after the modal was closed.
  */
-function BriefCardItem({ card, onAccepted }: { card: BoardBriefCard; onAccepted: () => void }) {
+function BriefCardItem({
+  card,
+  onAccepted,
+}: {
+  card: BoardBriefCard;
+  onAccepted: (contentPieceId: string) => void;
+}) {
   const [accepting, startAccept] = useTransition();
   const [confirmOpen, setConfirmOpen] = useState(false);
 
@@ -154,8 +168,11 @@ function BriefCardItem({ card, onAccepted }: { card: BoardBriefCard; onAccepted:
         toast.success("Brief accepted. Generating the draft…");
         setConfirmOpen(false);
         // The brief is gone from readBoard now and the new piece is in this
-        // same column; the refetch is what swaps one for the other.
-        onAccepted();
+        // same column; the refetch is what swaps one for the other. The id
+        // rides along so the board can open the generation modal on the piece
+        // that was just created — this card is about to stop existing, so it
+        // cannot show that itself.
+        onAccepted(result.contentPieceId);
       } catch (err) {
         toast.error(
           err instanceof Error ? err.message : "Something went wrong. The brief wasn't accepted."

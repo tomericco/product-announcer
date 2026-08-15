@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -188,12 +188,48 @@ export function shouldStopPolling(progress: GenerationProgress | null): boolean 
  * the persisted `generationStep` column every 3s instead of consuming an
  * event stream.
  *
- * Shared by the board card and the drafts list — both poll the same piece
- * under the same condition (`status === "brief"` with a step in flight), so
- * this lives in `src/components/` rather than under either route.
+ * Shared by the board card, the drafts list and `GenerationModal` — all three
+ * poll the same piece under the same condition (`status === "brief"` with a
+ * step in flight), so this lives in `src/components/` rather than under any
+ * one route.
  */
-export function GenerationChecklist({ contentPieceId }: { contentPieceId: string }) {
+export function GenerationChecklist({
+  contentPieceId,
+  onTerminal,
+  refreshOnTerminal = true,
+}: {
+  contentPieceId: string;
+  /**
+   * Fired once, when the poll loop lands on a terminal state — the seam
+   * `GenerationModal` needs to know a run finished, without a second poll of
+   * its own beside this one.
+   */
+  onTerminal?: (outcome: TerminalOutcome) => void;
+  /**
+   * Whether landing also asks the surrounding page to re-read itself. True
+   * for the inline consumers, whose parents render from server-fetched props
+   * that are stale the moment a run lands (see the call below).
+   *
+   * `GenerationModal` passes false, and defers that refresh to its own close.
+   * On `/briefs/[briefId]` the refresh is destructive while the modal is
+   * open: the brief is `accepted` by then, so the re-render returns the
+   * page's read-only branch, which unmounts the workspace — and the modal
+   * with it, at the exact moment it had a finished draft to offer.
+   */
+  refreshOnTerminal?: boolean;
+}) {
   const router = useRouter();
+  // The latest-ref pattern: `onTerminal` is usually an inline closure, and
+  // putting it in the effect's dependency list would tear down and restart
+  // the poll loop (resetting `attempts` with it) on every parent render.
+  const onTerminalRef = useRef(onTerminal);
+  useEffect(() => {
+    onTerminalRef.current = onTerminal;
+  });
+  const refreshRef = useRef(refreshOnTerminal);
+  useEffect(() => {
+    refreshRef.current = refreshOnTerminal;
+  });
   // Paced rather than set straight through, so a run that crosses two
   // deterministic steps between polls doesn't repaint both at once and leave
   // the first unread. Nothing about the poll itself changes: the interval, the
@@ -246,7 +282,10 @@ export function GenerationChecklist({ contentPieceId }: { contentPieceId: string
         // stays under an "Awaiting generation" badge, and a failed one never
         // flips to "Generation failed", until an unrelated navigation
         // happens to refresh the page.
-        router.refresh();
+        if (refreshRef.current) router.refresh();
+        // Last, so the owner hears about the outcome with the checklist's own
+        // state already settled.
+        onTerminalRef.current?.(outcome);
         return;
       }
 

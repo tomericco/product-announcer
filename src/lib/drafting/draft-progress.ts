@@ -14,8 +14,8 @@ export type OnDraftProgress = (event: DraftProgressEvent) => void;
 /**
  * One row of a stepped loader.
  *
- * `slow` marks the step whose duration is a real model call rather than server
- * bookkeeping — the one step a user is genuinely waiting on. It exists for
+ * `slow` marks a step whose duration is a real model call rather than server
+ * bookkeeping — the steps a user is genuinely waiting on. It exists for
  * `usePacedStatuses` (src/components/draft-progress-checklist.tsx), which
  * gives every OTHER step a minimum visible duration so it can be read instead
  * of flashing past. Never paced means never *padded*: the flag is what keeps a
@@ -40,7 +40,12 @@ export const DRAFT_STEPS: ProgressStep<DraftStepKey>[] = [
   { key: "preparing", label: "Preparing brand profile & examples" },
   // The model call the whole checklist is really waiting on.
   { key: "generating", label: "Generating the draft", slow: true },
-  { key: "reviewing", label: "Reviewing against brand guidelines" },
+  // Also a real model call, not bookkeeping: `generateDraftForPiece` runs
+  // `review(draft, brandProfile)` under this step (src/lib/briefs/draft.ts).
+  // Without the flag, `reviewing -> saving` was charged an 800ms floor on top
+  // of a wait that was already as long as it was going to be — and a failure
+  // out of the review would have been held behind that floor.
+  { key: "reviewing", label: "Reviewing against brand guidelines", slow: true },
   { key: "saving", label: "Saving the draft" },
 ];
 

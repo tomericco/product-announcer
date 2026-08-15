@@ -53,10 +53,17 @@ const { moveCard, assignCard, acceptBriefCard, generateDraft, pollGenerationProg
     toast: { success: vi.fn(), error: vi.fn() },
   }));
 
+const { router } = vi.hoisted(() => ({ router: {} as Record<string, unknown> }));
+router.refresh = refresh;
+router.push = vi.fn();
+
 vi.mock("../../src/app/(dashboard)/board/actions", () => ({ moveCard, assignCard, acceptBriefCard }));
 vi.mock("../../src/app/(dashboard)/briefs/actions", () => ({ generateDraft }));
 vi.mock("../../src/app/(dashboard)/progress-actions", () => ({ pollGenerationProgress }));
-vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh, push: vi.fn() }) }));
+// One object for every render: `useRouter` is in the generation checklist's
+// poll-effect dependency list, and a fresh object per render would restart that
+// effect — and its poll — on every render. Next's real hook is stable.
+vi.mock("next/navigation", () => ({ useRouter: () => router }));
 vi.mock("sonner", () => ({ toast }));
 
 /**
@@ -301,6 +308,11 @@ beforeEach(() => {
   vi.clearAllMocks();
   harness.droppables.clear();
   harness.draggables.clear();
+  // Confirming an accept now opens the board's generation modal, which mounts
+  // a real `GenerationChecklist` and polls. Nothing here asserts on that — the
+  // modal is driven in tests/components/generation-modal.test.tsx — but the
+  // poll must resolve to something the loop can read rather than `undefined`.
+  pollGenerationProgress.mockResolvedValue(null as never);
 });
 
 describe("the Brief column", () => {

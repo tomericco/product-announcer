@@ -1,6 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
+import { GenerationModal } from "@/components/generation-modal";
 import { useBriefDecision } from "../brief-decision";
 import { useBriefEditor } from "./use-brief-editor";
 import { BriefHeader } from "./brief-header";
@@ -42,6 +43,16 @@ export function BriefWorkspace({
       <BriefHeader briefId={briefId} canDecide={canDecide} decision={decision} />
       {children}
       <BriefEditor initialTitle={initialTitle} initialBody={initialBody} editor={editor} />
+
+      {/* Accepting shows the generation here instead of redirecting to
+          `/drafts/[id]`, so the author stays on the brief they just read.
+          Mounted OUTSIDE the `canDecide` gate the header uses: the moment the
+          accept lands the brief is no longer `new`, and hiding the modal along
+          with the buttons that opened it would close it on its own success. */}
+      <GenerationModal
+        contentPieceId={decision.generatingPieceId}
+        onClose={decision.closeGeneration}
+      />
     </>
   );
 }

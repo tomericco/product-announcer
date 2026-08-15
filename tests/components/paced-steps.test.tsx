@@ -195,6 +195,27 @@ describe("usePacedStatuses — the model call is never paced", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  // The other model call in DRAFT_STEPS. `reviewing -> saving` used to be
+  // charged a floor, which held the last step of a run behind a fake wait —
+  // and would have held a failure out of the review behind it too.
+  it("advances off the review step with no delay either", () => {
+    render(
+      <Harness
+        steps={DRAFT_STEPS}
+        script={[[inFlight(DRAFT_STEPS, "reviewing")], [inFlight(DRAFT_STEPS, "saving")]]}
+      />
+    );
+
+    announce(0);
+    expect(statusOf("Reviewing against brand guidelines")).toBe("active");
+
+    announce(1);
+
+    expect(statusOf("Reviewing against brand guidelines")).toBe("done");
+    expect(statusOf("Saving the draft")).toBe("active");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("still paces the deterministic step that precedes it, in the same list", () => {
     // The contrast that makes the test above mean something: the exemption is
     // the `slow` flag on the step being replaced, not "pacing is off for
@@ -213,11 +234,20 @@ describe("usePacedStatuses — the model call is never paced", () => {
     expect(statusOf("Generating the draft")).toBe("active");
   });
 
-  it("marks the model call, and only it, as the slow step in each flow", () => {
+  it("marks the model calls, and only them, as the slow steps in each flow", () => {
     // The identification the two rules above hang off. A property on the step
     // definition rather than a key list inside the hook: `saving` is a key in
     // both lists, so a key list could not tell these two flows apart.
-    expect(DRAFT_STEPS.filter((step) => step.slow).map((step) => step.key)).toEqual(["generating"]);
+    //
+    // `reviewing` is on this list because `generateDraftForPiece` runs
+    // `review(draft, brandProfile)` under it (src/lib/briefs/draft.ts) — it is
+    // a second model call, not bookkeeping, and pacing it charged an 800ms
+    // floor against a wait that had already happened. The membership test is
+    // "is this step a model call", not "is it the slowest one".
+    expect(DRAFT_STEPS.filter((step) => step.slow).map((step) => step.key)).toEqual([
+      "generating",
+      "reviewing",
+    ]);
     expect(PROPOSAL_STEPS.filter((step) => step.slow).map((step) => step.key)).toEqual([
       "proposing",
     ]);

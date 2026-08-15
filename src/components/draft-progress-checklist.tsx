@@ -37,10 +37,10 @@ export function initialStepStatuses<K extends string>(
  * intent behind that number — long enough to actually read a 3-to-5 word label
  * — is met well below a full second; anything past roughly half a second reads
  * as a discrete event rather than a flicker. The reason not to round up is that
- * this cost compounds. DRAFT_STEPS has four non-slow steps, so a floor of 1s
- * would add up to four seconds of pure padding to a run that had none, and
+ * this cost compounds. DRAFT_STEPS has three non-slow steps, so a floor of 1s
+ * would add up to three seconds of pure padding to a run that had none, and
  * padding a user can *feel* is a worse failure than a step they didn't read.
- * 800ms keeps the worst case under 3.2s and the common case (PROPOSAL_STEPS,
+ * 800ms keeps the worst case under 2.4s and the common case (PROPOSAL_STEPS,
  * one paced step) at a single beat.
  */
 export const MIN_STEP_VISIBLE_MS = 800;

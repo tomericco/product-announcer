@@ -42,6 +42,7 @@ import type {
   DisplayColumn,
 } from "@/lib/content/board";
 import type { WorkspaceMember } from "@/lib/workspace/members";
+import { GenerationModal } from "@/components/generation-modal";
 import { Column } from "./column";
 import { BoardCardItem } from "./card";
 import { boardCollisionDetection } from "./collision";
@@ -182,6 +183,12 @@ export function Board({
   const [pendingSchedule, setPendingSchedule] = useState<{ id: string } | null>(null);
   const [scheduleValue, setScheduleValue] = useState("");
   const [scheduling, setScheduling] = useState(false);
+  // The piece a just-accepted brief is generating into, watched in the modal
+  // at the bottom of this component. It lives HERE rather than on the brief
+  // card that started it because accepting removes that card: the refresh
+  // below swaps the brief for the piece, and a modal mounted inside the card
+  // would be torn down by the very refetch that proves the accept worked.
+  const [generatingPieceId, setGeneratingPieceId] = useState<string | null>(null);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
@@ -424,7 +431,15 @@ export function Board({
                         card.kind === "piece" && card.status !== "brief" && card.status !== "published"
                       }
                       onGenerated={() => router.refresh()}
-                      onAccepted={() => router.refresh()}
+                      // Both, and in this order: the modal is what the person
+                      // who clicked Accept watches, and the refetch is what
+                      // puts the new piece — with its own inline checklist —
+                      // on the board behind it, so closing the modal leaves a
+                      // card that is still reporting the run.
+                      onAccepted={(contentPieceId) => {
+                        setGeneratingPieceId(contentPieceId);
+                        router.refresh();
+                      }}
                       onAssigned={(userId) => handleAssigned(card.id, userId)}
                     />
                   ))
@@ -454,6 +469,18 @@ export function Board({
           })}
         </div>
       </DndContext>
+
+      {/* Closing is not a cancel — the run continues in `after()` and the
+          card behind this keeps reporting it. The re-read on close is what
+          picks up a run that landed while the modal was open (the checklist
+          inside it deliberately does not refresh; see `refreshOnTerminal`). */}
+      <GenerationModal
+        contentPieceId={generatingPieceId}
+        onClose={() => {
+          setGeneratingPieceId(null);
+          router.refresh();
+        }}
+      />
 
       <Dialog open={pendingSchedule !== null} onOpenChange={(open) => !open && setPendingSchedule(null)}>
         <DialogContent>

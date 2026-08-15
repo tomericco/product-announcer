@@ -2,8 +2,10 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, renderHook, act, waitFor } from "@testing-library/react";
 
 /**
- * The Critical this file exists for: Accept navigates away with `router.push`,
- * which is NOT a `GuardedLink`, so the unsaved-changes guard never fires — and
+ * The Critical this file exists for: Accept never passes through the
+ * unsaved-changes guard — it used to navigate away with `router.push`, which
+ * is NOT a `GuardedLink`, and it now does not navigate at all (the generation
+ * is watched in a modal on the brief) — and
  * `acceptBrief` scaffolds and generates the draft from the STORED row. On the
  * natural flow of this page (open → edit → Accept) the model therefore received
  * the commission the human did not write, and the brief flipped to `accepted`,
@@ -19,32 +21,50 @@ import { render, screen, fireEvent, renderHook, act, waitFor } from "@testing-li
  * `@/db`), never to stand in for the logic under test. The title field, the
  * header, the decision hook and the editor hook are all the real ones.
  */
-const { calls, saveBriefBody, acceptBrief, dismissBrief, push, refresh, toastError, toastSuccess } =
-  vi.hoisted(() => {
-    const calls: string[] = [];
-    return {
-      calls,
-      saveBriefBody: vi.fn(async () => {
-        calls.push("save");
-        return { ok: true as const };
-      }),
-      acceptBrief: vi.fn(async () => {
-        calls.push("accept");
-        return { ok: true as const, contentPieceId: "piece-1" };
-      }),
-      dismissBrief: vi.fn(async () => {
-        calls.push("dismiss");
-        return { ok: true as const };
-      }),
-      push: vi.fn(),
-      refresh: vi.fn(),
-      toastError: vi.fn(),
-      toastSuccess: vi.fn(),
-    };
-  });
+const {
+  calls,
+  saveBriefBody,
+  acceptBrief,
+  dismissBrief,
+  generateDraft,
+  pollGenerationProgress,
+  push,
+  refresh,
+  toastError,
+  toastSuccess,
+} = vi.hoisted(() => {
+  const calls: string[] = [];
+  return {
+    calls,
+    // Both only have to exist: they are reached through the generation modal
+    // `BriefWorkspace` now mounts, and nothing in this file opens it. The
+    // modal is driven for real in tests/components/generation-modal.test.tsx.
+    generateDraft: vi.fn(),
+    pollGenerationProgress: vi.fn(async () => null),
+    saveBriefBody: vi.fn(async () => {
+      calls.push("save");
+      return { ok: true as const };
+    }),
+    acceptBrief: vi.fn(async () => {
+      calls.push("accept");
+      return { ok: true as const, contentPieceId: "piece-1" };
+    }),
+    dismissBrief: vi.fn(async () => {
+      calls.push("dismiss");
+      return { ok: true as const };
+    }),
+    push: vi.fn(),
+    refresh: vi.fn(),
+    toastError: vi.fn(),
+    toastSuccess: vi.fn(),
+  };
+});
 
 vi.mock("../../src/app/(dashboard)/briefs/[briefId]/actions", () => ({ saveBriefBody }));
-vi.mock("../../src/app/(dashboard)/briefs/actions", () => ({ acceptBrief, dismissBrief }));
+vi.mock("../../src/app/(dashboard)/briefs/actions", () => ({ acceptBrief, dismissBrief, generateDraft }));
+// A "use server" module that imports `@/db`, pulled in by the generation
+// modal's checklist. Unreachable in jsdom either way.
+vi.mock("../../src/app/(dashboard)/progress-actions", () => ({ pollGenerationProgress }));
 vi.mock("sonner", () => ({ toast: { error: toastError, success: toastSuccess } }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push, refresh }) }));
 
@@ -205,6 +225,11 @@ describe("useBriefDecision with no beforeDecide", () => {
     });
 
     expect(calls).toEqual(["accept"]);
-    expect(push).toHaveBeenCalledWith("/drafts/piece-1");
+    // Accepting no longer navigates: the generation is watched in a modal on
+    // the brief itself (`GenerationModal`, mounted by `BriefWorkspace`), so the
+    // author stays on the brief they just read. The piece id the modal watches
+    // is what the hook hands back in place of the push.
+    expect(push).not.toHaveBeenCalled();
+    expect(result.current.generatingPieceId).toBe("piece-1");
   });
 });
