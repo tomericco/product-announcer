@@ -21,8 +21,8 @@ describe("clampStep", () => {
 
 describe("resolveOnboardingRedirect", () => {
   it("sends a finished tenant to the dashboard from any step", () => {
-    expect(resolveOnboardingRedirect({ completed: true, storedStep: 1, requestedStep: 3 })).toBe("/briefs");
-    expect(resolveOnboardingRedirect({ completed: true, storedStep: 4, requestedStep: 4 })).toBe("/briefs");
+    expect(resolveOnboardingRedirect({ completed: true, storedStep: 1, requestedStep: 3 })).toBe("/board");
+    expect(resolveOnboardingRedirect({ completed: true, storedStep: 4, requestedStep: 4 })).toBe("/board");
   });
 
   it("renders the requested step when it is the stored one", () => {

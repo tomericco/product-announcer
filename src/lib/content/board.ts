@@ -147,7 +147,7 @@ export async function readBoard(
       // filter is the security boundary and lives here, in the WHERE clause,
       // not in the loop below.
       .where(and(eq(briefs.tenantId, tenantId), eq(briefs.status, "new")))
-      // Same ordering as the /briefs inbox (see listBriefs): scores cluster
+      // Same ordering the old /briefs inbox used: scores cluster
       // narrowly, so recency breaks the ties score leaves.
       .orderBy(desc(briefs.score), desc(briefs.createdAt)),
   ]);

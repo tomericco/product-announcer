@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { db } from "../../../src/db";
 import { tenants, briefs, briefSignals, signals, briefRuns } from "../../../src/db/schema";
-import { listBriefs, listBriefSignals, latestBriefRun } from "../../../src/lib/briefs/query";
+import { listBriefSignals, latestBriefRun } from "../../../src/lib/briefs/query";
 import { seedTenant, dropTenant } from "../../helpers/fixtures";
 
 const TENANT = "Brief Query Test Tenant";
@@ -32,52 +32,6 @@ async function seedBrief(
     .returning();
   return brief;
 }
-
-describe("listBriefs", () => {
-  it("returns only the calling tenant's briefs", async () => {
-    const mine = await seedTenant(TENANT);
-    const [other] = await db.insert(tenants).values({ name: TENANT }).returning();
-    await seedBrief(mine.id, { title: "Mine" });
-    await seedBrief(other.id, { title: "Theirs" });
-
-    const rows = await listBriefs(mine.id, {}, db);
-    expect(rows.map((b) => b.title)).toEqual(["Mine"]);
-  });
-
-  it("defaults to new briefs only", async () => {
-    const tenant = await seedTenant(TENANT);
-    await seedBrief(tenant.id, { title: "Open", status: "new" });
-    await seedBrief(tenant.id, { title: "Gone", status: "dismissed" });
-
-    const rows = await listBriefs(tenant.id, {}, db);
-    expect(rows.map((b) => b.title)).toEqual(["Open"]);
-  });
-
-  it("reaches decided briefs through the status filter", async () => {
-    const tenant = await seedTenant(TENANT);
-    await seedBrief(tenant.id, { title: "Open", status: "new" });
-    await seedBrief(tenant.id, { title: "Gone", status: "dismissed" });
-
-    const rows = await listBriefs(tenant.id, { status: "dismissed" }, db);
-    expect(rows.map((b) => b.title)).toEqual(["Gone"]);
-  });
-
-  it("orders by score, then recency", async () => {
-    const tenant = await seedTenant(TENANT);
-    // Two briefs share a score. The spike measured scores clustering at
-    // 0.66-0.92, so score alone cannot order a real backlog — recency is what
-    // breaks the ties, and this fixture is the tie.
-    const older = await seedBrief(tenant.id, { title: "Older", score: 0.8 });
-    await new Promise((r) => setTimeout(r, 10));
-    const newer = await seedBrief(tenant.id, { title: "Newer", score: 0.8 });
-    await seedBrief(tenant.id, { title: "Best", score: 0.95 });
-
-    const rows = await listBriefs(tenant.id, {}, db);
-    expect(rows.map((b) => b.title)).toEqual(["Best", "Newer", "Older"]);
-    expect(newer.createdAt.getTime()).toBeGreaterThan(older.createdAt.getTime());
-  });
-
-});
 
 /**
  * The evidence read the editor at `/briefs/[briefId]` uses — a targeted

@@ -32,11 +32,11 @@ export function BriefHeader({
     <>
       <div className="sticky top-0 z-20 -mx-4 flex items-center justify-between gap-3 bg-background px-4 py-3">
         <GuardedLink
-          href="/briefs"
+          href="/board"
           className="inline-flex items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground"
         >
           <ArrowLeft className="size-3.5" />
-          Briefs
+          Board
         </GuardedLink>
         <div className="flex items-center gap-4">
           <SourceToggleButton />

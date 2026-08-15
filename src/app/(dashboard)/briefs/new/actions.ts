@@ -153,6 +153,6 @@ export async function createManualBrief(input: ManualBriefInput): Promise<Create
     );
   }
 
-  revalidatePath("/briefs");
+  revalidatePath("/board");
   return { ok: true, briefId: brief.id };
 }

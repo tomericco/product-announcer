@@ -33,7 +33,7 @@ export function resolveOnboardingRedirect({
   storedStep: number;
   requestedStep: OnboardingStep;
 }): string | null {
-  if (completed) return "/briefs";
+  if (completed) return "/board";
   const stored = clampStep(storedStep);
   if (stored < requestedStep) return ONBOARDING_STEP_PATHS[stored];
   return null;

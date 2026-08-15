@@ -178,7 +178,7 @@ function BriefCardItem({ card, onAccepted }: { card: BoardBriefCard; onAccepted:
           {/* `briefs.contentType` and `contentPieces.type` are the same
               pg enum, so the label map above covers both. */}
           <Badge variant="secondary">{CONTENT_TYPE_LABEL[card.contentType]}</Badge>
-          {/* Same two-decimal form as the /briefs inbox rows. */}
+          {/* Same two-decimal form the old /briefs inbox rows used. */}
           <Badge variant="outline">{card.score.toFixed(2)}</Badge>
         </div>
 

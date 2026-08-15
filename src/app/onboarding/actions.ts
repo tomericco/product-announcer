@@ -56,7 +56,7 @@ export async function saveOnboardingSchedule(formData: FormData) {
     .onConflictDoUpdate({ target: scheduleConfigs.tenantId, set: { hour } });
 
   await markOnboardingComplete(session.user.tenantId);
-  redirect("/briefs");
+  redirect("/board");
 }
 
 /**
@@ -67,7 +67,7 @@ export async function saveOnboardingSchedule(formData: FormData) {
 export async function skipScheduleStep() {
   const session = await requireSession();
   await markOnboardingComplete(session.user.tenantId);
-  redirect("/briefs");
+  redirect("/board");
 }
 
 /**
@@ -87,7 +87,7 @@ export async function importBrandStyle(formData: FormData) {
   // directly — and importBrandStyleForTenant fetches a live page and runs an LLM
   // derivation, so an ungated replay burns real money on a tenant who is already
   // done. The write itself is idempotent; the cost is not.
-  if (await isOnboardingComplete(session.user.tenantId)) return redirect("/briefs");
+  if (await isOnboardingComplete(session.user.tenantId)) return redirect("/board");
 
   const url = (formData.get("updatesPageUrl") as string)?.trim();
   // An empty URL is a hard validation error, so it gets the same visible
@@ -109,7 +109,7 @@ export async function bootstrapOnboardingCompany(formData: FormData) {
   // replayed directly — and bootstrapCompanyContext fetches up to four live
   // pages and runs an LLM derivation, so an ungated replay burns real money on
   // a tenant who is already done. The write is idempotent; the cost is not.
-  if (await isOnboardingComplete(session.user.tenantId)) return redirect("/briefs");
+  if (await isOnboardingComplete(session.user.tenantId)) return redirect("/board");
 
   const url = (formData.get("websiteUrl") as string)?.trim();
   if (!url) return redirect("/onboarding/brand?error=empty");
@@ -142,7 +142,7 @@ export async function saveOnboardingCompany(formData: FormData) {
   const session = await requireSession();
   // Same gate as its neighbours: this still writes (and advances), so a
   // replayed POST after onboarding is done must not mutate the profile.
-  if (await isOnboardingComplete(session.user.tenantId)) return redirect("/briefs");
+  if (await isOnboardingComplete(session.user.tenantId)) return redirect("/board");
 
   const profile = await getOrCreateCompanyProfile(session.user.tenantId);
 

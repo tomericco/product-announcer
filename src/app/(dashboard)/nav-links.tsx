@@ -8,7 +8,6 @@ import {
   Columns3,
   FilePen,
   History,
-  Inbox,
   Plug,
   Radar,
 } from "lucide-react";
@@ -18,7 +17,6 @@ import { cn } from "@/lib/utils";
 
 const NAV = [
   { href: "/signals", label: "Signals", icon: Radar },
-  { href: "/briefs", label: "Briefs", icon: Inbox },
   { href: "/board", label: "Board", icon: Columns3 },
   { href: "/calendar", label: "Calendar", icon: CalendarDays },
   { href: "/drafts", label: "Drafts", icon: FilePen },

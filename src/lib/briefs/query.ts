@@ -1,36 +1,8 @@
 import { and, desc, eq } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
-import { briefRuns, briefSignals, briefs, signals, type Brief, type BriefRun, type Signal } from "@/db/schema";
-
-export type BriefFilters = { status?: Brief["status"] };
+import { briefRuns, briefSignals, signals, type BriefRun, type Signal } from "@/db/schema";
 
 export type CitedSignal = { id: string; title: string; url: string | null; kind: Signal["kind"] };
-
-/**
- * Tenant-scoped brief listing for the inbox.
- *
- * Ordered by score AND recency. The validation spike measured scores
- * clustering at 0.66-0.92 (see the comment on `briefs.score`), so score alone
- * cannot order a real backlog — recency breaks the ties it leaves.
- *
- * Defaults to `new`. Accepted, dismissed and expired briefs are decisions
- * already made and are reachable only by asking for them.
- *
- * No longer joins evidence: the list row doesn't show it (the editor at
- * `/briefs/[briefId]` does, via `listBriefSignals` below, scoped to the one
- * brief being opened rather than every row in the list).
- */
-export async function listBriefs(
-  tenantId: string,
-  filters: BriefFilters,
-  database: typeof defaultDb = defaultDb
-): Promise<Brief[]> {
-  return database
-    .select()
-    .from(briefs)
-    .where(and(eq(briefs.tenantId, tenantId), eq(briefs.status, filters.status ?? "new")))
-    .orderBy(desc(briefs.score), desc(briefs.createdAt));
-}
 
 /**
  * The evidence cited by one brief — the editor's read, not the list's.

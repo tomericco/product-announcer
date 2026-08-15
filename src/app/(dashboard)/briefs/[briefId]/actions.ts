@@ -88,7 +88,7 @@ export async function saveBriefBody({
     })
     .where(and(eq(briefs.id, briefId), eq(briefs.tenantId, tenantId)));
 
-  revalidatePath("/briefs");
+  revalidatePath("/board");
   revalidatePath(`/briefs/${briefId}`);
 
   return { ok: true };

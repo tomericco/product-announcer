@@ -46,7 +46,7 @@ const DISMISS_REASON_OPTIONS = DISMISS_REASON_VALUES.map((value) => ({
  * the two buttons in its `CardAction` slot and the reason picker in its
  * `CardFooter`, while the editor puts the buttons in its sticky header and
  * the picker in a panel below it. The card is gone (row-level decisions were
- * removed — see `/briefs`'s list rows in `briefs-list.tsx`), but the hook
+ * removed along with the `/briefs` list itself), but the hook
  * stayed split out this way rather than folded back into the editor, so
  * there remains exactly one implementation of "what dismissing a brief asks
  * for and what accepting it does next" if another caller ever needs it.
@@ -111,7 +111,7 @@ export function useBriefDecision(
         setDismissOpen(false);
         setReason("");
         setNote("");
-        // `dismissBrief` revalidates /briefs, which invalidates the cache but
+        // `dismissBrief` revalidates /board, which invalidates the cache but
         // does not push anything to the page the user is standing on. On the
         // editor route that page must go read-only the moment the brief is
         // dismissed, so ask for the re-render explicitly.

@@ -111,7 +111,7 @@ export async function acceptBrief(briefId: string): Promise<AcceptResult> {
     return { ok: false, error: "This brief was already accepted." };
   }
 
-  revalidatePath("/briefs");
+  revalidatePath("/board");
   // The new content piece shows up in the drafts sidebar count too — without
   // this the count can lag behind an accept until something else revalidates
   // /drafts.
@@ -179,7 +179,7 @@ export async function dismissBrief(
 
   if (updated.length === 0) return { ok: false, error: "This brief was already decided." };
 
-  revalidatePath("/briefs");
+  revalidatePath("/board");
   return { ok: true };
 }
 

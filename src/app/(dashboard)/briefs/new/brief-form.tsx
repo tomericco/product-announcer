@@ -149,7 +149,7 @@ export function BriefForm({ evidence }: { evidence: EvidenceSignal[] }) {
       return;
     }
 
-    router.push("/briefs");
+    router.push("/board");
   }
 
   return (
@@ -242,7 +242,7 @@ export function BriefForm({ evidence }: { evidence: EvidenceSignal[] }) {
       {error && <p className="text-sm text-destructive">{error}</p>}
 
       <div className="flex justify-end gap-2">
-        <Button type="button" variant="outline" onClick={() => router.push("/briefs")} disabled={submitting}>
+        <Button type="button" variant="outline" onClick={() => router.push("/board")} disabled={submitting}>
           Cancel
         </Button>
         <Button type="submit" disabled={submitting || !title.trim()}>

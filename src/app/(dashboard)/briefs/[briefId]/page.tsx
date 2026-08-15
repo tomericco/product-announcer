@@ -81,11 +81,11 @@ export default async function BriefDetailPage({ params }: { params: Promise<{ br
       <div className="mx-auto w-full max-w-3xl space-y-6">
         <div className="sticky top-0 z-20 -mx-4 flex items-center justify-between bg-background px-4 py-3">
           <Link
-            href="/briefs"
+            href="/board"
             className="inline-flex items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground"
           >
             <ArrowLeft className="size-3.5" />
-            Briefs
+            Board
           </Link>
         </div>
 

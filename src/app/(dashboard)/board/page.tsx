@@ -14,7 +14,7 @@ import { Board } from "./board";
 
 /**
  * `/board`: Brief → Draft → Review → Scheduled → Published, alongside (not
- * replacing) /briefs and /drafts. The first column holds two things: real
+ * replacing) /drafts. The first column holds two things: real
  * briefs (a different table) and the pieces generating from accepted ones,
  * which is why BOARD_DISPLAY_COLUMNS is one shorter than BOARD_COLUMNS. The
  * rest are one `contentPieces.status` each.

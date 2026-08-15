@@ -201,7 +201,7 @@ describe("acceptBrief", () => {
 
     // The sidebar draft count reads /drafts, which would otherwise lag behind
     // an accept until something unrelated revalidated it.
-    expect(revalidatePath).toHaveBeenCalledWith("/briefs");
+    expect(revalidatePath).toHaveBeenCalledWith("/board");
     expect(revalidatePath).toHaveBeenCalledWith("/drafts");
   });
 
