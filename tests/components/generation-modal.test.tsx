@@ -110,6 +110,8 @@ vi.mock("@dnd-kit/core", async () => {
 
 import { Board } from "../../src/app/(dashboard)/board/board";
 import { BriefWorkspace } from "../../src/app/(dashboard)/briefs/[briefId]/brief-workspace";
+import { MAX_POLL_ATTEMPTS } from "../../src/components/generation-checklist";
+import { MIN_STEP_VISIBLE_MS } from "../../src/components/draft-progress-checklist";
 
 const BRIEF_TITLE = "How localization breaks design systems";
 const PIECE_ID = "piece-new";
@@ -317,6 +319,55 @@ describe("the board's Accept, into the modal", () => {
     }
   });
 
+  it("walks through a step the poll never sampled, holding it for its floor", async () => {
+    // The sequence above is not one the server can produce. On the real
+    // timeline (src/lib/briefs/draft.ts) `preparing` and `generating` are
+    // written a few statements apart, so a 3s poll never catches `preparing`
+    // at all: it reads `collecting`, then `generating`. Announcing only what
+    // was sampled jumps straight to the model call with `preparing`
+    // retro-marked done — the exact problem the pacing was commissioned to
+    // fix, which pacing alone cannot fix, because the client never saw the
+    // step it was supposed to hold.
+    pollReturns(STEP("collecting"), STEP("generating"), COMPLETE);
+    render(<Board {...boardProps(boardData())} />);
+
+    await acceptFromBoard();
+    expect(statusOf(modal(), "Collecting pending changes")).toBe("active");
+
+    await advance(POLL_INTERVAL_MS);
+
+    // The poll jumped. The checklist does not: the unsampled step is shown,
+    // and the model call it skipped to is still pending.
+    expect(statusOf(modal(), "Collecting pending changes")).toBe("done");
+    expect(statusOf(modal(), "Preparing brand profile & examples")).toBe("active");
+    expect(statusOf(modal(), "Generating the draft")).toBe("pending");
+
+    // Held for the full floor — one millisecond short, it is still there.
+    await advance(MIN_STEP_VISIBLE_MS - 1);
+    expect(statusOf(modal(), "Preparing brand profile & examples")).toBe("active");
+
+    await advance(1);
+    expect(statusOf(modal(), "Preparing brand profile & examples")).toBe("done");
+    expect(statusOf(modal(), "Generating the draft")).toBe("active");
+  });
+
+  it("does not walk on the first sample — a run may have started before this mounted", async () => {
+    // A board card (or a modal reopened) can meet a generation already in its
+    // model call. Walking there would replay steps that finished minutes ago,
+    // which is the dishonest version of the walk-through above.
+    pollReturns(STEP("generating"));
+    render(<Board {...boardProps(boardData())} />);
+
+    await acceptFromBoard();
+
+    expect(statusOf(modal(), "Generating the draft")).toBe("active");
+    expect(statusOf(modal(), "Collecting pending changes")).toBe("done");
+
+    // And nothing is queued behind it: waiting out a floor rewinds nothing.
+    await advance(MIN_STEP_VISIBLE_MS);
+    expect(statusOf(modal(), "Generating the draft")).toBe("active");
+  });
+
   it("offers Open draft only once the run has landed, pointing at the new piece", async () => {
     pollReturns(STEP("generating"), COMPLETE);
     render(<Board {...boardProps(boardData())} />);
@@ -352,6 +403,29 @@ describe("the board's Accept, into the modal", () => {
     expect(within(modal()).queryByRole("button", { name: "Open draft" })).not.toBeInTheDocument();
     // No timer is left holding anything back.
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("stops promising a minute once the poll has given up", async () => {
+    // A wedged piece: a step stays in flight forever and nothing terminal ever
+    // lands, so the poll exhausts its cap. The checklist says so — but the
+    // description above it used to keep saying "This takes a minute or so",
+    // because the give-up branch never told the modal anything.
+    pollReturns(STEP("generating"));
+    render(<Board {...boardProps(boardData())} />);
+
+    await acceptFromBoard();
+    expect(within(modal()).getByText(/takes a minute or so/i)).toBeInTheDocument();
+
+    // The first poll fires on mount, so the cap is reached one interval early.
+    await advance(POLL_INTERVAL_MS * MAX_POLL_ATTEMPTS);
+
+    expect(within(modal()).queryByText(/takes a minute or so/i)).not.toBeInTheDocument();
+    expect(within(modal()).getByText(/still no result/i)).toBeInTheDocument();
+    // And the two now agree, rather than contradicting each other.
+    expect(within(modal()).getByText(/taking longer than expected/i)).toBeInTheDocument();
+    expect(within(modal()).getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    // Not a landed run: nothing to open.
+    expect(within(modal()).queryByRole("button", { name: "Open draft" })).not.toBeInTheDocument();
   });
 
   it("keeps the run going when the modal is closed, and the card still reports it", async () => {

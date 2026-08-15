@@ -234,7 +234,13 @@ export function CreateBriefModal({
                   // was selected — those differ whenever `listSignals` drops
                   // something. And says out loud why Close is safe, so nobody
                   // reads it as "discard what was just made".
-                  `Built from ${outcome.usedSignalCount} ${plural(outcome.usedSignalCount, "signal", "signals")}. It's waiting in your briefs inbox — closing this won't lose it.`
+                  // "your briefs inbox" pointed at a page that no longer
+                  // exists: the pivot retired the Briefs tab, and there is no
+                  // inbox for a brief to wait in. A new brief shows up in the
+                  // board's Brief column, which is the only place to find it
+                  // again once this modal is closed — so that is what the
+                  // reassurance has to name.
+                  `Built from ${outcome.usedSignalCount} ${plural(outcome.usedSignalCount, "signal", "signals")}. It's in the board's Brief column — closing this won't lose it.`
                 : outcome.phase === "failed"
                   ? // Deliberately not "nothing was created": that holds for
                     // every `{ ok: false }` refusal (each returns before

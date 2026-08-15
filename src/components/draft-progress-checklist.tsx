@@ -96,11 +96,15 @@ function hasActiveStep<K extends string>(
  *
  * `steps` is captured once. Every caller passes a module-level constant, and a
  * checklist does not change its step list mid-run.
+ *
+ * Returns the displayed statuses, the setter, and a cancel — see
+ * `cancelPacing` below for who needs the third one and why the setter's own
+ * terminal handling isn't enough for them.
  */
 export function usePacedStatuses<K extends string>(
   steps: readonly ProgressStep<K>[],
   initial?: Record<K, StepStatus>
-): [Record<K, StepStatus>, (next: Record<K, StepStatus>) => void] {
+): [Record<K, StepStatus>, (next: Record<K, StepStatus>) => void, () => void] {
   const [displayed, setDisplayed] = useState<Record<K, StepStatus>>(
     () => initial ?? initialStepStatuses(steps)
   );
@@ -179,7 +183,28 @@ export function usePacedStatuses<K extends string>(
     [advance, show]
   );
 
-  return [displayed, showPaced];
+  /**
+   * Drop the pace in flight and everything queued behind it, leaving whatever
+   * is currently displayed exactly where it is.
+   *
+   * `showPaced` already cancels for every terminal state it can SEE, because
+   * those all arrive as a snapshot with no active step (rule 2 above). This is
+   * for the callers whose terminal state never becomes a snapshot at all:
+   * `GenerationChecklist` stops rendering the checklist outright on a landed
+   * failure, and freezes it at render time on a give-up. Neither pushes a
+   * final snapshot through the setter, so without this a queued step from the
+   * last poll would still fire afterwards — walking the checklist forward
+   * underneath a result that is already on screen.
+   */
+  const cancelPacing = useCallback(() => {
+    if (timerRef.current !== null) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    queueRef.current = [];
+  }, []);
+
+  return [displayed, showPaced, cancelPacing];
 }
 
 /**

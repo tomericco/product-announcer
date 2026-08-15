@@ -57,6 +57,20 @@ export type ChecklistDisplayState = DraftStepKey | "complete" | null;
 export type TerminalOutcome = "complete" | "failed" | "gone";
 
 /**
+ * What this checklist reports to an owner watching it: the three ways a run
+ * can LAND, plus `"stalled"` for the poll loop giving up — terminal for the
+ * loop without being terminal for the run, since a wedged piece may still be
+ * re-queued (that is what Retry is for). `null` means "back in flight", which
+ * only a successful Retry produces.
+ *
+ * `"stalled"` is deliberately NOT folded into `TerminalOutcome`. This
+ * component's own `terminal` state has to stay null through a give-up, or
+ * `shouldOfferRetry` stops offering the very Retry the give-up branch exists
+ * to show.
+ */
+export type GenerationOutcome = TerminalOutcome | "stalled";
+
+/**
  * What kind of terminal state a stopped poll landed in — only meaningful
  * once `shouldStopPolling(progress)` is already true.
  *
@@ -103,6 +117,49 @@ export function statusesForStep(currentKey: ChecklistDisplayState): Record<Draft
       currentIndex === -1 ? "pending" : index < currentIndex ? "done" : index === currentIndex ? "active" : "pending";
   }
   return statuses;
+}
+
+/**
+ * The steps to announce for a poll that observed `observed`, given the last
+ * step this client already announced.
+ *
+ * The poll SAMPLES a persisted column every `POLL_INTERVAL_MS`; it does not
+ * receive one event per transition. On the real server timeline
+ * (`src/lib/briefs/draft.ts`) `collecting`, `preparing` and `generating` are
+ * written a few statements apart — the last two milliseconds apart — so
+ * `preparing` is essentially never the value a poll happens to catch.
+ * Announcing only what was observed therefore takes the checklist from
+ * `collecting` straight to the model call with `preparing` retro-marked done:
+ * the exact jump the minimum-visible pacing was commissioned to remove, and
+ * one that pacing alone cannot fix, because a step the client never observed
+ * is a step it can never hold on screen.
+ *
+ * So the skipped steps are announced too, in order, and the pacing hook holds
+ * each of them for its floor on the way past. They are not invented: every one
+ * of them ran on the server, in this order, between the two polls. They were
+ * merely unsampled.
+ *
+ * Two cases deliberately announce `observed` on its own:
+ *
+ *   - Nothing has been announced yet. This is the first sample of this
+ *     component's life and the run may have started long before it mounted —
+ *     a board card rendering a generation begun in another tab is the normal
+ *     case, not the edge one. Walking there would replay steps that finished
+ *     minutes ago, which is the dishonest version of this.
+ *   - The observed step is not ahead of the last announced one: a repeat (the
+ *     common case — a model call spans many polls), or a key this build does
+ *     not know. Nothing to walk through either way, and `statusesForStep`
+ *     already renders an unknown key as "nothing in flight".
+ */
+export function stepsToAnnounce(
+  announced: DraftStepKey | null,
+  observed: DraftStepKey | null
+): (DraftStepKey | null)[] {
+  if (observed === null) return [null];
+  const to = DRAFT_STEPS.findIndex((step) => step.key === observed);
+  const from = announced === null ? -1 : DRAFT_STEPS.findIndex((step) => step.key === announced);
+  if (to === -1 || from === -1 || to <= from) return [observed];
+  return DRAFT_STEPS.slice(from + 1, to + 1).map((step) => step.key);
 }
 
 /**
@@ -195,16 +252,17 @@ export function shouldStopPolling(progress: GenerationProgress | null): boolean 
  */
 export function GenerationChecklist({
   contentPieceId,
-  onTerminal,
+  onOutcome,
   refreshOnTerminal = true,
 }: {
   contentPieceId: string;
   /**
-   * Fired once, when the poll loop lands on a terminal state — the seam
-   * `GenerationModal` needs to know a run finished, without a second poll of
-   * its own beside this one.
+   * Fired when the poll loop stops — with a landed outcome, or `"stalled"`
+   * when it gives up — and again with `null` if a Retry puts a run back in
+   * flight. The seam `GenerationModal` needs to keep its own description
+   * honest, without a second poll of its own beside this one.
    */
-  onTerminal?: (outcome: TerminalOutcome) => void;
+  onOutcome?: (outcome: GenerationOutcome | null) => void;
   /**
    * Whether landing also asks the surrounding page to re-read itself. True
    * for the inline consumers, whose parents render from server-fetched props
@@ -222,21 +280,28 @@ export function GenerationChecklist({
   // The latest-ref pattern: `onTerminal` is usually an inline closure, and
   // putting it in the effect's dependency list would tear down and restart
   // the poll loop (resetting `attempts` with it) on every parent render.
-  const onTerminalRef = useRef(onTerminal);
+  const onOutcomeRef = useRef(onOutcome);
   useEffect(() => {
-    onTerminalRef.current = onTerminal;
+    onOutcomeRef.current = onOutcome;
   });
   const refreshRef = useRef(refreshOnTerminal);
   useEffect(() => {
     refreshRef.current = refreshOnTerminal;
   });
-  // Paced rather than set straight through, so a run that crosses two
-  // deterministic steps between polls doesn't repaint both at once and leave
-  // the first unread. Nothing about the poll itself changes: the interval, the
-  // cap and the terminal branches are untouched, and every terminal update
-  // (complete, failed, gone, and the reset a retry does) has no "active" step,
-  // so `usePacedStatuses` paints it immediately.
-  const [statuses, showStatuses] = usePacedStatuses<DraftStepKey>(DRAFT_STEPS);
+  // Paced — but note that on THIS path the floor never bites on its own, which
+  // an earlier comment in this spot claimed it did. A poll announces at most
+  // one snapshot every POLL_INTERVAL_MS (3s), already far past the 800ms
+  // floor, so no announcement of this component's is ever held back by pacing
+  // alone. What makes the floor bite is `stepsToAnnounce`: it announces the
+  // steps a poll SKIPPED as well as the one it saw — several in a single tick
+  // — and the hook's queue then holds each of those for its floor.
+  //
+  // The poll itself is untouched: same interval, same cap, same terminal
+  // branches. Every terminal update either arrives with no "active" step (a
+  // completion, the reset a retry does) and paints at once, or cancels the
+  // walk outright via `cancelPacing` (a failure, a disappeared piece, a
+  // give-up) — never held behind a floor.
+  const [statuses, showStatuses, cancelPacing] = usePacedStatuses<DraftStepKey>(DRAFT_STEPS);
   const [terminal, setTerminal] = useState<TerminalOutcome | null>(null);
   const [gaveUp, setGaveUp] = useState(false);
   const [retrying, startRetry] = useTransition();
@@ -249,6 +314,12 @@ export function GenerationChecklist({
   // again (offering Retry again), instead of either polling forever or being
   // permanently stuck after one stall.
   const [cycle, setCycle] = useState(0);
+  // The last step ANNOUNCED to the pacing hook — not the one currently on
+  // screen, which lags it while a walk-through is in flight. `stepsToAnnounce`
+  // reads it to work out which steps a poll skipped over. A ref rather than
+  // state: nothing renders from it, and the poll must see its own previous
+  // write without waiting for a re-render.
+  const announcedRef = useRef<DraftStepKey | null>(null);
 
   useEffect(() => {
     let stopped = false;
@@ -273,8 +344,15 @@ export function GenerationChecklist({
         const outcome = terminalOutcome(result);
         setTerminal(outcome);
         // Only a genuine success renders "every step done" — see
-        // terminalOutcome's docstring for why a failure must not.
+        // terminalOutcome's docstring for why a failure must not. That
+        // snapshot has no "active" step, so it also cancels any walk-through
+        // still in flight rather than queueing behind it.
         if (outcome === "complete") showStatuses(statusesForStep("complete"));
+        // "failed" and "gone" stop rendering the checklist entirely (see the
+        // branches at the bottom), so there is no final snapshot to push
+        // through the setter — cancel the walk explicitly instead of leaving
+        // a timer to fire into a result that is already on screen.
+        else cancelPacing();
         // card.tsx / drafts/page.tsx render from server-fetched props
         // (status, generationStep, generationError) that are stale the
         // moment this poll notices the run landed — nothing else tells
@@ -285,18 +363,34 @@ export function GenerationChecklist({
         if (refreshRef.current) router.refresh();
         // Last, so the owner hears about the outcome with the checklist's own
         // state already settled.
-        onTerminalRef.current?.(outcome);
+        onOutcomeRef.current?.(outcome);
         return;
       }
 
       if (hasExceededPollLimit(attempts)) {
         stopped = true;
         clearInterval(intervalId);
+        // Freeze what is on screen. The render branch below downgrades the
+        // DISPLAYED active step to "stalled", which a walk-through still in
+        // flight would paint straight over with the next step.
+        cancelPacing();
         setGaveUp(true);
+        // Without this the modal's own outcome stayed null, so it kept saying
+        // "This takes a minute or so" directly above this checklist's "This is
+        // taking longer than expected."
+        onOutcomeRef.current?.("stalled");
         return;
       }
 
-      showStatuses(statusesForStep(result?.generationStep ?? null));
+      const observed = result?.generationStep ?? null;
+      // One call per step, all inside this tick. The pacing hook's queue is
+      // what turns them into one-at-a-time repaints (its docstring covers why
+      // it is a queue in a ref rather than a derived transform: React would
+      // otherwise batch them into only the last one).
+      for (const key of stepsToAnnounce(announcedRef.current, observed)) {
+        showStatuses(statusesForStep(key));
+      }
+      announcedRef.current = observed;
     }
 
     // Declared before use here, but not run: `poll`'s body only reads
@@ -312,7 +406,7 @@ export function GenerationChecklist({
       stopped = true;
       clearInterval(intervalId);
     };
-  }, [contentPieceId, router, cycle, showStatuses]);
+  }, [contentPieceId, router, cycle, showStatuses, cancelPacing]);
 
   /**
    * Re-queues a wedged piece and resumes polling. Both state resets are
@@ -336,11 +430,26 @@ export function GenerationChecklist({
       // Every step pending — no "active" step, so this lands at once rather
       // than waiting out the frozen cycle's pace.
       showStatuses(statusesForStep(null));
+      // The new cycle's first poll is the first sample of a fresh run: it must
+      // not be walked to from the step the previous cycle stalled on.
+      announcedRef.current = null;
       setGaveUp(false);
       setCycle((c) => c + 1);
-      // The piece is marked "collecting" again before the action returned, so
-      // the parent's own gate stays satisfied and re-renders in sync.
-      router.refresh();
+      // Back in flight, so an owner told about the stall above has to be told
+      // it is over — otherwise the modal keeps describing a stall while a run
+      // is genuinely under way again.
+      onOutcomeRef.current?.(null);
+      // Gated exactly as the terminal path is, and for the same reason.
+      // Ungated, this is precisely the destructive refresh `refreshOnTerminal`
+      // exists to suppress: on /briefs/[briefId] the brief is `accepted` by
+      // now, so re-reading the page returns its read-only branch, which
+      // unmounts BriefWorkspace — and the modal with it — mid-retry, one line
+      // under a toast saying generation restarted, with nowhere left to watch
+      // it. `GenerationModal`'s `onClose` already carries the deferred
+      // refresh. The inline consumers (board card, drafts list) still get it:
+      // the piece is marked "collecting" again before the action returned, so
+      // their own gate stays satisfied and re-renders in sync.
+      if (refreshRef.current) router.refresh();
     });
   }
 

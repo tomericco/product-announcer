@@ -11,7 +11,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { GenerationChecklist, type TerminalOutcome } from "@/components/generation-checklist";
+import { GenerationChecklist, type GenerationOutcome } from "@/components/generation-checklist";
 
 /**
  * Draft generation, shown as it happens — the same stepped modal brief
@@ -23,8 +23,8 @@ import { GenerationChecklist, type TerminalOutcome } from "@/components/generati
  * second progress system here: `contentPieces.generationStep` is persisted by
  * `generateDraftForPiece`, `GenerationChecklist` polls it, and this component
  * wraps that one poll in a dialog. It deliberately does not poll itself — the
- * checklist's `onTerminal` is the only seam added, and only so the footer
- * knows when a draft exists to open.
+ * checklist's `onOutcome` is the only seam added, and only so the footer knows
+ * when a draft exists to open and the description knows what to say.
  *
  * **Closing is not a cancel.** Generation runs in an `after()` callback with
  * no open response and no abort seam; it continues whether or not anyone is
@@ -80,7 +80,7 @@ function GenerationRun({
   contentPieceId: string;
   onClose: () => void;
 }) {
-  const [outcome, setOutcome] = useState<TerminalOutcome | null>(null);
+  const [outcome, setOutcome] = useState<GenerationOutcome | null>(null);
 
   return (
     <>
@@ -93,9 +93,15 @@ function GenerationRun({
               ? // Said out loud, because a modal over a background job is
                 // otherwise read as one you have to sit through.
                 "This takes a minute or so. Closing won't stop it — the card on the board keeps showing the progress."
-              : // "failed" and "gone" both land here; the checklist below says
-                // which, and neither leaves a draft to open.
-                "Nothing was lost — the piece is still on the board."}
+              : outcome === "stalled"
+                ? // The poll gave up; the run itself may or may not still be
+                  // alive. Anything reassuring about a minute would contradict
+                  // the checklist immediately below, which by now reads "This
+                  // is taking longer than expected" beside a Retry.
+                  "Still no result. Nothing was lost — the piece is on the board, and Retry below re-queues it."
+                : // "failed" and "gone" both land here; the checklist below
+                  // says which, and neither leaves a draft to open.
+                  "Nothing was lost — the piece is still on the board."}
         </DialogDescription>
       </DialogHeader>
 
@@ -103,7 +109,7 @@ function GenerationRun({
           suppressed and deferred to `onClose` — see `refreshOnTerminal`. */}
       <GenerationChecklist
         contentPieceId={contentPieceId}
-        onTerminal={setOutcome}
+        onOutcome={setOutcome}
         refreshOnTerminal={false}
       />
 

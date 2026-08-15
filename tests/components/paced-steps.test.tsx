@@ -40,10 +40,17 @@ function Harness<K extends string>({
   steps: readonly ProgressStep<K>[];
   script: Record<K, StepStatus>[][];
 }) {
-  const [statuses, showStatuses] = usePacedStatuses<K>(steps);
+  const [statuses, showStatuses, cancelPacing] = usePacedStatuses<K>(steps);
   return (
     <>
       <ProgressChecklist steps={steps} statuses={statuses} />
+      {/* The third return value, for callers whose terminal state never
+          arrives as a snapshot — GenerationChecklist stops rendering the
+          checklist outright on a failure, and freezes it at render time on a
+          give-up. */}
+      <button type="button" onClick={cancelPacing}>
+        cancel
+      </button>
       {script.map((group, index) => (
         <button
           key={index}
@@ -333,6 +340,33 @@ describe("usePacedStatuses — terminal states are never paced", () => {
 
     expect(statusOf("Collecting pending changes")).toBe("stalled");
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("cancels a pace outright for a caller that has no final snapshot to push", () => {
+    render(
+      <Harness
+        steps={DRAFT_STEPS}
+        script={[[inFlight(DRAFT_STEPS, "collecting"), inFlight(DRAFT_STEPS, "preparing")]]}
+      />
+    );
+
+    announce(0);
+    tick(100);
+    expect(statusOf("Collecting pending changes")).toBe("active");
+
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "cancel" }));
+    });
+
+    // Whatever was displayed stays displayed — this is a cancel, not a reset.
+    expect(statusOf("Collecting pending changes")).toBe("active");
+    expect(vi.getTimerCount()).toBe(0);
+
+    // And the queued step is gone, not merely deferred: letting it fire later
+    // would walk the checklist forward underneath a result already on screen.
+    tick(MIN_STEP_VISIBLE_MS * 2);
+    expect(statusOf("Collecting pending changes")).toBe("active");
+    expect(statusOf("Preparing brand profile & examples")).toBe("pending");
   });
 
   it("resets to all-pending at once, so a fresh run starts from a clean checklist", () => {

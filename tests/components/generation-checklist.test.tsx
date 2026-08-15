@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { DRAFT_STEPS } from "../../src/lib/drafting/draft-progress";
 import {
   statusesForStep,
+  stepsToAnnounce,
   statusesForGaveUp,
   shouldStopPolling,
   shouldOfferRetry,
@@ -64,6 +65,55 @@ describe("statusesForStep", () => {
     // never started.
     const statuses = statusesForStep("complete");
     for (const step of DRAFT_STEPS) expect(statuses[step.key]).toBe("done");
+  });
+});
+
+describe("stepsToAnnounce", () => {
+  it("walks through the steps a poll skipped over", () => {
+    // The real server timeline: `preparing` and `generating` are written
+    // milliseconds apart (src/lib/briefs/draft.ts), so a 3s poll reads
+    // `collecting` and then `generating`, never `preparing` in between.
+    expect(stepsToAnnounce("collecting", "generating")).toEqual(["preparing", "generating"]);
+  });
+
+  it("announces a single-step advance unchanged", () => {
+    expect(stepsToAnnounce("collecting", "preparing")).toEqual(["preparing"]);
+  });
+
+  it("announces the first sample alone, without replaying what came before it", () => {
+    // A board card can mount onto a run already in its model call. Those
+    // earlier steps really did happen — minutes ago, before this client
+    // existed. Walking them would be theatre, not honesty.
+    expect(stepsToAnnounce(null, "generating")).toEqual(["generating"]);
+  });
+
+  it("announces a repeated step unchanged — a model call spans many polls", () => {
+    expect(stepsToAnnounce("generating", "generating")).toEqual(["generating"]);
+  });
+
+  it("does not walk backwards", () => {
+    expect(stepsToAnnounce("generating", "collecting")).toEqual(["collecting"]);
+  });
+
+  it("passes a cleared step straight through", () => {
+    expect(stepsToAnnounce("generating", null)).toEqual([null]);
+  });
+
+  it("passes an unrecognized step key through instead of walking to nowhere", () => {
+    // A build newer than this client could persist a key DRAFT_STEPS doesn't
+    // know. statusesForStep renders it as "nothing in flight"; there is no
+    // position to walk to.
+    expect(stepsToAnnounce("collecting", "some-future-step" as never)).toEqual(["some-future-step"]);
+    expect(stepsToAnnounce("some-future-step" as never, "generating")).toEqual(["generating"]);
+  });
+
+  it("walks every intermediate step of a long jump, in order", () => {
+    expect(stepsToAnnounce("collecting", "saving")).toEqual([
+      "preparing",
+      "generating",
+      "reviewing",
+      "saving",
+    ]);
   });
 });
 
