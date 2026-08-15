@@ -873,15 +873,25 @@ export const rejectedArticles = pgTable(
 );
 
 /**
- * One row per ideation run, whatever the outcome.
+ * One row per ideation run, whatever the outcome. Written by every run, read
+ * by nothing.
  *
- * Exists because of the failure this codebase already named at
- * `src/lib/briefs/run.ts:213` — a permanently broken ideation is
+ * Exists because of the failure this codebase already named in
+ * `src/lib/briefs/run.ts` — a permanently broken ideation is
  * "indistinguishable from a genuinely quiet company: the cron reports ok, no
  * brief appears, and nothing is written anywhere." This table is the
- * "anywhere". Nothing currently reads the latest row — the inbox page that
- * once did (so an empty inbox could say which of the two it is) is gone, and
- * where that distinction surfaces next is a separate pending decision.
+ * "anywhere": these rows are the only record that a run happened at all, and
+ * the only place an ideation error gets captured (`error` below) rather than
+ * just logged to console and lost. When the agent is misbehaving, this is
+ * where a developer looks — query it directly.
+ *
+ * Nothing in the product reads it. The inbox page that once did — so an empty
+ * inbox could say which of "never run" / "ran, found nothing" / "ran and
+ * failed" it was looking at — is gone; briefs now live in the board's Brief
+ * column, and an empty column can't tell those three apart. That's a
+ * deliberate, owner-approved loss, not an oversight: run status was decided
+ * not worth surfacing anywhere in the UI. This table is left write-only on
+ * purpose, as the fallback for whoever next needs to debug a quiet agent.
  *
  * The assessment lives HERE and not on `briefs` on purpose: it describes a
  * run, not a brief, and denormalising it onto each brief would mean a run that
@@ -911,7 +921,9 @@ export const briefRuns = pgTable(
     error: text("error"),
   },
   (table) => [
-    // The inbox reads exactly one row: this tenant's most recent.
+    // Nothing in the product queries this table (see the table comment), but
+    // a developer debugging a quiet agent will still want this tenant's most
+    // recent rows fast.
     index("brief_runs_tenant_ran_at_idx").on(table.tenantId, table.ranAt),
   ]
 );

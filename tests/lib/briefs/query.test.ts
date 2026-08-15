@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { db } from "../../../src/db";
-import { tenants, briefs, briefSignals, signals, briefRuns } from "../../../src/db/schema";
-import { listBriefSignals, latestBriefRun } from "../../../src/lib/briefs/query";
+import { tenants, briefs, briefSignals, signals } from "../../../src/db/schema";
+import { listBriefSignals } from "../../../src/lib/briefs/query";
 import { seedTenant, dropTenant } from "../../helpers/fixtures";
 
 const TENANT = "Brief Query Test Tenant";
@@ -95,33 +95,5 @@ describe("listBriefSignals", () => {
     await db.insert(briefSignals).values({ briefId: brief.id, signalId: signal.id });
 
     expect(await listBriefSignals(brief.id, attacker.id, db)).toEqual([]);
-  });
-});
-
-describe("latestBriefRun", () => {
-  it("returns the most recent run for the tenant", async () => {
-    const tenant = await seedTenant(TENANT);
-    await db.insert(briefRuns).values({
-      tenantId: tenant.id,
-      assessment: "old",
-      ranAt: new Date(Date.now() - 86_400_000),
-    });
-    await db.insert(briefRuns).values({ tenantId: tenant.id, assessment: "new" });
-
-    const run = await latestBriefRun(tenant.id, db);
-    expect(run?.assessment).toBe("new");
-  });
-
-  it("returns null when the agent has never run", async () => {
-    const tenant = await seedTenant(TENANT);
-    expect(await latestBriefRun(tenant.id, db)).toBeNull();
-  });
-
-  it("does not read another tenant's run", async () => {
-    const mine = await seedTenant(TENANT);
-    const [other] = await db.insert(tenants).values({ name: TENANT }).returning();
-    await db.insert(briefRuns).values({ tenantId: other.id, assessment: "theirs" });
-
-    expect(await latestBriefRun(mine.id, db)).toBeNull();
   });
 });

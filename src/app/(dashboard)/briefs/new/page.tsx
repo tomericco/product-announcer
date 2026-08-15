@@ -75,7 +75,7 @@ export default async function NewBriefPage({
         <p className="text-sm text-muted-foreground">
           {chosen.length > 0
             ? "Write it yourself — the signals you selected are attached as evidence."
-            : "Write a brief by hand and it lands in the inbox like any other."}
+            : "Write a brief by hand and it lands on the board's Brief column like any other."}
         </p>
       </div>
 

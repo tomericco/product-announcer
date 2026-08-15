@@ -1,6 +1,6 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
-import { briefRuns, briefSignals, signals, type BriefRun, type Signal } from "@/db/schema";
+import { briefSignals, signals, type Signal } from "@/db/schema";
 
 export type CitedSignal = { id: string; title: string; url: string | null; kind: Signal["kind"] };
 
@@ -29,27 +29,4 @@ export async function listBriefSignals(
     .from(briefSignals)
     .innerJoin(signals, eq(signals.id, briefSignals.signalId))
     .where(and(eq(briefSignals.briefId, briefId), eq(signals.tenantId, tenantId)));
-}
-
-/**
- * This tenant's most recent ideation run, or null if the agent has never run.
- *
- * Written for an inbox header that would read this so an empty list could say
- * WHICH empty it is: never run, ran and judged the period quiet, or ran and
- * failed. That inbox page is gone (briefs now live in the board's Brief
- * column) and nothing currently reads this — the three-way distinction it
- * exists to draw is the subject of a separate pending decision about where
- * run status surfaces next.
- */
-export async function latestBriefRun(
-  tenantId: string,
-  database: typeof defaultDb = defaultDb
-): Promise<BriefRun | null> {
-  const [row] = await database
-    .select()
-    .from(briefRuns)
-    .where(eq(briefRuns.tenantId, tenantId))
-    .orderBy(desc(briefRuns.ranAt))
-    .limit(1);
-  return row ?? null;
 }
