@@ -14,7 +14,7 @@ import {
 import {
   ProgressChecklist,
   initialStepStatuses,
-  type StepStatus,
+  usePacedStatuses,
 } from "@/components/draft-progress-checklist";
 import { PROPOSAL_STEPS, type ProposalStepKey } from "@/lib/drafting/draft-progress";
 import { proposeAndCreateBrief } from "./propose-actions";
@@ -26,8 +26,6 @@ type Outcome =
   | { phase: "failed"; error: string };
 
 const GENERIC_FAILURE = "Couldn't create the brief. Please try again.";
-
-type Statuses = Record<ProposalStepKey, StepStatus>;
 
 function plural(count: number, one: string, many: string): string {
   return count === 1 ? one : many;
@@ -65,11 +63,24 @@ function plural(count: number, one: string, many: string): string {
  *   - `saving` is marked done together with the result, because by the time
  *     the client hears back the row exists.
  *
- * No timer paces any of this. Advancing the middle step on a `setTimeout` to
- * make the wait feel busier would be theatre, and the spec argues for three
+ * No timer *invents* any of this. Advancing the middle step on a `setTimeout`
+ * to make the wait feel busier would be theatre, and the spec argues for three
  * honest steps precisely against that. If `proposeBriefFromSignals` ever
  * grows real internal phases, they belong inside `proposing`, reported over a
  * stream the way the draft pipeline already does.
+ *
+ * What `usePacedStatuses` adds is narrower than that and does not change which
+ * steps exist or when the server hears about them: `resolving` really does
+ * happen, and it is held on screen for `MIN_STEP_VISIBLE_MS` so it can be
+ * read, instead of being over in a frame nobody sees. `proposing` is marked
+ * `slow` in PROPOSAL_STEPS and is never padded, and every terminal update
+ * below — the two failure paths and the success — lands immediately even if a
+ * pace is still running.
+ *
+ * Note the two `showStatuses` calls in the synchronous block below. React
+ * would batch two `useState` setters there into a single render and
+ * `resolving: "active"` would never exist; the hook queues through a ref
+ * instead, which is what makes the first of the pair observable at all.
  *
  * ### Why the wait can be walked out of
  *
@@ -108,7 +119,10 @@ export function CreateBriefModal({
 }) {
   const [open, setOpen] = useState(false);
   const [outcome, setOutcome] = useState<Outcome>({ phase: "idle" });
-  const [statuses, setStatuses] = useState<Statuses>(() => initialStepStatuses(PROPOSAL_STEPS));
+  const [statuses, showStatuses] = usePacedStatuses<ProposalStepKey>(
+    PROPOSAL_STEPS,
+    initialStepStatuses(PROPOSAL_STEPS)
+  );
   // The ids this run was started with, captured rather than read live off the
   // prop: the "Write it by hand" link must carry the selection the failed
   // proposal actually used, even if the list behind the modal re-renders with
@@ -137,27 +151,35 @@ export function CreateBriefModal({
     const seq = ++runSeq.current;
     setRanIds(ids);
     setOutcome({ phase: "running" });
-    setStatuses({ resolving: "active", proposing: "pending", saving: "pending" });
+    // Reset first. An all-pending snapshot has no step in flight, so the hook
+    // treats it as terminal: it drops whatever a walked-out-of run still had
+    // queued and starts this run's pacing from zero, rather than making the
+    // new run queue up behind the old one's floor. Nothing of this renders on
+    // its own — React commits only the last of the setters in this block.
+    showStatuses(initialStepStatuses(PROPOSAL_STEPS));
+    showStatuses({ resolving: "active", proposing: "pending", saving: "pending" });
     show(true);
 
     void (async () => {
       let result: Awaited<ReturnType<typeof proposeAndCreateBrief>>;
       try {
         // Inside the try, and called before the first `await` so the request
-        // is genuinely in flight when `proposing` goes active below — the two
-        // `setStatuses` calls in this synchronous block batch into one
-        // render, which is the point: "resolving" is never a state the user
-        // sits in. Outside the try, a synchronous throw here became an
-        // unhandled rejection that pinned the modal at `resolving: "active"`
-        // with no result ever arriving.
+        // is genuinely in flight when `proposing` goes active below. The two
+        // `showStatuses` calls in this synchronous block are one tick apart,
+        // which is precisely why they go through the pacing queue rather than
+        // a plain setter: React would batch two setters into a single render
+        // and "resolving" would never be a state the user could see, which is
+        // the flash-past this task exists to fix. Outside the try, a
+        // synchronous throw here became an unhandled rejection that pinned the
+        // modal at `resolving: "active"` with no result ever arriving.
         const pending = proposeAndCreateBrief(ids);
-        setStatuses({ resolving: "done", proposing: "active", saving: "pending" });
+        showStatuses({ resolving: "done", proposing: "active", saving: "pending" });
         result = await pending;
       } catch {
         // A thrown Server Function is the network/deploy failure path — it
         // carries no message worth showing, unlike an `{ ok: false }` refusal.
         if (runSeq.current !== seq) return;
-        setStatuses({ resolving: "done", proposing: "stalled", saving: "pending" });
+        showStatuses({ resolving: "done", proposing: "stalled", saving: "pending" });
         setOutcome({ phase: "failed", error: GENERIC_FAILURE });
         return;
       }
@@ -168,12 +190,12 @@ export function CreateBriefModal({
       if (!result.ok) {
         // "stalled", not "active": nothing is advancing this step anymore, so
         // it must stop spinning next to text saying the run failed.
-        setStatuses({ resolving: "done", proposing: "stalled", saving: "pending" });
+        showStatuses({ resolving: "done", proposing: "stalled", saving: "pending" });
         setOutcome({ phase: "failed", error: result.error });
         return;
       }
 
-      setStatuses({ resolving: "done", proposing: "done", saving: "done" });
+      showStatuses({ resolving: "done", proposing: "done", saving: "done" });
       setOutcome({
         phase: "created",
         briefId: result.briefId,

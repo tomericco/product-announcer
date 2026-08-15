@@ -38,6 +38,7 @@ vi.mock("../../src/app/(dashboard)/briefs/actions", () => ({
 }));
 
 import { CreateBriefModal } from "../../src/app/(dashboard)/signals/create-brief-modal";
+import { MIN_STEP_VISIBLE_MS } from "../../src/components/draft-progress-checklist";
 
 const SIGNAL_IDS = ["sig-1", "sig-2", "sig-3"];
 
@@ -80,6 +81,25 @@ async function clickCreate() {
   });
 }
 
+/**
+ * Wait out the minimum-visible floor `usePacedStatuses` holds `resolving` for.
+ *
+ * Real timers, unlike tests/components/paced-steps.test.tsx: this file drives
+ * a Base UI dialog and a pile of promise plumbing, and swapping the whole file
+ * onto fake timers to shave a second off is not a trade worth making. The
+ * pacing mechanics are pinned at the instant level in that other file; here
+ * the floor just has to elapse.
+ *
+ * Only the deterministic step needs this. Every result — success and both
+ * failure paths — is terminal and lands immediately, which is why none of the
+ * tests below waits for one.
+ */
+async function waitOutPacing() {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, MIN_STEP_VISIBLE_MS + 20));
+  });
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
 });
@@ -105,14 +125,22 @@ describe("CreateBriefModal — the run", () => {
   });
 
   // The step wiring, which is the whole reason this modal exists. Asserted at
-  // both moments the client can actually observe: the request in flight, and
-  // the result back.
+  // all three moments the client can actually observe: the request being
+  // dispatched, the request in flight, and the result back.
   it("reaches all three steps — proposing carries the wait, then everything lands done", async () => {
     const { promise, settle } = deferred();
     proposeAndCreateBrief.mockReturnValue(promise);
 
     render(<CreateBriefModal signalIds={SIGNAL_IDS} />);
     await clickCreate();
+
+    // Resolving is genuinely over by now — the request is already dispatched,
+    // in the same synchronous block the click ran. It stays on screen anyway,
+    // long enough to be read, which is the pacing this task added.
+    expect(statusOf("Resolving your signals")).toBe("active");
+    expect(statusOf("Proposing an angle")).toBe("pending");
+
+    await waitOutPacing();
 
     // Mid-flight: resolving is behind us and the model call is what's being
     // waited on, so that is the step that spins.
@@ -124,6 +152,20 @@ describe("CreateBriefModal — the run", () => {
 
     expect(statusOf("Resolving your signals")).toBe("done");
     expect(statusOf("Proposing an angle")).toBe("done");
+    expect(statusOf("Creating the brief")).toBe("done");
+  });
+
+  // The pacing's other half, end to end through the real modal: a result that
+  // beats the floor is not held behind it.
+  it("lands a result immediately even when it beats the pacing floor", async () => {
+    proposeAndCreateBrief.mockResolvedValue(created("brief-9"));
+
+    render(<CreateBriefModal signalIds={SIGNAL_IDS} />);
+    await clickCreate();
+
+    // No waitOutPacing, and no waitFor timeout to hide behind: the success is
+    // terminal, so it must already be on screen.
+    expect(linkButton("Open brief")).toHaveAttribute("href", "/briefs/brief-9");
     expect(statusOf("Creating the brief")).toBe("done");
   });
 
@@ -220,6 +262,7 @@ describe("CreateBriefModal — walking out of a stalled run", () => {
     // The abandoned run lands last, and must not overwrite the live one.
     await act(async () => first.settle({ ok: false, error: "stale failure" }));
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    await waitOutPacing();
     expect(statusOf("Proposing an angle")).toBe("active");
 
     await act(async () => second.settle(created("brief-9")));
@@ -288,6 +331,21 @@ describe("CreateBriefModal — failure", () => {
     expect(statusOf("Creating the brief")).toBe("pending");
   });
 
+  // The rule that matters most: the refusal lands while `resolving` is still
+  // being paced, and it must not be held behind the remainder of that floor.
+  // Being told the thing broke is not something to make someone wait for.
+  it("surfaces a refusal that arrives mid-pace without waiting the floor out", async () => {
+    proposeAndCreateBrief.mockResolvedValue({ ok: false, error: "No angle." });
+
+    render(<CreateBriefModal signalIds={SIGNAL_IDS} />);
+    await clickCreate();
+
+    // No waitOutPacing and no waitFor: the failure is already rendered.
+    expect(screen.getByRole("alert")).toHaveTextContent("No angle.");
+    expect(statusOf("Resolving your signals")).toBe("done");
+    expect(statusOf("Proposing an angle")).toBe("stalled");
+  });
+
   // "Never block the form": a failed proposal must not cost the user their
   // selection.
   it("offers Write it by hand, carrying the same ids to /briefs/new", async () => {
@@ -330,6 +388,7 @@ describe("CreateBriefModal — failure", () => {
     await clickCreate();
 
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    await waitOutPacing();
     expect(statusOf("Proposing an angle")).toBe("active");
 
     await act(async () => settle(created("brief-9")));

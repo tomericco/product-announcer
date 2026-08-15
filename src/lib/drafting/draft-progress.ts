@@ -11,10 +11,35 @@ export type DraftProgressEvent =
 
 export type OnDraftProgress = (event: DraftProgressEvent) => void;
 
-export const DRAFT_STEPS: { key: DraftStepKey; label: string }[] = [
+/**
+ * One row of a stepped loader.
+ *
+ * `slow` marks the step whose duration is a real model call rather than server
+ * bookkeeping — the one step a user is genuinely waiting on. It exists for
+ * `usePacedStatuses` (src/components/draft-progress-checklist.tsx), which
+ * gives every OTHER step a minimum visible duration so it can be read instead
+ * of flashing past. Never paced means never *padded*: the flag is what keeps a
+ * fast failure out of a model call from being held behind an artificial floor.
+ *
+ * It lives on the step definition rather than in a key list inside the pacing
+ * hook for three reasons. The flows deliberately do not share a key type
+ * (see `ProposalStepKey` below), so a key list would have to be a union or a
+ * per-flow map — exactly the coupling that comment argues against. `"saving"`
+ * is a key in both DRAFT_STEPS and PROPOSAL_STEPS, so a key list is ambiguous
+ * by construction. And a fourth flow declares its own slow step where it
+ * declares its steps, instead of having to find and edit a list somewhere else.
+ */
+export type ProgressStep<K extends string> = {
+  key: K;
+  label: string;
+  slow?: boolean;
+};
+
+export const DRAFT_STEPS: ProgressStep<DraftStepKey>[] = [
   { key: "collecting", label: "Collecting pending changes" },
   { key: "preparing", label: "Preparing brand profile & examples" },
-  { key: "generating", label: "Generating the draft" },
+  // The model call the whole checklist is really waiting on.
+  { key: "generating", label: "Generating the draft", slow: true },
   { key: "reviewing", label: "Reviewing against brand guidelines" },
   { key: "saving", label: "Saving the draft" },
 ];
@@ -23,9 +48,9 @@ export const DRAFT_STEPS: { key: DraftStepKey; label: string }[] = [
 // as the compose flow, minus the atomic-update "collecting" pass (it edits an
 // existing body rather than assembling one). Same step keys, so the compose
 // dialog's checklist loader renders it unchanged.
-export const EDIT_STEPS: { key: DraftStepKey; label: string }[] = [
+export const EDIT_STEPS: ProgressStep<DraftStepKey>[] = [
   { key: "preparing", label: "Preparing brand profile" },
-  { key: "generating", label: "Regenerating the update" },
+  { key: "generating", label: "Regenerating the update", slow: true },
   { key: "reviewing", label: "Reviewing against brand guidelines" },
   { key: "saving", label: "Saving the update" },
 ];
@@ -43,8 +68,10 @@ export const EDIT_STEPS: { key: DraftStepKey; label: string }[] = [
 // that a persisted DB column also happens to use.
 export type ProposalStepKey = "resolving" | "proposing" | "saving";
 
-export const PROPOSAL_STEPS: { key: ProposalStepKey; label: string }[] = [
+export const PROPOSAL_STEPS: ProgressStep<ProposalStepKey>[] = [
   { key: "resolving", label: "Resolving your signals" },
-  { key: "proposing", label: "Proposing an angle" },
+  // `proposeBriefForSelection`'s single `generateObject` call is nearly the
+  // whole wait — see the pacing note in create-brief-modal.tsx.
+  { key: "proposing", label: "Proposing an angle", slow: true },
   { key: "saving", label: "Creating the brief" },
 ];

@@ -4,7 +4,11 @@ import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { ProgressChecklist, type StepStatus } from "@/components/draft-progress-checklist";
+import {
+  ProgressChecklist,
+  usePacedStatuses,
+  type StepStatus,
+} from "@/components/draft-progress-checklist";
 import { DRAFT_STEPS, type DraftStepKey } from "@/lib/drafting/draft-progress";
 // Type-only: GenerationProgress lives in a module with a top-level `db`
 // import, and Next does not tree-shake an unused runtime import out of a
@@ -190,7 +194,13 @@ export function shouldStopPolling(progress: GenerationProgress | null): boolean 
  */
 export function GenerationChecklist({ contentPieceId }: { contentPieceId: string }) {
   const router = useRouter();
-  const [step, setStep] = useState<ChecklistDisplayState>(null);
+  // Paced rather than set straight through, so a run that crosses two
+  // deterministic steps between polls doesn't repaint both at once and leave
+  // the first unread. Nothing about the poll itself changes: the interval, the
+  // cap and the terminal branches are untouched, and every terminal update
+  // (complete, failed, gone, and the reset a retry does) has no "active" step,
+  // so `usePacedStatuses` paints it immediately.
+  const [statuses, showStatuses] = usePacedStatuses<DraftStepKey>(DRAFT_STEPS);
   const [terminal, setTerminal] = useState<TerminalOutcome | null>(null);
   const [gaveUp, setGaveUp] = useState(false);
   const [retrying, startRetry] = useTransition();
@@ -228,7 +238,7 @@ export function GenerationChecklist({ contentPieceId }: { contentPieceId: string
         setTerminal(outcome);
         // Only a genuine success renders "every step done" — see
         // terminalOutcome's docstring for why a failure must not.
-        if (outcome === "complete") setStep("complete");
+        if (outcome === "complete") showStatuses(statusesForStep("complete"));
         // card.tsx / drafts/page.tsx render from server-fetched props
         // (status, generationStep, generationError) that are stale the
         // moment this poll notices the run landed — nothing else tells
@@ -247,7 +257,7 @@ export function GenerationChecklist({ contentPieceId }: { contentPieceId: string
         return;
       }
 
-      setStep(result?.generationStep ?? null);
+      showStatuses(statusesForStep(result?.generationStep ?? null));
     }
 
     // Declared before use here, but not run: `poll`'s body only reads
@@ -263,7 +273,7 @@ export function GenerationChecklist({ contentPieceId }: { contentPieceId: string
       stopped = true;
       clearInterval(intervalId);
     };
-  }, [contentPieceId, router, cycle]);
+  }, [contentPieceId, router, cycle, showStatuses]);
 
   /**
    * Re-queues a wedged piece and resumes polling. Both state resets are
@@ -284,7 +294,9 @@ export function GenerationChecklist({ contentPieceId }: { contentPieceId: string
         return;
       }
       toast.success("Generation restarted");
-      setStep(null);
+      // Every step pending — no "active" step, so this lands at once rather
+      // than waiting out the frozen cycle's pace.
+      showStatuses(statusesForStep(null));
       setGaveUp(false);
       setCycle((c) => c + 1);
       // The piece is marked "collecting" again before the action returned, so
@@ -305,8 +317,6 @@ export function GenerationChecklist({ contentPieceId }: { contentPieceId: string
   if (terminal === "gone") {
     return null;
   }
-
-  const statuses = statusesForStep(step);
 
   return (
     <div>
