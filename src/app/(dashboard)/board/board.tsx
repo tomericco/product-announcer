@@ -388,6 +388,26 @@ export function Board({
                   </Link>
                 )}
 
+                {/* The hand-written-from-scratch path recovered from the
+                    deleted /briefs list page (see `NewBriefAction` in that
+                    page's history) — `/briefs/new` with no `?signals=` is its
+                    own zero-signal branch, and without a link somewhere the
+                    only route to it was the selection bar's failure branch on
+                    /signals. Lives on the Brief column specifically, not the
+                    board header, because it's an action on this column's
+                    contents, not the whole board. */}
+                {column === BRIEF_COLUMN && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="w-full"
+                    render={<Link href="/briefs/new" />}
+                  >
+                    New brief
+                  </Button>
+                )}
+
+
                 {visible.length === 0 ? (
                   <p className="px-1 py-2 text-xs text-muted-foreground">No cards.</p>
                 ) : (

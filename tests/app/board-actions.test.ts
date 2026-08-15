@@ -158,9 +158,10 @@ describe("acceptBriefCard", () => {
     expect(after.status).toBe("accepted");
     expect(after.contentPieceId).toBe(result.contentPieceId);
 
-    // acceptBrief revalidates /briefs and /drafts itself; the board wrapper
-    // adds /board on top, since acceptBrief has no reason to know the board
-    // exists.
+    // acceptBrief revalidates /board and /drafts itself; the board wrapper
+    // is redundant with that /board call, kept anyway since acceptBrief has
+    // no reason to know the board exists and shouldn't be trusted to keep
+    // revalidating it.
     expect(revalidatePath).toHaveBeenCalledWith("/board");
   });
 

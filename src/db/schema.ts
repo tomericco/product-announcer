@@ -879,8 +879,9 @@ export const rejectedArticles = pgTable(
  * `src/lib/briefs/run.ts:213` — a permanently broken ideation is
  * "indistinguishable from a genuinely quiet company: the cron reports ok, no
  * brief appears, and nothing is written anywhere." This table is the
- * "anywhere". The inbox reads the latest row so an empty inbox can say which
- * of the two it is.
+ * "anywhere". Nothing currently reads the latest row — the inbox page that
+ * once did (so an empty inbox could say which of the two it is) is gone, and
+ * where that distinction surfaces next is a separate pending decision.
  *
  * The assessment lives HERE and not on `briefs` on purpose: it describes a
  * run, not a brief, and denormalising it onto each brief would mean a run that

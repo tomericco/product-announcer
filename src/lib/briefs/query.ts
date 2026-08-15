@@ -34,9 +34,12 @@ export async function listBriefSignals(
 /**
  * This tenant's most recent ideation run, or null if the agent has never run.
  *
- * The inbox header reads this so an empty list can say WHICH empty it is: never
- * run, ran and judged the period quiet, or ran and failed. Without it those
- * three render identically — the failure `run.ts:246` already warns about.
+ * Written for an inbox header that would read this so an empty list could say
+ * WHICH empty it is: never run, ran and judged the period quiet, or ran and
+ * failed. That inbox page is gone (briefs now live in the board's Brief
+ * column) and nothing currently reads this — the three-way distinction it
+ * exists to draw is the subject of a separate pending decision about where
+ * run status surfaces next.
  */
 export async function latestBriefRun(
   tenantId: string,

@@ -314,6 +314,24 @@ describe("the Brief column", () => {
     expect(within(card).getByText("0.82")).toBeInTheDocument();
   });
 
+  // The hand-written-from-scratch path (`/briefs/new` with no `?signals=`)
+  // had no UI entry point after the standalone /briefs list was deleted —
+  // the only remaining link to it carried `?signals=` and only rendered on
+  // the create-brief modal's failure branch. This is the affordance that
+  // closes that gap; it must not depend on there being any cards to show,
+  // agent-proposed or otherwise.
+  it("offers a route to /briefs/new that doesn't require picking signals first", () => {
+    renderBoard({ board: boardData({ briefs: [], brief: [] }) });
+
+    // Rendered as a `Button` with `render={<Link .../>}` (see board.tsx and
+    // the other Button-wrapped links in this file, e.g. "Accept brief") —
+    // Base UI's Button stamps `role="button"` on the underlying anchor, so
+    // this queries by that role rather than "link".
+    const column = columnNamed("Brief");
+    const link = within(column).getByRole("button", { name: "New brief" });
+    expect(link).toHaveAttribute("href", "/briefs/new");
+  });
+
   // The Generating column is gone: a piece mid-generation belongs beside the
   // brief it came from, and merging the two removed the drop target that
   // made acceptance a drag.
