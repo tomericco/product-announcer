@@ -81,3 +81,31 @@ export function isBlankBriefBody(body: string): boolean {
 /** The message both writers report when {@link isBlankBriefBody} refuses. */
 export const EMPTY_BRIEF_BODY_ERROR =
   "A brief needs a body — it is the commission the draft is written from.";
+
+/**
+ * The skeleton a hand-written brief starts from: exactly the headings
+ * {@link renderBriefBody} emits, in the same order, so a hand-written brief
+ * and a proposed one are indistinguishable downstream — `briefBody`'s
+ * fallback semantics stay coherent whichever way a brief's body arrived.
+ *
+ * Kept beside `renderBriefBody` rather than inlined in the `/briefs/new`
+ * page: if the renderer's headings ever change, this must move with them,
+ * and colocation is what makes that obvious. See `body.test.ts`, which
+ * derives its expected headings from `renderBriefBody`'s own output rather
+ * than a second hardcoded copy, so the two cannot silently drift apart.
+ */
+export const BRIEF_TEMPLATE = `## Angle
+
+
+
+## Why now
+
+
+
+## Key points
+
+-
+
+## Audience
+
+`;

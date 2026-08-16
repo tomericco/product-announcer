@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../src/db";
 import { tenants, briefs, briefSignals, signals } from "../../src/db/schema";
-import { renderBriefBody } from "../../src/lib/briefs/body";
+import { renderBriefBody, EMPTY_BRIEF_BODY_ERROR } from "../../src/lib/briefs/body";
 
 const TENANT = "New Brief Actions Test Tenant";
 let currentTenantId = "";
@@ -202,5 +202,63 @@ describe("createManualBrief", () => {
     // and they may not have selected anything. That must still save.
     const result = await createManualBrief({ ...FORM, signalIds: [] });
     expect(result.ok).toBe(true);
+  });
+
+  describe("with an explicit body (the markdown editor path)", () => {
+    it("stores that body verbatim, not the fields rendered", async () => {
+      await seedTenant();
+      const handWritten = "# Not what renderBriefBody would produce\n\nFree-form prose.";
+
+      const result = await createManualBrief({ ...FORM, body: handWritten, signalIds: [] });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const [brief] = await db.select().from(briefs).where(eq(briefs.id, result.briefId));
+      expect(brief.body).toBe(handWritten);
+      // Proof it wasn't rendered from the fields: FORM's fields render to
+      // something else entirely, and that is not what got stored.
+      expect(brief.body).not.toBe(
+        renderBriefBody({
+          angle: FORM.angle,
+          whyNow: FORM.whyNow,
+          keyPoints: FORM.keyPoints,
+          audience: FORM.audience,
+        })
+      );
+    });
+
+    it("is refused when blank/whitespace-only, exactly as a rendered blank body is", async () => {
+      const tenant = await seedTenant();
+
+      const result = await createManualBrief({ ...FORM, body: "   \n\t  ", signalIds: [] });
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe(EMPTY_BRIEF_BODY_ERROR);
+      expect(await db.select().from(briefs).where(eq(briefs.tenantId, tenant.id))).toHaveLength(0);
+    });
+
+    it("leaves the omitted-body path unchanged: it still renders from fields", async () => {
+      // Not a new assertion so much as a check that adding the optional
+      // `body` parameter didn't disturb the existing default — the suite's
+      // "stores a rendered body equal to renderBriefBody of its own fields"
+      // test above already covers this input by input, this just states it
+      // once more, explicitly, next to the explicit-body tests.
+      await seedTenant();
+
+      const result = await createManualBrief({ ...FORM, signalIds: [] });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const [brief] = await db.select().from(briefs).where(eq(briefs.id, result.briefId));
+      expect(brief.body).toBe(
+        renderBriefBody({
+          angle: brief.angle,
+          whyNow: brief.whyNow,
+          keyPoints: brief.keyPoints,
+          audience: brief.audience,
+        })
+      );
+    });
   });
 });

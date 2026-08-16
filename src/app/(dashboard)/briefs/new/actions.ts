@@ -36,6 +36,18 @@ export type ManualBriefInput = {
    * is a model's proposal nobody has read yet. See the doc comment below.
    */
   expiresAt?: Date | null;
+  /**
+   * The document body, written directly (the markdown editor path). When
+   * given, it is stored verbatim and the structured fields below are not
+   * rendered into it at all — they still get written to their own NOT NULL
+   * columns, just not consulted for `body`. When omitted, behaviour is
+   * unchanged: `body` is `renderBriefBody`'d from `angle`/`whyNow`/
+   * `keyPoints`/`audience`, exactly as before this field existed.
+   *
+   * Either way there is exactly one insert and one blank-body guard below —
+   * see the comment on that guard for why a second one must never appear.
+   */
+  body?: string;
 };
 
 export type CreateManualBriefResult = { ok: true; briefId: string } | { ok: false; error: string };
@@ -98,14 +110,21 @@ export async function createManualBrief(input: ManualBriefInput): Promise<Create
   const whyNow = input.whyNow.trim();
   const audience = input.audience?.trim() || null;
   const keyPoints = input.keyPoints;
-  const body = renderBriefBody({ angle, whyNow, keyPoints, audience });
+  // The one insert path's one body value, however it arrived: verbatim when
+  // the caller wrote it directly (the markdown editor), rendered from the
+  // structured fields when it didn't (today's field-by-field form). Both
+  // feed the same guard immediately below and the same `.insert()` — see the
+  // comment on `body` in `ManualBriefInput` for why there must not be a
+  // second insert path or a second guard for the explicit case.
+  const body = input.body ?? renderBriefBody({ angle, whyNow, keyPoints, audience });
 
   // The same guard `saveBriefBody` applies, from the same module — this action
   // is the OTHER writer of `briefs.body` and was unguarded. Only `title` is
   // validated above, and the form gates its submit button on the title alone,
   // so angle/why-now/key-points/audience can all arrive blank; `renderBriefBody`
   // then returns "" and stored "" — not null — which is the one value
-  // `briefBody`'s fallback cannot rescue (see the module).
+  // `briefBody`'s fallback cannot rescue (see the module). An explicit `body`
+  // that is blank or whitespace-only hits this exact same guard.
   //
   // Refused rather than stored as null. Null would only re-run the very
   // renderer that just produced "" from these same fields, so the fallback

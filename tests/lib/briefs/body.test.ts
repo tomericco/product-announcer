@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { renderBriefBody, briefBody, type BriefBodyFields } from "../../../src/lib/briefs/body";
+import { renderBriefBody, briefBody, BRIEF_TEMPLATE, type BriefBodyFields } from "../../../src/lib/briefs/body";
+
+/** Every `## Heading` line, in order — the shape both sides of the drift check share. */
+function headings(markdown: string): string[] {
+  return markdown.match(/^## .+$/gm) ?? [];
+}
 
 const fullFields: BriefBodyFields = {
   angle: "Ship the new export flow as the headline.",
@@ -75,6 +80,18 @@ describe("renderBriefBody", () => {
     // doesn't grow a `title` by accident.
     expect(body).not.toContain("Ship the new export flow as the headline.\nShip");
     expect(Object.keys(fullFields)).not.toContain("title");
+  });
+});
+
+describe("BRIEF_TEMPLATE", () => {
+  it("contains exactly the headings renderBriefBody emits, in the same order", () => {
+    // Derived from the renderer's own output, not a hardcoded copy of the
+    // headings — that's the only way this test can catch the template and
+    // the renderer drifting apart, which is the one failure worth testing
+    // here. `fullFields` has every field populated so all four sections
+    // render; anything renderBriefBody would ever emit a heading for must
+    // show up here.
+    expect(headings(BRIEF_TEMPLATE)).toEqual(headings(renderBriefBody(fullFields)));
   });
 });
 
