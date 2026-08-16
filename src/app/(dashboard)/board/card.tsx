@@ -9,15 +9,6 @@ import { useDraggable } from "@dnd-kit/core";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogClose,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import type { BoardBriefCard, BoardCard as BoardCardType } from "@/lib/content/board";
@@ -28,7 +19,7 @@ import type { WorkspaceMember } from "@/lib/workspace/members";
 // value from a server *module* crosses the boundary; this is a Server
 // Function reference, which is how Next.js expects client code to invoke one.
 import { generateDraft } from "../briefs/actions";
-import { assignCard, acceptBriefCard } from "./actions";
+import { assignCard } from "./actions";
 import { GenerationChecklist } from "@/components/generation-checklist";
 
 // The scheduled badge must show the piece's LOCAL wall-clock time (the
@@ -72,28 +63,22 @@ type Props = {
   card: BoardCardType | BoardBriefCard;
   members: WorkspaceMember[];
   /** False for a piece mid-generation (no drag out — Generate is its only
-   * exit) and for `published` (terminal, read-only). Always false for a
-   * brief, which is not a move target of anything and whose only exit is
-   * Accept — the board passes it per card, since one column holds both. */
+   * exit) and for `published` (terminal, read-only). True for a brief, whose
+   * one exit is a drag onto Draft — the board passes it per card, since the
+   * two kinds are drag-eligible under different rules. */
   draggable: boolean;
   /** Called after a successful generation so the board can pick up the
    * piece's new status and body — `generateDraft` only revalidates /drafts
    * and /drafts/[id], not /board. Unused by the brief branch. */
   onGenerated: () => void;
-  /** Called after a successful acceptance with the id of the piece it
-   * created, so the board re-reads (the brief is replaced by that piece) and
-   * opens the generation modal on it. The modal is the BOARD's to render, not
-   * this card's: the re-read removes this card, and a modal mounted here
-   * would be unmounted with it. Unused by the piece branch. */
-  onAccepted: (contentPieceId: string) => void;
   /** Unused by the brief branch — a brief has no assignee. */
   onAssigned: (userId: string | null) => void;
 };
 
 /** Dispatches on the card's kind. See `Props.card`. */
-export function BoardCardItem({ card, members, draggable, onGenerated, onAccepted, onAssigned }: Props) {
+export function BoardCardItem({ card, members, draggable, onGenerated, onAssigned }: Props) {
   if (card.kind === "brief") {
-    return <BriefCardItem card={card} onAccepted={onAccepted} />;
+    return <BriefCardItem card={card} draggable={draggable} />;
   }
   return (
     <PieceCardItem
@@ -107,123 +92,95 @@ export function BoardCardItem({ card, members, draggable, onGenerated, onAccepte
 }
 
 /**
- * A brief card: a commission that has not been accepted yet. Same chrome as
- * a piece card (linked title, badge row, one action button) rather than a
- * second visual language — only the badges differ, and the title links to
- * the brief editor at `/briefs/[briefId]`, not to a draft that does not
- * exist yet.
- *
- * It does not drag. It shares the Brief column with the pieces generating
- * from already-accepted briefs, and a drag within one column cannot mean
- * "accept", so Accept is a button here — the same shape as Generate on the
- * piece card below, except this one is one click away from a model call and
- * an irreversible status flip with no un-accept path, so it does not fire
- * on that first click. An earlier plan put Accept directly on this row and a
- * later spec deliberately moved it into the editor instead, reasoning that
- * "a row-level Accept lets you accept a brief you never opened" — see
- * `briefs-list.tsx`. Putting the button back on the board reopens exactly
- * that hazard unless the click itself asks first, which is what the dialog
- * below is for: it names the brief, says the action can't be undone, and
- * only THEN runs the same request-report-refetch shape the piece card's
- * Generate button uses below (report a refusal, let the board re-read the
- * server rather than guessing at the result — the piece acceptance creates
- * does not exist client-side, so there is nothing honest to render
- * optimistically anyway).
- *
- * Reuses the repo's confirm-dialog shape (`draft-row-menu.tsx`'s "Publish
- * this update?" / "Delete this draft?", the same `Dialog` primitive this
- * board already uses for its own "Schedule this piece" step below) rather
- * than `brief-decision.tsx`'s dismiss flow — that one is an inline
- * open/close panel built to collect a reason, which this action doesn't
- * take, not a yes/no confirmation.
- *
- * The confirmation now leads into the board's `GenerationModal` rather than
- * dismissing to an inline checklist. Both still exist and neither is
- * redundant: the modal is for the person who just clicked Accept, and the
- * inline checklist on the piece card is for everyone else — another tab, or
- * the same one after the modal was closed.
+ * Shared by both card kinds: the same small grip that owns the drag, so a
+ * card is never picked up by its title link or its assignee select. Rendered
+ * only when the card is actually draggable — a handle for a drag that cannot
+ * happen is worse than no handle.
  */
-function BriefCardItem({
-  card,
-  onAccepted,
+function DragHandle({
+  title,
+  attributes,
+  listeners,
 }: {
-  card: BoardBriefCard;
-  onAccepted: (contentPieceId: string) => void;
+  title: string;
+  /** Taken straight off `useDraggable` rather than restated, so this cannot
+   * drift from whatever the library hands back. */
+  attributes: ReturnType<typeof useDraggable>["attributes"];
+  listeners: ReturnType<typeof useDraggable>["listeners"];
 }) {
-  const [accepting, startAccept] = useTransition();
-  const [confirmOpen, setConfirmOpen] = useState(false);
+  return (
+    <button
+      type="button"
+      className="mt-0.5 shrink-0 cursor-grab touch-none text-muted-foreground hover:text-foreground active:cursor-grabbing"
+      aria-label={`Move ${title}`}
+      {...attributes}
+      {...listeners}
+    >
+      <GripVertical className="size-4" />
+    </button>
+  );
+}
 
-  function handleAccept() {
-    startAccept(async () => {
-      // Unlike `generateDraft`, this one is wrapped: acceptance is not
-      // repeatable (the brief flips to `accepted` and a generation fires),
-      // so a thrown rejection — an expired session, a DB blip — must not
-      // leave the click silent and the user clicking again.
-      try {
-        const result = await acceptBriefCard(card.id);
-        if (!result.ok) {
-          toast.error(result.error);
-          return;
-        }
-        toast.success("Brief accepted. Generating the draft…");
-        setConfirmOpen(false);
-        // The brief is gone from readBoard now and the new piece is in this
-        // same column; the refetch is what swaps one for the other. The id
-        // rides along so the board can open the generation modal on the piece
-        // that was just created — this card is about to stop existing, so it
-        // cannot show that itself.
-        onAccepted(result.contentPieceId);
-      } catch (err) {
-        toast.error(
-          err instanceof Error ? err.message : "Something went wrong. The brief wasn't accepted."
-        );
+/**
+ * A brief card: a commission that has not been accepted yet. Same chrome as
+ * a piece card (grip, linked title, badge row) rather than a second visual
+ * language — only the badges differ, and the title links to the brief editor
+ * at `/briefs/[briefId]`, not to a draft that does not exist yet.
+ *
+ * **It drags, and Draft is the only place it can go.** That is the whole
+ * acceptance gesture now: the Accept button this card used to carry is gone,
+ * so there is exactly one way to spend the model call rather than two. The
+ * refusal is not implemented here — the board disables every other column's
+ * `useDroppable` while a brief is in hand (`canDrop` in board.tsx), which is
+ * the same mechanism the piece moves already use, and `collision.ts` is what
+ * makes a release outside the one enabled column resolve to nothing.
+ *
+ * The confirmation, the acceptance call and the generation modal all live on
+ * the board too, not here: accepting removes this card, so anything mounted
+ * inside it would be torn down by the very refetch that proves the accept
+ * worked. (See `pendingAccept` in board.tsx, which also carries the note on
+ * why a confirmation still stands behind a deliberate gesture.)
+ */
+function BriefCardItem({ card, draggable }: { card: BoardBriefCard; draggable: boolean }) {
+  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
+    id: card.id,
+    disabled: !draggable,
+  });
+
+  const style = transform
+    ? {
+        transform: `translate3d(${transform.x}px, ${transform.y}px, 0)`,
+        position: "relative" as const,
+        zIndex: 20,
       }
-    });
-  }
+    : undefined;
 
   return (
-    <Card size="sm">
-      <CardContent className="space-y-2">
-        <Link
-          href={`/briefs/${card.id}`}
-          className="block truncate text-sm font-medium hover:underline"
-        >
-          {card.title}
-        </Link>
+    <div ref={setNodeRef} style={style} className={cn(isDragging && "opacity-40")}>
+      <Card size="sm">
+        <CardContent className="space-y-2">
+          <div className="flex items-start gap-1.5">
+            {draggable && (
+              <DragHandle title={card.title} attributes={attributes} listeners={listeners} />
+            )}
+            <Link
+              href={`/briefs/${card.id}`}
+              className="min-w-0 flex-1 truncate text-sm font-medium hover:underline"
+            >
+              {card.title}
+            </Link>
+          </div>
 
-        <div className="flex flex-wrap items-center gap-1.5">
-          {/* `briefs.contentType` and `contentPieces.type` are the same
-              pg enum, so the label map above covers both. */}
-          <Badge variant="secondary">{CONTENT_TYPE_LABEL[card.contentType]}</Badge>
-          {/* Same two-decimal form the old /briefs inbox rows used. */}
-          <Badge variant="outline">{card.score.toFixed(2)}</Badge>
-        </div>
-
-        <Button type="button" size="sm" className="w-full" onClick={() => setConfirmOpen(true)}>
-          Accept brief
-        </Button>
-      </CardContent>
-
-      <Dialog
-        open={confirmOpen}
-        onOpenChange={(next) => !next && !accepting && setConfirmOpen(false)}
-      >
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Generate a draft from &ldquo;{card.title}&rdquo;?</DialogTitle>
-            <DialogDescription>This creates a draft and can&apos;t be undone.</DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <DialogClose render={<Button type="button" variant="ghost" disabled={accepting} />}>
-              Cancel
-            </DialogClose>
-            <Button type="button" onClick={handleAccept} disabled={accepting}>
-              {accepting ? "Generating…" : "Generate draft"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </Card>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {/* `briefs.contentType` and `contentPieces.type` are the same
+                pg enum, so the label map above covers both. */}
+            <Badge variant="secondary">{CONTENT_TYPE_LABEL[card.contentType]}</Badge>
+            {/* Same two-decimal form the old /briefs inbox rows used. */}
+            <Badge variant="outline">{card.score.toFixed(2)}</Badge>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
   );
 }
 
@@ -239,7 +196,7 @@ function PieceCardItem({
   draggable,
   onGenerated,
   onAssigned,
-}: Omit<Props, "card" | "onAccepted"> & { card: BoardCardType }) {
+}: Omit<Props, "card"> & { card: BoardCardType }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: card.id,
     disabled: !draggable,
@@ -318,15 +275,7 @@ function PieceCardItem({
         <CardContent className="space-y-2">
           <div className="flex items-start gap-1.5">
             {draggable && (
-              <button
-                type="button"
-                className="mt-0.5 shrink-0 cursor-grab touch-none text-muted-foreground hover:text-foreground active:cursor-grabbing"
-                aria-label={`Move ${card.title}`}
-                {...attributes}
-                {...listeners}
-              >
-                <GripVertical className="size-4" />
-              </button>
+              <DragHandle title={card.title} attributes={attributes} listeners={listeners} />
             )}
             <Link
               href={`/drafts/${card.id}`}

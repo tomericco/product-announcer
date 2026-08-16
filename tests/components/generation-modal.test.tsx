@@ -81,9 +81,20 @@ vi.mock("../../src/app/(dashboard)/briefs/[briefId]/brief-body-editor", () => ({
   BriefBodyEditor: () => <div data-testid="body-editor" />,
 }));
 
-// dnd-kit cannot be driven in jsdom (every rect is 0×0) and no drag happens in
-// this file — this stand-in only has to let the board render. The drag rules
-// are covered in tests/components/board-briefs.test.tsx.
+// dnd-kit cannot be driven in jsdom (every rect is 0×0), so the drag that
+// starts an acceptance is fed to the board's own handlers directly here — the
+// stand-in captures them, and `acceptFromBoard` below calls them with the drop
+// already resolved to Draft. WHICH drops resolve where is a different question
+// and is covered, against the board's real collision strategy, in
+// tests/components/board-briefs.test.tsx; this file is about what the modal
+// does once one has landed.
+const dnd = vi.hoisted(() => ({
+  handlers: {} as {
+    onDragStart?: (event: unknown) => void;
+    onDragEnd?: (event: unknown) => void;
+  },
+}));
+
 vi.mock("@dnd-kit/core", async () => {
   const { createElement, Fragment } = await import("react");
   // Everything except the context, the hooks and the sensors stays real —
@@ -91,8 +102,18 @@ vi.mock("@dnd-kit/core", async () => {
   const actual = await vi.importActual<Record<string, unknown>>("@dnd-kit/core");
   return {
     ...actual,
-    DndContext: ({ children }: { children?: unknown }) =>
-      createElement(Fragment, null, children as never),
+    DndContext: ({
+      children,
+      onDragStart,
+      onDragEnd,
+    }: {
+      children?: unknown;
+      onDragStart?: (event: unknown) => void;
+      onDragEnd?: (event: unknown) => void;
+    }) => {
+      dnd.handlers = { onDragStart, onDragEnd };
+      return createElement(Fragment, null, children as never);
+    },
     useDroppable: () => ({ setNodeRef: () => {}, isOver: false }),
     useDraggable: () => ({
       attributes: {},
@@ -238,11 +259,22 @@ function statusOf(scope: HTMLElement, label: string): string | null {
   return within(scope).getByText(label).closest("li")?.getAttribute("data-status") ?? null;
 }
 
-/** Board: click Accept on the brief card, then confirm. */
-async function acceptFromBoard() {
+/** Board: drop the brief card on Draft, which is the accept gesture. */
+async function dropBriefOnDraft() {
+  // Two acts, not one: `onDragEnd` reads the `activeCard` that `onDragStart`
+  // set, and batching both into a single act would have the end handler close
+  // over the pre-start render's null.
   await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: /accept brief/i }));
+    dnd.handlers.onDragStart?.({ active: { id: "brief-1" } });
   });
+  await act(async () => {
+    dnd.handlers.onDragEnd?.({ active: { id: "brief-1" }, over: { id: "draft" } });
+  });
+}
+
+/** Board: drop the brief on Draft, then confirm. */
+async function acceptFromBoard() {
+  await dropBriefOnDraft();
   await act(async () => {
     fireEvent.click(screen.getByRole("button", { name: /generate draft/i }));
   });
@@ -267,13 +299,11 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe("the board's Accept, into the modal", () => {
+describe("the board's drop onto Draft, into the modal", () => {
   it("keeps the confirmation, and opens the modal only once it is confirmed", async () => {
     render(<Board {...boardProps(boardData())} />);
 
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: /accept brief/i }));
-    });
+    await dropBriefOnDraft();
 
     // The confirmation, not the generation: nothing has been asked of the
     // server, and no poll has started.

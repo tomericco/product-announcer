@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { ArrowRight } from "lucide-react";
@@ -46,7 +46,7 @@ import { GenerationModal } from "@/components/generation-modal";
 import { Column } from "./column";
 import { BoardCardItem } from "./card";
 import { boardCollisionDetection } from "./collision";
-import { moveCard } from "./actions";
+import { moveCard, acceptBriefCard } from "./actions";
 
 // The server module's BRIEF_COLUMN, which cannot be imported here as a
 // runtime value for the reason above. The `BriefColumn` annotation is what
@@ -61,12 +61,10 @@ const COLUMN_LABEL: Record<DisplayColumn, string> = {
   // commissions awaiting a decision — get their own column; content pieces
   // in the `brief` *status* — the accept-time scaffold a piece occupies for
   // about the length of one generation — render in Draft instead, alongside
-  // finished drafts, because accepting a brief is about to become a drag
-  // onto Draft (see the plan this task implements): a piece that stayed in
-  // Brief until generation finished would make that drag look like it
-  // hadn't stuck. Brief itself is not a drop target for anything, which is
-  // why accepting a brief is (for now) a button on its card rather than a
-  // drag.
+  // finished drafts, because accepting a brief IS a drag onto Draft: a piece
+  // that stayed in Brief until generation finished would make that drag look
+  // like it hadn't stuck. Brief itself is not a drop target for anything —
+  // briefs leave this column, nothing arrives in it.
   briefs: "Brief",
   draft: "Draft",
   review: "Review",
@@ -84,11 +82,13 @@ const isPieceColumn = (column: DisplayColumn): column is Exclude<DisplayColumn, 
   column !== BRIEF_COLUMN;
 
 /**
- * Content pieces only — the brief column is not searched. A brief is not
- * draggable, so no brief id can reach here; and if one somehow did, the
- * right answer is "not found", because everything downstream of this
- * (`activeCard`, `applyMove`, `moveCard`) is the content-piece path and a
- * brief id must never enter it.
+ * Content pieces only — the brief column is deliberately not searched, even
+ * though briefs drag now. Everything downstream of this (`applyMove`,
+ * `moveCard`, `moveContentPiece`) is the content-piece path, and a brief id
+ * must never enter it: acceptance is a different transition with a different
+ * authority (`acceptBriefCard`). "Not found" is the right answer for a brief
+ * id here, which is why `findDragged` below looks briefs up separately
+ * rather than widening this.
  */
 function findCard(
   board: BoardState,
@@ -100,6 +100,17 @@ function findCard(
     if (card) return { card, column };
   }
   return null;
+}
+
+/**
+ * The card a drag just picked up, of either kind. Briefs first: they are the
+ * smaller list, and the two id spaces are disjoint (`briefs.id` vs
+ * `contentPieces.id`), so order is about cost, not correctness.
+ */
+function findDragged(board: BoardState, columns: readonly BoardColumn[], id: string): AnyCard | null {
+  const brief = board[BRIEF_COLUMN].find((b) => b.id === id);
+  if (brief) return brief;
+  return findCard(board, columns, id)?.card ?? null;
 }
 
 /**
@@ -154,13 +165,20 @@ export function Board({
    * enabled column resolve to nothing; `handleDragEnd` checks `canDrop`
    * once more on top.
    */
-  function canDrop(card: BoardCardType | null, to: DisplayColumn): boolean {
+  function canDrop(card: AnyCard | null, to: DisplayColumn): boolean {
     if (!card) return false;
     // Nothing may be dropped INTO Brief. A content piece cannot become a
-    // brief — the relationship is one-way — and the briefs already there
-    // are not draggable, so no card of either kind has business landing
-    // in this column.
+    // brief — the relationship is one-way — and a brief dropped back where
+    // it started is not a transition, so no card of either kind has
+    // business landing in this column.
     if (!isPieceColumn(to)) return false;
+    // A brief has exactly one destination, and it is not a `canMove`
+    // question: it has no `contentPieces.status` to move FROM, and
+    // acceptance is a different transition with a different authority
+    // (`acceptBriefCard` → `acceptBrief`) from the piece moves the matrix
+    // governs. Draft is where it goes because that is where the piece
+    // acceptance creates renders while it generates.
+    if (card.kind === "brief") return to === "draft";
     return canMove(card.status, to);
   }
 
@@ -176,9 +194,10 @@ export function Board({
     setBoard(initialBoard);
   }
 
-  // A piece or nothing: briefs are not draggable (acceptance is a button on
-  // the card), so a brief can never be the card being dragged.
-  const [activeCard, setActiveCard] = useState<BoardCardType | null>(null);
+  // Either kind, or nothing. A brief drags now — that is how it is accepted
+  // — so `canDrop` and `handleDragEnd` both have to branch on `kind` rather
+  // than assume a piece.
+  const [activeCard, setActiveCard] = useState<AnyCard | null>(null);
   // A drop onto "scheduled" doesn't move the card immediately — it opens
   // this picker, and the move only happens on confirm. Cancelling (or
   // navigating away) leaves the card exactly where it was, so an
@@ -192,6 +211,24 @@ export function Board({
   // below swaps the brief for the piece, and a modal mounted inside the card
   // would be torn down by the very refetch that proves the accept worked.
   const [generatingPieceId, setGeneratingPieceId] = useState<string | null>(null);
+  // A brief released over Draft, awaiting confirmation. Like `pendingSchedule`
+  // above, the drop itself is not the mutation: it opens a dialog, and
+  // cancelling leaves the brief exactly where it was.
+  //
+  // Why a confirmation at all, behind a gesture as deliberate as a drag: it
+  // was added at the owner's explicit request when Accept was a one-click
+  // button, and acceptance is still irreversible — a content piece created,
+  // the brief flipped to `accepted` with no un-accept path, and a model call
+  // spent. Whether the drag makes it redundant is the owner's call to make,
+  // not this component's; until then it stays wired to the drop.
+  //
+  // It lives HERE and not on the brief card for the same reason the
+  // generation modal does: accepting removes that card, so a dialog mounted
+  // inside it would be unmounted by the refetch that proves the accept
+  // worked. The title rides along so the dialog can name the brief after the
+  // card is gone.
+  const [pendingAccept, setPendingAccept] = useState<{ id: string; title: string } | null>(null);
+  const [accepting, startAccept] = useTransition();
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
@@ -199,8 +236,7 @@ export function Board({
   );
 
   function handleDragStart(event: DragStartEvent) {
-    const found = findCard(board, columns, String(event.active.id));
-    setActiveCard(found?.card ?? null);
+    setActiveCard(findDragged(board, columns, String(event.active.id)));
   }
 
   function handleDragCancel() {
@@ -266,6 +302,15 @@ export function Board({
     // call, not a guarantee this handler should take on trust.
     if (!canDrop(card, to)) return;
 
+    // A brief takes the acceptance path, never the move path: no optimistic
+    // patch (the piece it becomes does not exist client-side yet, so there
+    // is nothing honest to render), and no `moveCard`. canDrop above has
+    // already established `to` is Draft.
+    if (card.kind === "brief") {
+      setPendingAccept({ id: card.id, title: card.title });
+      return;
+    }
+
     // Unreachable — canDrop above already refused every non-piece column.
     // Kept so `to` narrows to a status the move path can actually write.
     if (!isPieceColumn(to)) return;
@@ -296,6 +341,42 @@ export function Board({
     void applyMove(pendingSchedule.id, "scheduled", date.toISOString()).finally(() => {
       setScheduling(false);
       setPendingSchedule(null);
+    });
+  }
+
+  /**
+   * The confirmed drop. Same request-report-refetch shape as the piece
+   * card's Generate button: report a refusal, then let the board re-read the
+   * server rather than guessing at the result.
+   */
+  function confirmAccept() {
+    if (!pendingAccept) return;
+    const briefId = pendingAccept.id;
+    startAccept(async () => {
+      // Unlike `moveCard`, acceptance is not repeatable (the brief flips to
+      // `accepted` and a generation fires), so a thrown rejection — an
+      // expired session, a DB blip — must not leave the drop silent and the
+      // user dropping again.
+      try {
+        const result = await acceptBriefCard(briefId);
+        if (!result.ok) {
+          toast.error(result.error);
+          return;
+        }
+        toast.success("Brief accepted. Generating the draft…");
+        setPendingAccept(null);
+        // Both, and in this order: the modal is what the person who just
+        // dropped the card watches, and the refetch is what swaps the brief
+        // for the piece acceptance created — with its own inline checklist —
+        // behind it, so closing the modal leaves a card still reporting the
+        // run.
+        setGeneratingPieceId(result.contentPieceId);
+        router.refresh();
+      } catch (err) {
+        toast.error(
+          err instanceof Error ? err.message : "Something went wrong. The brief wasn't accepted."
+        );
+      }
     });
   }
 
@@ -437,23 +518,16 @@ export function Board({
                       key={card.id}
                       card={card}
                       members={members}
-                      // Per card, not per column, now that one column holds
-                      // both kinds. A brief does not drag (Accept is its only
-                      // exit), nor does a piece mid-generation (Generate is
-                      // its only exit) or a published one (terminal).
+                      // Per card, not per column: the two kinds are
+                      // drag-eligible under different rules. A brief always
+                      // drags — onto Draft, which is how it is accepted. A
+                      // piece does not while mid-generation (Generate is its
+                      // only exit) or once published (terminal).
                       draggable={
-                        card.kind === "piece" && card.status !== "brief" && card.status !== "published"
+                        card.kind === "brief" ||
+                        (card.status !== "brief" && card.status !== "published")
                       }
                       onGenerated={() => router.refresh()}
-                      // Both, and in this order: the modal is what the person
-                      // who clicked Accept watches, and the refetch is what
-                      // puts the new piece — with its own inline checklist —
-                      // on the board behind it, so closing the modal leaves a
-                      // card that is still reporting the run.
-                      onAccepted={(contentPieceId) => {
-                        setGeneratingPieceId(contentPieceId);
-                        router.refresh();
-                      }}
                       onAssigned={(userId) => handleAssigned(card.id, userId)}
                     />
                   ))
@@ -493,6 +567,30 @@ export function Board({
           router.refresh();
         }}
       />
+
+      {/* The dropped brief's confirmation. Reuses the repo's confirm-dialog
+          shape (`draft-row-menu.tsx`'s "Publish this update?" / "Delete this
+          draft?", and the "Schedule this piece" step below) — see
+          `pendingAccept` for why it survives the move from button to drag. */}
+      <Dialog
+        open={pendingAccept !== null}
+        onOpenChange={(next) => !next && !accepting && setPendingAccept(null)}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Generate a draft from &ldquo;{pendingAccept?.title}&rdquo;?</DialogTitle>
+            <DialogDescription>This creates a draft and can&apos;t be undone.</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <DialogClose render={<Button type="button" variant="ghost" disabled={accepting} />}>
+              Cancel
+            </DialogClose>
+            <Button type="button" onClick={confirmAccept} disabled={accepting}>
+              {accepting ? "Generating…" : "Generate draft"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={pendingSchedule !== null} onOpenChange={(open) => !open && setPendingSchedule(null)}>
         <DialogContent>

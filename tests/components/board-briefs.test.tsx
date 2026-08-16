@@ -13,10 +13,11 @@ import type { Board as BoardData, BoardBriefCard, BoardCard } from "../../src/li
  * The Brief column holds only briefs — rows in `briefs` awaiting a decision.
  * Content pieces mid-generation (`status = "brief"`) render in Draft instead,
  * alongside finished drafts: accepting a brief creates one of these, and a
- * card that stayed in Brief until generation finished would make the coming
- * drag-to-accept look like it hadn't worked. There is no Generating column
- * and (yet) no drag path to acceptance — accepting is a button on the brief
- * card — so the drag tests here are about what the board REFUSES.
+ * card that stayed in Brief until generation finished would make the
+ * drag-to-accept look like it hadn't worked. There is no Generating column.
+ * Accepting a brief IS the drag now — onto Draft, and onto nothing else — so
+ * the drag tests here are about the one target the board offers and the four
+ * it REFUSES.
  *
  * Mocked, all of them because they are unreachable in jsdom rather than to
  * dodge an assertion:
@@ -337,8 +338,7 @@ describe("the Brief column", () => {
   it("offers a route to /briefs/new that doesn't require picking signals first", () => {
     renderBoard({ board: boardData({ briefs: [], brief: [] }) });
 
-    // Rendered as a `Button` with `render={<Link .../>}` (see board.tsx and
-    // the other Button-wrapped links in this file, e.g. "Accept brief") —
+    // Rendered as a `Button` with `render={<Link .../>}` (see board.tsx) —
     // Base UI's Button stamps `role="button"` on the underlying anchor, so
     // this queries by that role rather than "link".
     const column = columnNamed("Brief");
@@ -374,7 +374,7 @@ describe("the Brief column", () => {
   // its `useDraggable`, so this is the rule about which cards can be picked
   // up at all — asserted as the whole map, so a card silently gaining or
   // losing a drag handle shows up here.
-  it("makes brief cards non-draggable, like the generating pieces now in Draft", () => {
+  it("makes brief cards draggable, unlike the generating pieces now in Draft", () => {
     renderBoard({
       board: boardData({
         brief: [pieceCard({ id: "piece-generating", status: "brief" })],
@@ -383,19 +383,31 @@ describe("the Brief column", () => {
       }),
     });
 
-    // The brief is absent from this map entirely — it does not register a
-    // draggable at all, which is a stronger statement than registering a
-    // disabled one, and the whole map is asserted so a card silently gaining
-    // or losing a drag handle shows up here.
     expect(Object.fromEntries(harness.draggables)).toEqual({
+      // A brief drags — onto Draft, which is how it is accepted now.
+      "brief-1": true,
       // Generate is the only exit from a generating piece; Published is terminal.
       "piece-generating": false,
       "piece-draft": true,
       "piece-published": false,
     });
-    expect(harness.draggables.has("brief-1")).toBe(false);
-    // And no grip either — a handle for a drag that cannot happen.
-    expect(within(cardOf(BRIEF_TITLE)).queryByRole("button", { name: /^Move / })).not.toBeInTheDocument();
+    // And a grip to pick it up by — the same handle shape the piece cards
+    // use, which is also the keyboard path (KeyboardSensor drags from the
+    // focused handle) now that the Accept button is gone.
+    expect(
+      within(cardOf(BRIEF_TITLE)).getByRole("button", { name: `Move ${BRIEF_TITLE}` })
+    ).toBeInTheDocument();
+  });
+
+  // The button is gone: acceptance is the drag now, and leaving a one-click
+  // path beside it would be two ways to spend the same irreversible model
+  // call.
+  it("no longer offers an Accept button on the card", () => {
+    renderBoard();
+
+    expect(
+      within(cardOf(BRIEF_TITLE)).queryByRole("button", { name: /accept brief/i })
+    ).not.toBeInTheDocument();
   });
 });
 
@@ -477,41 +489,46 @@ describe("the Draft column", () => {
   });
 });
 
-/** Clicks the Accept button on the brief card. Opens the confirmation; calls nothing. */
-function clickAccept() {
-  fireEvent.click(within(cardOf(BRIEF_TITLE)).getByRole("button", { name: /accept brief/i }));
+/** The confirmation the drop opens — distinguished from the generation modal. */
+function acceptDialog(): HTMLElement {
+  return screen
+    .getAllByRole("dialog")
+    .find((d) => /can.t be undone/i.test(d.textContent ?? "")) as HTMLElement;
 }
 
 /** Confirms the open Accept dialog — the click that actually runs acceptBriefCard. */
 function confirmAccept() {
-  fireEvent.click(screen.getByRole("button", { name: /generate draft/i }));
+  fireEvent.click(within(acceptDialog()).getByRole("button", { name: /generate draft/i }));
 }
 
 /** Cancels the open Accept dialog. */
 function cancelAccept() {
-  fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
+  fireEvent.click(within(acceptDialog()).getByRole("button", { name: /cancel/i }));
 }
 
 describe("accepting a brief", () => {
-  // The row-level-Accept hazard an earlier spec deliberately designed out of
-  // the editor (see briefs-list.tsx) — a row-level Accept lets you accept a
-  // brief you never opened. Putting Accept back on the board's card
-  // reintroduces exactly that risk unless the click itself asks first.
-  it("opens a confirmation naming the brief, and does not call acceptBriefCard yet", async () => {
+  // Draft is the only column that takes a brief, and the drop is what asks.
+  // The confirmation itself is inherited from the button this replaced: it
+  // was added at the owner's explicit request when Accept was one click, and
+  // reversing that is the owner's call, not this task's.
+  it("opens a confirmation naming the brief on a drop onto Draft, and calls nothing yet", async () => {
     renderBoard();
 
-    clickAccept();
+    const { over } = await drag("brief-1", "draft");
 
+    expect(over).toBe("draft");
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByText(new RegExp(BRIEF_TITLE))).toBeInTheDocument();
     expect(within(dialog).getByText(/can.t be undone/i)).toBeInTheDocument();
     expect(acceptBriefCard).not.toHaveBeenCalled();
+    // The piece path must never see a brief id.
+    expect(moveCard).not.toHaveBeenCalled();
   });
 
   it("calls nothing when the confirmation is cancelled", async () => {
     renderBoard();
 
-    clickAccept();
+    await drag("brief-1", "draft");
     await screen.findByRole("dialog");
     cancelAccept();
 
@@ -522,7 +539,7 @@ describe("accepting a brief", () => {
   it("calls acceptBriefCard exactly once with the right brief id once confirmed", async () => {
     renderBoard();
 
-    clickAccept();
+    await drag("brief-1", "draft");
     await screen.findByRole("dialog");
     confirmAccept();
 
@@ -530,16 +547,31 @@ describe("accepting a brief", () => {
     expect(acceptBriefCard).toHaveBeenCalledWith("brief-1");
     expect(moveCard).not.toHaveBeenCalled();
     await waitFor(() => expect(toast.success).toHaveBeenCalled());
-    // Same as the Generate button beside it: the server is re-read, which is
-    // what removes the brief and brings back the piece acceptance created.
+    // Same as the Generate button on the piece cards: the server is re-read,
+    // which is what removes the brief and brings back the piece acceptance
+    // created.
     expect(refresh).toHaveBeenCalled();
+  });
+
+  // The modal the button used to open, opened by the drop instead — the
+  // person who just dropped the card watches the run here.
+  it("opens the generation modal on the piece acceptance created", async () => {
+    renderBoard();
+
+    await drag("brief-1", "draft");
+    await screen.findByRole("dialog");
+    confirmAccept();
+
+    await waitFor(() => expect(screen.getByText("Generating a draft")).toBeInTheDocument());
+    // And the confirmation itself has closed — one dialog, not two stacked.
+    expect(screen.queryByText(/can.t be undone/i)).not.toBeInTheDocument();
   });
 
   it("reports the error and leaves the card alone when acceptance is refused", async () => {
     acceptBriefCard.mockResolvedValueOnce({ ok: false, error: "This brief was already accepted." } as never);
     renderBoard();
 
-    clickAccept();
+    await drag("brief-1", "draft");
     await screen.findByRole("dialog");
     confirmAccept();
 
@@ -550,35 +582,60 @@ describe("accepting a brief", () => {
     // The dialog stays open on a refusal, so the underlying brief card is
     // (correctly) aria-hidden behind it — getByText, not getByRole, so this
     // assertion isn't just re-testing that the modal is open.
-    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(acceptDialog()).toBeInTheDocument();
     expect(screen.getByText(BRIEF_TITLE)).toBeInTheDocument();
   });
 
-  it("reports a thrown rejection rather than leaving the click silent", async () => {
+  it("reports a thrown rejection rather than leaving the drop silent", async () => {
     acceptBriefCard.mockRejectedValueOnce(new Error("Network down."));
     renderBoard();
 
-    clickAccept();
+    await drag("brief-1", "draft");
     await screen.findByRole("dialog");
     confirmAccept();
 
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith("Network down."));
     expect(refresh).not.toHaveBeenCalled();
-    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(acceptDialog()).toBeInTheDocument();
     expect(screen.getByText(BRIEF_TITLE)).toBeInTheDocument();
   });
 
-  // There is no drop target for a brief any more, and the board must not
-  // acquire one by accident: a brief released over ANY column is a no-op.
-  it.each(DISPLAY_COLUMNS)("cannot happen by dragging the brief onto %s", async (column) => {
+  // Draft is the ONLY target. Every other column refuses the brief outright:
+  // no drop offered, nothing asked, nothing called.
+  it.each(DISPLAY_COLUMNS.filter((c) => c !== "draft"))(
+    "does not happen by dragging the brief onto %s",
+    async (column) => {
+      renderBoard();
+
+      const { over } = await drag("brief-1", column);
+
+      expect(over).toBeNull();
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      expect(acceptBriefCard).not.toHaveBeenCalled();
+      expect(moveCard).not.toHaveBeenCalled();
+      expect(screen.getByRole("link", { name: BRIEF_TITLE })).toBeInTheDocument();
+    }
+  );
+
+  // The refusal above is the `disabled` flag on `useDroppable`, not a second
+  // check bolted on afterwards — asserted as the whole map so a column
+  // silently becoming a target for a brief shows up here. (Brief itself is
+  // absent from the enabled set for the same reason it is when a piece is
+  // dragged: nothing may be dropped INTO Brief.)
+  it("enables only Draft as a droppable while a brief is being dragged", () => {
     renderBoard();
 
-    const { over } = await drag("brief-1", column);
+    act(() => {
+      harness.handlers.onDragStart?.({ active: { id: "brief-1" } });
+    });
 
-    expect(over).toBeNull();
-    expect(acceptBriefCard).not.toHaveBeenCalled();
-    expect(moveCard).not.toHaveBeenCalled();
-    expect(screen.getByRole("link", { name: BRIEF_TITLE })).toBeInTheDocument();
+    expect(Object.fromEntries(harness.droppables)).toEqual({
+      briefs: false,
+      draft: true,
+      review: false,
+      scheduled: false,
+      published: false,
+    });
   });
 });
 
