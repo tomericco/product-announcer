@@ -560,10 +560,11 @@ export function Board({
         </div>
       </DndContext>
 
-      {/* Closing is not a cancel — the run continues in `after()` and the
-          card behind this keeps reporting it. The re-read on close is what
-          picks up a run that landed while the modal was open (the checklist
-          inside it deliberately does not refresh; see `refreshOnTerminal`). */}
+      {/* Closing is not a cancel — the run continues in `after()`, and the
+          card behind this keeps its "Generating…" badge, which reopens this
+          same modal. The re-read on close is what picks up a run that landed
+          while the modal was open: the checklist inside it never refreshes on
+          its own, because doing so would unmount the modal it lives in. */}
       <GenerationModal
         contentPieceId={generatingPieceId}
         onClose={() => {

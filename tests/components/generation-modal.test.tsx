@@ -458,7 +458,7 @@ describe("the board's drop onto Draft, into the modal", () => {
     expect(within(modal()).queryByRole("button", { name: "Open draft" })).not.toBeInTheDocument();
   });
 
-  it("keeps the run going when the modal is closed, and the card still reports it", async () => {
+  it("keeps the run going when the modal is closed, and the card's badge reopens it", async () => {
     pollReturns(STEP("generating"));
     const { rerender } = render(<Board {...boardProps(boardData())} />);
 
@@ -487,14 +487,28 @@ describe("the board's drop onto Draft, into the modal", () => {
     expect(generateDraft).not.toHaveBeenCalled();
     expect(moveCard).not.toHaveBeenCalled();
 
-    // And the card's own inline checklist — the thing that also covers a
-    // generation started in another tab — is still on screen and still
-    // polling, outside any dialog.
-    const card = screen.getByRole("link", { name: BRIEF_TITLE }).closest("[data-slot='card']");
-    expect(statusOf(card as HTMLElement, "Generating the draft")).toBe("active");
-    const pollsSoFar = pollGenerationProgress.mock.calls.length;
+    // The card behind it carries no loader of its own anymore — that is the
+    // whole point of this change — but it does carry the way back in: a real
+    // "Generating…" control, which is what covers both this case and a
+    // generation started in another tab.
+    const card = screen.getByRole("link", { name: BRIEF_TITLE }).closest("[data-slot='card']") as HTMLElement;
+    expect(within(card).queryByText("Generating the draft")).not.toBeInTheDocument();
+    const badge = within(card).getByRole("button", { name: /generating…/i });
+
+    // Nothing polls while no modal is open — the loader and the poll are the
+    // same thing now.
+    const pollsWhileClosed = pollGenerationProgress.mock.calls.length;
     await advance(POLL_INTERVAL_MS);
-    expect(pollGenerationProgress.mock.calls.length).toBeGreaterThan(pollsSoFar);
+    expect(pollGenerationProgress.mock.calls.length).toBe(pollsWhileClosed);
+
+    // And activating the badge puts the run back on screen, at the step it is
+    // actually on rather than at the beginning.
+    await act(async () => {
+      fireEvent.click(badge);
+    });
+    await settle();
+    expect(statusOf(modal(), "Generating the draft")).toBe("active");
+    expect(statusOf(modal(), "Collecting pending changes")).toBe("done");
   });
 });
 

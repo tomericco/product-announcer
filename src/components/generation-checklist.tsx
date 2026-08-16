@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useRef, useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -239,21 +238,29 @@ export function shouldStopPolling(progress: GenerationProgress | null): boolean 
 }
 
 /**
- * Live checklist for a card whose draft is generating. Draft generation runs
+ * Live checklist for a piece whose draft is generating. Draft generation runs
  * in an `after()` callback with no open response to stream into, so unlike
  * agent-edit-dialog.tsx's stream-driven ProgressChecklist, this one polls
  * the persisted `generationStep` column every 3s instead of consuming an
  * event stream.
  *
- * Shared by the board card, the drafts list and `GenerationModal` — all three
- * poll the same piece under the same condition (`status === "brief"` with a
- * step in flight), so this lives in `src/components/` rather than under any
- * one route.
+ * **It has exactly one mount site: `GenerationModal`.** It used to render
+ * inline on the board card, the drafts list and the draft detail page too;
+ * those surfaces now show a "Generating…" badge that opens the modal
+ * (`GeneratingBadge`), so there is one loader instead of four in various
+ * states of drift. It still lives in `src/components/` rather than beside the
+ * modal's only caller, because the modal itself is opened from four places
+ * across three routes.
+ *
+ * Two consequences of that move are load-bearing and easy to undo by
+ * accident: nothing polls this piece unless the modal is open (so no surface
+ * re-reads itself on completion — see the terminal branch), and this
+ * component never calls `router.refresh()` (so it cannot unmount the modal it
+ * is inside).
  */
 export function GenerationChecklist({
   contentPieceId,
   onOutcome,
-  refreshOnTerminal = true,
 }: {
   contentPieceId: string;
   /**
@@ -263,30 +270,13 @@ export function GenerationChecklist({
    * honest, without a second poll of its own beside this one.
    */
   onOutcome?: (outcome: GenerationOutcome | null) => void;
-  /**
-   * Whether landing also asks the surrounding page to re-read itself. True
-   * for the inline consumers, whose parents render from server-fetched props
-   * that are stale the moment a run lands (see the call below).
-   *
-   * `GenerationModal` passes false, and defers that refresh to its own close.
-   * On `/briefs/[briefId]` the refresh is destructive while the modal is
-   * open: the brief is `accepted` by then, so the re-render returns the
-   * page's read-only branch, which unmounts the workspace — and the modal
-   * with it, at the exact moment it had a finished draft to offer.
-   */
-  refreshOnTerminal?: boolean;
 }) {
-  const router = useRouter();
   // The latest-ref pattern: `onTerminal` is usually an inline closure, and
   // putting it in the effect's dependency list would tear down and restart
   // the poll loop (resetting `attempts` with it) on every parent render.
   const onOutcomeRef = useRef(onOutcome);
   useEffect(() => {
     onOutcomeRef.current = onOutcome;
-  });
-  const refreshRef = useRef(refreshOnTerminal);
-  useEffect(() => {
-    refreshRef.current = refreshOnTerminal;
   });
   // Paced — but note that on THIS path the floor never bites on its own, which
   // an earlier comment in this spot claimed it did. A poll announces at most
@@ -353,14 +343,22 @@ export function GenerationChecklist({
         // through the setter — cancel the walk explicitly instead of leaving
         // a timer to fire into a result that is already on screen.
         else cancelPacing();
-        // card.tsx / drafts/page.tsx render from server-fetched props
-        // (status, generationStep, generationError) that are stale the
-        // moment this poll notices the run landed — nothing else tells
-        // either page to re-fetch them. Without this, a successful run
-        // stays under an "Awaiting generation" badge, and a failed one never
-        // flips to "Generation failed", until an unrelated navigation
-        // happens to refresh the page.
-        if (refreshRef.current) router.refresh();
+        // No `router.refresh()` here, deliberately. This used to fire for the
+        // inline consumers (board card, drafts list) and be suppressed for the
+        // modal by a `refreshOnTerminal` flag; the inline consumers are gone,
+        // so the flag had one caller passing one value and was removed. The
+        // refresh it stood for now belongs entirely to whoever owns the modal,
+        // on close — which is where it always had to happen anyway: on
+        // /briefs/[briefId] a refresh mid-run returns the page's read-only
+        // branch and unmounts the modal at the exact moment it has a finished
+        // draft to offer.
+        //
+        // The consequence is real and worth stating: with the modal CLOSED,
+        // nothing on a surface notices a run landing. A board left open sits
+        // on a "Generating…" badge until something else refreshes it. Clicking
+        // that badge self-heals — the modal's first poll reads the terminal
+        // state, offers the draft, and refreshes on close.
+        //
         // Last, so the owner hears about the outcome with the checklist's own
         // state already settled.
         onOutcomeRef.current?.(outcome);
@@ -406,7 +404,7 @@ export function GenerationChecklist({
       stopped = true;
       clearInterval(intervalId);
     };
-  }, [contentPieceId, router, cycle, showStatuses, cancelPacing]);
+  }, [contentPieceId, cycle, showStatuses, cancelPacing]);
 
   /**
    * Re-queues a wedged piece and resumes polling. Both state resets are
@@ -439,26 +437,22 @@ export function GenerationChecklist({
       // it is over — otherwise the modal keeps describing a stall while a run
       // is genuinely under way again.
       onOutcomeRef.current?.(null);
-      // Gated exactly as the terminal path is, and for the same reason.
-      // Ungated, this is precisely the destructive refresh `refreshOnTerminal`
-      // exists to suppress: on /briefs/[briefId] the brief is `accepted` by
-      // now, so re-reading the page returns its read-only branch, which
-      // unmounts BriefWorkspace — and the modal with it — mid-retry, one line
-      // under a toast saying generation restarted, with nowhere left to watch
-      // it. `GenerationModal`'s `onClose` already carries the deferred
-      // refresh. The inline consumers (board card, drafts list) still get it:
-      // the piece is marked "collecting" again before the action returned, so
-      // their own gate stays satisfied and re-renders in sync.
-      if (refreshRef.current) router.refresh();
+      // No `router.refresh()` here either, for the same reason as the terminal
+      // path: this component only ever runs inside the modal now, and a
+      // refresh underneath an open modal is destructive. On /briefs/[briefId]
+      // the brief is `accepted` by now, so re-reading the page returns its
+      // read-only branch, which would unmount BriefWorkspace — and this modal
+      // with it — mid-retry, one line under a toast saying generation
+      // restarted, with nowhere left to watch it. Every owner's `onClose`
+      // carries the refresh instead.
     });
   }
 
-  // A landed failure or a disappeared piece — router.refresh() (above) is
-  // already on its way to replace this whole component with the parent's
-  // own "Generation failed" badge/error text, but that refetch is async and
-  // must not leave a false "all done" checklist on screen in the meantime.
-  // "gone" renders nothing: there is no id left to report anything about,
-  // and the row itself is about to disappear from the refreshed list.
+  // A landed failure or a disappeared piece. The surface behind this modal
+  // still shows whatever it last read, and will be re-read on close — but
+  // that is a moment away, and until then this must not leave a false "all
+  // done" checklist on screen. "gone" renders nothing: there is no id left to
+  // report anything about.
   if (terminal === "failed") {
     return <p className="text-xs text-destructive">Generation failed.</p>;
   }

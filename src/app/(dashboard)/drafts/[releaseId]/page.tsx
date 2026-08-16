@@ -8,7 +8,7 @@ import { requireSession } from "@/lib/workspace/session";
 import { reviewStatusLabel } from "@/lib/ai/review-status";
 import { Badge } from "@/components/ui/badge";
 import { GenerateDraftButton } from "./generate-draft-button";
-import { GenerationChecklist } from "@/components/generation-checklist";
+import { GeneratingBadge } from "@/components/generating-badge";
 import { containsCodeBlock } from "@/lib/publishing/markdown-to-html";
 import { computeReleaseDelta } from "@/lib/change-events/release-deltas";
 import { saveDraft } from "../actions";
@@ -77,38 +77,41 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
           <h1 className="font-heading text-3xl leading-[1.15] tracking-[0.015em]">
             {update.title || "Untitled draft"}
           </h1>
-          <Badge variant={!generating && update.generationError ? "destructive" : "outline"}>
-            {generating
-              ? "Generating…"
-              : update.generationError
-                ? "Generation failed"
-                : "Awaiting generation"}
-          </Badge>
+          {/* Same gate as the board card (card.tsx) and the drafts list
+              (drafts/page.tsx), and the same shared control — a generation is
+              actually in flight, not merely un-run. In flight the badge opens
+              the generation modal, which is the one place the stepped loader
+              lives now. That matters most on THIS page: accepting a brief
+              redirects straight here (briefs/[briefId]/brief-workspace.tsx,
+              via brief-decision.tsx), so it is the page the author is sitting
+              on during the one flow that reliably kicks off a background
+              generation, and a badge that only ever sat there was what the
+              inline checklist was added to fix. The row already selects every
+              column, so `generationStep` is present and tenant-scoped by the
+              query above. */}
+          {generating ? (
+            <GeneratingBadge contentPieceId={update.id} />
+          ) : (
+            <Badge variant={update.generationError ? "destructive" : "outline"}>
+              {update.generationError ? "Generation failed" : "Awaiting generation"}
+            </Badge>
+          )}
         </div>
 
-        {/* Same gate as the board card (card.tsx) and the drafts list
-            (drafts/page.tsx), and the same shared component — a generation is
-            actually in flight, not merely un-run. This page needs it MORE than
-            either of them: accepting a brief redirects straight here
-            (briefs/[briefId]/brief-workspace.tsx, via brief-decision.tsx), so
-            this is the page the author is sitting on during the one flow that
-            reliably kicks off a background generation. Without it they
-            watched a static "Awaiting generation" badge for the whole run.
-            The row already selects every column, so `generationStep` is
-            present and tenant-scoped by the query above. */}
-        {generating ? (
-          <GenerationChecklist contentPieceId={update.id} />
-        ) : update.generationError ? (
-          <div className="space-y-1 rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
-            <p className="font-medium">The last generation attempt failed.</p>
-            <p>{update.generationError}</p>
-          </div>
-        ) : (
-          <p className="text-sm text-muted-foreground">
-            This brief was accepted, but its draft hasn&apos;t been generated yet. What you see below
-            is the brief it was accepted with, not the finished copy.
-          </p>
-        )}
+        {/* The failure and never-run explanations are untouched — the badge
+            above replaced the loader, not the error state. */}
+        {!generating &&
+          (update.generationError ? (
+            <div className="space-y-1 rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
+              <p className="font-medium">The last generation attempt failed.</p>
+              <p>{update.generationError}</p>
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              This brief was accepted, but its draft hasn&apos;t been generated yet. What you see
+              below is the brief it was accepted with, not the finished copy.
+            </p>
+          ))}
 
         <pre className="rounded-md border bg-muted/30 p-4 text-sm whitespace-pre-wrap">{update.body}</pre>
 

@@ -20,7 +20,7 @@ import type { WorkspaceMember } from "@/lib/workspace/members";
 // Function reference, which is how Next.js expects client code to invoke one.
 import { generateDraft } from "../briefs/actions";
 import { assignCard } from "./actions";
-import { GenerationChecklist } from "@/components/generation-checklist";
+import { GeneratingBadge } from "@/components/generating-badge";
 
 // The scheduled badge must show the piece's LOCAL wall-clock time (the
 // spec's requirement — see the picker in board.tsx), which rules out pinning
@@ -295,16 +295,18 @@ function PieceCardItem({
                 the scaffold body is intact and Generate below offers a retry.
                 Unless it is generating right now, in which case that error is
                 the pre-model marker and not a failure at all (see
-                `generating`). */}
-            {card.status === "brief" && (
-              <Badge variant={!generating && card.generationError ? "destructive" : "outline"}>
-                {generating
-                  ? "Generating…"
-                  : card.generationError
-                    ? "Generation failed"
-                    : "Awaiting generation"}
-              </Badge>
-            )}
+                `generating`) — and the badge is a control rather than a label,
+                because the stepped loader now lives only in the modal it
+                opens. The other two states stay plain badges: there is nothing
+                in flight to watch. */}
+            {card.status === "brief" &&
+              (generating ? (
+                <GeneratingBadge contentPieceId={card.id} title={card.title} />
+              ) : (
+                <Badge variant={card.generationError ? "destructive" : "outline"}>
+                  {card.generationError ? "Generation failed" : "Awaiting generation"}
+                </Badge>
+              ))}
 
             {/* A "draft" card with generationError is a WARNING, not a
                 failure: the post-generation name scan matched something. The
@@ -326,13 +328,6 @@ function PieceCardItem({
           {card.status === "draft" && card.generationError && (
             <p className="text-xs text-muted-foreground">{card.generationError}</p>
           )}
-
-          {/* Only while a generation is actually in flight — a brief that
-              hasn't been generated yet (generationStep null, no error) shows
-              just the "Awaiting generation" badge above, not a half-lit
-              checklist. A run this card just kicked off is already covered:
-              the step is written before the action returns. */}
-          {generating && <GenerationChecklist contentPieceId={card.id} />}
 
           <Select
             value={card.assignedTo ?? "unassigned"}
@@ -361,7 +356,8 @@ function PieceCardItem({
               click DURING the run is the weaker case, since that guard is a
               read-then-act and two overlapping runs can both pass it. Removing
               the control is what makes the second one unreachable from here.
-              The checklist above stands in for it. */}
+              The "Generating…" badge above stands in for it, and opens the
+              modal that shows how far the run has got. */}
           {card.status === "brief" && !generating && (
             <Button type="button" size="sm" className="w-full" disabled={starting} onClick={handleGenerate}>
               {starting ? "Starting…" : card.generationError ? "Retry generation" : "Generate draft"}

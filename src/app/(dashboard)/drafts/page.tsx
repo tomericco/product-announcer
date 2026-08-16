@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { reviewStatusLabel } from "@/lib/ai/review-status";
 import { formatShortDate } from "@/lib/utils";
-import { GenerationChecklist } from "@/components/generation-checklist";
+import { GeneratingBadge } from "@/components/generating-badge";
 import { DraftRowMenu } from "./draft-row-menu";
 import {
   EmptyState,
@@ -91,8 +91,8 @@ export default async function DraftsPage() {
       <div className="-mx-3">
         {drafts.map((d) => (
           // The menu button can't nest inside the anchor, so the link is
-          // stretched over the whole row (including the checklist below, when
-          // it renders) and the menu sits above it as a sibling.
+          // stretched over the whole row and the menu sits above it as a
+          // sibling — as does the "Generating…" badge, which is a control too.
           <div
             key={d.id}
             className="group relative rounded-lg px-3 py-2.5 transition-colors hover:bg-muted/60"
@@ -108,23 +108,25 @@ export default async function DraftsPage() {
                   `generationError` on it is the interrupted-generation marker
                   `generateDraftForPiece` writes BEFORE the model call — a
                   description of a previous attempt's worst case, not a landed
-                  failure. Badging it "Generation failed" directly above a live
-                  checklist reported the run as broken while it was still
-                  running. The failed badge returns once the step clears with
-                  the error still set, which is the honest state. */}
-              {d.status === "brief" && (
-                <Badge
-                  variant={
-                    d.generationStep === null && d.generationError ? "destructive" : "outline"
-                  }
-                >
-                  {d.generationStep !== null
-                    ? "Generating…"
-                    : d.generationError
-                      ? "Generation failed"
-                      : "Awaiting generation"}
-                </Badge>
-              )}
+                  failure. Badging it "Generation failed" while the run was
+                  still going reported it as broken. The failed badge returns
+                  once the step clears with the error still set, which is the
+                  honest state.
+
+                  In flight, the badge is a control that opens the generation
+                  modal — the stepped loader lives there and nowhere else now.
+                  It needs `relative`, like the menu below: the row's stretched
+                  link is an absolutely-positioned sibling ABOVE every static
+                  element here, so an unpositioned control would sit under it
+                  and never receive the click. */}
+              {d.status === "brief" &&
+                (d.generationStep !== null ? (
+                  <GeneratingBadge contentPieceId={d.id} title={d.title} className="relative" />
+                ) : (
+                  <Badge variant={d.generationError ? "destructive" : "outline"}>
+                    {d.generationError ? "Generation failed" : "Awaiting generation"}
+                  </Badge>
+                ))}
               {reviewStatusLabel(d.reviewStatus) && (
                 <Badge variant={d.reviewStatus === "failed" ? "destructive" : "outline"}>
                   {reviewStatusLabel(d.reviewStatus)}
@@ -155,17 +157,6 @@ export default async function DraftsPage() {
                 </div>
               )}
             </div>
-            {/* Same condition the board card uses (column.tsx / card.tsx):
-                only while a generation is actually in flight — a brief that
-                hasn't been generated yet (generationStep null, no error)
-                shows just the badge above, not a half-lit checklist. Reuses
-                the same component the board polls so the two surfaces can
-                never drift out of sync on what "in flight" means. */}
-            {d.status === "brief" && d.generationStep !== null && (
-              <div className="relative mt-2">
-                <GenerationChecklist contentPieceId={d.id} />
-              </div>
-            )}
           </div>
         ))}
       </div>
