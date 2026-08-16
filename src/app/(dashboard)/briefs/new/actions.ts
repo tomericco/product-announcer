@@ -8,11 +8,19 @@ import { EMPTY_BRIEF_BODY_ERROR, isBlankBriefBody, renderBriefBody } from "@/lib
 import { requireSession } from "@/lib/workspace/session";
 
 /**
- * The manual brief form's shape. Mirrors `ProposedBrief` (minus
- * `evidenceSignalIds`, which is the separate `signalIds` field here) so a
- * proposal can pre-fill this form's state without any translation layer, but
- * every field is filled in by a human either way — including on the
- * degradation path, where the proposal failed and the form starts empty.
+ * `createManualBrief`'s input shape, written from two real callers with very
+ * different provenance:
+ *
+ *   - `NewBriefEditor` (`/briefs/new`), body-first: a human writes `body`
+ *     directly in the markdown editor, and everything below it —
+ *     angle/whyNow/keyPoints/audience/suggestedChannel/targetLength/
+ *     scoreRationale — is a hardcoded constant (mostly "" or null) rather than
+ *     collected from any field, because the prose in `body` IS those
+ *     sections. `score` is fixed at a neutral 0.5.
+ *   - `proposeAndCreateBrief` (`src/app/(dashboard)/signals/propose-actions.ts`),
+ *     fields-first: every field here, including `body` (rendered from the
+ *     structured ones via `renderBriefBody`), comes from a model's proposal
+ *     that no human has reviewed yet.
  */
 export type ManualBriefInput = {
   contentType: Brief["contentType"];

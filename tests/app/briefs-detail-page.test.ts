@@ -17,7 +17,7 @@ vi.mock("../../src/lib/workspace/session", () => ({
 
 import BriefDetailPage from "../../src/app/(dashboard)/briefs/[briefId]/page";
 import { BriefWorkspace } from "../../src/app/(dashboard)/briefs/[briefId]/brief-workspace";
-import { BriefEvidence } from "../../src/app/(dashboard)/briefs/[briefId]/brief-evidence";
+import { BriefEvidence } from "../../src/app/(dashboard)/briefs/brief-evidence";
 import { renderBriefBody } from "../../src/lib/briefs/body";
 
 const TENANT = "Brief Detail Page Test Tenant";

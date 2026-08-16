@@ -10,7 +10,7 @@ import { listBriefSignals } from "@/lib/briefs/query";
 import { Badge } from "@/components/ui/badge";
 import { EditorProvider } from "@/components/markdown/editor-context";
 import { BriefWorkspace } from "./brief-workspace";
-import { BriefEvidence } from "./brief-evidence";
+import { BriefEvidence } from "../brief-evidence";
 
 const CONTENT_TYPE_LABEL: Record<Brief["contentType"], string> = {
   product_update: "Product update",
@@ -28,7 +28,11 @@ function BriefBadges({ brief }: { brief: Brief }) {
   return (
     <div className="flex flex-wrap items-center gap-2">
       <Badge variant="secondary">{CONTENT_TYPE_LABEL[brief.contentType]}</Badge>
-      <Badge variant="outline">{brief.suggestedChannel}</Badge>
+      {/* A hand-written brief (`/briefs/new`) always sends "" here — there is
+          no model to have suggested a channel — and an empty bordered pill is
+          worse than no pill. `suggestedChannel` has no functional consumer;
+          this is display only. */}
+      {brief.suggestedChannel && <Badge variant="outline">{brief.suggestedChannel}</Badge>}
       <Badge variant="outline">{brief.score.toFixed(2)}</Badge>
       {brief.status !== "new" && <Badge variant="outline">{DECIDED_LABEL[brief.status]}</Badge>}
     </div>

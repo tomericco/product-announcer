@@ -1,8 +1,8 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
-import { BriefTitleField } from "./brief-title-field";
-import { BriefBodyEditor } from "./brief-body-editor";
+import { BriefTitleField } from "../brief-title-field";
+import { BriefBodyEditor } from "../brief-body-editor";
 import type { useBriefEditor } from "./use-brief-editor";
 
 /**

@@ -17,9 +17,9 @@ import {
 import type { Brief } from "@/db/schema";
 import type { CitedSignal } from "@/lib/briefs/query";
 import { GuardedLink, useUnsavedChanges } from "../../unsaved-changes";
-import { BriefBodyEditor } from "../[briefId]/brief-body-editor";
-import { BriefEvidence } from "../[briefId]/brief-evidence";
-import { BriefTitleField } from "../[briefId]/brief-title-field";
+import { BriefBodyEditor } from "../brief-body-editor";
+import { BriefEvidence } from "../brief-evidence";
+import { BriefTitleField } from "../brief-title-field";
 import { createManualBrief, type ManualBriefInput } from "./actions";
 
 /**
@@ -193,17 +193,29 @@ export function NewBriefEditor({
       // decision, and the sweep must not expire it out from under them.
     };
 
-    const result = await createManualBrief(input);
-    setSubmitting(false);
+    // `try/finally`, mirroring `useBriefEditor.save`: `createManualBrief` is a
+    // Server Action, and an unhandled throw on the server (network drop,
+    // deploy skew mid-request, a bug) surfaces as a REJECTED promise here, not
+    // a `{ ok: false }` result. Without the `finally`, that rejection would
+    // leave `submitting` stuck `true` forever — both buttons below are gated
+    // on it, Cancel included, so the entire brief the user just wrote would be
+    // trapped on a page they can't even leave.
+    try {
+      const result = await createManualBrief(input);
 
-    if (!result.ok) {
-      setError(result.error);
-      return;
+      if (!result.ok) {
+        setError(result.error);
+        return;
+      }
+
+      setSectionDirty("new-brief-title", false);
+      setSectionDirty("new-brief-body", false);
+      router.push("/board");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Something went wrong creating this brief. Try again.");
+    } finally {
+      setSubmitting(false);
     }
-
-    setSectionDirty("new-brief-title", false);
-    setSectionDirty("new-brief-body", false);
-    router.push("/board");
   }
 
   return (
@@ -253,7 +265,7 @@ export function NewBriefEditor({
       {/* The visible title is a textarea, so the document outline would
           otherwise have no heading at all — give screen readers a real h1. */}
       <h1 className="sr-only">New brief</h1>
-      <BriefTitleField defaultValue="" onChange={onTitleChange} />
+      <BriefTitleField defaultValue="" onChange={onTitleChange} autoFocus />
       <BriefBodyEditor defaultValue={BRIEF_TEMPLATE} onChange={onBodyChange} />
 
       {error && (

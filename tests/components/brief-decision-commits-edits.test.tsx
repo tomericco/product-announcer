@@ -86,7 +86,7 @@ vi.mock("../../src/app/(dashboard)/unsaved-changes", () => ({
 // The body editor is a `ssr: false` dynamic import of MDXEditor, which brings
 // a CSS import and a large browser-only bundle. The title field below is the
 // real component and is enough to make the editor dirty through the DOM.
-vi.mock("../../src/app/(dashboard)/briefs/[briefId]/brief-body-editor", () => ({
+vi.mock("../../src/app/(dashboard)/briefs/brief-body-editor", () => ({
   BriefBodyEditor: () => <div data-testid="body-editor" />,
 }));
 

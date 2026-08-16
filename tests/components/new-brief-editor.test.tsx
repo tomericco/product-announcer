@@ -52,7 +52,7 @@ vi.mock("../../src/app/(dashboard)/unsaved-changes", () => ({
 
 // The seeded markdown arrives here as `markdown`; the textarea is how a test
 // plays the human typing into the editor.
-vi.mock("../../src/app/(dashboard)/briefs/[briefId]/brief-mdx-editor", () => ({
+vi.mock("../../src/app/(dashboard)/briefs/brief-mdx-editor", () => ({
   default: ({
     markdown,
     onChange,
@@ -224,6 +224,38 @@ describe("NewBriefEditor — Create", () => {
       "One or more selected signals could not be found."
     );
     expect(push).not.toHaveBeenCalled();
+  });
+
+  /**
+   * `createManualBrief` is a Server Action: a network drop, deploy skew, or an
+   * unhandled server throw surfaces here as a REJECTED promise, not an
+   * `{ ok: false }` result — a different failure mode than the refusal above.
+   * Without a `finally` resetting `submitting`, this would leave both Create
+   * and Cancel disabled forever: nothing is saved until Create succeeds, so a
+   * stuck "Creating…" traps the entire brief the user just wrote on a page
+   * they can't even leave.
+   */
+  it("leaves the page usable when the Server Action rejects, Cancel included", async () => {
+    createManualBrief.mockRejectedValue(new Error("network drop"));
+    await renderEditor();
+
+    typeTitle("Exports, finally");
+    typeBody(WRITTEN);
+    await clickCreate();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("network drop");
+    expect(push).not.toHaveBeenCalled();
+
+    const createButton = screen.getByRole("button", { name: "Create brief" });
+    expect(createButton).not.toBeDisabled();
+
+    const cancelButton = screen.getByRole("button", { name: "Cancel" });
+    expect(cancelButton).not.toBeDisabled();
+
+    await act(async () => {
+      fireEvent.click(cancelButton);
+    });
+    expect(push).toHaveBeenCalledWith("/board");
   });
 });
 

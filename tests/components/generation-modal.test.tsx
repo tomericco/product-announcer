@@ -77,7 +77,7 @@ vi.mock("../../src/app/(dashboard)/unsaved-changes", () => ({
   }),
   GuardedLink: ({ children }: { children?: React.ReactNode }) => <span>{children}</span>,
 }));
-vi.mock("../../src/app/(dashboard)/briefs/[briefId]/brief-body-editor", () => ({
+vi.mock("../../src/app/(dashboard)/briefs/brief-body-editor", () => ({
   BriefBodyEditor: () => <div data-testid="body-editor" />,
 }));
 
