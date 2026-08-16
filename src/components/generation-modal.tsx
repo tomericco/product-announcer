@@ -35,13 +35,21 @@ import { GenerationChecklist, type GenerationOutcome } from "@/components/genera
  * ONLY loader for a draft generation; nothing renders `GenerationChecklist`
  * inline anymore.
  *
- * Where this is mounted matters, in all three callers. For the two accept
- * flows it must sit ABOVE anything that a re-render of the accepted brief can
- * unmount — the board renders it beside its columns rather than inside the
- * brief card (accepting removes that card), and the brief editor renders it
- * outside the `canDecide` gate. `GeneratingBadge` mounts it beside the badge
- * instead, which is safe for the opposite reason: nothing unmounts a badge
- * whose piece is still generating.
+ * Where this is mounted matters, in all four callers. Every one of them must
+ * sit ABOVE whatever the refresh that follows a started run re-renders:
+ *
+ *   - the board (`board/board.tsx`) mounts it beside its columns, not inside
+ *     a card — accepting removes the brief card, and this one modal serves
+ *     both of the board's starts, a confirmed brief drop and a card's
+ *     Generate button;
+ *   - the brief editor mounts it outside the `canDecide` gate that accepting
+ *     closes;
+ *   - the draft detail page's `GenerateDraftButton` keeps itself mounted
+ *     while `inFlight` instead of returning null, because the refresh it
+ *     fires is what sets `inFlight`;
+ *   - `GeneratingBadge` mounts it beside the badge, which is safe as long as
+ *     the only refresh in play is the one this modal defers to `onClose` —
+ *     see the bound spelled out in that component's docstring.
  */
 export function GenerationModal({
   contentPieceId,

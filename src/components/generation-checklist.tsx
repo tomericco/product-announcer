@@ -249,7 +249,7 @@ export function shouldStopPolling(progress: GenerationProgress | null): boolean 
  * those surfaces now show a "Generating…" badge that opens the modal
  * (`GeneratingBadge`), so there is one loader instead of four in various
  * states of drift. It still lives in `src/components/` rather than beside the
- * modal's only caller, because the modal itself is opened from four places
+ * modal's only caller, because the modal itself is mounted in four places
  * across three routes.
  *
  * Two consequences of that move are load-bearing and easy to undo by
@@ -358,6 +358,12 @@ export function GenerationChecklist({
         // on a "Generating…" badge until something else refreshes it. Clicking
         // that badge self-heals — the modal's first poll reads the terminal
         // state, offers the draft, and refreshes on close.
+        //
+        // What that leaves is a run nobody is watching, which is now only a
+        // run nobody in THIS tab started: every first-party way to start one
+        // (both accepts, both Generate buttons) opens this modal on it. A run
+        // begun in another tab, or one whose modal was closed early, still
+        // needs the badge.
         //
         // Last, so the owner hears about the outcome with the checklist's own
         // state already settled.

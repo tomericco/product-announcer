@@ -206,11 +206,19 @@ export function Board({
   const [pendingSchedule, setPendingSchedule] = useState<{ id: string } | null>(null);
   const [scheduleValue, setScheduleValue] = useState("");
   const [scheduling, setScheduling] = useState(false);
-  // The piece a just-accepted brief is generating into, watched in the modal
-  // at the bottom of this component. It lives HERE rather than on the brief
-  // card that started it because accepting removes that card: the refresh
-  // below swaps the brief for the piece, and a modal mounted inside the card
-  // would be torn down by the very refetch that proves the accept worked.
+  // The piece whose generation is being watched in the modal at the bottom of
+  // this component. Set by both of the board's two ways to start a run: a
+  // confirmed brief drop (`confirmAccept`) and a piece card's own Generate
+  // button (`onGenerated` below). One piece of state and one modal, because
+  // both are the same event — a run has just been started from this board and
+  // the person who started it should see it.
+  //
+  // It lives HERE rather than on the card that started it. For an accept that
+  // is forced: accepting removes the brief card, so a modal mounted inside it
+  // would be torn down by the very refetch that proves the accept worked. For
+  // Generate it is merely correct — the piece card survives its own refetch —
+  // but a second mount site for the same modal is how surfaces drift apart,
+  // and this one is already above every card.
   const [generatingPieceId, setGeneratingPieceId] = useState<string | null>(null);
   // A brief released over Draft, awaiting confirmation. Like `pendingSchedule`
   // above, the drop itself is not the mutation: it opens a dialog, and
@@ -368,9 +376,9 @@ export function Board({
         setPendingAccept(null);
         // Both, and in this order: the modal is what the person who just
         // dropped the card watches, and the refetch is what swaps the brief
-        // for the piece acceptance created — with its own inline checklist —
-        // behind it, so closing the modal leaves a card still reporting the
-        // run.
+        // for the piece acceptance created — carrying its own "Generating…"
+        // badge — behind it, so closing the modal leaves a card that still
+        // reports the run and can reopen this same modal.
         setGeneratingPieceId(result.contentPieceId);
         router.refresh();
       } catch (err) {
@@ -531,7 +539,18 @@ export function Board({
                         card.kind === "brief" ||
                         (card.status !== "brief" && card.status !== "published")
                       }
-                      onGenerated={() => router.refresh()}
+                      // A run started from this card's Generate button, which
+                      // reports STARTED and nothing more. Both halves matter,
+                      // and in this order: the modal is the only loader — and
+                      // the only poll — a generation has now, so a button that
+                      // merely refreshed left the person who pressed it
+                      // watching a badge with nothing behind it, and nothing
+                      // would notice the run landing. The refetch is what
+                      // swaps the button for that badge underneath.
+                      onGenerated={() => {
+                        setGeneratingPieceId(card.id);
+                        router.refresh();
+                      }}
                       onAssigned={(userId) => handleAssigned(card.id, userId)}
                     />
                   ))
@@ -560,7 +579,12 @@ export function Board({
         </div>
       </DndContext>
 
-      {/* Closing is not a cancel — the run continues in `after()`, and the
+      {/* The board's one loader, for both of the ways a run starts here — a
+          confirmed brief drop and a card's Generate button. `joining` stays
+          false for both: each opens onto a run begun a moment ago, so the
+          modal's "this takes a minute or so" is honest.
+
+          Closing is not a cancel — the run continues in `after()`, and the
           card behind this keeps its "Generating…" badge, which reopens this
           same modal. The re-read on close is what picks up a run that landed
           while the modal was open: the checklist inside it never refreshes on

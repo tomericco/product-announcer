@@ -27,13 +27,31 @@ import { cn } from "@/lib/utils";
  * "Generation failed" / "Awaiting generation" badge and its own retry
  * affordance; this renders only while a step is actually in flight.
  *
- * The modal is mounted here rather than hoisted to each surface's root because
- * nothing unmounts this badge while it is open: the piece stays
- * `status = 'brief'` with a step in flight for the whole run, and the modal's
- * checklist deliberately does not refresh the page underneath it — the refresh
- * is deferred to `onClose` below. (Contrast the accept flows, where the modal
- * must sit above the brief card/editor that accepting destroys; those keep
- * their own mount.)
+ * **The modal is mounted here rather than hoisted to each surface's root, and
+ * the bound on that is narrower than it looks.** Nothing this component or its
+ * modal does can unmount it: the piece stays `status = 'brief'` with a step in
+ * flight for the whole run, and the modal's checklist deliberately does not
+ * refresh the page underneath it — the refresh is deferred to `onClose` below.
+ * (Contrast the accept flows, where the modal must sit above the brief
+ * card/editor that accepting destroys; those keep their own mount.)
+ *
+ * What that does NOT cover is a refresh from somewhere else on the same
+ * surface while this modal is open — another card's Generate, a move, an
+ * assign, an accept, all of which call `router.refresh()` on the board. If the
+ * run has landed by the time that re-read returns, the piece is no longer
+ * `brief`-with-a-step, the surface stops rendering this badge, and the open
+ * modal goes with it at the moment it had a finished draft to offer.
+ *
+ * Left as-is, deliberately. Fixing it means hoisting the modal above each
+ * surface's own `generating` conditional — three more mount sites and three
+ * more copies of the piece-id state, which is the drift this badge exists to
+ * remove — to buy back one "Open draft" button in a window that needs a
+ * concurrent mutation elsewhere on the surface to open at all. Nothing is
+ * lost when it happens: the refresh that unmounted the modal is the same one
+ * that repaints the surface with the finished draft, so the card behind now
+ * links to real copy rather than a scaffold. The one surface where that is
+ * not true — `/drafts/[releaseId]`, whose whole page is the stale thing — has
+ * no other mutation on it to fire such a refresh.
  */
 export function GeneratingBadge({
   contentPieceId,

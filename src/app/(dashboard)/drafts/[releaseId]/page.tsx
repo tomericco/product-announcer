@@ -56,9 +56,9 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
     // a process that dies mid-callback still leaves a visible error rather
     // than nothing. That marker describes a *previous* attempt's worst case,
     // not the current one, so presenting it as a landed failure while the run
-    // is under way is simply wrong. The checklist replaces it, and it comes
-    // back — honestly this time — the moment the step clears with the error
-    // still set.
+    // is under way is simply wrong. The "Generating…" badge replaces it, and
+    // it comes back — honestly this time — the moment the step clears with the
+    // error still set.
     const generating = update.generationStep !== null;
 
     return (
@@ -81,14 +81,29 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
               (drafts/page.tsx), and the same shared control — a generation is
               actually in flight, not merely un-run. In flight the badge opens
               the generation modal, which is the one place the stepped loader
-              lives now. That matters most on THIS page: accepting a brief
-              redirects straight here (briefs/[briefId]/brief-workspace.tsx,
-              via brief-decision.tsx), so it is the page the author is sitting
-              on during the one flow that reliably kicks off a background
-              generation, and a badge that only ever sat there was what the
-              inline checklist was added to fix. The row already selects every
-              column, so `generationStep` is present and tenant-scoped by the
-              query above. */}
+              lives now.
+
+              It carries more weight here than on either of those surfaces,
+              because what goes stale on this page is not a badge on an
+              otherwise-correct card: the branch it sits in returns before all
+              of the editor machinery, so a piece whose draft has landed but
+              whose page has not been re-read shows the accept-time scaffold in
+              a `<pre>` with no editor, no Ask AI and no publish. Nothing polls
+              while the modal is closed, so clicking this badge is what reports
+              the finished run — and its `onClose` refresh is what re-reads
+              this page into the editor.
+
+              Accepting a brief does NOT navigate here, contrary to what this
+              comment used to claim: `useBriefDecision.handleAccept` keeps the
+              author on the brief and watches the run in the modal there (see
+              its docstring in briefs/brief-decision.tsx, which spells out that
+              it deliberately no longer navigates). People reach this page
+              mid-run from the board card's title link, the drafts list,
+              another tab — or from this page's own Generate button below,
+              which opens the modal itself rather than leaving the run
+              unwatched. The row already selects every column, so
+              `generationStep` is present and tenant-scoped by the query
+              above. */}
           {generating ? (
             <GeneratingBadge contentPieceId={update.id} />
           ) : (
@@ -117,8 +132,10 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
 
         {/* isRetry reads the error only when it is a REAL landed failure —
             mid-run the marker is always set, and "Retry generation" on a
-            first attempt that is still running would be nonsense. The button
-            renders nothing at all while `generating`. */}
+            first attempt that is still running would be nonsense. No button is
+            offered at all while `generating` — but the component stays
+            mounted, because it owns the generation modal it opens on a
+            successful start. */}
         <GenerateDraftButton
           contentPieceId={update.id}
           isRetry={!generating && Boolean(update.generationError)}

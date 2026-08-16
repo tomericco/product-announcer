@@ -449,10 +449,10 @@ describe("the Draft column", () => {
     expect(within(briefColumn).queryByRole("link", { name: "Ship notes" })).not.toBeInTheDocument();
   });
 
-  // It keeps its inline checklist and its Generate affordance wherever it
+  // It keeps its status badge and its Generate affordance wherever it
   // renders — the move is presentation only, not a change to what the card
   // itself shows.
-  it("keeps its checklist and Generate affordance in Draft", () => {
+  it("keeps its badge and Generate affordance in Draft", () => {
     renderBoard({
       board: boardData({
         brief: [pieceCard({ id: "piece-generating", title: "Ship notes", status: "brief" })],
@@ -498,6 +498,65 @@ describe("the Draft column", () => {
     });
 
     expect(within(columnNamed("Draft")).getByText("2")).toBeInTheDocument();
+  });
+});
+
+/**
+ * The board's OTHER way to start a run: a piece already in Draft with its
+ * draft never generated (an accept whose `after()` died, a run that failed).
+ *
+ * It has to land in the same place a confirmed drop does. The modal is the
+ * only loader a generation has now, and — because the poll lives inside it —
+ * the only thing that ever notices one landing. A Generate that started a run
+ * and merely refreshed left the person who pressed it looking at a
+ * "Generating…" badge with nothing behind it and nothing to update it.
+ */
+describe("the Generate button on a piece card", () => {
+  function renderUngenerated() {
+    renderBoard({
+      board: boardData({
+        brief: [pieceCard({ id: "piece-generating", title: "Ship notes", status: "brief" })],
+        draft: [],
+      }),
+    });
+    return within(cardOf("Ship notes")).getByRole("button", { name: "Generate draft" });
+  }
+
+  it("opens the generation modal on the piece it just started", async () => {
+    const button = renderUngenerated();
+
+    fireEvent.click(button);
+
+    await waitFor(() => expect(generateDraft).toHaveBeenCalledWith("piece-generating"));
+    // The same modal a confirmed brief drop opens, mounted once above the
+    // columns rather than inside the card.
+    await waitFor(() => expect(screen.getByText("Generating a draft")).toBeInTheDocument());
+    expect(pollGenerationProgress).toHaveBeenCalledWith("piece-generating");
+    // And the board is re-read underneath it, which is what swaps the button
+    // for the badge behind the modal.
+    expect(refresh).toHaveBeenCalled();
+  });
+
+  it("joins the run it started rather than starting a second one", async () => {
+    const button = renderUngenerated();
+
+    fireEvent.click(button);
+
+    await waitFor(() => expect(screen.getByText("Generating a draft")).toBeInTheDocument());
+    // The modal polls a persisted column; it never re-queues the work.
+    expect(generateDraft).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens nothing when the start is refused", async () => {
+    generateDraft.mockResolvedValueOnce({ ok: false, error: "Already generating." } as never);
+    const button = renderUngenerated();
+
+    fireEvent.click(button);
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith("Already generating."));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(pollGenerationProgress).not.toHaveBeenCalled();
+    expect(refresh).not.toHaveBeenCalled();
   });
 });
 

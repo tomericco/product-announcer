@@ -67,9 +67,13 @@ type Props = {
    * one exit is a drag onto Draft — the board passes it per card, since the
    * two kinds are drag-eligible under different rules. */
   draggable: boolean;
-  /** Called after a successful generation so the board can pick up the
-   * piece's new status and body — `generateDraft` only revalidates /drafts
-   * and /drafts/[id], not /board. Unused by the brief branch. */
+  /** Called once a generation has been STARTED from this card — never when
+   * one finishes, which this card has no way to know: `generateDraft` returns
+   * as soon as the work is queued. The board answers it by opening the
+   * generation modal on this piece (the same one a confirmed brief drop
+   * opens, and the only thing that polls a run) and re-reading the server,
+   * which `generateDraft` does not do for /board — it revalidates only
+   * /drafts and /drafts/[id]. Unused by the brief branch. */
   onGenerated: () => void;
   /** Unused by the brief branch — a brief has no assignee. */
   onAssigned: (userId: string | null) => void;
@@ -244,10 +248,16 @@ function PieceCardItem({
       }
       // "Started", not "done". `generateDraft` is fire-and-forget: it returns
       // as soon as the work is queued, so there is no completion to report
-      // here. The checklist reports that, and the failure too.
+      // here. The modal the board opens next reports that, and the failure
+      // too — nothing on this card does.
       toast.success("Generation started");
-      // The step is already written, so this refetch reliably sees it and the
-      // card swaps the button for the checklist.
+      // Hands the run to the board, which opens the generation modal on this
+      // piece and re-reads the server. The refetch alone is not enough: the
+      // poll and the loader are the same object now, so a Generate that only
+      // refreshed would leave the person who pressed it looking at a
+      // "Generating…" badge with nothing watching the run behind it. The step
+      // is already written, so that refetch reliably sees it and the card
+      // swaps this button for the badge underneath the modal.
       onGenerated();
     });
   }
