@@ -23,18 +23,19 @@ export const BRIEF_COLUMN = "briefs" as const;
 export type BriefColumn = typeof BRIEF_COLUMN;
 
 // The `brief` STATUS, which is not a column. A piece holds it for about the
-// length of one generation, and it renders inside the Brief column beside
-// the briefs — so it must be dropped from the display order while staying
-// exactly where it is in BOARD_COLUMNS, which is the move rules' alphabet.
+// length of one generation, and it renders inside the Draft column beside
+// the finished drafts — so it must be dropped from the display order while
+// staying exactly where it is in BOARD_COLUMNS, which is the move rules'
+// alphabet.
 const GENERATING_STATUS = "brief" satisfies BoardColumn;
 
 /** A rendered column: the brief column, or a piece status that has one. */
 export type DisplayColumn = BriefColumn | Exclude<BoardColumn, typeof GENERATING_STATUS>;
 
-// Display order, Brief first — and Brief is now the only column holding two
-// populations: real briefs, and the pieces generating from accepted ones.
-// Derived from BOARD_COLUMNS rather than written out again, so a new status
-// gets a column without anyone having to remember this line.
+// Display order, Brief first — and Draft is now the only column holding two
+// populations: the pieces generating from accepted briefs, and finished
+// drafts. Derived from BOARD_COLUMNS rather than written out again, so a new
+// status gets a column without anyone having to remember this line.
 export const BOARD_DISPLAY_COLUMNS: readonly DisplayColumn[] = [
   BRIEF_COLUMN,
   ...BOARD_COLUMNS.filter((c): c is Exclude<BoardColumn, typeof GENERATING_STATUS> => c !== GENERATING_STATUS),
@@ -104,9 +105,10 @@ export async function readBoard(
   // concept and a brief has no assignee. The briefs come back either way and
   // the board explains the mismatch, rather than a column silently emptying
   // itself for a filter it cannot honour. Note this makes the two populations
-  // the Brief column renders behave differently under a filter — the pieces
-  // in `board.brief` obey it here, the briefs never do — which is exactly
-  // what the column's explanation is for.
+  // the Draft column renders behave differently under a filter — the pieces
+  // in `board.brief` (mid-generation, rendered in Draft) obey it here, the
+  // briefs (rendered in Brief) never do — which is exactly what the column's
+  // explanation is for.
   opts: { assignedTo?: string | "unassigned" } = {}
 ): Promise<Board> {
   // Two tables, one board. Fine at this size; the brief column is the natural

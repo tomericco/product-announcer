@@ -73,8 +73,9 @@ const COLUMN_LABEL: Record<DisplayColumn, string> = {
 };
 
 type BoardState = BoardData;
-/** Either kind of card the board renders. Only in the Brief column do both
- * kinds appear; every other column is pieces. */
+/** Either kind of card the board renders. No column mixes kinds: Brief holds
+ * only briefs, Draft holds only pieces (both the ones mid-generation and the
+ * finished drafts), and so does every column after it. */
 type AnyCard = BoardCardType | BoardBriefCard;
 
 /** Every display column except Brief is a real `contentPieces.status`. */

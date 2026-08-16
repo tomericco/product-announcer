@@ -51,8 +51,8 @@ describe("the display order", () => {
   // The two lists are deliberately different lengths. `brief` is still a
   // content-piece STATUS — moveContentPiece writes it, ALLOWED_MOVES is
   // keyed by it, readBoard groups by it — but it is no longer a column of
-  // its own: a piece mid-generation renders inside the Brief column, beside
-  // the briefs it was accepted from.
+  // its own: a piece mid-generation renders inside the Draft column, beside
+  // the finished drafts.
   it("renders Brief once and never as the `brief` status", () => {
     expect(BOARD_DISPLAY_COLUMNS).toEqual(["briefs", "draft", "review", "scheduled", "published"]);
     expect(BOARD_DISPLAY_COLUMNS).not.toContain("brief");

@@ -139,7 +139,7 @@ import { Board } from "../../src/app/(dashboard)/board/board";
 
 const COLUMNS = ["brief", "draft", "review", "scheduled", "published"] as const;
 // `brief` is a status, not a column: a piece mid-generation renders inside
-// the Brief column beside the briefs. This is BOARD_DISPLAY_COLUMNS.
+// the Draft column beside the finished drafts. This is BOARD_DISPLAY_COLUMNS.
 const DISPLAY_COLUMNS = ["briefs", "draft", "review", "scheduled", "published"] as const;
 // What page.tsx derives server-side from the real `canMove` — restated here
 // because importing `@/lib/content/board` would pull `pg` into jsdom. The
@@ -348,6 +348,14 @@ describe("the Brief column", () => {
     const column = columnNamed("Brief");
     const link = within(column).getByRole("button", { name: "New brief" });
     expect(link).toHaveAttribute("href", "/briefs/new");
+
+    // Scoping the query above to the Brief column proves Brief HAS the
+    // button; it can never prove the other four don't. `headerAction` is
+    // wired in board.tsx with a `column === BRIEF_COLUMN` gate, not inside
+    // `Column` itself, so nothing stops a future edit from handing every
+    // column the same action — this assertion is the one that would catch
+    // that board-wide, not just scoped to Brief.
+    expect(screen.getAllByRole("button", { name: "New brief" })).toHaveLength(1);
   });
 
   // The Generating column is gone: a piece mid-generation belongs beside the

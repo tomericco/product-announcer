@@ -75,17 +75,21 @@ function resolve({
 describe("the board's collision strategy, on a pointer drag", () => {
   // The Critical, as a property, restated without the scenario that
   // produced it: a brief drag onto a "Generating" column no longer exists —
-  // the Brief column merged with it, briefs stopped being draggable, and
-  // "brief" stopped being a droppable id at all (see board.ts's
-  // BOARD_DISPLAY_COLUMNS). What's still real is the general shape of the
-  // bug: with only ONE droppable enabled, a strategy that ranks candidates
-  // rather than hit-testing them resolves EVERY release to that one column,
-  // wherever the pointer actually is. No current piece drag produces exactly
-  // one enabled column either — see ALLOWED_MOVES, every `from` status
-  // permits at least two `to`s — so this is kept as a direct, synthetic test
-  // of collision.ts's own robustness rather than a re-enactment of any real
-  // drag. "brief" below is just this suite's stand-in droppable id, same as
-  // any other.
+  // the Brief column merged with it, and "brief" stopped being a droppable
+  // id at all (see board.ts's BOARD_DISPLAY_COLUMNS). What's still real is
+  // the general shape of the bug: with only ONE droppable enabled, a
+  // strategy that ranks candidates rather than hit-testing them resolves
+  // EVERY release to that one column, wherever the pointer actually is. This
+  // is no longer just a synthetic stress case, either: a brief still drags,
+  // and Draft is its only legal destination (`canDrop` in board.tsx), so a
+  // real brief drag now disables every other column and lands exactly in
+  // this one-enabled-droppable shape — making this suite load-bearing for
+  // that drag, not merely a robustness check for a scenario no real drag
+  // produces. No piece drag produces exactly one enabled column — see
+  // ALLOWED_MOVES, every `from` status permits at least two `to`s — so
+  // "brief" below is kept only as this suite's stand-in droppable id, same
+  // as any other; the real one-enabled-column case is the brief drag onto
+  // Draft.
   it.each(["briefs", "draft", "review", "scheduled", "published"] as const)(
     "resolves to nothing when a card is released over %s with only one column enabled",
     (releasedOver) => {

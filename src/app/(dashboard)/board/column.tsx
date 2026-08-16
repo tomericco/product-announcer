@@ -8,9 +8,11 @@ import { cn } from "@/lib/utils";
 /**
  * One column of the board. `droppable` reflects whether the card currently
  * being dragged (if any) is allowed into this column — computed by the
- * caller from `canMove(activeCard.status, id)`, so the same rule the server
- * enforces in `moveContentPiece` also decides what the UI offers as a drop
- * target. `useDroppable`'s own `disabled` flag (not just styling) backs
+ * caller from `canDrop(activeCard, id)`, which branches on the dragged
+ * card's kind: a piece defers to `canMove(activeCard.status, id)`, the same
+ * rule the server enforces in `moveContentPiece`, while a brief (which has
+ * no `.status`) is only ever allowed into Draft. `useDroppable`'s own
+ * `disabled` flag (not just styling) backs
  * this: a disabled droppable is not a candidate for collision at all, so a
  * card dragged over a column the mesh does not permit cannot land there.
  *

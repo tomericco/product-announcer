@@ -128,8 +128,11 @@ function DragHandle({
  * at `/briefs/[briefId]`, not to a draft that does not exist yet.
  *
  * **It drags, and Draft is the only place it can go.** That is the whole
- * acceptance gesture now: the Accept button this card used to carry is gone,
- * so there is exactly one way to spend the model call rather than two. The
+ * acceptance gesture on the board now: the Accept button this card used to
+ * carry is gone, so there is exactly one way to spend the model call from
+ * here rather than two. (`/briefs/[briefId]` still has its own Accept —
+ * `DecisionButtons` in `brief-header.tsx` — for the editor's read-then-decide
+ * flow; this claim is about the board card, not the app as a whole.) The
  * refusal is not implemented here — the board disables every other column's
  * `useDroppable` while a brief is in hand (`canDrop` in board.tsx), which is
  * the same mechanism the piece moves already use, and `collision.ts` is what

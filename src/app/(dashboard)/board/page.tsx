@@ -52,11 +52,12 @@ export default async function BoardPage({
   ]);
 
   // The sum of what the columns actually show — including the `brief`-status
-  // pieces, which have no column of their own but do render, inside Brief.
+  // pieces, which have no column of their own but do render, inside Draft.
   // Briefs themselves count only with no assignee filter active: a brief has
   // no assignee, so the Brief column hides them under a filter it cannot
-  // honour (see board.tsx) while keeping its pieces, and a total counting
-  // hidden cards would disagree with the columns below it.
+  // honour (see board.tsx), while Draft's pieces stay filtered normally —
+  // and a total counting hidden cards would disagree with the columns below
+  // it.
   const total =
     BOARD_COLUMNS.reduce((sum, column) => sum + filteredBoard[column].length, 0) +
     (assigneeFilter === "all" ? filteredBoard[BRIEF_COLUMN].length : 0);
