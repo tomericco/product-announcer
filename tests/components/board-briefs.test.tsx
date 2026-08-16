@@ -10,11 +10,13 @@ import type { Board as BoardData, BoardBriefCard, BoardCard } from "../../src/li
  * compute each column's droppability from its own state, and then drop a
  * card the way dnd-kit would.
  *
- * The column holds two populations now: briefs awaiting a decision (rows in
- * `briefs`) and content pieces mid-generation (`status = "brief"`). There is
- * no Generating column and no drag path to acceptance — accepting is a
- * button on the brief card — so the drag tests here are about what the board
- * REFUSES.
+ * The Brief column holds only briefs — rows in `briefs` awaiting a decision.
+ * Content pieces mid-generation (`status = "brief"`) render in Draft instead,
+ * alongside finished drafts: accepting a brief creates one of these, and a
+ * card that stayed in Brief until generation finished would make the coming
+ * drag-to-accept look like it hadn't worked. There is no Generating column
+ * and (yet) no drag path to acceptance — accepting is a button on the brief
+ * card — so the drag tests here are about what the board REFUSES.
  *
  * Mocked, all of them because they are unreachable in jsdom rather than to
  * dodge an assertion:
@@ -354,64 +356,25 @@ describe("the Brief column", () => {
     expect(headings).toEqual(["Brief", "Draft", "Review", "Scheduled", "Published"]);
   });
 
-  // Two populations, two card kinds, one column.
-  it("holds both a brief and a piece mid-generation, each as its own kind of card", () => {
+  // Brief holds only briefs now — the count badge must not include anything
+  // else, or a leftover `board.brief` piece would inflate it silently.
+  it("holds only briefs — the count badge does not include pieces mid-generation", () => {
     renderBoard({
       board: boardData({
         brief: [pieceCard({ id: "piece-generating", title: "Ship notes", status: "brief" })],
-        draft: [],
       }),
     });
 
     const column = columnNamed("Brief");
-    // The brief: links to the brief editor, has a score, has no assignee
-    // picker and no generation controls.
-    const brief = cardOf(BRIEF_TITLE);
-    expect(within(brief).getByRole("link", { name: BRIEF_TITLE })).toHaveAttribute(
-      "href",
-      "/briefs/brief-1"
-    );
-    expect(within(brief).queryByRole("button", { name: /generate draft/i })).not.toBeInTheDocument();
-    expect(within(brief).queryByText("Unassigned")).not.toBeInTheDocument();
-
-    // The piece: links to the draft, keeps its status badge, its assignee
-    // picker and its Generate affordance.
-    const piece = cardOf("Ship notes");
-    expect(within(piece).getByRole("link", { name: "Ship notes" })).toHaveAttribute(
-      "href",
-      "/drafts/piece-generating"
-    );
-    expect(within(piece).getByText("Awaiting generation")).toBeInTheDocument();
-    expect(within(piece).getByRole("button", { name: /generate draft/i })).toBeInTheDocument();
-    expect(within(piece).getByText("Unassigned")).toBeInTheDocument();
-
-    // The count badge covers both.
-    expect(within(column).getByText("2")).toBeInTheDocument();
-  });
-
-  // Pieces first: a piece is work already committed and moving, a brief is
-  // still a proposal. Accepting therefore reads as a promotion to the top of
-  // the same column, and the in-flight cards — the ones whose state changes
-  // while you watch — never sit below an unbounded, score-ordered brief list.
-  it("puts the pieces mid-generation above the briefs", () => {
-    renderBoard({
-      board: boardData({
-        brief: [pieceCard({ id: "piece-generating", title: "Ship notes", status: "brief" })],
-        draft: [],
-      }),
-    });
-
-    const links = within(columnNamed("Brief"))
-      .getAllByRole("link")
-      .map((a) => a.getAttribute("href"));
-    expect(links).toEqual(["/drafts/piece-generating", "/briefs/brief-1"]);
+    expect(within(column).getByText("1")).toBeInTheDocument();
+    expect(within(column).queryByRole("link", { name: "Ship notes" })).not.toBeInTheDocument();
   });
 
   // The `draggable` prop each card is rendered with becomes `disabled` on
   // its `useDraggable`, so this is the rule about which cards can be picked
   // up at all — asserted as the whole map, so a card silently gaining or
   // losing a drag handle shows up here.
-  it("makes brief cards non-draggable, like the generating pieces beside them", () => {
+  it("makes brief cards non-draggable, like the generating pieces now in Draft", () => {
     renderBoard({
       board: boardData({
         brief: [pieceCard({ id: "piece-generating", status: "brief" })],
@@ -433,6 +396,84 @@ describe("the Brief column", () => {
     expect(harness.draggables.has("brief-1")).toBe(false);
     // And no grip either — a handle for a drag that cannot happen.
     expect(within(cardOf(BRIEF_TITLE)).queryByRole("button", { name: /^Move / })).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * A `brief`-status content piece is work in flight created by accepting a
+ * brief; it renders in Draft, not Brief — see the header comment. Draft is
+ * therefore the one column with two populations now: generating pieces and
+ * finished drafts.
+ */
+describe("the Draft column", () => {
+  // The placement itself. This is the test the task's mutation check targets:
+  // put `board.brief` back into the Brief column's `visible` list and this
+  // must fail.
+  it("renders a piece mid-generation in Draft, not Brief", () => {
+    renderBoard({
+      board: boardData({
+        brief: [pieceCard({ id: "piece-generating", title: "Ship notes", status: "brief" })],
+        draft: [],
+      }),
+    });
+
+    const draftColumn = columnNamed("Draft");
+    const piece = within(draftColumn).getByRole("link", { name: "Ship notes" });
+    expect(piece).toHaveAttribute("href", "/drafts/piece-generating");
+
+    const briefColumn = columnNamed("Brief");
+    expect(within(briefColumn).queryByRole("link", { name: "Ship notes" })).not.toBeInTheDocument();
+  });
+
+  // It keeps its inline checklist and its Generate affordance wherever it
+  // renders — the move is presentation only, not a change to what the card
+  // itself shows.
+  it("keeps its checklist and Generate affordance in Draft", () => {
+    renderBoard({
+      board: boardData({
+        brief: [pieceCard({ id: "piece-generating", title: "Ship notes", status: "brief" })],
+        draft: [],
+      }),
+    });
+
+    const piece = cardOf("Ship notes");
+    expect(within(piece).getByText("Awaiting generation")).toBeInTheDocument();
+    expect(within(piece).getByRole("button", { name: /generate draft/i })).toBeInTheDocument();
+    expect(within(piece).getByText("Unassigned")).toBeInTheDocument();
+  });
+
+  // Ordering decision: generating pieces sit ABOVE finished drafts, not
+  // below and not interleaved by date. They are work in flight whose state
+  // (checklist step, Retry) changes while you watch, the same reason the
+  // Brief column used to put them above the (unbounded, score-ordered)
+  // brief list before this move — and they are also, in practice, the
+  // newest thing in the column, since generation starts the moment a brief
+  // is accepted. Pinning them to the top keeps the one card someone is
+  // actually watching from drifting under a growing list of settled drafts.
+  it("puts the generating piece above finished drafts", () => {
+    renderBoard({
+      board: boardData({
+        brief: [pieceCard({ id: "piece-generating", title: "Ship notes", status: "brief" })],
+        draft: [pieceCard({ id: "piece-draft", title: "Existing draft" })],
+      }),
+    });
+
+    const links = within(columnNamed("Draft"))
+      .getAllByRole("link")
+      .map((a) => a.getAttribute("href"));
+    expect(links).toEqual(["/drafts/piece-generating", "/drafts/piece-draft"]);
+  });
+
+  // The count badge covers both populations sharing the column.
+  it("counts both the generating piece and the finished draft", () => {
+    renderBoard({
+      board: boardData({
+        brief: [pieceCard({ id: "piece-generating", title: "Ship notes", status: "brief" })],
+        draft: [pieceCard({ id: "piece-draft", title: "Existing draft" })],
+      }),
+    });
+
+    expect(within(columnNamed("Draft")).getByText("2")).toBeInTheDocument();
   });
 });
 
@@ -574,42 +615,29 @@ describe("dropping into Brief", () => {
 });
 
 /**
- * One column, two populations, two filter semantics. `assignedTo` is a
- * content-piece concept: readBoard filters the pieces by it and deliberately
- * does not filter the briefs, which have no assignee. So under a filter the
- * column keeps showing its pieces and hides its briefs — and says so, rather
- * than presenting a silently partial column.
+ * Brief holds only briefs now, so its filter semantics collapsed to one
+ * population, one reason: `assignedTo` is a content-piece concept, briefs
+ * have no assignee, and readBoard deliberately never filters them — so an
+ * active filter always hides every brief in the column and says why, rather
+ * than presenting a silently partial column. (Before this move, the same
+ * column also held generating pieces, which the server HAD already filtered
+ * — that second, differently-behaved population is what made this
+ * `filterHidesBriefs` note necessary in the first place; it is gone from
+ * Brief but the note is too, unless briefs remain.)
+ *
+ * Draft is unaffected by any of this: it renders exactly what it's handed,
+ * generating pieces included, with no filter-driven note of its own — the
+ * assignee filter for pieces is already applied server-side in readBoard,
+ * before this component ever sees the board.
  */
 describe("with an assignee filter active", () => {
-  it("hides the briefs and says why, while the generating pieces stay", () => {
-    renderBoard({
-      board: boardData({
-        brief: [pieceCard({ id: "piece-generating", title: "Ship notes", status: "brief" })],
-      }),
-      assigneeFilter: "user-1",
-    });
+  it("hides the briefs and says why", () => {
+    renderBoard({ assigneeFilter: "user-1" });
 
     const column = columnNamed("Brief");
-    // The briefs are gone...
-    expect(screen.queryByRole("link", { name: BRIEF_TITLE })).not.toBeInTheDocument();
-    // ...the piece, which the server already filtered, is not...
-    expect(within(column).getByRole("link", { name: "Ship notes" })).toBeInTheDocument();
-    // ...and the column explains the difference instead of looking partial.
+    expect(within(column).queryByRole("link", { name: BRIEF_TITLE })).not.toBeInTheDocument();
     expect(within(column).getByText(/assigned to anyone/i)).toBeInTheDocument();
-    expect(within(column).queryByText("No cards.")).not.toBeInTheDocument();
-  });
-
-  // Two populations empty for two different reasons, so the column says two
-  // things: nothing is shown here (true of the pieces, which the filter can
-  // and did apply to), and the briefs are excluded wholesale because the
-  // filter cannot apply to them at all. Suppressing either one would leave a
-  // column that looks like it has answered a question it hasn't.
-  it("says both when the pieces are filtered out and the briefs are hidden", () => {
-    renderBoard({ board: boardData({ brief: [], draft: [] }), assigneeFilter: "user-1" });
-
-    const column = columnNamed("Brief");
     expect(within(column).getByText("No cards.")).toBeInTheDocument();
-    expect(within(column).getByText(/assigned to anyone/i)).toBeInTheDocument();
   });
 
   // filterHidesBriefs must consult board.briefs.length: with a filter active
@@ -617,7 +645,7 @@ describe("with an assignee filter active", () => {
   // be withholding, and the explanatory note would contradict the
   // "No cards." right above it.
   it("says nothing is being withheld when there were no briefs to filter in the first place", () => {
-    renderBoard({ board: boardData({ briefs: [], brief: [], draft: [] }), assigneeFilter: "user-1" });
+    renderBoard({ board: boardData({ briefs: [] }), assigneeFilter: "user-1" });
 
     const column = columnNamed("Brief");
     expect(within(column).getByText("No cards.")).toBeInTheDocument();
@@ -629,5 +657,20 @@ describe("with an assignee filter active", () => {
 
     expect(screen.getByRole("link", { name: BRIEF_TITLE })).toBeInTheDocument();
     expect(screen.queryByText(/assigned to anyone/i)).not.toBeInTheDocument();
+  });
+
+  // The Brief-only note must never leak onto Draft — a generating piece
+  // there is unaffected by `filterHidesBriefs` and carries no such note.
+  it("leaves the generating piece in Draft alone — no note, still rendered", () => {
+    renderBoard({
+      board: boardData({
+        brief: [pieceCard({ id: "piece-generating", title: "Ship notes", status: "brief" })],
+      }),
+      assigneeFilter: "user-1",
+    });
+
+    const draftColumn = columnNamed("Draft");
+    expect(within(draftColumn).getByRole("link", { name: "Ship notes" })).toBeInTheDocument();
+    expect(within(draftColumn).queryByText(/assigned to anyone/i)).not.toBeInTheDocument();
   });
 });

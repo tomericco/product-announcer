@@ -55,15 +55,18 @@ import { moveCard } from "./actions";
 const BRIEF_COLUMN: BriefColumn = "briefs";
 
 const COLUMN_LABEL: Record<DisplayColumn, string> = {
-  // Brief holds two populations, which is why there are five labels for six
-  // board keys (`Board`'s BoardColumn statuses plus the separate `briefs`
-  // key — see `src/lib/content/board.ts`). Rows from the `briefs` table —
-  // commissions awaiting a decision — sit here alongside content pieces in
-  // the `brief` *status*, the accept-time scaffold a piece occupies for
-  // about the length of one generation. Both are "this is not written yet",
-  // so they share a column rather than splitting into Brief and Generating;
-  // and with no second column there is no drop target, which is why
-  // accepting a brief is a button on its card rather than a drag.
+  // Five labels for six board keys (`Board`'s BoardColumn statuses plus the
+  // separate `briefs` key — see `src/lib/content/board.ts`): Draft is the
+  // one column with two populations. Rows from the `briefs` table —
+  // commissions awaiting a decision — get their own column; content pieces
+  // in the `brief` *status* — the accept-time scaffold a piece occupies for
+  // about the length of one generation — render in Draft instead, alongside
+  // finished drafts, because accepting a brief is about to become a drag
+  // onto Draft (see the plan this task implements): a piece that stayed in
+  // Brief until generation finished would make that drag look like it
+  // hadn't stuck. Brief itself is not a drop target for anything, which is
+  // why accepting a brief is (for now) a button on its card rather than a
+  // drag.
   briefs: "Brief",
   draft: "Draft",
   review: "Review",
@@ -355,12 +358,11 @@ export function Board({
             // assignee, and readBoard deliberately does not filter briefs by
             // one. Showing every brief anyway would be a column quietly
             // ignoring an active filter, and dropping the column would be one
-            // that vanishes — so the briefs go and the column says why.
-            //
-            // Only the briefs. The pieces sharing this column DO have an
-            // assignee and were already filtered server-side, so they stay:
-            // one column, two populations, two filter semantics, and the
-            // note below is what stops that from reading as a bug.
+            // that vanishes — so when a filter is active, every brief is
+            // withheld and the column says why. Brief holds only briefs now
+            // (see COLUMN_LABEL above), so this is the whole story for this
+            // column — no second, differently-filtered population to reason
+            // about beside it any more.
             //
             // `board.briefs.length > 0` matters: without it, a filter active
             // over zero `new` briefs still claims briefs are being withheld,
@@ -368,15 +370,27 @@ export function Board({
             // a visible contradiction, not just an inaccuracy nobody sees.
             const filterHidesBriefs =
               column === BRIEF_COLUMN && assigneeFilter !== "all" && board.briefs.length > 0;
-            // Pieces first, then briefs. A piece is work already commissioned
-            // and in motion; a brief is still a proposal. Ordering it this way
-            // makes accepting a brief read as a promotion to the top of the
-            // same column, and keeps the cards whose state changes while you
-            // watch them off the bottom of an unbounded, score-ordered list.
+            // Draft is the one column with two populations: pieces mid-
+            // generation (`status = "brief"`) and finished drafts. Generating
+            // pieces sit ABOVE finished drafts — they are work in flight
+            // whose visible state (checklist step, Retry) changes while you
+            // watch, the same reason briefs-on-the-board originally put them
+            // above the (unbounded, score-ordered) brief list they used to
+            // share a column with; and in practice they are also the newest
+            // thing here, since generation starts the moment a brief is
+            // accepted. Pinning them to the top keeps the card someone is
+            // actively watching from drifting under a growing list of
+            // already-settled drafts. Pieces have their own assignee and are
+            // already filtered server-side (readBoard), so — unlike briefs —
+            // nothing here needs to hide them again for the filter.
             const visible: AnyCard[] =
               column === BRIEF_COLUMN
-                ? [...board.brief, ...(filterHidesBriefs ? [] : board[BRIEF_COLUMN])]
-                : board[column];
+                ? filterHidesBriefs
+                  ? []
+                  : board[BRIEF_COLUMN]
+                : column === "draft"
+                  ? [...board.brief, ...board.draft]
+                  : board[column];
             return (
               <Column
                 key={column}
@@ -445,17 +459,15 @@ export function Board({
                   ))
                 )}
 
-                {/* Below the cards, not instead of them: the pieces above are
-                    a real answer to the filter, and this note is only about
-                    the briefs it could not be applied to. When nothing is
-                    visible at all, "No cards." above says the pieces found
-                    nothing and this says the briefs were never asked — two
-                    empties, two reasons, both worth stating. */}
+                {/* Brief holds only briefs, so when this fires the column is
+                    empty of everything and "No cards." (above, from
+                    `visible.length === 0`) already says so; this note adds
+                    the reason — that the filter withheld the briefs
+                    entirely, rather than there being none to show. */}
                 {filterHidesBriefs && (
                   <p className="px-1 py-2 text-xs text-muted-foreground">
                     Briefs aren&rsquo;t assigned to anyone, so none are shown while the board is
-                    filtered by assignee; the pieces generating here still follow it. Choose
-                    &ldquo;Everyone&rdquo; to see the briefs.
+                    filtered by assignee. Choose &ldquo;Everyone&rdquo; to see them.
                   </p>
                 )}
 
