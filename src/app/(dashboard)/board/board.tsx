@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { ArrowRight } from "lucide-react";
+import { ArrowRight, Plus } from "lucide-react";
 import { toast } from "sonner";
 import {
   DndContext,
@@ -479,6 +479,29 @@ export function Board({
                 title={COLUMN_LABEL[column]}
                 count={visible.length}
                 droppable={canDrop(activeCard, column)}
+                // The hand-written-from-scratch path recovered from the
+                // deleted /briefs list page (see `NewBriefAction` in that
+                // page's history) — `/briefs/new` with no `?signals=` is its
+                // own zero-signal branch, and without a link somewhere the
+                // only route to it was the selection bar's failure branch on
+                // /signals. Lives on the Brief column specifically, not every
+                // column, because it's an action on this column's contents,
+                // not the whole board — passed only here, never inside
+                // `Column` itself. `aria-label` carries the accessible name:
+                // a bare `+` icon has none on its own, and this is the only
+                // route in the app to writing a brief from scratch.
+                headerAction={
+                  column === BRIEF_COLUMN ? (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      aria-label="New brief"
+                      render={<Link href="/briefs/new" />}
+                    >
+                      <Plus className="size-4" />
+                    </Button>
+                  ) : undefined
+                }
               >
                 {column === "published" && (
                   <Link
@@ -489,26 +512,6 @@ export function Board({
                     <ArrowRight className="size-3" />
                   </Link>
                 )}
-
-                {/* The hand-written-from-scratch path recovered from the
-                    deleted /briefs list page (see `NewBriefAction` in that
-                    page's history) — `/briefs/new` with no `?signals=` is its
-                    own zero-signal branch, and without a link somewhere the
-                    only route to it was the selection bar's failure branch on
-                    /signals. Lives on the Brief column specifically, not the
-                    board header, because it's an action on this column's
-                    contents, not the whole board. */}
-                {column === BRIEF_COLUMN && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="w-full"
-                    render={<Link href="/briefs/new" />}
-                  >
-                    New brief
-                  </Button>
-                )}
-
 
                 {visible.length === 0 ? (
                   <p className="px-1 py-2 text-xs text-muted-foreground">No cards.</p>

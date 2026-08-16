@@ -25,12 +25,18 @@ export function Column({
   title,
   count,
   droppable,
+  headerAction,
   children,
 }: {
   id: string;
   title: string;
   count: number;
   droppable: boolean;
+  /** An optional trailing control in the header, beside the title and count
+   * — e.g. the Brief column's "New brief" link. Nothing here special-cases
+   * which column gets one: that decision belongs to the caller (`board.tsx`),
+   * not to `Column` itself. */
+  headerAction?: ReactNode;
   children: ReactNode;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id, disabled: !droppable });
@@ -45,6 +51,7 @@ export function Column({
       <div className="flex items-center gap-2 px-1">
         <h2 className="text-sm font-semibold">{title}</h2>
         <Badge variant="secondary">{count}</Badge>
+        {headerAction && <div className="ml-auto">{headerAction}</div>}
       </div>
       <div
         ref={setNodeRef}

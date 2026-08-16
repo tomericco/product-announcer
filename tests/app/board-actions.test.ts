@@ -126,8 +126,8 @@ describe("moveCard", () => {
 });
 
 /**
- * `acceptBriefCard` is the action behind the Accept button on a brief card.
- * It is a thin wrapper around `acceptBrief`
+ * `acceptBriefCard` is the action behind dragging a brief card onto Draft
+ * and confirming the drop. It is a thin wrapper around `acceptBrief`
  * (src/app/(dashboard)/briefs/actions.ts), which is already the authority on
  * accepting a brief — these tests assert the actual outcomes of acceptance
  * (a content piece exists, the brief flipped to `accepted`), not that

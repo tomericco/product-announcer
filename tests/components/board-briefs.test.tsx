@@ -334,8 +334,12 @@ describe("the Brief column", () => {
   // the only remaining link to it carried `?signals=` and only rendered on
   // the create-brief modal's failure branch. This is the affordance that
   // closes that gap; it must not depend on there being any cards to show,
-  // agent-proposed or otherwise.
-  it("offers a route to /briefs/new that doesn't require picking signals first", () => {
+  // agent-proposed or otherwise. It now lives beside the column title as an
+  // icon button rather than in the column body — found here by its
+  // accessible name, not by test id or DOM position, because a bare `+`
+  // with no label would be unusable with a screen reader and this is the
+  // only route in the app to writing a brief from scratch.
+  it("offers a route to /briefs/new that doesn't require picking signals first, reachable by its accessible name", () => {
     renderBoard({ board: boardData({ briefs: [], brief: [] }) });
 
     // Rendered as a `Button` with `render={<Link .../>}` (see board.tsx) —
