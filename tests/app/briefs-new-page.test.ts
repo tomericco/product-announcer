@@ -55,13 +55,23 @@ function makeSignal(overrides: Partial<Signal> = {}): Signal {
 }
 
 // The page returns plain React elements without rendering — no
-// testing-library involved. `children` is a fixed-length array here (the JSX
-// below always has the same three syntactic children), so position is stable
-// regardless of which conditionals are truthy.
-function childrenOf(node: ReactNode): ReactNode[] {
-  const el = node as ReactElement<{ children?: ReactNode }>;
-  const children = el?.props?.children;
-  return Array.isArray(children) ? children : [children];
+// testing-library involved. The editor itself is a `"use client"` component
+// mounted inside an `EditorProvider`, so it is found by walking for the one
+// element carrying an `evidence` prop rather than by position: this page's
+// wrapper markup is presentation and must be free to change without
+// rewriting these assertions.
+function findEvidenceHolder(node: ReactNode): ReactElement<Record<string, unknown>> | null {
+  if (node === null || node === undefined || typeof node !== "object") return null;
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const found = findEvidenceHolder(child);
+      if (found) return found;
+    }
+    return null;
+  }
+  const el = node as ReactElement<Record<string, unknown>>;
+  if (el.props && Object.hasOwn(el.props, "evidence")) return el;
+  return findEvidenceHolder(el.props?.children as ReactNode);
 }
 
 // Recursively flattens every string/number leaf so a notice's wording can be
@@ -76,12 +86,9 @@ function textOf(node: ReactNode): string {
 
 async function renderPage(query: Record<string, string> = {}) {
   const page = (await NewBriefPage({ searchParams: Promise.resolve(query) })) as ReactElement;
-  const [headerDiv, overCapNotice, briefForm] = childrenOf(page);
-  return {
-    headerText: textOf(headerDiv),
-    overCapNotice,
-    briefFormProps: (briefForm as ReactElement<Record<string, unknown>>).props,
-  };
+  const editor = findEvidenceHolder(page);
+  if (!editor) throw new Error("the page rendered nothing that takes `evidence`");
+  return { pageText: textOf(page), editorProps: editor.props };
 }
 
 describe("NewBriefPage", () => {
@@ -91,34 +98,32 @@ describe("NewBriefPage", () => {
     const s2 = makeSignal({ title: "Signal two" });
     listSignals.mockResolvedValue([s1, s2]);
 
-    const { headerText, overCapNotice, briefFormProps } = await renderPage({
-      signals: `${s1.id},${s2.id}`,
-    });
+    const { pageText, editorProps } = await renderPage({ signals: `${s1.id},${s2.id}` });
 
-    expect(headerText).toContain("attached as evidence");
-    expect(overCapNotice).toBe(false);
-    // The proposal props are gone with the proposal branch — the form is
+    expect(pageText).not.toContain("left out");
+    // The proposal props are gone with the proposal branch — the editor is
     // unconditionally blank now, so passing them would be passing nothing.
-    expect(briefFormProps).not.toHaveProperty("proposal");
-    expect(briefFormProps).not.toHaveProperty("proposalError");
-    expect(briefFormProps.evidence).toEqual([
-      { id: s1.id, title: "Signal one", kind: "market_news" },
-      { id: s2.id, title: "Signal two", kind: "market_news" },
+    expect(editorProps).not.toHaveProperty("proposal");
+    expect(editorProps).not.toHaveProperty("proposalError");
+    // `CitedSignal`-shaped, so the editor can render the SAME `BriefEvidence`
+    // row `/briefs/[briefId]` does rather than a second badge list.
+    expect(editorProps.evidence).toEqual([
+      { id: s1.id, title: "Signal one", url: null, kind: "market_news" },
+      { id: s2.id, title: "Signal two", url: null, kind: "market_news" },
     ]);
-    // The whole point of this task: the in-render proposal is gone.
+    // The in-render proposal is gone and stays gone.
     expect(proposeBriefFromSignals).not.toHaveBeenCalled();
   });
 
-  it("renders the write-it-by-hand state when no signals were requested, and resolves nothing", async () => {
+  it("resolves nothing when no signals were requested", async () => {
     currentTenantId = crypto.randomUUID();
 
-    const { headerText, overCapNotice, briefFormProps } = await renderPage({});
+    const { pageText, editorProps } = await renderPage({});
 
-    expect(headerText).toContain("Write a brief by hand");
-    expect(overCapNotice).toBe(false);
-    expect(briefFormProps).not.toHaveProperty("proposal");
-    expect(briefFormProps).not.toHaveProperty("proposalError");
-    expect(briefFormProps.evidence).toEqual([]);
+    expect(pageText).not.toContain("left out");
+    expect(editorProps).not.toHaveProperty("proposal");
+    expect(editorProps).not.toHaveProperty("proposalError");
+    expect(editorProps.evidence).toEqual([]);
     expect(listSignals).not.toHaveBeenCalled();
     expect(proposeBriefFromSignals).not.toHaveBeenCalled();
   });
@@ -132,12 +137,14 @@ describe("NewBriefPage", () => {
     const droppedIds = [crypto.randomUUID(), crypto.randomUUID()];
     listSignals.mockResolvedValue([kept]);
 
-    const { overCapNotice, briefFormProps } = await renderPage({
+    const { pageText, editorProps } = await renderPage({
       signals: [...droppedIds, kept.id].join(","),
     });
 
-    expect(overCapNotice).toBe(false);
-    expect(briefFormProps.evidence).toEqual([{ id: kept.id, title: "Still here", kind: "market_news" }]);
+    expect(pageText).not.toContain("left out");
+    expect(editorProps.evidence).toEqual([
+      { id: kept.id, title: "Still here", url: null, kind: "market_news" },
+    ]);
     expect(proposeBriefFromSignals).not.toHaveBeenCalled();
   });
 
@@ -147,13 +154,13 @@ describe("NewBriefPage", () => {
     const resolved = Array.from({ length: extra }, (_, i) => makeSignal({ title: `Signal ${i}` }));
     listSignals.mockResolvedValue(resolved);
 
-    const { overCapNotice, briefFormProps } = await renderPage({
+    const { pageText, editorProps } = await renderPage({
       signals: resolved.map((s) => s.id).join(","),
     });
 
-    expect(overCapNotice).not.toBe(false);
-    expect(textOf(overCapNotice)).toContain(String(MAX_PROPOSAL_SIGNALS));
-    expect(briefFormProps.evidence).toHaveLength(MAX_PROPOSAL_SIGNALS);
+    expect(pageText).toContain("left out");
+    expect(pageText).toContain(String(MAX_PROPOSAL_SIGNALS));
+    expect(editorProps.evidence).toHaveLength(MAX_PROPOSAL_SIGNALS);
     expect(proposeBriefFromSignals).not.toHaveBeenCalled();
   });
 });

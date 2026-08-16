@@ -29,9 +29,9 @@ export type ManualBriefInput = {
   /**
    * When the sweep may expire this brief, or `null` for never.
    *
-   * Optional, and omitted by every hand-written caller — `BriefForm` builds a
-   * `ManualBriefInput` and never sets this — so the "a human wrote it, it
-   * never expires" rule holds by construction rather than by remembering to
+   * Optional, and omitted by every hand-written caller — `NewBriefEditor`
+   * builds a `ManualBriefInput` and never sets this — so the "a human wrote it,
+   * it never expires" rule holds by construction rather than by remembering to
    * pass `null`. Only `proposeAndCreateBrief` sets it, because what it saves
    * is a model's proposal nobody has read yet. See the doc comment below.
    */
@@ -66,7 +66,7 @@ export type CreateManualBriefResult = { ok: true; briefId: string } | { ok: fals
  *
  * Expiry is the caller's call, and the default is "never". A brief written by
  * hand is a decision the sweep must not expire out from under a human, so
- * `BriefForm` omits `expiresAt` and gets `null` — the same invariant this
+ * `NewBriefEditor` omits `expiresAt` and gets `null` — the same invariant this
  * comment has always stated, now stated for the hand-written path only.
  *
  * It is NOT true of every caller anymore. `proposeAndCreateBrief`
@@ -120,11 +120,12 @@ export async function createManualBrief(input: ManualBriefInput): Promise<Create
 
   // The same guard `saveBriefBody` applies, from the same module — this action
   // is the OTHER writer of `briefs.body` and was unguarded. Only `title` is
-  // validated above, and the form gates its submit button on the title alone,
-  // so angle/why-now/key-points/audience can all arrive blank; `renderBriefBody`
-  // then returns "" and stored "" — not null — which is the one value
-  // `briefBody`'s fallback cannot rescue (see the module). An explicit `body`
-  // that is blank or whitespace-only hits this exact same guard.
+  // validated above, so angle/why-now/key-points/audience can all arrive blank
+  // from the rendered path (`proposeAndCreateBrief`, whose fields come from a
+  // model); `renderBriefBody` then returns "" and stored "" — not null — which
+  // is the one value `briefBody`'s fallback cannot rescue (see the module). An
+  // explicit `body` that is blank or whitespace-only hits this exact same
+  // guard, which is why `/briefs/new` needs no second one of its own.
   //
   // Refused rather than stored as null. Null would only re-run the very
   // renderer that just produced "" from these same fields, so the fallback

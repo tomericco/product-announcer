@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { renderBriefBody, briefBody, BRIEF_TEMPLATE, type BriefBodyFields } from "../../../src/lib/briefs/body";
+import {
+  renderBriefBody,
+  briefBody,
+  BRIEF_TEMPLATE,
+  isUnfilledBriefTemplate,
+  type BriefBodyFields,
+} from "../../../src/lib/briefs/body";
 
 /** Every `## Heading` line, in order — the shape both sides of the drift check share. */
 function headings(markdown: string): string[] {
@@ -92,6 +98,55 @@ describe("BRIEF_TEMPLATE", () => {
     // render; anything renderBriefBody would ever emit a heading for must
     // show up here.
     expect(headings(BRIEF_TEMPLATE)).toEqual(headings(renderBriefBody(fullFields)));
+  });
+});
+
+describe("isUnfilledBriefTemplate", () => {
+  it("refuses the template exactly as /briefs/new seeds it", () => {
+    expect(isUnfilledBriefTemplate(BRIEF_TEMPLATE)).toBe(true);
+  });
+
+  it("refuses it after the editor has normalized it into its own dialect", () => {
+    // What MDXEditor hands back on mount having parsed and re-serialized the
+    // template: blank runs collapsed, the bullet marker rewritten. None of
+    // that is the human typing, so none of it makes this a brief.
+    const normalized = ["## Angle", "", "## Why now", "", "## Key points", "", "* ", "", "## Audience", ""].join(
+      "\n"
+    );
+
+    expect(isUnfilledBriefTemplate(normalized)).toBe(true);
+  });
+
+  it("refuses it when the bullet came back escaped, which is a marker with nothing after it", () => {
+    // `\-` is a legitimate serialization of a list marker that would otherwise
+    // be ambiguous. Still an empty bullet, still not a brief.
+    expect(isUnfilledBriefTemplate(BRIEF_TEMPLATE.replace("\n-\n", "\n\\-\n"))).toBe(true);
+  });
+
+  it("refuses a blank body too, so a caller that wants to tell them apart checks blankness first", () => {
+    // Documented behaviour, not an accident: stripping the skeleton out of ""
+    // leaves nothing, same as stripping it out of the skeleton. `/briefs/new`
+    // branches on `isBlankBriefBody` before reaching for this message.
+    expect(isUnfilledBriefTemplate("")).toBe(true);
+    expect(isUnfilledBriefTemplate("   \n\n  ")).toBe(true);
+  });
+
+  it("accepts the template the moment one section has prose under it", () => {
+    const filled = BRIEF_TEMPLATE.replace("## Angle\n", "## Angle\nShip the export flow as the headline.\n");
+
+    expect(isUnfilledBriefTemplate(filled)).toBe(false);
+  });
+
+  it("accepts a key point someone actually wrote", () => {
+    const filled = BRIEF_TEMPLATE.replace("\n-\n", "\n- Faster exports\n");
+
+    expect(isUnfilledBriefTemplate(filled)).toBe(false);
+  });
+
+  it("accepts prose that keeps none of the template's headings at all", () => {
+    // Deleting the skeleton and writing freehand is a brief. This must not be
+    // confused with an untouched template just because it has no headings.
+    expect(isUnfilledBriefTemplate("Just a paragraph about the export flow.")).toBe(false);
   });
 });
 

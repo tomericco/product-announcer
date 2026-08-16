@@ -194,7 +194,7 @@ describe("a brief the modal created", () => {
     expect(fromModal.ok).toBe(true);
     if (!fromModal.ok) return;
 
-    // The same writer, reached the way `BriefForm` reaches it: no expiry.
+    // The same writer, reached the way `NewBriefEditor` reaches it: no expiry.
     const byHand = await createManualBrief({ ...GOOD_INPUT, signalIds: [signal.id] });
     expect(byHand.ok).toBe(true);
     if (!byHand.ok) return;

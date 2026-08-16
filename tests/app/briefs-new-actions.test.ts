@@ -135,8 +135,8 @@ describe("createManualBrief", () => {
    * to be stated as "what is stored survives the prompt", not as "what is
    * stored equals what the renderer returned".
    *
-   * Only `title` is validated, and `brief-form.tsx` gates its submit button on
-   * the title alone — so a form with a title and nothing else is reachable, and
+   * Only `title` is validated — so a caller on the rendered path (a proposal
+   * whose model returned a title and blank sections) is reachable, and
    * `renderBriefBody` returns "" for it. "" is not null, so `briefBody`'s
    * fallback never fires and `composeBriefPrompt`'s `.filter(Boolean)` drops
    * it: the model would get a commission with no prose at all, silently.

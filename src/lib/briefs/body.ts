@@ -109,3 +109,57 @@ export const BRIEF_TEMPLATE = `## Angle
 ## Audience
 
 `;
+
+/** {@link BRIEF_TEMPLATE}'s own heading lines, derived rather than restated. */
+const BRIEF_TEMPLATE_HEADINGS = BRIEF_TEMPLATE.split("\n")
+  .map((line) => line.trim())
+  .filter((line) => line.startsWith("#"));
+
+/**
+ * True when `body` carries nothing but {@link BRIEF_TEMPLATE}'s skeleton — the
+ * headings and the empty bullet, with no prose under any of them. A brief whose
+ * body is only empty headings is not a brief: it reaches the model as a
+ * commission with a title and four section names and nothing to write from,
+ * which is the same failure {@link isBlankBriefBody} exists to prevent, one
+ * step less obvious.
+ *
+ * NOT the same guard, and deliberately not folded into it. `isBlankBriefBody`
+ * is what every writer of `briefs.body` shares, including the editor's save on
+ * an existing brief — a human who deletes a section heading there has done
+ * something meaningful and must not be refused. This one is about a specific
+ * moment: the `/briefs/new` page pressing Create on a template nobody typed
+ * into. It is applied there, on the client, before the round trip.
+ *
+ * The headings are read off `BRIEF_TEMPLATE` at module load, so renaming a
+ * section in the template renames it here too and this cannot drift from the
+ * skeleton it is describing.
+ *
+ * A blank body satisfies this as well (nothing is left after stripping
+ * nothing), so a caller that wants to distinguish "you didn't fill the template
+ * in" from "there is no body at all" must test {@link isBlankBriefBody} first.
+ */
+export function isUnfilledBriefTemplate(body: string): boolean {
+  return (
+    body
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      // The template's own headings say nothing on their own.
+      .filter((line) => !BRIEF_TEMPLATE_HEADINGS.includes(line))
+      // The empty bullet under "Key points", in whichever marker the editor
+      // normalized it to — MDXEditor rewrites the stored markdown into its own
+      // dialect on mount, and `-` coming back as `*`, or backslash-escaped
+      // because it has nothing after it, is not the human typing.
+      //
+      // Deliberately generous: the cost of a marker this misses is that an
+      // untouched template gets created as a brief (annoying, and the human
+      // can see and fix it), while the cost of matching too much would be
+      // refusing a brief someone actually wrote. Erring toward creating is the
+      // right way round.
+      .filter((line) => !/^\\?[-*+]\s*$/.test(line)).length === 0
+  );
+}
+
+/** The message `/briefs/new` shows when {@link isUnfilledBriefTemplate} refuses. */
+export const UNFILLED_BRIEF_TEMPLATE_ERROR =
+  "Fill the template in — a body of empty headings isn't a commission yet.";

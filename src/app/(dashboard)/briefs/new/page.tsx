@@ -3,7 +3,8 @@ import { requireSession } from "@/lib/workspace/session";
 import { listSignals } from "@/lib/signals/query";
 import { MAX_PROPOSAL_SIGNALS } from "@/lib/briefs/propose";
 import { single } from "@/lib/signals/params";
-import { BriefForm } from "./brief-form";
+import { EditorProvider } from "@/components/markdown/editor-context";
+import { NewBriefEditor } from "./new-brief-editor";
 
 function parseSignalIds(raw: string | undefined): string[] {
   if (!raw) return [];
@@ -15,7 +16,10 @@ function parseSignalIds(raw: string | undefined): string[] {
 /**
  * `/briefs/new`: the hand-written brief path — write a brief from scratch, or
  * from evidence selected on `/signals`, and save it through
- * `createManualBrief`, a plain insert with no model call of its own.
+ * `createManualBrief`, a plain insert with no model call of its own. It is the
+ * same markdown editor `/briefs/[briefId]` is, seeded with `BRIEF_TEMPLATE`;
+ * this file is the server half that resolves the evidence, and
+ * `NewBriefEditor` is everything a human touches.
  *
  * Until spec B
  * (`docs/superpowers/specs/2026-08-14-brief-creation-modal-design.md`), a
@@ -42,7 +46,7 @@ function parseSignalIds(raw: string | undefined): string[] {
  * simply never appears in `allSignals` and silently drops out of `chosen`
  * below. Nothing here trusts the URL directly.
  *
- * `chosen` is passed to `BriefForm` as the evidence to attach on save.
+ * `chosen` is passed to `NewBriefEditor` as the evidence to attach on Create.
  */
 export default async function NewBriefPage({
   searchParams,
@@ -69,24 +73,22 @@ export default async function NewBriefPage({
   const droppedOverCap = resolved.length - chosen.length;
 
   return (
-    <div className="space-y-4">
-      <div>
-        <h1 className="font-heading text-3xl leading-[1.15] tracking-[0.015em]">New brief</h1>
-        <p className="text-sm text-muted-foreground">
-          {chosen.length > 0
-            ? "Write it yourself — the signals you selected are attached as evidence."
-            : "Write a brief by hand and it lands on the board's Brief column like any other."}
-        </p>
-      </div>
-
-      {droppedOverCap > 0 && (
-        <div className="rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm">
-          Only the first {MAX_PROPOSAL_SIGNALS} of {resolved.length} selected signals are used per brief —{" "}
-          {droppedOverCap} more {droppedOverCap === 1 ? "was" : "were"} left out.
-        </div>
-      )}
-
-      <BriefForm evidence={chosen.map((s) => ({ id: s.id, title: s.title, kind: s.kind }))} />
+    <div className="mx-auto w-full max-w-3xl space-y-6">
+      {/* The same provider `/briefs/[briefId]` wraps its editor in: it is what
+          lets the header's Source toggle, which renders outside MDXEditor,
+          drive the editor's view mode. */}
+      <EditorProvider>
+        <NewBriefEditor
+          evidence={chosen.map((s) => ({ id: s.id, title: s.title, url: s.url, kind: s.kind }))}
+        >
+          {droppedOverCap > 0 && (
+            <div className="rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm">
+              Only the first {MAX_PROPOSAL_SIGNALS} of {resolved.length} selected signals are used per brief —{" "}
+              {droppedOverCap} more {droppedOverCap === 1 ? "was" : "were"} left out.
+            </div>
+          )}
+        </NewBriefEditor>
+      </EditorProvider>
     </div>
   );
 }
