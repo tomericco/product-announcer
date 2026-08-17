@@ -26,6 +26,7 @@ import DraftsPage from "../../../src/app/(dashboard)/drafts/page";
 import DraftDetailPage from "../../../src/app/(dashboard)/drafts/[releaseId]/page";
 import { GenerationChecklist } from "../../../src/components/generation-checklist";
 import { GeneratingBadge } from "../../../src/components/generating-badge";
+import { ScaffoldPoller } from "../../../src/app/(dashboard)/drafts/[releaseId]/scaffold-poller";
 
 const TENANT = "One Loader In The Modal Test Tenant";
 
@@ -152,5 +153,46 @@ describe("DraftDetailPage — a brief-status piece", () => {
     expect(nodesOfType(page, GeneratingBadge)).toHaveLength(0);
     expect(textOf(page)).toContain("hasn");
     expect(textOf(page)).toContain("Awaiting generation");
+  });
+});
+
+/**
+ * The one exception to badge-only behaviour, and where it is allowed to
+ * apply. What goes stale on the board and on `/drafts` is a badge on an
+ * otherwise-correct row; what goes stale here is the entire page, which
+ * renders the accept-time scaffold with no editor at all. So this page — and
+ * only this page — mounts a poll of its own. Whether that poll then runs is
+ * driven in tests/components/scaffold-poller.test.tsx.
+ */
+describe("DraftDetailPage — the scaffold's own poll", () => {
+  it("mounts the poller, told that a run is in flight, while showing the scaffold", async () => {
+    const { piece } = await seed({ generationStep: "generating" });
+
+    const page = (await DraftDetailPage({ params: Promise.resolve({ releaseId: piece.id }) })) as ReactElement;
+
+    const pollers = nodesOfType(page, ScaffoldPoller);
+    expect(pollers).toHaveLength(1);
+    expect(pollers[0].props).toMatchObject({ contentPieceId: piece.id, generating: true });
+  });
+
+  it("tells it there is nothing to watch when no step is in flight", async () => {
+    const { piece } = await seed({ generationStep: null, generationError: "The model refused." });
+
+    const page = (await DraftDetailPage({ params: Promise.resolve({ releaseId: piece.id }) })) as ReactElement;
+
+    const pollers = nodesOfType(page, ScaffoldPoller);
+    expect(pollers).toHaveLength(1);
+    expect(pollers[0].props).toMatchObject({ generating: false });
+  });
+
+  it("is not mounted once the page is no longer the scaffold", async () => {
+    // A piece past `brief` takes a different branch entirely — the editor, or
+    // the published read-only view. Neither is stale-until-refreshed, and
+    // neither should be polling.
+    const { piece } = await seed({ status: "published", body: "Real copy", publishedAt: new Date() });
+
+    const page = (await DraftDetailPage({ params: Promise.resolve({ releaseId: piece.id }) })) as ReactElement;
+
+    expect(nodesOfType(page, ScaffoldPoller)).toHaveLength(0);
   });
 });

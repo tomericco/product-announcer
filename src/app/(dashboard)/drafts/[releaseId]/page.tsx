@@ -9,6 +9,7 @@ import { reviewStatusLabel } from "@/lib/ai/review-status";
 import { Badge } from "@/components/ui/badge";
 import { GenerateDraftButton } from "./generate-draft-button";
 import { GeneratingBadge } from "@/components/generating-badge";
+import { ScaffoldPoller } from "./scaffold-poller";
 import { containsCodeBlock } from "@/lib/publishing/markdown-to-html";
 import { computeReleaseDelta } from "@/lib/change-events/release-deltas";
 import { saveDraft } from "../actions";
@@ -88,10 +89,11 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
               otherwise-correct card: the branch it sits in returns before all
               of the editor machinery, so a piece whose draft has landed but
               whose page has not been re-read shows the accept-time scaffold in
-              a `<pre>` with no editor, no Ask AI and no publish. Nothing polls
-              while the modal is closed, so clicking this badge is what reports
-              the finished run — and its `onClose` refresh is what re-reads
-              this page into the editor.
+              a `<pre>` with no editor, no Ask AI and no publish. That is why
+              this page — alone among the three — mounts `ScaffoldPoller`
+              below: the badge still opens the modal and its `onClose` still
+              refreshes, but nobody has to click it for the page to become the
+              editor.
 
               Accepting a brief does NOT navigate here, contrary to what this
               comment used to claim: `useBriefDecision.handleAccept` keeps the
@@ -112,6 +114,15 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
             </Badge>
           )}
         </div>
+
+        {/* Renders nothing. Inside this branch — and gated again on a step
+            actually being in flight — it polls the same persisted column the
+            modal's checklist reads, and refreshes once the run lands, which
+            re-runs this Server Component past the early return above and into
+            the editor. Scoped to this page on purpose: the board and /drafts
+            keep badge-only behaviour, because what goes stale there is a badge
+            on an otherwise-correct row, not the entire surface. */}
+        <ScaffoldPoller contentPieceId={update.id} generating={generating} />
 
         {/* The failure and never-run explanations are untouched — the badge
             above replaced the loader, not the error state. */}
