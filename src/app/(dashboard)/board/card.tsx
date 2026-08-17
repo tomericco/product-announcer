@@ -226,7 +226,8 @@ function PieceCardItem({
   // interrupted-generation marker `generateDraftForPiece` writes BEFORE the
   // model call, deliberately), so it describes a previous attempt's worst
   // case, not the current one. Badging or printing it as a landed failure
-  // beside a live checklist reported a running generation as broken.
+  // while a run is still in flight would report a running generation as
+  // broken.
   //
   // Server state ONLY. This briefly also OR'd in a local "I just started one"
   // flag to cover the gap before the first step write landed; because nothing

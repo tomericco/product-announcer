@@ -49,9 +49,22 @@ import { cn } from "@/lib/utils";
  * concurrent mutation elsewhere on the surface to open at all. Nothing is
  * lost when it happens: the refresh that unmounted the modal is the same one
  * that repaints the surface with the finished draft, so the card behind now
- * links to real copy rather than a scaffold. The one surface where that is
- * not true — `/drafts/[releaseId]`, whose whole page is the stale thing — has
- * no other mutation on it to fire such a refresh.
+ * links to real copy rather than a scaffold.
+ *
+ * `/drafts/[releaseId]` is NOT the exception this paragraph used to claim.
+ * That page mounts `ScaffoldPoller` (`drafts/[releaseId]/scaffold-poller.tsx`)
+ * beside this badge for exactly the reason above — its whole page is the
+ * stale thing, so it watches for itself instead of waiting on the badge to
+ * be clicked — and that poller's own `router.refresh()` is a mutation on
+ * this surface, on the same 3s cadence this badge's modal polls on. A run
+ * landing while that modal is open unmounts it the same way any other
+ * concurrent refresh would. It is still benign there, for the same reason:
+ * on success the refresh is what turns the page's `status === "brief"` early
+ * return into the real editor — the identical destination "Open draft"
+ * links to — so losing the modal loses nothing anyone was waiting to click.
+ * On a landed failure the refresh repaints this branch's own failed-badge
+ * instead, which is what the modal's checklist would have shown had it
+ * stayed open.
  */
 export function GeneratingBadge({
   contentPieceId,

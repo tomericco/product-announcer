@@ -250,7 +250,10 @@ export function shouldStopPolling(progress: GenerationProgress | null): boolean 
  * (`GeneratingBadge`), so there is one loader instead of four in various
  * states of drift. It still lives in `src/components/` rather than beside the
  * modal's only caller, because the modal itself is mounted in four places
- * across three routes.
+ * (the board, the brief editor, `/drafts/[releaseId]`'s own Generate button,
+ * and `GeneratingBadge`) that between them reach four routes: `/board`,
+ * `/drafts`, `/drafts/[releaseId]` and `/briefs/[briefId]` — `GeneratingBadge`
+ * alone accounts for the first three, one generating row at a time.
  *
  * Two consequences of that move are load-bearing and easy to undo by
  * accident: nothing polls this piece unless the modal is open (so no surface

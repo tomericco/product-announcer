@@ -462,9 +462,10 @@ export function Board({
               column === BRIEF_COLUMN && assigneeFilter !== "all" && board.briefs.length > 0;
             // Draft is the one column with two populations: pieces mid-
             // generation (`status = "brief"`) and finished drafts. Generating
-            // pieces sit ABOVE finished drafts — they are work in flight
-            // whose visible state (checklist step, Retry) changes while you
-            // watch, the same reason briefs-on-the-board originally put them
+            // pieces sit ABOVE finished drafts — they are work in flight, due
+            // to settle into a real title (or "Generation failed") on the
+            // board's next refresh, unlike a finished draft that just sits
+            // there. The same reason briefs-on-the-board originally put them
             // above the (unbounded, score-ordered) brief list they used to
             // share a column with; and in practice they are also the newest
             // thing here, since generation starts the moment a brief is

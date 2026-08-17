@@ -191,8 +191,11 @@ export async function dismissBrief(
  *
  * FIRE-AND-FORGET, exactly like `acceptBrief` above: it schedules the
  * generation in `after()` and returns as soon as the work is queued. `{ ok:
- * true }` means "generation started", NOT "draft ready" — both callers render
- * the shared `GenerationChecklist` for the run itself.
+ * true }` means "generation started", NOT "draft ready" — neither caller
+ * renders a stepped checklist for the run itself anymore. Each opens the
+ * generation modal instead (the board's shared one for the card's Generate
+ * button, `/drafts/[releaseId]`'s own for `GenerateDraftButton`), and the
+ * checklist lives inside that modal now, not at either call site.
  *
  * It used to `await generateDraftForPiece` inline. That held the server action
  * open for the entire generate + review round trip, so nothing re-rendered
@@ -204,8 +207,9 @@ export async function dismissBrief(
  * re-checks eligibility under the caller's own tenant and marks the piece in
  * one statement, so:
  *
- *   - the step is already non-null when this returns, and the caller's refresh
- *     always renders the checklist rather than racing the first step write;
+ *   - the step is already non-null when this returns, so the caller's refresh
+ *     reliably swaps its Generate/Retry button for the "Generating…" badge
+ *     instead of racing the first step write and showing neither for a tick;
  *   - a refusal is known synchronously and can still be reported to the user,
  *     rather than disappearing into a background log the way it briefly did.
  */
