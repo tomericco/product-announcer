@@ -401,7 +401,11 @@ export function Board({
 
   function pushAssigneeFilter(value: string | null) {
     const qs = !value || value === "all" ? "" : `?assignee=${value}`;
-    router.push(`/board${qs}`);
+    // `scroll: false` for the same reason the Company filter bars carry it:
+    // the App Router's default scrolls to the top on every push, so changing
+    // a filter throws away the reader's position for a navigation that only
+    // narrows what is already on screen.
+    router.push(`/board${qs}`, { scroll: false });
   }
 
   const assigneeOptions = [
