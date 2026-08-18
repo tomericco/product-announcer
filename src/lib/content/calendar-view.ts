@@ -193,3 +193,37 @@ export function leadingBlanksFor(month: string, weekStartsOn: WeekStartsOn): num
   const [year, monthNum] = month.split("-").map(Number);
   return (new Date(year, monthNum - 1, 1).getDay() - weekStartsOn + 7) % 7;
 }
+
+/**
+ * The workspace's two resting days, as `Date#getDay()` numbers: the last two
+ * columns of the week AS DISPLAYED. A Sunday-start week closes on Friday and
+ * Saturday, a Monday-start one on Saturday and Sunday.
+ *
+ * Derived from `weekStartsOn` and nothing else — no column of its own, no
+ * separate setting, and deliberately not read off `holidayCountries`. A
+ * workspace that has said which day its week opens on has already said which
+ * two close it.
+ *
+ * Same `% 7` as `leadingBlanksFor` above, for the mirror-image reason: Sunday
+ * is 0, so a Monday-start week's LAST column is the lowest weekday number
+ * there is. Without the modulo the pair comes out as 6 and 7, and 7 is not a
+ * weekday any `getDay()` ever returns — Sunday would silently never rest.
+ */
+export function restingWeekdaysFor(weekStartsOn: WeekStartsOn): [number, number] {
+  return [(weekStartsOn + 5) % 7, (weekStartsOn + 6) % 7];
+}
+
+/**
+ * Whether a given day of `month` is one of them.
+ *
+ * Builds the date from local components and reads a local component back, so
+ * the answer is the same in every timezone — which weekday a date falls on is
+ * a calendar fact, not an instant. The grid still gates the call behind
+ * hydration, but for a presentation reason rather than a correctness one; see
+ * `month-grid.tsx`.
+ */
+export function isRestingDay(month: string, dayNumber: number, weekStartsOn: WeekStartsOn): boolean {
+  const [year, monthNum] = month.split("-").map(Number);
+  const weekday = new Date(year, monthNum - 1, dayNumber).getDay();
+  return restingWeekdaysFor(weekStartsOn).includes(weekday);
+}

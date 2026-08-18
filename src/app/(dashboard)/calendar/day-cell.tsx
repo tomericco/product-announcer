@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useSyncExternalStore } from "react";
 import { format } from "date-fns";
 import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
 // Imported from `@/lib/content/calendar-view`, not `@/lib/content/calendar`
 // — see the comment in `month-grid.tsx` for why: `calendar.ts` imports
 // `@/db`, and any import from it into a "use client" file pulls the whole
@@ -45,6 +46,7 @@ export function DayCell({
   dayNumber,
   pieces,
   holidays,
+  resting,
 }: {
   dayNumber: number;
   pieces: Record<CalendarType, CalendarPiece[]>;
@@ -53,21 +55,56 @@ export function DayCell({
    * timezone-dependent and no hydration gate applies — unlike the times
    * below. More than one when two enabled countries share a day. */
   holidays: string[];
+  /** One of the workspace's two resting days — the last two columns of the
+   * week as displayed, derived from `weekStartsOn` alone. Decided by the
+   * caller so this component stays a pure renderer. */
+  resting: boolean;
 }) {
   const hydrated = useHydrated();
 
   return (
-    <div className="flex min-h-28 flex-col gap-1.5 rounded-lg border border-border p-1.5">
-      <span className="text-xs font-medium text-muted-foreground">{dayNumber}</span>
-      {holidays.map((holiday) => (
-        <span
-          key={holiday}
-          title={holiday}
-          className="truncate text-[10px] leading-tight font-medium text-muted-foreground"
-        >
-          {holiday}
-        </span>
-      ))}
+    <div
+      className={cn(
+        "flex min-h-28 flex-col gap-1.5 rounded-lg border border-border p-1.5",
+        // A background and NOTHING else, on purpose. This cell carries no
+        // other state today — every day renders the same border, and the
+        // leading blanks are bare borderless divs — but the moment one
+        // arrives (today, selected, a drop target) it will want the border,
+        // the ring or the type weight. Keeping the resting shade to the one
+        // channel nothing else uses is what lets a "today" ring read straight
+        // through it instead of fighting it. Do not promote this to a border
+        // or a ring colour without moving whatever claims that channel first.
+        //
+        // /40 rather than a solid fill for the same reason: the piece links
+        // inside hover to a full-strength `bg-muted`, so the hover still steps
+        // up visibly on a resting day rather than matching its background.
+        resting && "bg-muted/40"
+      )}
+    >
+      <span className="text-sm font-medium text-muted-foreground">{dayNumber}</span>
+      {holidays.length > 0 && (
+        // `flex-wrap` rather than a plain stack: two enabled countries can
+        // land on one day, and in a column wide enough for both pills they
+        // sit side by side, otherwise they wrap onto their own lines. Either
+        // way the cell grows — matching the no-`overflow-hidden` decision
+        // below — instead of the grid column widening to fit a long name.
+        <div className="flex flex-wrap gap-1">
+          {holidays.map((holiday) => (
+            // `max-w-full` is the guard: Badge is `w-fit whitespace-nowrap`,
+            // which is fit-content over unbreakable text — i.e. the pill's
+            // full natural width, cell be damned. Capping it at the cell and
+            // truncating the label inside keeps "Independence Day (Yom
+            // HaAtzmaut)" inside its column; `title` keeps the whole name
+            // reachable. The inner span (not the Badge itself) carries
+            // `truncate` because `text-overflow` does not apply to the
+            // anonymous flex item a bare text child of an `inline-flex`
+            // Badge becomes.
+            <Badge key={holiday} variant="secondary" title={holiday} className="max-w-full">
+              <span className="min-w-0 truncate">{holiday}</span>
+            </Badge>
+          ))}
+        </div>
+      )}
       {/* No `overflow-hidden` here on purpose: this view's whole job is
           coverage, so a busy day must grow the cell (and its row) rather
           than silently clip pieces past the third or so with no "+N more"

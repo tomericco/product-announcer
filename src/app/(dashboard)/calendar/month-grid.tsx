@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button";
 // imported here regardless of which file it's imported from.
 import {
   bucketByLocalDay,
+  isRestingDay,
   leadingBlanksFor,
   resolveMonth,
   rotateWeekdayLabels,
@@ -178,7 +179,7 @@ export function MonthGrid({
         </div>
       )}
 
-      <div className="grid grid-cols-7 gap-1.5 text-center text-xs font-medium text-muted-foreground">
+      <div className="grid grid-cols-7 gap-1.5 text-center text-sm font-medium text-muted-foreground">
         {rotateWeekdayLabels(weekStartsOn).map((label) => (
           <span key={label}>{label}</span>
         ))}
@@ -188,14 +189,25 @@ export function MonthGrid({
         {Array.from({ length: leadingBlanks }, (_, i) => (
           <div key={`blank-${i}`} />
         ))}
-        {days.map((day) => (
-          <DayCell
-            key={day.key}
-            dayNumber={Number(day.key.slice(-2))}
-            pieces={day.pieces}
-            holidays={holidaysByDay.get(day.key) ?? []}
-          />
-        ))}
+        {days.map((day) => {
+          const dayNumber = Number(day.key.slice(-2));
+          return (
+            <DayCell
+              key={day.key}
+              dayNumber={dayNumber}
+              pieces={day.pieces}
+              holidays={holidaysByDay.get(day.key) ?? []}
+              // Gated on `hydrated` alongside the leading blanks, though for a
+              // different reason: `isRestingDay` is timezone-invariant (see its
+              // comment), so this needs no gate to be CORRECT. It needs one to
+              // land in the same paint as the alignment it describes — shading
+              // "the last two columns of the week" while the grid is still
+              // drawn with zero leading blanks puts the shade under the wrong
+              // headers until hydration settles, then jumps.
+              resting={hydrated && isRestingDay(month, dayNumber, weekStartsOn)}
+            />
+          );
+        })}
       </div>
     </div>
   );

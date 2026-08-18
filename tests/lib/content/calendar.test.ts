@@ -17,6 +17,8 @@ import {
   shiftMonth,
   leadingBlanksFor,
   rotateWeekdayLabels,
+  restingWeekdaysFor,
+  isRestingDay,
   CALENDAR_TYPES,
 } from "../../../src/lib/content/calendar-view";
 import { seedTenant, dropTenant } from "../../helpers/fixtures";
@@ -315,6 +317,60 @@ describe("rotateWeekdayLabels", () => {
   it("always yields seven distinct labels", () => {
     for (const start of [0, 1] as const) {
       expect(new Set(rotateWeekdayLabels(start)).size).toBe(7);
+    }
+  });
+});
+
+describe("restingWeekdaysFor", () => {
+  it("rests on Friday and Saturday when the week opens on Sunday", () => {
+    expect(restingWeekdaysFor(0)).toEqual([5, 6]);
+  });
+
+  it("rests on Saturday and Sunday when the week opens on Monday", () => {
+    // Sunday is 0, so the pair wraps: the LAST column of a Monday-start week
+    // is the lowest `getDay()` number there is. A derivation without the
+    // modulo produces 7 here and matches nothing.
+    expect(restingWeekdaysFor(1)).toEqual([6, 0]);
+  });
+
+  it("always names the last two columns of the week as displayed", () => {
+    // Stated positionally rather than by weekday name, which is the actual
+    // rule: whatever `weekStartsOn` is, the resting pair is columns 5 and 6.
+    for (const start of [0, 1] as const) {
+      const columnOf = (weekday: number) => (weekday - start + 7) % 7;
+      expect(restingWeekdaysFor(start).map(columnOf)).toEqual([5, 6]);
+    }
+  });
+});
+
+describe("isRestingDay", () => {
+  // 2026-02 opens on a Sunday: the 1st and 8th are Sundays, the 6th a Friday,
+  // the 7th a Saturday. The week that contains all four is what makes both
+  // starts distinguishable on one month.
+  it("Sunday start: Friday and Saturday rest, Sunday does not", () => {
+    expect(isRestingDay("2026-02", 6, 0)).toBe(true);
+    expect(isRestingDay("2026-02", 7, 0)).toBe(true);
+    expect(isRestingDay("2026-02", 8, 0)).toBe(false);
+    expect(isRestingDay("2026-02", 1, 0)).toBe(false);
+  });
+
+  it("Monday start: Saturday and Sunday rest, Friday does not", () => {
+    expect(isRestingDay("2026-02", 7, 1)).toBe(true);
+    expect(isRestingDay("2026-02", 8, 1)).toBe(true);
+    expect(isRestingDay("2026-02", 6, 1)).toBe(false);
+    expect(isRestingDay("2026-02", 1, 1)).toBe(true);
+  });
+
+  it("rests exactly two days of every week, at either start", () => {
+    for (const start of [0, 1] as const) {
+      for (const month of everyMonth()) {
+        const [year, monthNum] = month.split("-").map(Number);
+        const daysInMonth = new Date(year, monthNum, 0).getDate();
+        for (let first = 1; first + 6 <= daysInMonth; first++) {
+          const week = Array.from({ length: 7 }, (_, i) => isRestingDay(month, first + i, start));
+          expect(week.filter(Boolean)).toHaveLength(2);
+        }
+      }
     }
   });
 });
