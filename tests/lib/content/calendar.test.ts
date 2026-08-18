@@ -15,6 +15,8 @@ import {
   resolveMonth,
   isValidMonthParam,
   shiftMonth,
+  leadingBlanksFor,
+  rotateWeekdayLabels,
   CALENDAR_TYPES,
 } from "../../../src/lib/content/calendar-view";
 import { seedTenant, dropTenant } from "../../helpers/fixtures";
@@ -253,3 +255,76 @@ describe("shiftMonth", () => {
     expect(shiftMonth("2026-06", 1)).toBe("2026-07");
   });
 });
+
+/**
+ * Week start. The grid used to hardcode a Sunday start (`getDay()` raw), so
+ * every assertion below at `weekStartsOn: 1` is new ground — and the pair of
+ * month-boundary cases is where the off-by-one actually lives: a month that
+ * begins ON the configured first day must produce ZERO leading blanks, and a
+ * month that begins the day BEFORE it must produce six, not minus one.
+ */
+describe("leadingBlanksFor", () => {
+  it("Sunday start: a month beginning on a Sunday needs no leading blanks", () => {
+    // 2026-02 begins on a Sunday.
+    expect(leadingBlanksFor("2026-02", 0)).toBe(0);
+  });
+
+  it("Sunday start: a month beginning on a Monday needs one leading blank", () => {
+    // 2026-06 begins on a Monday.
+    expect(leadingBlanksFor("2026-06", 0)).toBe(1);
+  });
+
+  it("Monday start: a month beginning on a Monday needs no leading blanks", () => {
+    expect(leadingBlanksFor("2026-06", 1)).toBe(0);
+  });
+
+  it("Monday start: a month beginning on a Sunday needs six leading blanks, not minus one", () => {
+    // The whole reason the formula is `(getDay() - weekStartsOn + 7) % 7` and
+    // not `getDay() - weekStartsOn`: Sunday is 0, so a naive subtraction
+    // yields -1 and `Array.from({length: -1})` silently renders no blanks —
+    // shifting the entire month one column left with nothing to show for it.
+    expect(leadingBlanksFor("2026-02", 1)).toBe(6);
+  });
+
+  it("agrees with getDay() at every month of two years for a Sunday start", () => {
+    for (const month of everyMonth()) {
+      const [year, monthNum] = month.split("-").map(Number);
+      expect(leadingBlanksFor(month, 0)).toBe(new Date(year, monthNum - 1, 1).getDay());
+    }
+  });
+
+  it("is exactly one column left of the Sunday start, modulo the week, at every month of two years", () => {
+    for (const month of everyMonth()) {
+      const sunday = leadingBlanksFor(month, 0);
+      expect(leadingBlanksFor(month, 1)).toBe((sunday + 6) % 7);
+      expect(leadingBlanksFor(month, 1)).toBeGreaterThanOrEqual(0);
+      expect(leadingBlanksFor(month, 1)).toBeLessThanOrEqual(6);
+    }
+  });
+});
+
+describe("rotateWeekdayLabels", () => {
+  it("starts the header row on Sunday for a Sunday start", () => {
+    expect(rotateWeekdayLabels(0)).toEqual(["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]);
+  });
+
+  it("starts the header row on Monday for a Monday start, with Sunday moved to the end", () => {
+    expect(rotateWeekdayLabels(1)).toEqual(["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]);
+  });
+
+  it("always yields seven distinct labels", () => {
+    for (const start of [0, 1] as const) {
+      expect(new Set(rotateWeekdayLabels(start)).size).toBe(7);
+    }
+  });
+});
+
+function everyMonth(): string[] {
+  const months: string[] = [];
+  for (let year = 2026; year <= 2027; year++) {
+    for (let monthNum = 1; monthNum <= 12; monthNum++) {
+      months.push(`${year}-${String(monthNum).padStart(2, "0")}`);
+    }
+  }
+  return months;
+}

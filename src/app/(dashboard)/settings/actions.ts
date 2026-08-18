@@ -12,6 +12,7 @@ import { listRepoBranches } from "@/lib/integrations/github/github";
 import { createInvite, revokeActiveInvite } from "@/lib/workspace/invites";
 import { removeWorkspaceMember } from "@/lib/workspace/members";
 import { parseHour } from "@/lib/workspace/parse-hour";
+import { normalizeWeekStart, parseHolidayCountries } from "@/lib/workspace/calendar-settings";
 
 export async function saveWorkspaceName(formData: FormData) {
   const session = await requireSession();
@@ -20,6 +21,31 @@ export async function saveWorkspaceName(formData: FormData) {
 
   await db.update(tenants).set({ name }).where(eq(tenants.id, session.user.tenantId));
   revalidatePath("/settings");
+}
+
+/**
+ * The two workspace calendar settings, saved together because they share one
+ * card and one Save button. Both values are re-derived from the allow-lists in
+ * `calendar-settings.ts` rather than trusted from the form, so a stale or
+ * tampered submission can only ever land a value the UI itself offers.
+ *
+ * `/calendar` is revalidated too: it reads both columns on every render, so a
+ * save that only revalidated `/settings` would leave the grid showing the old
+ * week start until something else invalidated it.
+ */
+export async function saveCalendarSettings(formData: FormData) {
+  const session = await requireSession();
+
+  const weekStartsOn = normalizeWeekStart(formData.get("weekStartsOn"));
+  const holidayCountries = parseHolidayCountries(formData.getAll("holidayCountries"));
+
+  await db
+    .update(tenants)
+    .set({ weekStartsOn, holidayCountries })
+    .where(eq(tenants.id, session.user.tenantId));
+
+  revalidatePath("/settings");
+  revalidatePath("/calendar");
 }
 
 export async function addRepo(formData: FormData) {

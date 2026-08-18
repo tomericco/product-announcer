@@ -26,6 +26,8 @@
 // `monthRangeUtc` — and being unexported was the reason they had no direct
 // test coverage at all.
 
+import type { WeekStartsOn } from "@/lib/workspace/calendar-settings";
+
 export const CALENDAR_TYPES = ["product_update", "blog_post", "social_post"] as const;
 export type CalendarType = (typeof CALENDAR_TYPES)[number];
 
@@ -159,4 +161,35 @@ export function shiftMonth(month: string, delta: number): string {
   const [year, monthNum] = month.split("-").map(Number);
   const shifted = new Date(Date.UTC(year, monthNum - 1 + delta, 1));
   return `${shifted.getUTCFullYear()}-${String(shifted.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+/**
+ * The weekday header row, rotated to open on the workspace's configured first
+ * day. Pure and identical on server and client — it depends only on a prop, not
+ * on a clock or a zone — so unlike the grid's contents it needs no hydration
+ * gate.
+ */
+export function rotateWeekdayLabels(weekStartsOn: WeekStartsOn): string[] {
+  return [...WEEKDAY_LABELS.slice(weekStartsOn), ...WEEKDAY_LABELS.slice(0, weekStartsOn)];
+}
+
+const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+/**
+ * How many empty cells precede the 1st, so it lands under the header column its
+ * weekday actually names.
+ *
+ * The `+ 7` before the modulo is the whole point: `getDay()` counts from Sunday,
+ * so a Monday-start month that begins on a Sunday gives `0 - 1 = -1`, and
+ * `Array.from({ length: -1 })` renders NO blanks rather than six — silently
+ * shifting the entire month one column left with nothing on screen to explain
+ * it. The modulo folds it back to 6.
+ *
+ * Reads local components on purpose: which weekday a date falls on is a local
+ * question, and the grid's caller gates this behind hydration for exactly the
+ * reason its `bucketByLocalDay` call is gated — see `month-grid.tsx`.
+ */
+export function leadingBlanksFor(month: string, weekStartsOn: WeekStartsOn): number {
+  const [year, monthNum] = month.split("-").map(Number);
+  return (new Date(year, monthNum - 1, 1).getDay() - weekStartsOn + 7) % 7;
 }

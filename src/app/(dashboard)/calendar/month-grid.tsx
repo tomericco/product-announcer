@@ -15,7 +15,19 @@ import { Button } from "@/components/ui/button";
 // fails `npm run build`. `calendar-view.ts` is the db-free split of the
 // same names (see its header comment); `readMonth` itself must never be
 // imported here regardless of which file it's imported from.
-import { bucketByLocalDay, resolveMonth, shiftMonth, type CalendarPiece } from "@/lib/content/calendar-view";
+import {
+  bucketByLocalDay,
+  leadingBlanksFor,
+  resolveMonth,
+  rotateWeekdayLabels,
+  shiftMonth,
+  type CalendarPiece,
+} from "@/lib/content/calendar-view";
+// Type-only from the settings module, and a plain data prop for the holidays
+// themselves: `@/lib/content/holidays` (which imports `date-holidays`) is
+// never reachable from this file's module graph. The lookup runs in page.tsx,
+// on the server.
+import type { CalendarHoliday, WeekStartsOn } from "@/lib/workspace/calendar-settings";
 import { DayCell } from "./day-cell";
 
 // Same pattern as day-cell.tsx and board/card.tsx: a mount-gated
@@ -45,8 +57,6 @@ const MONTH_NAMES = [
   "December",
 ];
 
-const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-
 /**
  * The client half of `/calendar`. `bucketByLocalDay` runs here and only
  * here — it's the whole reason Task 1 split it out of `readMonth`: "local
@@ -67,6 +77,8 @@ export function MonthGrid({
   isDefaulted,
   pieces,
   undatedPublished,
+  weekStartsOn,
+  holidays,
 }: {
   month: string;
   /** True when the server had no explicit `?month=` to honour and guessed
@@ -74,6 +86,11 @@ export function MonthGrid({
   isDefaulted: boolean;
   pieces: CalendarPiece[];
   undatedPublished: number;
+  /** Workspace setting: 0 = Sunday, 1 = Monday. */
+  weekStartsOn: WeekStartsOn;
+  /** Already resolved server-side for this month; `[]` when the workspace has
+   * no holiday countries enabled. */
+  holidays: CalendarHoliday[];
 }) {
   const hydrated = useHydrated();
   const router = useRouter();
@@ -101,7 +118,25 @@ export function MonthGrid({
     [hydrated, pieces, month]
   );
 
-  const leadingBlanks = hydrated ? new Date(year, monthNum - 1, 1).getDay() : 0;
+  // Still gated on `hydrated`, for the same reason it always was: which
+  // weekday the 1st falls on is read from a local `Date`, so the server pass
+  // would answer in ITS zone and disagree with the client's first pass. The
+  // week start itself is a server-provided prop and needs no gate — only the
+  // `getDay()` inside does.
+  const leadingBlanks = hydrated ? leadingBlanksFor(month, weekStartsOn) : 0;
+
+  // Holidays arrive as plain `YYYY-MM-DD` strings computed on the server, so
+  // no timezone question arises and no hydration gate is needed. Two enabled
+  // countries can land on the same day, hence a list per day rather than one.
+  const holidaysByDay = useMemo(() => {
+    const byDay = new Map<string, string[]>();
+    for (const holiday of holidays) {
+      const names = byDay.get(holiday.date);
+      if (names) names.push(holiday.name);
+      else byDay.set(holiday.date, [holiday.name]);
+    }
+    return byDay;
+  }, [holidays]);
 
   const monthLabel = `${MONTH_NAMES[monthNum - 1]} ${year}`;
   const prevMonth = shiftMonth(month, -1);
@@ -144,7 +179,7 @@ export function MonthGrid({
       )}
 
       <div className="grid grid-cols-7 gap-1.5 text-center text-xs font-medium text-muted-foreground">
-        {WEEKDAY_LABELS.map((label) => (
+        {rotateWeekdayLabels(weekStartsOn).map((label) => (
           <span key={label}>{label}</span>
         ))}
       </div>
@@ -154,7 +189,12 @@ export function MonthGrid({
           <div key={`blank-${i}`} />
         ))}
         {days.map((day) => (
-          <DayCell key={day.key} dayNumber={Number(day.key.slice(-2))} pieces={day.pieces} />
+          <DayCell
+            key={day.key}
+            dayNumber={Number(day.key.slice(-2))}
+            pieces={day.pieces}
+            holidays={holidaysByDay.get(day.key) ?? []}
+          />
         ))}
       </div>
     </div>

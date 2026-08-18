@@ -1,5 +1,13 @@
+import { eq } from "drizzle-orm";
+import { db } from "@/db";
+import { tenants } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { readMonth } from "@/lib/content/calendar";
+// Server-only: `date-holidays` carries worldwide rule data and must never
+// reach the client bundle, so the lookup happens HERE and the grid receives
+// plain `{ date, name }` objects as props. See holidays.ts's header.
+import { readMonthHolidays } from "@/lib/content/holidays";
+import { normalizeWeekStart } from "@/lib/workspace/calendar-settings";
 import { resolveMonth, isValidMonthParam } from "@/lib/content/calendar-view";
 import { single } from "@/lib/signals/params";
 import { MonthGrid } from "./month-grid";
@@ -36,6 +44,14 @@ export default async function CalendarPage({
   const session = await requireSession();
   const data = await readMonth(session.user.tenantId, month);
 
+  const [tenant] = await db
+    .select({ weekStartsOn: tenants.weekStartsOn, holidayCountries: tenants.holidayCountries })
+    .from(tenants)
+    .where(eq(tenants.id, session.user.tenantId))
+    .limit(1);
+
+  const holidays = readMonthHolidays(tenant?.holidayCountries ?? [], month);
+
   return (
     <div className="flex flex-1 flex-col gap-4">
       <h1 className="font-heading text-3xl leading-[1.15] tracking-[0.015em]">Calendar</h1>
@@ -44,6 +60,8 @@ export default async function CalendarPage({
         isDefaulted={isDefaulted}
         pieces={data.pieces}
         undatedPublished={data.undatedPublished}
+        weekStartsOn={normalizeWeekStart(tenant?.weekStartsOn)}
+        holidays={holidays}
       />
     </div>
   );

@@ -44,15 +44,30 @@ const TYPE_LABEL: Record<CalendarType, string> = {
 export function DayCell({
   dayNumber,
   pieces,
+  holidays,
 }: {
   dayNumber: number;
   pieces: Record<CalendarType, CalendarPiece[]>;
+  /** Public holiday names falling on this day, already resolved on the server
+   * (see calendar/page.tsx). Plain strings, so nothing here is
+   * timezone-dependent and no hydration gate applies — unlike the times
+   * below. More than one when two enabled countries share a day. */
+  holidays: string[];
 }) {
   const hydrated = useHydrated();
 
   return (
     <div className="flex min-h-28 flex-col gap-1.5 rounded-lg border border-border p-1.5">
       <span className="text-xs font-medium text-muted-foreground">{dayNumber}</span>
+      {holidays.map((holiday) => (
+        <span
+          key={holiday}
+          title={holiday}
+          className="truncate text-[10px] leading-tight font-medium text-muted-foreground"
+        >
+          {holiday}
+        </span>
+      ))}
       {/* No `overflow-hidden` here on purpose: this view's whole job is
           coverage, so a busy day must grow the cell (and its row) rather
           than silently clip pieces past the third or so with no "+N more"

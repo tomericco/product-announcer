@@ -1,4 +1,4 @@
-import { pgTable, pgEnum, uuid, text, timestamp, primaryKey, integer, jsonb, uniqueIndex, index, boolean, real } from "drizzle-orm/pg-core";
+import { pgTable, pgEnum, uuid, text, timestamp, primaryKey, integer, smallint, jsonb, uniqueIndex, index, boolean, real } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
 // A persona in a tenant's brand profile is either a live reference to a seeded
@@ -22,6 +22,16 @@ export const tenants = pgTable("tenants", {
   // are skippable — their DB artifacts cannot distinguish "skipped" from "not
   // reached" — and `name` is auto-derived at signup, so it is never empty.
   onboardingStep: integer("onboarding_step").notNull().default(1),
+  // Which day the /calendar month grid starts on: 0 = Sunday, 1 = Monday.
+  // Defaults to 0 because that is what the grid hardcoded before this column
+  // existed — every workspace that predates it keeps exactly today's layout.
+  weekStartsOn: smallint("week_starts_on").notNull().default(0),
+  // ISO 3166-1 alpha-2 codes whose PUBLIC holidays the calendar labels.
+  // Empty by default: no workspace gets holidays it did not ask for. The
+  // holidays themselves are never stored — they are recomputed per request
+  // from date-holidays' rules (see src/lib/content/holidays.ts), which is the
+  // whole reason a rule-based source was chosen over a baked-in list.
+  holidayCountries: text("holiday_countries").array().notNull().default([]),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
