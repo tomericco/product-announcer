@@ -1,9 +1,10 @@
 import { UnsavedChangesProvider, GuardedLink } from "./unsaved-changes";
-import { and, count, eq, inArray } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { redirect } from "next/navigation";
 import { ChevronsUpDown } from "lucide-react";
 import { db } from "@/db";
-import { contentPieces, tenants } from "@/db/schema";
+import { tenants } from "@/db/schema";
+import { readBoardNavCount } from "@/lib/content/board";
 import { requireSession } from "@/lib/workspace/session";
 import { isOnboardingComplete } from "@/lib/workspace/onboarding";
 import { Button } from "@/components/ui/button";
@@ -26,18 +27,9 @@ export default async function DashboardLayout({ children }: { children: React.Re
 
   const [tenant] = await db.select().from(tenants).where(eq(tenants.id, session.user.tenantId)).limit(1);
 
-  const [draftCountRow] = await db
-    .select({ value: count() })
-    .from(contentPieces)
-    .where(
-      and(
-        eq(contentPieces.tenantId, session.user.tenantId),
-        // "brief" (accepted, not yet generated) counts alongside "draft" — an
-        // accepted brief must not silently vanish from the sidebar count.
-        inArray(contentPieces.status, ["brief", "draft"])
-      )
-    );
-  const draftCount = draftCountRow?.value ?? 0;
+  // See the doc comment on readBoardNavCount for what this counts and why
+  // it cannot honour /board's assignee filter.
+  const boardCount = await readBoardNavCount(session.user.tenantId);
 
   return (
     <UnsavedChangesProvider>
@@ -59,7 +51,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
 
         <Separator className="my-2" />
 
-        <NavLinks draftCount={draftCount} />
+        <NavLinks boardCount={boardCount} />
 
         <div className="mt-auto pt-3">
           <UserMenu email={session.user.email!} name={session.user.name ?? null} />

@@ -23,7 +23,7 @@ const NAV = [
   { href: "/company", label: "Company", icon: Building2 },
 ];
 
-export function NavLinks({ draftCount }: { draftCount: number }) {
+export function NavLinks({ boardCount }: { boardCount: number }) {
   const pathname = usePathname();
 
   return (
@@ -52,9 +52,9 @@ export function NavLinks({ draftCount }: { draftCount: number }) {
                 colour is inherited instead. */}
             <Icon className={cn(!active && "text-muted-foreground")} />
             {item.label}
-            {item.href === "/drafts" && draftCount > 0 && (
+            {item.href === "/board" && boardCount > 0 && (
               <Badge variant="secondary" className="ml-auto">
-                {draftCount}
+                {boardCount}
               </Badge>
             )}
           </Button>

@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, count, desc, eq, inArray } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
 import { briefs, contentPieces, tenantMembers, type Brief } from "@/db/schema";
 import type { ContentPiece } from "@/lib/publishing/destinations/types";
@@ -185,6 +185,31 @@ export async function readBoard(
   board.published = board.published.slice(0, PUBLISHED_COLUMN_LIMIT);
 
   return board;
+}
+
+// The sidebar's Board badge — Brief + Draft + Review, the same three
+// columns readBoard's `total` in board/page.tsx sums (Scheduled and
+// Published are excluded: work that has left active drafting, not work in
+// flight). Deliberately NOT assignee-filter-aware: the sidebar renders on
+// every page and has no access to /board's `?assignee=` filter, so this
+// always counts the whole tenant. That means with a filter active, this
+// number and the filtered board columns can disagree — that mismatch is the
+// accepted trade (see the "Out of scope" note in the delete-on-the-card
+// plan), not a bug to fix by threading the filter into the layout.
+export async function readBoardNavCount(tenantId: string, database: Database = defaultDb): Promise<number> {
+  const [[pieceRow], [briefRow]] = await Promise.all([
+    database
+      .select({ value: count() })
+      .from(contentPieces)
+      .where(
+        and(eq(contentPieces.tenantId, tenantId), inArray(contentPieces.status, ["brief", "draft", "review"]))
+      ),
+    database
+      .select({ value: count() })
+      .from(briefs)
+      .where(and(eq(briefs.tenantId, tenantId), eq(briefs.status, "new"))),
+  ]);
+  return (pieceRow?.value ?? 0) + (briefRow?.value ?? 0);
 }
 
 export type MoveResult = { ok: true } | { ok: false; error: string };

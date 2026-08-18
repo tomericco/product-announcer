@@ -4,6 +4,7 @@ import { db } from "../../../src/db";
 import { tenants, contentPieces, users, tenantMembers, briefs } from "../../../src/db/schema";
 import {
   readBoard,
+  readBoardNavCount,
   BOARD_COLUMNS,
   BOARD_DISPLAY_COLUMNS,
   BRIEF_COLUMN,
@@ -271,6 +272,68 @@ describe("readBoard — the brief column", () => {
     // emptying the column (see the spec).
     const board = await readBoard(tenant.id, db, { assignedTo: member.id });
     expect(board[BRIEF_COLUMN].map((c) => c.id)).toEqual([brief.id]);
+  });
+});
+
+describe("readBoardNavCount", () => {
+  it("sums the Brief + Draft + Review columns: new briefs plus brief/draft/review pieces", async () => {
+    const tenant = await seedTenant(TENANT);
+    await seedBrief(tenant.id, { title: "A new brief" });
+    await seedPiece(tenant.id, { title: "Generating", status: "brief" });
+    await seedPiece(tenant.id, { title: "A draft", status: "draft" });
+    await seedPiece(tenant.id, { title: "In review", status: "review" });
+
+    // One brief + three pieces (brief/draft/review) = 4.
+    expect(await readBoardNavCount(tenant.id, db)).toBe(4);
+  });
+
+  it("excludes Scheduled and Published — proven by adding a Scheduled piece to an otherwise-counted set", async () => {
+    const tenant = await seedTenant(TENANT);
+    await seedPiece(tenant.id, { title: "A draft", status: "draft" });
+    await seedPiece(tenant.id, { title: "Already scheduled", status: "scheduled" });
+    await seedPiece(tenant.id, { title: "Already published", status: "published" });
+
+    // Only the draft counts; the scheduled and published pieces sitting
+    // right beside it must not move the number.
+    expect(await readBoardNavCount(tenant.id, db)).toBe(1);
+  });
+
+  it("excludes accepted, dismissed, and expired briefs — only status \"new\" counts", async () => {
+    const tenant = await seedTenant(TENANT);
+    const piece = await seedPiece(tenant.id, { title: "Accepted's piece", status: "draft" });
+    await seedBrief(tenant.id, {
+      title: "Accepted",
+      status: "accepted",
+      contentPieceId: piece.id,
+      acceptedAt: new Date(),
+    });
+    await seedBrief(tenant.id, {
+      title: "Dismissed",
+      status: "dismissed",
+      dismissReason: "off_topic",
+      dismissedAt: new Date(),
+    });
+    await seedBrief(tenant.id, { title: "Expired", status: "expired" });
+
+    // The accepted brief's own content piece (status "draft") still counts —
+    // just not the brief row itself, which would double-count the same work.
+    expect(await readBoardNavCount(tenant.id, db)).toBe(1);
+  });
+
+  it("counts only the calling tenant's briefs and pieces", async () => {
+    const mine = await seedTenant(TENANT);
+    const [other] = await db.insert(tenants).values({ name: TENANT }).returning();
+    await seedPiece(mine.id, { title: "Mine", status: "draft" });
+    await seedBrief(mine.id, { title: "Mine too" });
+    await seedPiece(other.id, { title: "Theirs", status: "draft" });
+    await seedBrief(other.id, { title: "Theirs too" });
+    await seedPiece(other.id, { title: "Theirs again", status: "review" });
+
+    // A concrete number, not a bare zero — a broken tenant filter that
+    // dropped the WHERE clause entirely would also make this tenant's own
+    // rows disappear and could still read as "correct" against a zero.
+    expect(await readBoardNavCount(mine.id, db)).toBe(2);
+    expect(await readBoardNavCount(other.id, db)).toBe(3);
   });
 });
 

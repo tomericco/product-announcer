@@ -1,11 +1,9 @@
-import { Badge } from "@/components/ui/badge";
 import { requireSession } from "@/lib/workspace/session";
 import {
   readBoard,
   canMove,
   BOARD_COLUMNS,
   BOARD_DISPLAY_COLUMNS,
-  BRIEF_COLUMN,
   PUBLISHED_COLUMN_LIMIT,
   type BoardColumn,
 } from "@/lib/content/board";
@@ -51,17 +49,6 @@ export default async function BoardPage({
     listWorkspaceMembers(session.user.tenantId),
   ]);
 
-  // The sum of what the columns actually show — including the `brief`-status
-  // pieces, which have no column of their own but do render, inside Draft.
-  // Briefs themselves count only with no assignee filter active: a brief has
-  // no assignee, so the Brief column hides them under a filter it cannot
-  // honour (see board.tsx), while Draft's pieces stay filtered normally —
-  // and a total counting hidden cards would disagree with the columns below
-  // it.
-  const total =
-    BOARD_COLUMNS.reduce((sum, column) => sum + filteredBoard[column].length, 0) +
-    (assigneeFilter === "all" ? filteredBoard[BRIEF_COLUMN].length : 0);
-
   // Computed here (server-side, from the real `canMove`) and handed down as
   // plain data — `board.tsx` is a Client Component and must not import
   // `canMove` itself: `@/lib/content/board` also imports `db`, and importing
@@ -74,10 +61,7 @@ export default async function BoardPage({
 
   return (
     <div className="flex flex-1 flex-col gap-4">
-      <div className="flex items-center gap-2">
-        <h1 className="font-heading text-3xl leading-[1.15] tracking-[0.015em]">Board</h1>
-        <Badge variant="secondary">{total}</Badge>
-      </div>
+      <h1 className="font-heading text-3xl leading-[1.15] tracking-[0.015em]">Board</h1>
       <Board
         initialBoard={filteredBoard}
         members={members}
