@@ -195,8 +195,8 @@ export async function approveDraft(formData: FormData): Promise<{ problems: Link
     await dispatchAllDestinations(contentPieceId, undefined, destinations);
   }
 
-  revalidatePath("/drafts");
-  redirect("/drafts");
+  revalidatePath("/board");
+  redirect("/board");
 }
 
 export async function rejectDraft(formData: FormData) {
@@ -215,14 +215,20 @@ export async function rejectDraft(formData: FormData) {
     await revertReleaseAtomicUpdates(contentPieceId, tx);
   });
 
-  revalidatePath("/drafts");
-  redirect("/drafts");
+  revalidatePath("/board");
+  redirect("/board");
 }
 
 /**
- * Publishes a draft as-stored, for the drafts list — where there is no editor
- * and so nothing unsaved to preserve. `approveDraft` is the detail-page
- * equivalent and additionally persists the submitted title/body first.
+ * Publishes a draft as-stored, with no editor involved and so nothing
+ * unsaved to preserve. `approveDraft` is the detail-page equivalent and
+ * additionally persists the submitted title/body first.
+ *
+ * Written for the `/drafts` list's row-menu quick-publish, which is now
+ * gone (that list was retired; `/drafts/[releaseId]` is the only surviving
+ * UI, and it publishes through `approveDraft`, not this). Kept — tested,
+ * tenant-scoped, and behaviorally sound — for a future caller that wants an
+ * as-stored publish without opening the editor; currently has no UI caller.
  */
 export async function publishDraft(
   formData: FormData
@@ -230,13 +236,10 @@ export async function publishDraft(
   const session = await requireSession();
   const contentPieceId = formData.get("contentPieceId") as string;
   const existing = await loadOwnedDraft(session.user.tenantId, contentPieceId);
-  // Same as `approveDraft`: NOT `assertDraftEditable` (this list also
-  // re-publishes already-`published` pieces), and the same allowlist —
-  // "draft", "review", "scheduled" and "published" may proceed. The drafts
-  // list UI has no Publish entry point for "review"/"scheduled" today, but
-  // the board's card links straight into the editor for them, and this
-  // action must not refuse what that editor's own Publish now allows. Only
-  // "brief" is refused — an ungenerated scaffold is never publishable.
+  // Same as `approveDraft`: NOT `assertDraftEditable` (this also re-publishes
+  // already-`published` pieces), and the same allowlist — "draft", "review",
+  // "scheduled" and "published" may proceed. Only "brief" is refused — an
+  // ungenerated scaffold is never publishable.
   if (
     existing.status !== "draft" &&
     existing.status !== "review" &&
@@ -246,13 +249,11 @@ export async function publishDraft(
     throw new Error(notEditableMessage(existing.status));
   }
   // Publishes as-stored (no editor here), so gate the stored body: an invalid
-  // link returns the offenders — plus the body — so the list modal can fix them.
+  // link returns the offenders — plus the body — so a caller can fix them.
   const problems = await findInvalidLinks(existing.body);
   if (problems.length > 0) return { problems, body: existing.body };
-  // Same guard as approveDraft: the drafts list only ever renders the Publish
-  // action for a "draft"-status piece, so in practice this is always null,
-  // but the mechanism stays identical rather than special-casing the list's
-  // caller.
+  // Same guard as approveDraft, kept identical rather than special-cased for
+  // this action's one-time caller.
   const expectedPublishedAt = parseExpectedPublishedAt(formData.get("publishedAt"));
 
   // See approveDraft: publish UPDATE + closing out the content piece's atomic
@@ -289,7 +290,7 @@ export async function publishDraft(
     await dispatchAllDestinations(contentPieceId);
   }
 
-  revalidatePath("/drafts");
+  revalidatePath("/board");
 }
 
 export async function deleteDraft(formData: FormData) {
@@ -311,5 +312,5 @@ export async function deleteDraft(formData: FormData) {
     await tx.delete(contentPieces).where(eq(contentPieces.id, contentPieceId));
   });
 
-  revalidatePath("/drafts");
+  revalidatePath("/board");
 }

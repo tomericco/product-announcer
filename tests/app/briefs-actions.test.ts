@@ -199,10 +199,10 @@ describe("acceptBrief", () => {
     // A null acceptedBy would pass silently if no test ever set a real user id.
     expect(after.acceptedBy).toBe(user.id);
 
-    // The sidebar draft count reads /drafts, which would otherwise lag behind
-    // an accept until something unrelated revalidated it.
+    // The sidebar draft count is rendered by the same layout /board sits
+    // under, so revalidating /board is also what keeps it from lagging
+    // behind an accept until something unrelated revalidates it.
     expect(revalidatePath).toHaveBeenCalledWith("/board");
-    expect(revalidatePath).toHaveBeenCalledWith("/drafts");
   });
 
   it("leaves generation unrun but already MARKED on a freshly accepted brief", async () => {
@@ -381,7 +381,7 @@ describe("generateDraft", () => {
     expect(generateBriefDraft).toHaveBeenCalledTimes(1);
     // The pages the user is sitting on were rendered before generation even
     // started, so the callback has to revalidate them itself.
-    expect(revalidatePath).toHaveBeenCalledWith("/drafts");
+    expect(revalidatePath).toHaveBeenCalledWith("/board");
     expect(revalidatePath).toHaveBeenCalledWith(`/drafts/${piece.id}`);
   });
 

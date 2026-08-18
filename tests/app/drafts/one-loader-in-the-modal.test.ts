@@ -7,13 +7,19 @@ import { db } from "../../../src/db";
 import { tenants, contentPieces } from "../../../src/db/schema";
 
 /**
- * The two server-rendered surfaces, checked the way
+ * The server-rendered detail surface, checked the way
  * release-id-page-published-gate.test.ts checks its gate: call the async
  * Server Component directly and inspect the element tree it returns. A
  * component referenced in JSX is only `{type: Foo, props}` until React renders
  * it, so `.type` identity tells us what WOULD be mounted without needing a
  * DOM — which is what this file is about. What the badge DOES once mounted is
  * driven in tests/components/generating-badge.test.tsx.
+ *
+ * This file used to also cover `/drafts`'s list page the same way — that
+ * list was retired (see 2026-08-17-delete-on-the-card-retire-drafts); its
+ * "badges a generating row" cases went with it, since there's no row left to
+ * badge. `/drafts/[releaseId]` is the only surviving server-rendered surface
+ * here.
  */
 
 let currentTenantId = "";
@@ -22,7 +28,6 @@ vi.mock("../../../src/lib/workspace/session", () => ({
   requireSession: vi.fn(async () => ({ user: { tenantId: currentTenantId, id: null } })),
 }));
 
-import DraftsPage from "../../../src/app/(dashboard)/drafts/page";
 import DraftDetailPage from "../../../src/app/(dashboard)/drafts/[releaseId]/page";
 import { GenerationChecklist } from "../../../src/components/generation-checklist";
 import { GeneratingBadge } from "../../../src/components/generating-badge";
@@ -92,37 +97,6 @@ describe("the checklist has exactly one mount site", () => {
   });
 });
 
-describe("DraftsPage — the list", () => {
-  it("badges a generating row with the control, and mounts no inline checklist", async () => {
-    const { piece } = await seed({ generationStep: "generating" });
-
-    const page = (await DraftsPage()) as ReactElement;
-
-    expect(nodesOfType(page, GenerationChecklist)).toHaveLength(0);
-    const badges = nodesOfType(page, GeneratingBadge);
-    expect(badges).toHaveLength(1);
-    expect(badges[0].props).toMatchObject({ contentPieceId: piece.id });
-  });
-
-  it("keeps a landed failure's own badge — the control replaces the loader, not the error", async () => {
-    await seed({ generationStep: null, generationError: "The model refused." });
-
-    const page = (await DraftsPage()) as ReactElement;
-
-    expect(nodesOfType(page, GeneratingBadge)).toHaveLength(0);
-    expect(textOf(page)).toContain("Generation failed");
-  });
-
-  it("keeps an un-run brief's own badge", async () => {
-    await seed({ generationStep: null, generationError: null });
-
-    const page = (await DraftsPage()) as ReactElement;
-
-    expect(nodesOfType(page, GeneratingBadge)).toHaveLength(0);
-    expect(textOf(page)).toContain("Awaiting generation");
-  });
-});
-
 describe("DraftDetailPage — a brief-status piece", () => {
   it("badges a generating piece with the control, and mounts no inline checklist", async () => {
     const { piece } = await seed({ generationStep: "generating" });
@@ -158,8 +132,8 @@ describe("DraftDetailPage — a brief-status piece", () => {
 
 /**
  * The one exception to badge-only behaviour, and where it is allowed to
- * apply. What goes stale on the board and on `/drafts` is a badge on an
- * otherwise-correct row; what goes stale here is the entire page, which
+ * apply. What goes stale on the board is a badge on an otherwise-correct
+ * card; what goes stale here is the entire page, which
  * renders the accept-time scaffold with no editor at all. So this page — and
  * only this page — mounts a poll of its own. Whether that poll then runs is
  * driven in tests/components/scaffold-poller.test.tsx.

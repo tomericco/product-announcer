@@ -6,7 +6,6 @@ import {
   Building2,
   CalendarDays,
   Columns3,
-  FilePen,
   History,
   Plug,
   Radar,
@@ -19,7 +18,6 @@ const NAV = [
   { href: "/signals", label: "Signals", icon: Radar },
   { href: "/board", label: "Board", icon: Columns3 },
   { href: "/calendar", label: "Calendar", icon: CalendarDays },
-  { href: "/drafts", label: "Drafts", icon: FilePen },
   { href: "/history", label: "Release history", icon: History },
   { href: "/integrations", label: "Integrations", icon: Plug },
   { href: "/company", label: "Company", icon: Building2 },
@@ -32,7 +30,7 @@ export function NavLinks({ draftCount }: { draftCount: number }) {
     <nav className="flex flex-col gap-1">
       {NAV.map((item) => {
         // Highlight the item for its own route and any nested route under it
-        // (e.g. /drafts/[updateId] keeps "Drafts" active).
+        // (e.g. a future /board/[id] would keep "Board" active).
         const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
         const Icon = item.icon;
         return (

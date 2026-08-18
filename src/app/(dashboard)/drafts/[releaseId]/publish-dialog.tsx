@@ -37,7 +37,7 @@ import { approveDraft, checkDraftLinks } from "../actions";
  * the live form via a ref to the in-form Publish button
  * (`triggerRef.current.form`) — capturing the current title/body/hidden fields
  * exactly as a submit would — then appends the chosen destinations and invokes
- * approveDraft in a transition. approveDraft's redirect("/drafts") navigates
+ * approveDraft in a transition. approveDraft's redirect("/board") navigates
  * the router on success (a server action invoked in a transition navigates;
  * see the Next server-actions guide).
  */

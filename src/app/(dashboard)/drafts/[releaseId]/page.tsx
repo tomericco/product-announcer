@@ -66,11 +66,11 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
       <div className="mx-auto w-full max-w-3xl space-y-6">
         <div className="sticky top-0 z-20 -mx-4 flex items-center justify-between bg-background px-4 py-3">
           <GuardedLink
-            href="/drafts"
+            href="/board"
             className="inline-flex items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground"
           >
             <ArrowLeft className="size-3.5" />
-            Drafts
+            Board
           </GuardedLink>
         </div>
 
@@ -165,8 +165,10 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
   // NOT a change to those actions. It closes a different hole: `/calendar`
   // (spec 8) is the first and only place that links a `published` piece into
   // THIS page. Before it existed, nothing reachable by clicking around ever
-  // opened this editor for an already-published piece — `/drafts` filters to
-  // `brief`/`draft`, and the board's `published` column is read-only. A fresh
+  // opened this editor for an already-published piece — the board's
+  // `published` column is read-only, and the drafts list this page sits
+  // under only ever listed `brief`/`draft` pieces (that list is gone now,
+  // but was never a path to a published one either). A fresh
   // load of this page for a published piece carries the CURRENT
   // `publishedAt` into the hidden field the double-submit guard checks, so an
   // accidental Publish click here would pass that guard and re-dispatch for
@@ -181,11 +183,11 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
       <div className="mx-auto w-full max-w-3xl space-y-6">
         <div className="sticky top-0 z-20 -mx-4 flex items-center justify-between bg-background px-4 py-3">
           <GuardedLink
-            href="/drafts"
+            href="/board"
             className="inline-flex items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground"
           >
             <ArrowLeft className="size-3.5" />
-            Drafts
+            Board
           </GuardedLink>
         </div>
 
@@ -246,11 +248,11 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
         <AgentEditProvider>
           <div className="sticky top-0 z-20 -mx-4 flex items-center justify-between bg-background px-4 py-3">
             <GuardedLink
-              href="/drafts"
+              href="/board"
               className="inline-flex items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground"
             >
               <ArrowLeft className="size-3.5" />
-              Drafts
+              Board
             </GuardedLink>
             <SourceToggleButton />
           </div>

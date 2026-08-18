@@ -112,11 +112,11 @@ export async function acceptBrief(briefId: string): Promise<AcceptResult> {
     return { ok: false, error: "This brief was already accepted." };
   }
 
+  // Also covers the nav's draft-count badge: the new content piece shows up
+  // in it too, and the badge is rendered by the shared layout `/board` sits
+  // under, so this one call — previously two, one for `/board` and one for
+  // the now-retired `/drafts` list — now serves both.
   revalidatePath("/board");
-  // The new content piece shows up in the drafts sidebar count too — without
-  // this the count can lag behind an accept until something else revalidates
-  // /drafts.
-  revalidatePath("/drafts");
 
   // Runs once the response is finished, so accept stays instant and a
   // generation failure can never cost the human their decision.
@@ -144,7 +144,7 @@ export async function acceptBrief(briefId: string): Promise<AcceptResult> {
     // `npm run build` is the backstop: it already caught one illegal-export
     // rule this suite's 1216 tests missed, and would fail here too if this
     // usage were actually invalid.
-    revalidatePath("/drafts");
+    revalidatePath("/board");
     revalidatePath(`/drafts/${contentPieceId}`);
   });
 
@@ -314,7 +314,7 @@ export async function generateDraft(
     if (!result.ok) {
       console.error(`[briefs] generateDraft failed for piece ${contentPieceId}: ${result.error}`);
     }
-    revalidatePath("/drafts");
+    revalidatePath("/board");
     revalidatePath(`/drafts/${contentPieceId}`);
   });
 

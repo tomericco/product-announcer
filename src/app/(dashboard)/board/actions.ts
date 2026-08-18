@@ -63,7 +63,7 @@ export async function assignCard(id: string, userId: string | null): Promise<Mov
  * Reimplementing any of that here — even just the tenant check — would be
  * the second copy of acceptance the design doc says not to build, so this
  * stays a thin wrapper: delegate, revalidate the board (belt-and-suspenders —
- * acceptBrief already revalidates /board and /drafts), return exactly what
+ * acceptBrief already revalidates /board itself), return exactly what
  * acceptBrief returned.
  *
  * Note there is deliberately no `requireSession()` here. This function had
@@ -95,20 +95,18 @@ export async function acceptBriefCard(briefId: string): Promise<AcceptResult> {
  * transaction, in that order, because `contentPieceId` is ON DELETE SET NULL
  * and deleting first would strand them.
  *
- * Two things this wrapper does add:
+ * One thing this wrapper does add: the throw-to-result conversion.
+ * `deleteDraft` throws — its own callers are expected to catch and report —
+ * while every board action returns a `{ ok }` result the board reports, so a
+ * refusal arrives here the same shape as a refused move, rather than as a
+ * rejected promise the caller has to remember to catch. The message is
+ * `assertDraftDeletable`'s own, passed through unchanged rather than
+ * restated. (`revalidatePath("/board")` below is belt-and-suspenders —
+ * `deleteDraft` already revalidates `/board` itself, now that the `/drafts`
+ * list it used to revalidate is retired.)
  *
- *  - `revalidatePath("/board")`. `deleteDraft` revalidates `/drafts` only,
- *    and has no reason to know the board exists.
- *  - The throw-to-result conversion. `deleteDraft` throws (the /drafts row
- *    menu catches and toasts), while every board action returns a
- *    `{ ok }` result the board reports — so a refusal arrives here the same
- *    shape as a refused move, rather than as a rejected promise the caller
- *    has to remember to catch. The message is `assertDraftDeletable`'s own,
- *    passed through unchanged rather than restated.
- *
- * FormData because that is `deleteDraft`'s signature (it is wired to a form
- * on /drafts). Building one here is cheaper than widening a shared authority
- * to please a second caller.
+ * FormData because that is `deleteDraft`'s signature. Building one here is
+ * cheaper than widening a shared authority to please a second caller.
  */
 export async function deleteCard(contentPieceId: string): Promise<MoveResult> {
   const formData = new FormData();
