@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { ArrowRight, Plus } from "lucide-react";
+import { Plus } from "lucide-react";
 import { toast } from "sonner";
 import {
   DndContext,
@@ -513,18 +513,8 @@ export function Board({
                   ) : undefined
                 }
               >
-                {column === "published" && (
-                  <Link
-                    href="/history"
-                    className="flex items-center gap-1 px-1 pb-1 text-xs text-muted-foreground hover:text-foreground hover:underline"
-                  >
-                    Full history
-                    <ArrowRight className="size-3" />
-                  </Link>
-                )}
-
                 {visible.length === 0 ? (
-                  <p className="px-1 py-2 text-xs text-muted-foreground">No cards.</p>
+                  <p className="rounded-lg border border-dashed border-foreground/15 bg-muted/30 px-3 py-6 text-center text-xs text-muted-foreground">No cards.</p>
                 ) : (
                   visible.map((card) => (
                     <BoardCardItem
