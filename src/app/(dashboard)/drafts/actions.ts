@@ -219,86 +219,12 @@ export async function rejectDraft(formData: FormData) {
   redirect("/board");
 }
 
-/**
- * Publishes a draft as-stored, with no editor involved and so nothing
- * unsaved to preserve. `approveDraft` is the detail-page equivalent and
- * additionally persists the submitted title/body first.
- *
- * Written for the `/drafts` list's row-menu quick-publish, which is now
- * gone (that list was retired; `/drafts/[releaseId]` is the only surviving
- * UI, and it publishes through `approveDraft`, not this). Kept — tested,
- * tenant-scoped, and behaviorally sound — for a future caller that wants an
- * as-stored publish without opening the editor; currently has no UI caller.
- */
-export async function publishDraft(
-  formData: FormData
-): Promise<{ problems: LinkProblem[]; body: string } | void> {
-  const session = await requireSession();
-  const contentPieceId = formData.get("contentPieceId") as string;
-  const existing = await loadOwnedDraft(session.user.tenantId, contentPieceId);
-  // Same as `approveDraft`: NOT `assertDraftEditable` (this also re-publishes
-  // already-`published` pieces), and the same allowlist — "draft", "review",
-  // "scheduled" and "published" may proceed. Only "brief" is refused — an
-  // ungenerated scaffold is never publishable.
-  if (
-    existing.status !== "draft" &&
-    existing.status !== "review" &&
-    existing.status !== "scheduled" &&
-    existing.status !== "published"
-  ) {
-    throw new Error(notEditableMessage(existing.status));
-  }
-  // Publishes as-stored (no editor here), so gate the stored body: an invalid
-  // link returns the offenders — plus the body — so a caller can fix them.
-  const problems = await findInvalidLinks(existing.body);
-  if (problems.length > 0) return { problems, body: existing.body };
-  // Same guard as approveDraft, kept identical rather than special-cased for
-  // this action's one-time caller.
-  const expectedPublishedAt = parseExpectedPublishedAt(formData.get("publishedAt"));
-
-  // See approveDraft: publish UPDATE + closing out the content piece's atomic
-  // updates run in one transaction, so a crash between them can't leave a
-  // published content piece with atomic updates still `open`.
-  const [changed] = await db.transaction(async (tx) => {
-    const rows = await tx
-      .update(contentPieces)
-      .set({
-        status: "published",
-        publishedAt: new Date(),
-        publishedBy: session.user.id,
-        // See approveDraft: publishing is leaving "scheduled" the same as a
-        // board drag out of it, so scheduledFor must clear here too.
-        scheduledFor: null,
-      })
-      .where(
-        and(
-          eq(contentPieces.id, contentPieceId),
-          eq(contentPieces.tenantId, session.user.tenantId),
-          sql`${contentPieces.publishedAt} IS NOT DISTINCT FROM ${expectedPublishedAt}`
-        )
-      )
-      .returning({ id: contentPieces.id });
-
-    if (rows.length > 0) {
-      await markReleaseAtomicUpdatesReleased(contentPieceId, tx);
-    }
-
-    return rows;
-  });
-
-  if (changed) {
-    await dispatchAllDestinations(contentPieceId);
-  }
-
-  revalidatePath("/board");
-}
-
 export async function deleteDraft(formData: FormData) {
   const session = await requireSession();
   const contentPieceId = formData.get("contentPieceId") as string;
   // NOT `assertDraftEditable` — that gate refuses "brief", but a "brief"
   // piece whose generation can never succeed needs a way out or it sits
-  // forever inflating the drafts count. A published content piece is still
+  // forever inflating the sidebar's Board count. A published content piece is still
   // refused: deleting it would erase that history and, via the revert below,
   // reopen its shipped atomic updates.
   assertDraftDeletable(await loadOwnedDraft(session.user.tenantId, contentPieceId));

@@ -181,9 +181,11 @@ export async function dispatchAllDestinations(
   contentPieceId: string,
   database: typeof defaultDb = defaultDb,
   // When provided, restricts delivery to these destinations — the publish
-  // modal's chosen subset. Omitted (publishDraft, the list quick-publish)
-  // keeps delivering to all configured destinations. A selected-but-now-
-  // unconfigured id is still safe: the loadConfig null-skip below drops it.
+  // modal's chosen subset, which is what the only surviving caller
+  // (`approveDraft`) always passes. Omitted keeps delivering to every
+  // configured destination, kept for a caller that publishes without a modal
+  // to choose in. A selected-but-now-unconfigured id is still safe: the
+  // loadConfig null-skip below drops it.
   only?: DestinationId[]
 ): Promise<void> {
   // Runs AFTER the update is already published. Nothing here may throw — not the

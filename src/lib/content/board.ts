@@ -187,10 +187,15 @@ export async function readBoard(
   return board;
 }
 
-// The sidebar's Board badge — Brief + Draft + Review, the same three
-// columns readBoard's `total` in board/page.tsx sums (Scheduled and
-// Published are excluded: work that has left active drafting, not work in
-// flight). Deliberately NOT assignee-filter-aware: the sidebar renders on
+// The sidebar's Board badge — briefs waiting on a decision, plus pieces at
+// `brief`, `draft` or `review`. Deliberately NOT the board's own total: the
+// `total` that used to sit in the /board h1 (deleted when this badge replaced
+// it) summed all five columns plus briefs, Scheduled and Published included.
+// This number answers a different question — how much is still in flight and
+// wants a person — so work that has left active drafting is excluded on
+// purpose. It is not a regression of the old count; don't "fix" it back.
+//
+// Deliberately NOT assignee-filter-aware either: the sidebar renders on
 // every page and has no access to /board's `?assignee=` filter, so this
 // always counts the whole tenant. That means with a filter active, this
 // number and the filtered board columns can disagree — that mismatch is the
@@ -218,7 +223,7 @@ export type MoveResult = { ok: true } | { ok: false; error: string };
 // silently permits whatever nobody thought to forbid. `draft`, `review`, and
 // `scheduled` are the planning states a human owns and can freely move a
 // card between; `brief` (the accept-time scaffold, left only by generation)
-// and `published` (already shipped, entered only through `publishDraft`'s
+// and `published` (already shipped, entered only through `approveDraft`'s
 // own guards) are excluded from both sides.
 const ALLOWED_MOVES: ReadonlySet<`${BoardColumn}:${BoardColumn}`> = new Set([
   "draft:review",

@@ -38,11 +38,11 @@ const EDITABLE_STATUSES: readonly ContentPieceStatus[] = ["draft", "review", "sc
  * underlying changes have since been reassigned elsewhere. "brief" was never
  * editable in the first place — its body is still the accept-time scaffold.
  *
- * Deliberately NOT folded into either `loadOwnedDraft`: `approveDraft` and
- * `publishDraft` share those loaders and support an intentional re-publish,
- * which this guard would break. They stay gated by their own `publishedAt`
- * check instead (and their own allowlist, which independently also admits
- * "review"/"scheduled" — see the comment there).
+ * Deliberately NOT folded into `loadOwnedDraft`: `approveDraft` shares that
+ * loader and supports an intentional re-publish, which this guard would
+ * break. It stays gated by its own `publishedAt` check instead (and its own
+ * allowlist, which independently also admits "review"/"scheduled" — see the
+ * comment there).
  */
 export function assertDraftEditable(piece: { status: ContentPieceStatus }): void {
   if (!EDITABLE_STATUSES.includes(piece.status)) {
@@ -60,7 +60,7 @@ export function assertDraftEditable(piece: { status: ContentPieceStatus }): void
  * depend on staying refused: a "brief" piece whose generation can never
  * succeed (no linked brief, or a persistent model failure) has no other exit.
  * Without this, `assertDraftEditable`'s refusal makes it permanently
- * undeletable and it inflates the drafts sidebar count forever.
+ * undeletable and it inflates the sidebar's Board count forever.
  */
 export function assertDraftDeletable(piece: { status: ContentPieceStatus }): void {
   if (piece.status !== "brief" && !EDITABLE_STATUSES.includes(piece.status)) {

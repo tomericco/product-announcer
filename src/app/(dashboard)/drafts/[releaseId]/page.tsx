@@ -78,19 +78,18 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
           <h1 className="font-heading text-3xl leading-[1.15] tracking-[0.015em]">
             {update.title || "Untitled draft"}
           </h1>
-          {/* Same gate as the board card (card.tsx) and the drafts list
-              (drafts/page.tsx), and the same shared control — a generation is
-              actually in flight, not merely un-run. In flight the badge opens
-              the generation modal, which is the one place the stepped loader
-              lives now.
+          {/* Same gate as the board card (board/card.tsx), and the same
+              shared control — a generation is actually in flight, not merely
+              un-run. In flight the badge opens the generation modal, which is
+              the one place the stepped loader lives now.
 
-              It carries more weight here than on either of those surfaces,
-              because what goes stale on this page is not a badge on an
-              otherwise-correct card: the branch it sits in returns before all
+              It carries more weight here than on the board, because what
+              goes stale on this page is not a badge on an otherwise-correct
+              card: the branch it sits in returns before all
               of the editor machinery, so a piece whose draft has landed but
               whose page has not been re-read shows the accept-time scaffold in
               a `<pre>` with no editor, no Ask AI and no publish. That is why
-              this page — alone among the three — mounts `ScaffoldPoller`
+              this page — and not the board — mounts `ScaffoldPoller`
               below: the badge still opens the modal and its `onClose` still
               refreshes, but nobody has to click it for the page to become the
               editor.
@@ -100,9 +99,9 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
               author on the brief and watches the run in the modal there (see
               its docstring in briefs/brief-decision.tsx, which spells out that
               it deliberately no longer navigates). People reach this page
-              mid-run from the board card's title link, the drafts list,
-              another tab — or from this page's own Generate button below,
-              which opens the modal itself rather than leaving the run
+              mid-run from the board card's title link, another tab — or
+              from this page's own Generate button below, which opens the
+              modal itself rather than leaving the run
               unwatched. The row already selects every column, so
               `generationStep` is present and tenant-scoped by the query
               above. */}
@@ -119,9 +118,9 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
             actually being in flight — it polls the same persisted column the
             modal's checklist reads, and refreshes once the run lands, which
             re-runs this Server Component past the early return above and into
-            the editor. Scoped to this page on purpose: the board and /drafts
-            keep badge-only behaviour, because what goes stale there is a badge
-            on an otherwise-correct row, not the entire surface. */}
+            the editor. Scoped to this page on purpose: the board keeps
+            badge-only behaviour, because what goes stale there is a badge on
+            an otherwise-correct card, not the entire surface. */}
         <ScaffoldPoller contentPieceId={update.id} generating={generating} />
 
         {/* The failure and never-run explanations are untouched — the badge
@@ -157,18 +156,17 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
   }
 
   // A `published` piece is not editable content anymore — it's a record of
-  // what already shipped. `approveDraft`/`publishDraft` still ALLOW an
+  // what already shipped. `approveDraft` still ALLOWS an
   // intentional re-publish of a `published` piece (see the allowlist and
   // comments in `drafts/actions.ts` and `assertDraftEditable`'s docstring in
   // `@/lib/draft-editable` — that flow is deliberate and
   // `tests/app/drafts/publish-idempotency.test.ts` locks it in), so this is
-  // NOT a change to those actions. It closes a different hole: `/calendar`
+  // NOT a change to that action. It closes a different hole: `/calendar`
   // (spec 8) is the first and only place that links a `published` piece into
   // THIS page. Before it existed, nothing reachable by clicking around ever
   // opened this editor for an already-published piece — the board's
-  // `published` column is read-only, and the drafts list this page sits
-  // under only ever listed `brief`/`draft` pieces (that list is gone now,
-  // but was never a path to a published one either). A fresh
+  // `published` column is read-only, and the retired drafts list this page
+  // sat under only ever listed `brief`/`draft` pieces. A fresh
   // load of this page for a published piece carries the CURRENT
   // `publishedAt` into the hidden field the double-submit guard checks, so an
   // accidental Publish click here would pass that guard and re-dispatch for

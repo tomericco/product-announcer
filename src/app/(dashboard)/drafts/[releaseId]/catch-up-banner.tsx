@@ -27,7 +27,7 @@ type Props = {
  * `computeReleaseDelta` found new or changed atomic updates since compose).
  * "Catch up" merge-regenerates, preserving wording; "Start over" discards the
  * current body and regenerates from scratch, so it sits behind a confirm
- * dialog (mirrors the destructive-action pattern in `draft-row-menu.tsx`).
+ * dialog (mirrors the destructive-action pattern in `board/board.tsx`).
  * Both calls are multi-second LLM round trips with no streaming, hence the
  * pending state disabling the row instead of an optimistic update.
  */

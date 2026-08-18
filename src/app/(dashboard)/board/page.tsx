@@ -11,11 +11,13 @@ import { listWorkspaceMembers } from "@/lib/workspace/members";
 import { Board } from "./board";
 
 /**
- * `/board`: Brief → Draft → Review → Scheduled → Published, alongside (not
- * replacing) /drafts. The first column holds two things: real
- * briefs (a different table) and the pieces generating from accepted ones,
- * which is why BOARD_DISPLAY_COLUMNS is one shorter than BOARD_COLUMNS. The
- * rest are one `contentPieces.status` each.
+ * `/board`: Brief → Draft → Review → Scheduled → Published. This is the only
+ * list of content pieces now — the /drafts list it once sat alongside is
+ * retired (that route redirects here), and its Draft column shows the same
+ * pieces. The first column holds two things: real briefs (a different table)
+ * and the pieces generating from accepted ones, which is why
+ * BOARD_DISPLAY_COLUMNS is one shorter than BOARD_COLUMNS. The rest are one
+ * `contentPieces.status` each.
  *
  * `searchParams` is a Promise in this Next.js version — see the "Rendering
  * with search params" note in
@@ -38,6 +40,12 @@ export default async function BoardPage({
   const rawAssignee = params.assignee;
   const assigneeParam = Array.isArray(rawAssignee) ? rawAssignee[0] : rawAssignee;
   const assigneeFilter = assigneeParam ?? "all";
+
+  // With a filter on, this page's columns and the sidebar's Board badge will
+  // disagree: the badge is tenant-wide by design (it renders on every route
+  // and cannot see this `?assignee=`), and it counts a different set anyway —
+  // briefs + brief/draft/review only. See `readBoardNavCount`. Accepted, not
+  // a bug: the fix would be threading this filter into the dashboard layout.
 
   const session = await requireSession();
   const [filteredBoard, members] = await Promise.all([

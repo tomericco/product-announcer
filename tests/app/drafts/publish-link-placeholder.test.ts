@@ -10,7 +10,7 @@ import { getServerSession } from "next-auth";
 import { db } from "../../../src/db";
 import { tenants, atomicUpdates, contentPieces, users, tenantMembers } from "../../../src/db/schema";
 import { linkAtomicUpdatesToPiece } from "../../../src/lib/change-events/release-claim";
-import { approveDraft, publishDraft, checkDraftLinks } from "../../../src/app/(dashboard)/drafts/actions";
+import { approveDraft, checkDraftLinks } from "../../../src/app/(dashboard)/drafts/actions";
 
 const TENANT_NAME = "Publish Invalid Links Test Tenant";
 const USER_EMAIL = "publish-invalid-links-test@example.com";
@@ -74,15 +74,15 @@ describe("publishing is blocked when the body has invalid links", () => {
     await assertUnpublished(release.id, atomicUpdateId);
   });
 
-  it("publishDraft returns problems for a stored body with an invalid link and does not publish", async () => {
+  it("approveDraft link-checks the stored body when the submitted one is blank, and does not publish", async () => {
     const { tenant } = await seed();
     const { release, atomicUpdateId } = await seedDraft(tenant.id, "Grab it here [add link].");
 
-    const fd = new FormData();
-    fd.set("contentPieceId", release.id);
-    fd.set("publishedAt", "");
-
-    const result = await publishDraft(fd);
+    // A blank submitted body is `resolveBody`'s fallback case: the body that
+    // would actually publish is the stored one, so that is what the link
+    // check has to see. Publishing an empty string past the check instead
+    // would be the worst of both.
+    const result = await approveDraft(formDataFor(release.id, ""));
 
     expect(result?.problems.length).toBeGreaterThan(0);
     await assertUnpublished(release.id, atomicUpdateId);

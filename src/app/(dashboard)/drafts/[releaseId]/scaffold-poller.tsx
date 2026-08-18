@@ -24,12 +24,12 @@ const POLL_INTERVAL_MS = 3000;
  *
  * **Why this one page polls when nothing else does.** The stepped checklist
  * mounts only inside `GenerationModal`, so nothing polls while no modal is
- * open — an accepted decision. On the board and on `/drafts` the cost of that
- * is one stale badge on an otherwise-correct row, and clicking the badge
- * self-heals it. Here the cost is the whole page: `page.tsx` returns early
+ * open — an accepted decision. On the board the cost of that is one stale
+ * badge on an otherwise-correct card, and clicking the badge self-heals it.
+ * Here the cost is the whole page: `page.tsx` returns early
  * for `status = 'brief'` and renders the brief's own document in a `<pre>`
  * with no editor, no Ask AI and no publish. Someone who arrives mid-run from
- * the board's title link, the drafts list, another tab, or the brief editor's
+ * the board's title link, another tab, or the brief editor's
  * Accept (which stays put by design) sits on that scaffold until they open
  * and close the badge's modal, or reload. So this page — and only this page —
  * watches for itself.

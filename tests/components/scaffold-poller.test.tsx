@@ -7,8 +7,8 @@ import type { GenerationProgress } from "../../src/lib/content/generation-progre
  * itself.
  *
  * The stepped checklist mounts only inside the generation modal, so nothing
- * polls while no modal is open. On the board and on `/drafts` that costs one
- * stale badge, and clicking it self-heals. On this page it costs the whole
+ * polls while no modal is open. On the board that costs one stale badge, and
+ * clicking it self-heals. On this page it costs the whole
  * page: the Server Component returns early for `status = 'brief'` and renders
  * the accept-time scaffold in a `<pre>` — no editor, no Ask AI, no publish —
  * so a run that lands while nobody has a modal open leaves the author looking

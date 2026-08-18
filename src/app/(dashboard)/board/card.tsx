@@ -71,9 +71,12 @@ type Props = {
    * one finishes, which this card has no way to know: `generateDraft` returns
    * as soon as the work is queued. The board answers it by opening the
    * generation modal on this piece (the same one a confirmed brief drop
-   * opens, and the only thing that polls a run) and re-reading the server,
-   * which `generateDraft` does not do for /board — it revalidates only
-   * /drafts and /drafts/[id]. Unused by the brief branch. */
+   * opens, and the only thing that polls a run) and re-reading the server.
+   * That re-read is not redundant with `generateDraft`'s own
+   * `revalidatePath("/board")`: the revalidate runs inside `after()`, so it
+   * fires only once the run has landed — long after this response. Delete
+   * either one and a card sits on stale data until something else refreshes
+   * it. Unused by the brief branch. */
   onGenerated: () => void;
   /** Unused by the brief branch — a brief has no assignee. */
   onAssigned: (userId: string | null) => void;

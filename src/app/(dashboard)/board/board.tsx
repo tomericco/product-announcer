@@ -650,8 +650,8 @@ export function Board({
       />
 
       {/* The dropped brief's confirmation. Reuses the repo's confirm-dialog
-          shape (`draft-row-menu.tsx`'s "Publish this update?" / "Delete this
-          draft?", and the "Schedule this piece" step below) — see
+          shape (the delete confirmation below, the "Schedule this piece"
+          step, and `catch-up-banner.tsx`'s "Start over") — see
           `pendingAccept` for why it survives the move from button to drag. */}
       <Dialog
         open={pendingAccept !== null}
@@ -675,7 +675,7 @@ export function Board({
 
       {/* Delete, for both card kinds — the same confirm shape as the accept
           dialog above rather than a second one, and the same wording
-          (“deleted permanently”) the /drafts row menu already used. One
+          (“deleted permanently”) the retired /drafts row menu used. One
           dialog with a branch, not one per kind: the difference is two
           sentences, and two dialogs is how the destructive path drifts from
           the reversible one. */}

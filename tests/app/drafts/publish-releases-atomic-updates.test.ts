@@ -10,7 +10,7 @@ import { getServerSession } from "next-auth";
 import { db } from "../../../src/db";
 import { tenants, atomicUpdates, contentPieces, users, tenantMembers } from "../../../src/db/schema";
 import { linkAtomicUpdatesToPiece } from "../../../src/lib/change-events/release-claim";
-import { approveDraft, publishDraft } from "../../../src/app/(dashboard)/drafts/actions";
+import { approveDraft } from "../../../src/app/(dashboard)/drafts/actions";
 
 const TENANT_NAME = "Publish Releases Atomic Updates Test Tenant";
 const USER_EMAIL = "publish-releases-atomic-updates-test@example.com";
@@ -32,10 +32,10 @@ async function seedLinkedRelease(tenantId: string, atomicUpdateId: string) {
   return release;
 }
 
-// approveDraft now requires the form to name at least one valid destination
-// (publishDraft ignores the field). Default to "webhook" so these
-// atomic-update-status tests publish successfully; delivery itself is a no-op
-// here since no webhook/webflow config is seeded (dispatch skips it).
+// approveDraft requires the form to name at least one valid destination.
+// Default to "webhook" so these atomic-update-status tests publish
+// successfully; delivery itself is a no-op here since no webhook/webflow
+// config is seeded (dispatch skips it).
 function formDataFor(releaseId: string, publishedAt: string, destinations: string[] = ["webhook"]) {
   const fd = new FormData();
   fd.set("contentPieceId", releaseId);
@@ -73,23 +73,6 @@ describe("publishing a draft releases its atomic updates", () => {
     expect(afterPublish.every((a) => a.status === "released")).toBe(true);
   });
 
-  it("publishDraft flips a claimed atomic update from open to released", async () => {
-    const { tenant, user } = await seedTenantAndUser();
-    vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id, id: user.id } } as never);
-
-    const [au] = await db
-      .insert(atomicUpdates)
-      .values({ tenantId: tenant.id, title: "A", summary: "S" })
-      .returning();
-    const release = await seedLinkedRelease(tenant.id, au.id);
-
-    await publishDraft(formDataFor(release.id, ""));
-
-    const afterPublish = await atomicUpdatesFor(release.id);
-    expect(afterPublish).toHaveLength(1);
-    expect(afterPublish.every((a) => a.status === "released")).toBe(true);
-  });
-
   it("a double-submit second call does not error and atomic updates stay released", async () => {
     const { tenant, user } = await seedTenantAndUser();
     vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id, id: user.id } } as never);
@@ -100,11 +83,11 @@ describe("publishing a draft releases its atomic updates", () => {
       .returning();
     const release = await seedLinkedRelease(tenant.id, au.id);
 
-    await publishDraft(formDataFor(release.id, ""));
+    await approveDraft(formDataFor(release.id, ""));
     // Second call still names the original (now-stale) expected publishedAt
     // ("") — the publish UPDATE matches zero rows, so this must be a no-op,
     // not a second `markReleaseAtomicUpdatesReleased` call erroring out.
-    await publishDraft(formDataFor(release.id, ""));
+    await approveDraft(formDataFor(release.id, ""));
 
     const afterPublish = await atomicUpdatesFor(release.id);
     expect(afterPublish).toHaveLength(1);
