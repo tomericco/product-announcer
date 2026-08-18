@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../src/db";
-import { tenants, contentPieces, briefs } from "../../src/db/schema";
+import { tenants, contentPieces, briefs, briefSignals, signals } from "../../src/db/schema";
 
 const TENANT_NAME = "Board Actions Test Tenant";
 let currentTenantId = "";
@@ -53,7 +53,12 @@ vi.mock("../../src/lib/ai/review-draft", () => ({
 }));
 
 import { revalidatePath } from "next/cache";
-import { moveCard, acceptBriefCard } from "../../src/app/(dashboard)/board/actions";
+import {
+  moveCard,
+  acceptBriefCard,
+  deleteCard,
+  deleteBriefCard,
+} from "../../src/app/(dashboard)/board/actions";
 
 async function seed(status: "draft" | "review" = "draft") {
   const [tenant] = await db.insert(tenants).values({ name: TENANT_NAME }).returning();
@@ -204,5 +209,199 @@ describe("acceptBriefCard", () => {
     const pieces = await db.select().from(contentPieces).where(eq(contentPieces.tenantId, tenant.id));
     expect(pieces).toHaveLength(0);
     expect(revalidatePath).not.toHaveBeenCalledWith("/board");
+  });
+});
+
+/**
+ * `deleteCard` is Delete on a content-piece card. It is a wrapper around
+ * `deleteDraft` (src/app/(dashboard)/drafts/actions.ts), which already owns
+ * the tenant scoping, the published refusal and the atomic-update revert —
+ * so these tests assert the outcomes reached FROM THE BOARD, not that the
+ * wrapper called a function. What `deleteDraft` does on its own is pinned in
+ * tests/app/drafts/reject-delete-actions.test.ts; what is asserted here is
+ * that the board's entry point inherits all of it, and turns a throw into a
+ * refusal the board can toast.
+ */
+describe("deleteCard", () => {
+  async function pieceRow(id: string) {
+    const [row] = await db.select().from(contentPieces).where(eq(contentPieces.id, id));
+    return row;
+  }
+
+  it("deletes a draft piece", async () => {
+    const { piece } = await seed("draft");
+
+    const result = await deleteCard(piece.id);
+
+    expect(result).toEqual({ ok: true });
+    expect(await pieceRow(piece.id)).toBeUndefined();
+    expect(revalidatePath).toHaveBeenCalledWith("/board");
+  });
+
+  it("refuses a published piece and leaves the row intact", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT_NAME }).returning();
+    currentTenantId = tenant.id;
+    const [piece] = await db
+      .insert(contentPieces)
+      .values({ tenantId: tenant.id, title: "T", body: "B", status: "published", publishedAt: new Date() })
+      .returning();
+
+    const result = await deleteCard(piece.id);
+
+    expect(result.ok).toBe(false);
+    expect((await pieceRow(piece.id))?.status).toBe("published");
+    expect(revalidatePath).not.toHaveBeenCalledWith("/board");
+  });
+
+  // The deliberate asymmetry with `assertDraftEditable`: a piece whose
+  // generation can never succeed has no other exit, and on the board it is a
+  // card sitting in Draft with a "Generation failed" badge.
+  it('deletes a "brief"-status piece — a generation that can never succeed needs a way out', async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT_NAME }).returning();
+    currentTenantId = tenant.id;
+    const [piece] = await db
+      .insert(contentPieces)
+      .values({ tenantId: tenant.id, title: "T", body: "B", status: "brief", generationError: "boom" })
+      .returning();
+
+    const result = await deleteCard(piece.id);
+
+    expect(result).toEqual({ ok: true });
+    expect(await pieceRow(piece.id)).toBeUndefined();
+  });
+
+  // "Delete at any review" — `deleteDraft` never consults `reviewStatus`, so
+  // a piece the reviewer failed is as deletable as one it passed. Pinned
+  // here rather than trusted, because it is a requirement of this spec that
+  // no line of code states.
+  it("deletes regardless of reviewStatus", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT_NAME }).returning();
+    currentTenantId = tenant.id;
+    const [failed] = await db
+      .insert(contentPieces)
+      .values({ tenantId: tenant.id, title: "F", body: "B", status: "review", reviewStatus: "failed" })
+      .returning();
+    const [passed] = await db
+      .insert(contentPieces)
+      .values({ tenantId: tenant.id, title: "P", body: "B", status: "review", reviewStatus: "passed" })
+      .returning();
+
+    expect(await deleteCard(failed.id)).toEqual({ ok: true });
+    expect(await deleteCard(passed.id)).toEqual({ ok: true });
+    expect(await pieceRow(failed.id)).toBeUndefined();
+    expect(await pieceRow(passed.id)).toBeUndefined();
+  });
+
+  it("is tenant-scoped: another tenant's piece id deletes nothing", async () => {
+    const [mine] = await db.insert(tenants).values({ name: TENANT_NAME }).returning();
+    currentTenantId = mine.id;
+    const [theirTenant] = await db.insert(tenants).values({ name: TENANT_NAME }).returning();
+    const [theirs] = await db
+      .insert(contentPieces)
+      .values({ tenantId: theirTenant.id, title: "Theirs", body: "B", status: "draft" })
+      .returning();
+
+    const result = await deleteCard(theirs.id);
+
+    expect(result.ok).toBe(false);
+    // By id. An empty result under MY tenant would pass even if the row had
+    // been deleted from theirs.
+    expect(await pieceRow(theirs.id)).toBeDefined();
+    expect(revalidatePath).not.toHaveBeenCalledWith("/board");
+  });
+});
+
+/**
+ * `deleteBriefCard` is Delete on a brief card — a genuinely new destructive
+ * action, unlike `deleteCard` above. It delegates to `deleteBrief`
+ * (src/app/(dashboard)/briefs/actions.ts), which is where the tenant scope
+ * and the accepted-brief refusal live.
+ */
+describe("deleteBriefCard", () => {
+  async function briefRow(id: string) {
+    const [row] = await db.select().from(briefs).where(eq(briefs.id, id));
+    return row;
+  }
+
+  it("deletes the brief row", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT_NAME }).returning();
+    currentTenantId = tenant.id;
+    const brief = await seedBrief(tenant.id);
+
+    const result = await deleteBriefCard(brief.id);
+
+    expect(result).toEqual({ ok: true });
+    expect(await briefRow(brief.id)).toBeUndefined();
+    expect(revalidatePath).toHaveBeenCalledWith("/board");
+  });
+
+  it("is tenant-scoped: another tenant's brief id deletes nothing", async () => {
+    const [mine] = await db.insert(tenants).values({ name: TENANT_NAME }).returning();
+    currentTenantId = mine.id;
+    const [theirTenant] = await db.insert(tenants).values({ name: TENANT_NAME }).returning();
+    const theirs = await seedBrief(theirTenant.id);
+
+    const result = await deleteBriefCard(theirs.id);
+
+    expect(result.ok).toBe(false);
+    // By id, for the same reason acceptBriefCard's tenant test asserts by
+    // id: "nothing of mine changed" is not the claim being made here.
+    const survivor = await briefRow(theirs.id);
+    expect(survivor).toBeDefined();
+    expect(survivor.status).toBe("new");
+    expect(revalidatePath).not.toHaveBeenCalledWith("/board");
+  });
+
+  // The decision recorded in `deleteBrief`'s doc comment. An accepted brief
+  // owns a content piece via `contentPieceId`; deleting the brief would
+  // leave that piece with no traceable commission and erase the record that
+  // a human accepted it. Refused rather than cascaded.
+  it("refuses an accepted brief, leaving it and its content piece intact", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT_NAME }).returning();
+    currentTenantId = tenant.id;
+    const [piece] = await db
+      .insert(contentPieces)
+      .values({ tenantId: tenant.id, title: "T", body: "B", status: "draft" })
+      .returning();
+    const brief = await seedBrief(tenant.id, {
+      status: "accepted",
+      contentPieceId: piece.id,
+      acceptedAt: new Date(),
+    });
+
+    const result = await deleteBriefCard(brief.id);
+
+    expect(result.ok).toBe(false);
+    expect(await briefRow(brief.id)).toBeDefined();
+    const [survivingPiece] = await db.select().from(contentPieces).where(eq(contentPieces.id, piece.id));
+    expect(survivingPiece).toBeDefined();
+  });
+
+  // `brief_signals.briefId` is ON DELETE cascade, so the join rows go with
+  // the brief and the signals themselves — the durable evidence — stay.
+  // Asserted rather than assumed: this is the half of the delete that no
+  // line of application code performs.
+  it("takes its brief_signals join rows with it and leaves the signals themselves", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT_NAME }).returning();
+    currentTenantId = tenant.id;
+    const brief = await seedBrief(tenant.id);
+    const [signal] = await db
+      .insert(signals)
+      .values({
+        tenantId: tenant.id,
+        kind: "market_news",
+        externalId: `delete-brief-card-${brief.id}`,
+        title: "A competitor shipped multilingual tooling",
+        occurredAt: new Date(),
+      })
+      .returning();
+    await db.insert(briefSignals).values({ briefId: brief.id, signalId: signal.id });
+
+    expect(await deleteBriefCard(brief.id)).toEqual({ ok: true });
+
+    const joins = await db.select().from(briefSignals).where(eq(briefSignals.signalId, signal.id));
+    expect(joins).toHaveLength(0);
+    const [survivingSignal] = await db.select().from(signals).where(eq(signals.id, signal.id));
+    expect(survivingSignal).toBeDefined();
   });
 });

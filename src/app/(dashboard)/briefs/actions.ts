@@ -1,6 +1,6 @@
 "use server";
 
-import { and, eq } from "drizzle-orm";
+import { and, eq, ne } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { after } from "next/server";
 import { db } from "@/db";
@@ -12,6 +12,7 @@ import { generateDraftForPiece, queueGeneration, GENERATION_QUEUED_STEP } from "
 export type DismissReason = NonNullable<Brief["dismissReason"]>;
 export type AcceptResult = { ok: true; contentPieceId: string } | { ok: false; error: string };
 export type DismissResult = { ok: true } | { ok: false; error: string };
+export type DeleteBriefResult = { ok: true } | { ok: false; error: string };
 
 /**
  * Re-reads a brief scoped to the caller's tenant.
@@ -178,6 +179,82 @@ export async function dismissBrief(
     .returning({ id: briefs.id });
 
   if (updated.length === 0) return { ok: false, error: "This brief was already decided." };
+
+  revalidatePath("/board");
+  return { ok: true };
+}
+
+/**
+ * Deletes a brief outright — the board card's Delete. There was no brief
+ * deletion at all before this: a brief could only be *dismissed*.
+ *
+ * **Deleting is NOT "dismiss, but tidier", and the difference is
+ * behavioural, not cosmetic.** `dismissBrief` writes `dismissReason` /
+ * `dismissNote` and leaves the row in place, and `src/lib/briefs/run.ts`
+ * reads dismissed briefs back into the next ideation run's prompt as
+ * `rejected` — that is what stops the agent re-proposing the same idea. A
+ * deleted brief is not there to be read, so **the agent can propose it again
+ * on the very next run.** Anyone reaching for "delete" to make an idea go
+ * away permanently wants dismiss instead. Flagged, deliberately not solved
+ * here: preserving dedupe across a delete would mean a tombstone table or a
+ * soft delete, and that is a decision about what ideation remembers, not
+ * about what this button does.
+ *
+ * Two things this does NOT do, both decided rather than inherited:
+ *
+ *  - **An `accepted` brief is refused.** It owns a content piece through
+ *    `contentPieceId`, and that piece outlives the brief: the FK is ON DELETE
+ *    SET NULL in the *other* direction precisely so deleting the draft cannot
+ *    erase the record that a human accepted something. Deleting the brief
+ *    would leave a piece whose commission — its angle, its why-now, its
+ *    evidence — is unrecoverable, and would erase that accept decision from
+ *    the side the schema does not protect. Cascading to the piece instead was
+ *    rejected outright: it would silently destroy work a human may have spent
+ *    a generation and an edit session on, from a button on a different card.
+ *    Refused is the only coherent answer, and it costs nothing in practice —
+ *    `readBoard` only ever renders `status = "new"` briefs, so no accepted
+ *    brief has a Delete control to press.
+ *  - **`brief_signals` rows are not deleted here.** `briefSignals.briefId` is
+ *    ON DELETE cascade (see `src/db/schema.ts`), so Postgres removes the join
+ *    rows with the brief. That is what we want: the join is bookkeeping about
+ *    which evidence supported this commission, meaningless once the
+ *    commission is gone. The `signals` themselves are untouched — they are
+ *    the durable record of what happened in the world, shared with other
+ *    briefs and with the signals browser.
+ *
+ * `briefId` arrives from the browser and is untrusted, so the tenant scope is
+ * the security boundary: `loadOwnBrief` re-reads the brief under the caller's
+ * own tenant, and the DELETE re-states both the id and the tenant rather than
+ * trusting that read — one statement, so a concurrent accept cannot slip
+ * between the check and the delete.
+ */
+export async function deleteBrief(briefId: string): Promise<DeleteBriefResult> {
+  const session = await requireSession();
+  const tenantId = session.user.tenantId;
+
+  const brief = await loadOwnBrief(briefId, tenantId);
+  if (!brief) return { ok: false, error: "Brief not found." };
+  if (brief.status === "accepted") {
+    return {
+      ok: false,
+      error: "This brief was accepted and has a draft. Delete the draft instead.",
+    };
+  }
+
+  // `tenantId` is repeated here on purpose: `loadOwnBrief` above proved
+  // ownership in a separate statement, and this is the one that actually
+  // destroys a row. `status` is repeated for the same reason the accept
+  // transition repeats it — a brief accepted between the check and this
+  // statement must survive, not be deleted by a decision made against its
+  // older state.
+  const deleted = await db
+    .delete(briefs)
+    .where(
+      and(eq(briefs.id, briefId), eq(briefs.tenantId, tenantId), ne(briefs.status, "accepted"))
+    )
+    .returning({ id: briefs.id });
+
+  if (deleted.length === 0) return { ok: false, error: "This brief could not be deleted." };
 
   revalidatePath("/board");
   return { ok: true };

@@ -144,6 +144,7 @@ function renderCard(overrides: Partial<BoardCard> = {}) {
       draggable={false}
       onGenerated={() => {}}
       onAssigned={() => {}}
+      onDelete={() => {}}
     />
   );
 }

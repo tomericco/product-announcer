@@ -45,22 +45,39 @@ import type { Board as BoardData, BoardBriefCard, BoardCard } from "../../src/li
  *     board accepted a brief dropped anywhere on it.
  */
 
-const { moveCard, assignCard, acceptBriefCard, generateDraft, pollGenerationProgress, refresh, toast } =
-  vi.hoisted(() => ({
-    moveCard: vi.fn(async () => ({ ok: true as const })),
-    assignCard: vi.fn(async () => ({ ok: true as const })),
-    acceptBriefCard: vi.fn(async () => ({ ok: true as const, contentPieceId: "piece-new" })),
-    generateDraft: vi.fn(async () => ({ ok: true as const })),
-    pollGenerationProgress: vi.fn(),
-    refresh: vi.fn(),
-    toast: { success: vi.fn(), error: vi.fn() },
-  }));
+const {
+  moveCard,
+  assignCard,
+  acceptBriefCard,
+  deleteCard,
+  deleteBriefCard,
+  generateDraft,
+  pollGenerationProgress,
+  refresh,
+  toast,
+} = vi.hoisted(() => ({
+  moveCard: vi.fn(async () => ({ ok: true as const })),
+  assignCard: vi.fn(async () => ({ ok: true as const })),
+  acceptBriefCard: vi.fn(async () => ({ ok: true as const, contentPieceId: "piece-new" })),
+  deleteCard: vi.fn(async () => ({ ok: true as const })),
+  deleteBriefCard: vi.fn(async () => ({ ok: true as const })),
+  generateDraft: vi.fn(async () => ({ ok: true as const })),
+  pollGenerationProgress: vi.fn(),
+  refresh: vi.fn(),
+  toast: { success: vi.fn(), error: vi.fn() },
+}));
 
 const { router } = vi.hoisted(() => ({ router: {} as Record<string, unknown> }));
 router.refresh = refresh;
 router.push = vi.fn();
 
-vi.mock("../../src/app/(dashboard)/board/actions", () => ({ moveCard, assignCard, acceptBriefCard }));
+vi.mock("../../src/app/(dashboard)/board/actions", () => ({
+  moveCard,
+  assignCard,
+  acceptBriefCard,
+  deleteCard,
+  deleteBriefCard,
+}));
 vi.mock("../../src/app/(dashboard)/briefs/actions", () => ({ generateDraft }));
 vi.mock("../../src/app/(dashboard)/progress-actions", () => ({ pollGenerationProgress }));
 // One object for every render: `useRouter` is in the generation checklist's
@@ -800,5 +817,173 @@ describe("with an assignee filter active", () => {
     const draftColumn = columnNamed("Draft");
     expect(within(draftColumn).getByRole("link", { name: "Ship notes" })).toBeInTheDocument();
     expect(within(draftColumn).queryByText(/assigned to anyone/i)).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * The delete confirmation, told apart from the accept one by its wording.
+ * The two must never share a matcher: both are `role="dialog"` and both can
+ * name the same card.
+ */
+function deleteDialog(): HTMLElement {
+  return screen
+    .getAllByRole("dialog")
+    .find((d) => /deleted permanently/i.test(d.textContent ?? "")) as HTMLElement;
+}
+
+/** Opens the delete confirmation from a card, by the control's accessible name. */
+function clickDelete(title: string) {
+  fireEvent.click(screen.getByRole("button", { name: `Delete ${title}` }));
+}
+
+/** Confirms the open delete dialog — the click that actually deletes. */
+function confirmDelete() {
+  fireEvent.click(within(deleteDialog()).getByRole("button", { name: /^delete$/i }));
+}
+
+/**
+ * Delete on the card, for both kinds. Deletion used to exist only as a row
+ * menu on /drafts — which never covered briefs at all — so these drive the
+ * board's own control: the confirmation it opens, the action it calls, and
+ * the two cards that deliberately do NOT offer it.
+ *
+ * The confirmation and the calls live in `Board`, not in the cards, for the
+ * same reason acceptance does: deleting removes the card, so a dialog
+ * mounted inside it would be torn down by the refetch that proves the delete
+ * worked.
+ */
+describe("deleting a card", () => {
+  const PIECE_TITLE = "Ship notes for v4";
+
+  it("offers Delete on a brief card and asks before calling anything", async () => {
+    renderBoard();
+
+    clickDelete(BRIEF_TITLE);
+
+    const dialog = deleteDialog();
+    expect(within(dialog).getByText(new RegExp(BRIEF_TITLE))).toBeInTheDocument();
+    expect(deleteBriefCard).not.toHaveBeenCalled();
+    expect(deleteCard).not.toHaveBeenCalled();
+  });
+
+  // The behavioural difference `deleteBrief`'s doc comment records, said out
+  // loud to the person doing it: a dismissal trains the agent, a delete does
+  // not, so the same brief can come back on the next run.
+  it("warns in the brief confirmation that the agent may propose it again", () => {
+    renderBoard();
+
+    clickDelete(BRIEF_TITLE);
+
+    expect(within(deleteDialog()).getByText(/propose it again/i)).toBeInTheDocument();
+  });
+
+  it("calls deleteBriefCard once with the brief id once confirmed", async () => {
+    renderBoard();
+
+    clickDelete(BRIEF_TITLE);
+    confirmDelete();
+
+    await waitFor(() => expect(deleteBriefCard).toHaveBeenCalledTimes(1));
+    expect(deleteBriefCard).toHaveBeenCalledWith("brief-1");
+    expect(deleteCard).not.toHaveBeenCalled();
+    await waitFor(() => expect(toast.success).toHaveBeenCalled());
+    expect(refresh).toHaveBeenCalled();
+  });
+
+  it("calls deleteCard once with the piece id once confirmed", async () => {
+    renderBoard();
+
+    clickDelete(PIECE_TITLE);
+    confirmDelete();
+
+    await waitFor(() => expect(deleteCard).toHaveBeenCalledTimes(1));
+    expect(deleteCard).toHaveBeenCalledWith("piece-1");
+    expect(deleteBriefCard).not.toHaveBeenCalled();
+    expect(refresh).toHaveBeenCalled();
+  });
+
+  it("calls nothing when the confirmation is cancelled", () => {
+    renderBoard();
+
+    clickDelete(PIECE_TITLE);
+    fireEvent.click(within(deleteDialog()).getByRole("button", { name: /cancel/i }));
+
+    expect(deleteCard).not.toHaveBeenCalled();
+    expect(deleteBriefCard).not.toHaveBeenCalled();
+  });
+
+  it("reports a refusal and leaves the card alone", async () => {
+    deleteCard.mockResolvedValueOnce({
+      ok: false,
+      error: "This update has already been published and can no longer be edited.",
+    } as never);
+    renderBoard();
+
+    clickDelete(PIECE_TITLE);
+    confirmDelete();
+
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith(
+        "This update has already been published and can no longer be edited."
+      )
+    );
+    expect(refresh).not.toHaveBeenCalled();
+    expect(deleteDialog()).toBeInTheDocument();
+  });
+
+  it("reports a thrown rejection rather than leaving the click silent", async () => {
+    deleteBriefCard.mockRejectedValueOnce(new Error("Network down."));
+    renderBoard();
+
+    clickDelete(BRIEF_TITLE);
+    confirmDelete();
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith("Network down."));
+    expect(refresh).not.toHaveBeenCalled();
+    expect(deleteDialog()).toBeInTheDocument();
+  });
+
+  // The whole reason `assertDraftDeletable` admits "brief" where
+  // `assertDraftEditable` refuses it: a generation that can never succeed is
+  // a card with no other exit. It is not draggable and has no Publish, so
+  // Delete is the only control that must be there.
+  it("offers Delete on a piece mid-generation, whose only other exit is Generate", () => {
+    renderBoard({
+      board: boardData({
+        brief: [pieceCard({ id: "piece-gen", title: "Generating one", status: "brief" })],
+        draft: [],
+      }),
+    });
+
+    expect(screen.getByRole("button", { name: "Delete Generating one" })).toBeInTheDocument();
+  });
+
+  // "At any review": the board card does not even carry `reviewStatus`, and
+  // `deleteDraft` never consults it — so a piece in Review is as deletable
+  // as one in Draft. Pinned so a later "only drafts can be deleted" gate
+  // fails here rather than shipping.
+  it.each(["draft", "review", "scheduled"] as const)("offers Delete on a %s piece", (status) => {
+    renderBoard({
+      board: boardData({
+        draft: [],
+        [status]: [pieceCard({ id: "piece-s", title: "Any status", status })],
+      }),
+    });
+
+    expect(screen.getByRole("button", { name: "Delete Any status" })).toBeInTheDocument();
+  });
+
+  // Not offered rather than offered-and-refused: `assertDraftDeletable`
+  // refuses a published piece server-side, and a control that can only ever
+  // toast an error is worse than no control.
+  it("does not offer Delete on a published piece", () => {
+    renderBoard({
+      board: boardData({
+        draft: [],
+        published: [pieceCard({ id: "piece-pub", title: "Shipped one", status: "published" })],
+      }),
+    });
+
+    expect(screen.queryByRole("button", { name: "Delete Shipped one" })).not.toBeInTheDocument();
   });
 });

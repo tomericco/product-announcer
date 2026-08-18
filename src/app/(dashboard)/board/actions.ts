@@ -3,7 +3,8 @@
 import { revalidatePath } from "next/cache";
 import { requireSession } from "@/lib/workspace/session";
 import { moveContentPiece, assignContentPiece, type MoveResult, type BoardColumn } from "@/lib/content/board";
-import { acceptBrief, type AcceptResult } from "../briefs/actions";
+import { acceptBrief, deleteBrief, type AcceptResult, type DeleteBriefResult } from "../briefs/actions";
+import { deleteDraft } from "../drafts/actions";
 
 /**
  * The board's drag-end handler calls this. `id` and `to` arrive from client
@@ -75,6 +76,71 @@ export async function assignCard(id: string, userId: string | null): Promise<Mov
  */
 export async function acceptBriefCard(briefId: string): Promise<AcceptResult> {
   const result = await acceptBrief(briefId);
+  if (result.ok) revalidatePath("/board");
+  return result;
+}
+
+/**
+ * Delete on a content-piece card. `contentPieceId` is untrusted, exactly
+ * like `id` in `moveCard` — and, exactly like `acceptBriefCard` above, the
+ * tenant check is not this function's to make.
+ *
+ * `deleteDraft` (src/app/(dashboard)/drafts/actions.ts) is already the
+ * authority on deleting a piece and there is deliberately no second copy of
+ * it here. It re-reads the piece under the caller's own tenant, refuses a
+ * `published` one through `assertDraftDeletable` (which never consults
+ * `reviewStatus`, so a piece is deletable at any review outcome, and which
+ * deliberately ADMITS `brief` — a generation that can never succeed needs a
+ * way out), and reverts the piece's atomic updates back to `open` inside a
+ * transaction, in that order, because `contentPieceId` is ON DELETE SET NULL
+ * and deleting first would strand them.
+ *
+ * Two things this wrapper does add:
+ *
+ *  - `revalidatePath("/board")`. `deleteDraft` revalidates `/drafts` only,
+ *    and has no reason to know the board exists.
+ *  - The throw-to-result conversion. `deleteDraft` throws (the /drafts row
+ *    menu catches and toasts), while every board action returns a
+ *    `{ ok }` result the board reports — so a refusal arrives here the same
+ *    shape as a refused move, rather than as a rejected promise the caller
+ *    has to remember to catch. The message is `assertDraftDeletable`'s own,
+ *    passed through unchanged rather than restated.
+ *
+ * FormData because that is `deleteDraft`'s signature (it is wired to a form
+ * on /drafts). Building one here is cheaper than widening a shared authority
+ * to please a second caller.
+ */
+export async function deleteCard(contentPieceId: string): Promise<MoveResult> {
+  const formData = new FormData();
+  formData.set("contentPieceId", contentPieceId);
+  try {
+    await deleteDraft(formData);
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : "Something went wrong. The card wasn't deleted.",
+    };
+  }
+  revalidatePath("/board");
+  return { ok: true };
+}
+
+/**
+ * Delete on a brief card. A thin wrapper for the same reason
+ * `acceptBriefCard` is one: `deleteBrief` (src/app/(dashboard)/briefs/
+ * actions.ts) is the authority — it owns the tenant scope, the refusal of an
+ * `accepted` brief, and the doc comment recording why deleting a brief is
+ * NOT the same as dismissing one (a dismissed brief still feeds ideation's
+ * dedupe; a deleted one cannot, so the agent may re-propose it). Read that
+ * comment before changing anything here.
+ *
+ * `requireSession()` is deliberately absent, as in `acceptBriefCard`:
+ * `deleteBrief` opens with its own and scopes the delete to that session's
+ * tenant, so a second call could only ever agree with it while suggesting
+ * this wrapper shares an authority it does not have.
+ */
+export async function deleteBriefCard(briefId: string): Promise<DeleteBriefResult> {
+  const result = await deleteBrief(briefId);
   if (result.ok) revalidatePath("/board");
   return result;
 }

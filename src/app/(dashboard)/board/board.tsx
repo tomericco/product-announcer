@@ -46,7 +46,7 @@ import { GenerationModal } from "@/components/generation-modal";
 import { Column } from "./column";
 import { BoardCardItem } from "./card";
 import { boardCollisionDetection } from "./collision";
-import { moveCard, acceptBriefCard } from "./actions";
+import { moveCard, acceptBriefCard, deleteCard, deleteBriefCard } from "./actions";
 
 // The server module's BRIEF_COLUMN, which cannot be imported here as a
 // runtime value for the reason above. The `BriefColumn` annotation is what
@@ -238,6 +238,22 @@ export function Board({
   // card is gone.
   const [pendingAccept, setPendingAccept] = useState<{ id: string; title: string } | null>(null);
   const [accepting, startAccept] = useTransition();
+  // A card whose Delete was pressed, awaiting confirmation. Deletion is
+  // irreversible — a content piece row and its body are gone, and a brief
+  // takes its `brief_signals` rows with it — so the click opens a dialog and
+  // nothing is called until it is confirmed, exactly like `pendingAccept`.
+  //
+  // It lives HERE and not on the card for the same reason: a successful
+  // delete removes that card, so a dialog mounted inside it would be
+  // unmounted by the refetch that proves the delete worked — and on the
+  // refusal path the dialog must survive to report it. `kind` is what routes
+  // the confirmed click to the right action (the two id spaces are
+  // disjoint, but the actions are not interchangeable), and `title` rides
+  // along so the dialog can name the card after it is gone.
+  const [pendingDelete, setPendingDelete] = useState<
+    { id: string; title: string; kind: AnyCard["kind"] } | null
+  >(null);
+  const [deleting, startDelete] = useTransition();
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
@@ -384,6 +400,41 @@ export function Board({
       } catch (err) {
         toast.error(
           err instanceof Error ? err.message : "Something went wrong. The brief wasn't accepted."
+        );
+      }
+    });
+  }
+
+  /**
+   * The confirmed Delete. Same request-report-refetch shape as
+   * `confirmAccept` above, and the same reason for the try/catch: a delete
+   * is not repeatable, so a thrown rejection — an expired session, a DB blip
+   * — must not leave the click silent and the user pressing Delete again on
+   * a card that may already be gone.
+   *
+   * No optimistic removal. `applyMove` can patch and revert because a move
+   * is reversible client-side; a removed card cannot be put back with its
+   * generation state, badges and assignee intact from what this component
+   * holds, and a refused delete is exactly the case where it would have to
+   * be. The refetch is what removes the card, which also means the card is
+   * still there behind the dialog when the delete is refused.
+   */
+  function confirmDelete() {
+    if (!pendingDelete) return;
+    const { id, kind } = pendingDelete;
+    startDelete(async () => {
+      try {
+        const result = kind === "brief" ? await deleteBriefCard(id) : await deleteCard(id);
+        if (!result.ok) {
+          toast.error(result.error);
+          return;
+        }
+        toast.success(kind === "brief" ? "Brief deleted" : "Deleted");
+        setPendingDelete(null);
+        router.refresh();
+      } catch (err) {
+        toast.error(
+          err instanceof Error ? err.message : "Something went wrong. Nothing was deleted."
         );
       }
     });
@@ -547,6 +598,12 @@ export function Board({
                         router.refresh();
                       }}
                       onAssigned={(userId) => handleAssigned(card.id, userId)}
+                      // Opens the confirmation above this column; nothing is
+                      // deleted until it is confirmed. `card.kind` is carried
+                      // across because the dialog outlives the card.
+                      onDelete={() =>
+                        setPendingDelete({ id: card.id, title: card.title, kind: card.kind })
+                      }
                     />
                   ))
                 )}
@@ -611,6 +668,49 @@ export function Board({
             </DialogClose>
             <Button type="button" onClick={confirmAccept} disabled={accepting}>
               {accepting ? "Generating…" : "Generate draft"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete, for both card kinds — the same confirm shape as the accept
+          dialog above rather than a second one, and the same wording
+          (“deleted permanently”) the /drafts row menu already used. One
+          dialog with a branch, not one per kind: the difference is two
+          sentences, and two dialogs is how the destructive path drifts from
+          the reversible one. */}
+      <Dialog
+        open={pendingDelete !== null}
+        onOpenChange={(next) => !next && !deleting && setPendingDelete(null)}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              {pendingDelete?.kind === "brief" ? "Delete this brief?" : "Delete this draft?"}
+            </DialogTitle>
+            <DialogDescription>
+              &ldquo;{pendingDelete?.title}&rdquo; will be deleted permanently.{" "}
+              {pendingDelete?.kind === "brief" ? (
+                // The behavioural difference between deleting and dismissing,
+                // said where the decision is made. `deleteBrief`'s doc comment
+                // is the long version: a dismissal is read back into the next
+                // ideation run as `rejected`, a deletion is not there to read.
+                <>
+                  Deleting is not the same as dismissing it &mdash; a dismissed brief teaches the
+                  agent not to suggest it again, so after a delete it may propose it again on a
+                  future run.
+                </>
+              ) : (
+                <>Any updates composed into it become available again, so they can go into a future piece.</>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <DialogClose render={<Button type="button" variant="ghost" disabled={deleting} />}>
+              Cancel
+            </DialogClose>
+            <Button type="button" variant="destructive" onClick={confirmDelete} disabled={deleting}>
+              {deleting ? "Deleting…" : "Delete"}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -3,7 +3,7 @@
 import { useState, useSyncExternalStore, useTransition } from "react";
 import Link from "next/link";
 import { format } from "date-fns";
-import { GripVertical } from "lucide-react";
+import { GripVertical, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { useDraggable } from "@dnd-kit/core";
 import { Card, CardContent } from "@/components/ui/card";
@@ -77,12 +77,18 @@ type Props = {
   onGenerated: () => void;
   /** Unused by the brief branch — a brief has no assignee. */
   onAssigned: (userId: string | null) => void;
+  /** Called when this card's Delete is pressed — NOT when a delete lands.
+   * Nothing is deleted here: the board opens the confirmation and makes the
+   * call, for the same reason it owns the accept confirmation (see
+   * `pendingDelete` in board.tsx). Both kinds raise it; the board tells them
+   * apart by the card it stashed, not by which one called. */
+  onDelete: () => void;
 };
 
 /** Dispatches on the card's kind. See `Props.card`. */
-export function BoardCardItem({ card, members, draggable, onGenerated, onAssigned }: Props) {
+export function BoardCardItem({ card, members, draggable, onGenerated, onAssigned, onDelete }: Props) {
   if (card.kind === "brief") {
-    return <BriefCardItem card={card} draggable={draggable} />;
+    return <BriefCardItem card={card} draggable={draggable} onDelete={onDelete} />;
   }
   return (
     <PieceCardItem
@@ -91,6 +97,7 @@ export function BoardCardItem({ card, members, draggable, onGenerated, onAssigne
       draggable={draggable}
       onGenerated={onGenerated}
       onAssigned={onAssigned}
+      onDelete={onDelete}
     />
   );
 }
@@ -137,6 +144,33 @@ function DragHandle({
 }
 
 /**
+ * Shared by both card kinds: Delete. It opens a confirmation on the board
+ * and deletes nothing itself — see `Props.onDelete`.
+ *
+ * Revealed on hover like the drag handle, and for the same reasons kept in
+ * the layout rather than removed: `focus-visible` brings it back for anyone
+ * tabbing, so the one irreversible action on a card is never pointer-only.
+ * Unlike the handle it keeps its width at rest — a destructive control that
+ * changes the card's layout as the pointer arrives is how the wrong card
+ * gets clicked.
+ *
+ * `aria-label` carries the accessible name: a bare icon has none, and
+ * "Delete" alone would be ambiguous on a board of near-identical cards.
+ */
+function DeleteButton({ title, onDelete }: { title: string; onDelete: () => void }) {
+  return (
+    <button
+      type="button"
+      className="ml-1.5 mt-0.5 shrink-0 cursor-pointer opacity-0 transition-opacity text-muted-foreground hover:text-destructive focus-visible:opacity-100 group-hover/card:opacity-100"
+      aria-label={`Delete ${title}`}
+      onClick={onDelete}
+    >
+      <Trash2 className="size-4" />
+    </button>
+  );
+}
+
+/**
  * A brief card: a commission that has not been accepted yet. Same chrome as
  * a piece card (grip, linked title, badge row) rather than a second visual
  * language — only the badges differ, and the title links to the brief editor
@@ -159,7 +193,15 @@ function DragHandle({
  * worked. (See `pendingAccept` in board.tsx, which also carries the note on
  * why a confirmation still stands behind a deliberate gesture.)
  */
-function BriefCardItem({ card, draggable }: { card: BoardBriefCard; draggable: boolean }) {
+function BriefCardItem({
+  card,
+  draggable,
+  onDelete,
+}: {
+  card: BoardBriefCard;
+  draggable: boolean;
+  onDelete: () => void;
+}) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: card.id,
     disabled: !draggable,
@@ -187,6 +229,12 @@ function BriefCardItem({ card, draggable }: { card: BoardBriefCard; draggable: b
             >
               {card.title}
             </Link>
+            {/* Always offered on a brief. `readBoard` renders only
+                `status = "new"` briefs, and `deleteBrief` refuses exactly one
+                status — `accepted` — which can therefore never appear here.
+                (Deleting a brief is not dismissing it: see `deleteBrief`'s
+                doc comment, and the confirmation the board opens says so.) */}
+            <DeleteButton title={card.title} onDelete={onDelete} />
           </div>
 
           <div className="flex flex-wrap items-center gap-1.5">
@@ -214,6 +262,7 @@ function PieceCardItem({
   draggable,
   onGenerated,
   onAssigned,
+  onDelete,
 }: Omit<Props, "card"> & { card: BoardCardType }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: card.id,
@@ -308,6 +357,16 @@ function PieceCardItem({
             >
               {card.title}
             </Link>
+            {/* Mirrors `assertDraftDeletable` exactly, and nothing more: it
+                refuses only `published` (the record of what shipped), and
+                deliberately ADMITS `brief` — a generation that can never
+                succeed is a card whose only other control is Generate, so
+                removing this one would strand it. It never consults
+                `reviewStatus`, which this card does not even carry, so a
+                piece is deletable at any review outcome. Not offered rather
+                than offered-and-refused: a control that can only ever toast
+                an error is worse than no control. */}
+            {card.status !== "published" && <DeleteButton title={card.title} onDelete={onDelete} />}
           </div>
 
           <div className="flex flex-wrap items-center gap-1.5">
