@@ -22,6 +22,7 @@ import {
   resolveMonth,
   rotateWeekdayLabels,
   shiftMonth,
+  todayDayNumberIn,
   type CalendarPiece,
 } from "@/lib/content/calendar-view";
 // Type-only from the settings module, and a plain data prop for the holidays
@@ -126,6 +127,18 @@ export function MonthGrid({
   // `getDay()` inside does.
   const leadingBlanks = hydrated ? leadingBlanksFor(month, weekStartsOn) : 0;
 
+  // Gated the same way, and for the strongest version of the same reason.
+  // `leadingBlanks` gated because the server would answer in ITS zone; this
+  // gates because the server does not know the viewer's date AT ALL — it has
+  // only its own clock, and rendering that ships one machine's "today" to
+  // every viewer in the world, silently and without a mismatch to warn
+  // anyone. `null` until hydration settles (nothing marked, exactly as
+  // nothing is blanked), then the viewer's real local date. `todayDayNumberIn`
+  // returns `null` for any month that isn't the one `now` falls in, so
+  // navigating away from the current month marks nothing without a second
+  // check here.
+  const todayDayNumber = hydrated ? todayDayNumberIn(month) : null;
+
   // Holidays arrive as plain `YYYY-MM-DD` strings computed on the server, so
   // no timezone question arises and no hydration gate is needed. Two enabled
   // countries can land on the same day, hence a list per day rather than one.
@@ -205,6 +218,10 @@ export function MonthGrid({
               // drawn with zero leading blanks puts the shade under the wrong
               // headers until hydration settles, then jumps.
               resting={hydrated && isRestingDay(month, dayNumber, weekStartsOn)}
+              // Already `null` before hydration and for every non-current
+              // month, so the gate lives in one place above rather than being
+              // repeated per cell.
+              today={todayDayNumber === dayNumber}
             />
           );
         })}

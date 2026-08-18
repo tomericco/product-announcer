@@ -1,5 +1,12 @@
-import { describe, it, expect, vi } from "vitest";
-import { render } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, act } from "@testing-library/react";
+import { hydrateRoot } from "react-dom/client";
+// The server pass, which `render()` can never show: @testing-library/react
+// mounts with `createRoot`, so `useSyncExternalStore` reads `getSnapshot()`
+// and the tree is already "hydrated" on its very first pass. react-dom/server
+// is the only way to observe what the server actually emits — see the
+// "MonthGrid today" describe at the foot of this file.
+import { renderToStaticMarkup, renderToString } from "react-dom/server";
 
 /**
  * The week start and the holiday labels, at their delivery point.
@@ -291,5 +298,224 @@ describe("MonthGrid type scale", () => {
     const dayNumber = [...days.children].find((child) => (child.textContent ?? "").trim() === "1");
 
     expect(dayNumber?.firstElementChild?.className).toContain("text-sm");
+  });
+});
+
+/**
+ * Today's two treatments, as the classes that carry them. jsdom renders no
+ * CSS, so — exactly as with `RESTING_SHADE` above — the class list IS the
+ * only evidence available. Two constants, not one, because the brief asks
+ * for two independent things: a highlight on the CELL and a marker on the
+ * date NUMBER. A change that delivered only one of them must fail.
+ */
+const TODAY_CELL_HIGHLIGHT = ["ring-2", "ring-primary"];
+const TODAY_NUMBER_MARKER = ["rounded-full", "bg-primary"];
+
+/**
+ * Today, at its delivery point.
+ *
+ * `todayDayNumberIn` is pinned as a pure function in
+ * tests/lib/content/calendar.test.ts. What only this file can see is that the
+ * grid calls it with the month ACTUALLY ON SCREEN, behind the same hydration
+ * gate as the leading blanks, and that the two treatments compose with the
+ * resting shade instead of replacing it.
+ *
+ * ## How "now" is controlled, and why it isn't timezone-luck
+ *
+ * `vi.useFakeTimers({ toFake: ["Date"] })` + `vi.setSystemTime(...)` — the
+ * mechanism already used in tests/app/propose-actions.test.ts and every
+ * poller test under tests/components.
+ *
+ * The instant is always built with `localNoon()`: local calendar components
+ * in, local calendar components out. `new Date(2026, 1, 16, 12)` is noon on
+ * 16 February in whatever zone the runtime happens to be in, and reading
+ * `.getDate()` back off it returns 16 in that same zone — midday, so no
+ * offset change (DST, a historical zone revision) can push it across a
+ * midnight. Nothing here depends on the node project's `TZ=Asia/Jerusalem`
+ * pin, which the jsdom project does not even apply: run this file under
+ * `TZ=UTC` or `TZ=Pacific/Auckland` and it asserts the identical thing. A
+ * literal like `new Date("2026-02-16T00:00:00Z")` would NOT have that
+ * property — it is 16 February in Jerusalem and 15 February in Los Angeles,
+ * which is precisely the trap that moved the US/DE/GB holidays a day in the
+ * earlier work.
+ */
+describe("MonthGrid today", () => {
+  /** Noon on a local calendar date — see the block comment above. */
+  function localNoon(year: number, monthIndex: number, day: number): Date {
+    return new Date(year, monthIndex, day, 12, 0, 0, 0);
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** Every in-month day cell (the leading blanks render no text). */
+  function dayCells(container: HTMLElement): HTMLElement[] {
+    const days = container.querySelectorAll(".grid-cols-7")[1];
+    return [...days.children].filter((child) => (child.textContent ?? "").trim()) as HTMLElement[];
+  }
+
+  /** The cell whose date number is exactly `day`. */
+  function cellForDay(container: HTMLElement, day: number): HTMLElement {
+    const cell = dayCells(container).find(
+      (child) => child.firstElementChild?.textContent?.trim() === String(day)
+    );
+    expect(cell, `no cell rendering day ${day}`).toBeDefined();
+    return cell as HTMLElement;
+  }
+
+  /** Treatment 1: the cell itself. */
+  function cellIsHighlighted(cell: HTMLElement): boolean {
+    return TODAY_CELL_HIGHLIGHT.every((cls) => cell.classList.contains(cls));
+  }
+
+  /** Treatment 2: the date number inside it. */
+  function numberIsMarked(cell: HTMLElement): boolean {
+    const number = cell.firstElementChild as HTMLElement;
+    return TODAY_NUMBER_MARKER.every((cls) => number.classList.contains(cls));
+  }
+
+  it("highlights today's cell and marks its date number", () => {
+    vi.setSystemTime(localNoon(2026, 1, 16));
+    const cell = cellForDay(grid(SUNDAY_MONTH, 0), 16);
+
+    // Asserted separately, not as one "the cell looks different" check: the
+    // brief asked for both, so delivering either alone must fail here.
+    expect(cellIsHighlighted(cell)).toBe(true);
+    expect(numberIsMarked(cell)).toBe(true);
+  });
+
+  it("leaves every other day of the same month untouched", () => {
+    vi.setSystemTime(localNoon(2026, 1, 16));
+    const container = grid(SUNDAY_MONTH, 0);
+
+    const others = dayCells(container).filter(
+      (cell) => cell.firstElementChild?.textContent?.trim() !== "16"
+    );
+    expect(others.length).toBe(27); // 2026-02 has 28 days
+    expect(others.some(cellIsHighlighted)).toBe(false);
+    expect(others.some(numberIsMarked)).toBe(false);
+  });
+
+  it("marks nothing when the month on screen is not the current one", () => {
+    // Today is 16 February; the grid is showing March, which has a 16th of
+    // its own. A treatment keyed on the day number alone lights it up.
+    vi.setSystemTime(localNoon(2026, 1, 16));
+    const container = grid("2026-03", 0);
+
+    expect(dayCells(container).some(cellIsHighlighted)).toBe(false);
+    expect(dayCells(container).some(numberIsMarked)).toBe(false);
+  });
+
+  it("marks nothing in the same month of a different year", () => {
+    // The check that compares month-of-year and forgets the year passes every
+    // other case in this describe and fails this one.
+    vi.setSystemTime(localNoon(2025, 1, 16));
+    const container = grid(SUNDAY_MONTH, 0);
+
+    expect(dayCells(container).some(cellIsHighlighted)).toBe(false);
+    expect(dayCells(container).some(numberIsMarked)).toBe(false);
+  });
+
+  /**
+   * The collision the resting-day test above could only describe in a comment,
+   * because until now there was no today to collide with.
+   *
+   * 2026-02 opens on a Sunday, so at a Sunday start Friday the 6th is a
+   * resting day. Each treatment is asserted on its own channel — background,
+   * cell highlight, number marker — rather than by counting classes, so a
+   * today treatment that overwrote the shade (or a shade that swallowed the
+   * highlight) fails on the specific channel it clobbered.
+   */
+  it("reads as BOTH when today is also a resting day", () => {
+    vi.setSystemTime(localNoon(2026, 1, 6));
+    const cell = cellForDay(grid(SUNDAY_MONTH, 0), 6);
+
+    expect(cell.classList.contains(RESTING_SHADE)).toBe(true);
+    expect(cellIsHighlighted(cell)).toBe(true);
+    expect(numberIsMarked(cell)).toBe(true);
+  });
+
+  it("still marks today on a working day, so the resting case proves composition", () => {
+    // The control for the test above: without it, "both" could be passing
+    // because the highlight is unconditional rather than because it composes.
+    vi.setSystemTime(localNoon(2026, 1, 2)); // Monday the 2nd
+    const cell = cellForDay(grid(SUNDAY_MONTH, 0), 2);
+
+    expect(cell.classList.contains(RESTING_SHADE)).toBe(false);
+    expect(cellIsHighlighted(cell)).toBe(true);
+    expect(numberIsMarked(cell)).toBe(true);
+  });
+
+  /**
+   * The hydration gate, from the only angle that can see it.
+   *
+   * `render()` from @testing-library/react mounts with `createRoot`, so
+   * `useSyncExternalStore` reads `getSnapshot()` and `hydrated` is true on the
+   * very first pass — every test above is a post-hydration view. The server
+   * pass is reachable only through react-dom/server, which is what makes this
+   * the one place the gate is observable at all.
+   *
+   * Today is viewer-local; the server does not know the viewer's date. If it
+   * renders one anyway it is showing ITS today to everyone, and React's first
+   * client pass disagrees. So: nothing marked server-side, exactly as
+   * `leadingBlanks` is 0 server-side.
+   */
+  it("marks nothing in the server render, so the first client pass agrees", () => {
+    vi.setSystemTime(localNoon(2026, 1, 16));
+    const container = document.createElement("div");
+    container.innerHTML = renderToStaticMarkup(
+      <MonthGrid
+        month={SUNDAY_MONTH}
+        isDefaulted={false}
+        pieces={[]}
+        undatedPublished={0}
+        weekStartsOn={0}
+        holidays={[]}
+      />
+    );
+
+    // The 16th is on screen — this is the same clock and the same month the
+    // first test in this describe marks — and it is not marked.
+    expect(dayCells(container)).toHaveLength(28);
+    expect(dayCells(container).some(cellIsHighlighted)).toBe(false);
+    expect(dayCells(container).some(numberIsMarked)).toBe(false);
+  });
+
+  it("hydrates that markup with no mismatch, then marks today", async () => {
+    vi.setSystemTime(localNoon(2026, 1, 16));
+    const element = (
+      <MonthGrid
+        month={SUNDAY_MONTH}
+        isDefaulted={false}
+        pieces={[]}
+        undatedPublished={0}
+        weekStartsOn={0}
+        holidays={[]}
+      />
+    );
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    container.innerHTML = renderToString(element);
+
+    const recovered: unknown[] = [];
+    const root = await act(async () =>
+      hydrateRoot(container, element, { onRecoverableError: (error) => recovered.push(error) })
+    );
+
+    // A hydration mismatch is a recoverable error, not a throw — React repaints
+    // from the nearest boundary and carries on. Asserting on the count is the
+    // only way to notice.
+    expect(recovered).toEqual([]);
+    expect(cellIsHighlighted(cellForDay(container, 16))).toBe(true);
+    expect(numberIsMarked(cellForDay(container, 16))).toBe(true);
+
+    await act(async () => root.unmount());
+    container.remove();
   });
 });

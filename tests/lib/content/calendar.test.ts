@@ -19,6 +19,7 @@ import {
   rotateWeekdayLabels,
   restingWeekdaysFor,
   isRestingDay,
+  todayDayNumberIn,
   CALENDAR_TYPES,
 } from "../../../src/lib/content/calendar-view";
 import { seedTenant, dropTenant } from "../../helpers/fixtures";
@@ -372,6 +373,60 @@ describe("isRestingDay", () => {
         }
       }
     }
+  });
+});
+
+describe("todayDayNumberIn", () => {
+  // Every instant below is built from LOCAL calendar components at midday, so
+  // each assertion means the same thing in every timezone — including under
+  // this project's `TZ=Asia/Jerusalem` pin, which it therefore does not
+  // depend on. A literal like `new Date("2026-02-16T00:00:00Z")` would be the
+  // 16th in Jerusalem and the 15th in Los Angeles; midday-local is the 16th
+  // in both, and no DST shift is large enough to move it.
+  const localNoon = (year: number, monthIndex: number, day: number) =>
+    new Date(year, monthIndex, day, 12, 0, 0, 0);
+
+  it("returns the day of the month when the month is the current one", () => {
+    expect(todayDayNumberIn("2026-02", localNoon(2026, 1, 16))).toBe(16);
+  });
+
+  it("returns null for a different month of the same year", () => {
+    expect(todayDayNumberIn("2026-03", localNoon(2026, 1, 16))).toBeNull();
+    expect(todayDayNumberIn("2026-01", localNoon(2026, 1, 16))).toBeNull();
+  });
+
+  it("returns null for the same month of a different year", () => {
+    // The check that compares month-of-year and forgets the year.
+    expect(todayDayNumberIn("2026-02", localNoon(2025, 1, 16))).toBeNull();
+    expect(todayDayNumberIn("2026-02", localNoon(2027, 1, 16))).toBeNull();
+  });
+
+  it("holds at both edges of the month", () => {
+    expect(todayDayNumberIn("2026-02", localNoon(2026, 1, 1))).toBe(1);
+    expect(todayDayNumberIn("2026-02", localNoon(2026, 1, 28))).toBe(28);
+    // The instants either side of February, an hour outside it in local terms.
+    expect(todayDayNumberIn("2026-02", new Date(2026, 0, 31, 23, 0, 0))).toBeNull();
+    expect(todayDayNumberIn("2026-02", new Date(2026, 2, 1, 1, 0, 0))).toBeNull();
+  });
+
+  it("names exactly one day of exactly one month, across two years", () => {
+    // The whole grid, from one clock: on 2026-02-16 no other month may claim
+    // a day, and 2026-02 may claim only the 16th.
+    const now = localNoon(2026, 1, 16);
+    const named = everyMonth().filter((month) => todayDayNumberIn(month, now) !== null);
+    expect(named).toEqual(["2026-02"]);
+    expect(todayDayNumberIn("2026-02", now)).toBe(16);
+  });
+
+  it("reads the LOCAL date, not the UTC one", () => {
+    // 23:30 local on the last day of the month. Anywhere east of Greenwich
+    // that instant is already the 1st in UTC, so an implementation reaching
+    // for `toISOString()` or `getUTCDate()` answers with the wrong month —
+    // and a viewer in Jerusalem sees tomorrow highlighted at half past
+    // eleven at night. This asserts the local answer, whatever the offset.
+    const lateOnTheLastDay = new Date(2026, 1, 28, 23, 30, 0);
+    expect(todayDayNumberIn("2026-02", lateOnTheLastDay)).toBe(28);
+    expect(todayDayNumberIn("2026-03", lateOnTheLastDay)).toBeNull();
   });
 });
 

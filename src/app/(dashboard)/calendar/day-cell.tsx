@@ -47,6 +47,7 @@ export function DayCell({
   pieces,
   holidays,
   resting,
+  today,
 }: {
   dayNumber: number;
   pieces: Record<CalendarType, CalendarPiece[]>;
@@ -59,6 +60,11 @@ export function DayCell({
    * week as displayed, derived from `weekStartsOn` alone. Decided by the
    * caller so this component stays a pure renderer. */
   resting: boolean;
+  /** The viewer's own today. Decided by the caller — and, crucially, gated
+   * there behind hydration, because the server's clock is not the viewer's;
+   * see `month-grid.tsx`. False on the server pass and on React's first
+   * client pass, exactly like `resting`. */
+  today: boolean;
 }) {
   const hydrated = useHydrated();
 
@@ -78,10 +84,41 @@ export function DayCell({
         // /40 rather than a solid fill for the same reason: the piece links
         // inside hover to a full-strength `bg-muted`, so the hover still steps
         // up visibly on a resting day rather than matching its background.
-        resting && "bg-muted/40"
+        resting && "bg-muted/40",
+        // Today, treatment 1 of 2: an INSET ring, taking the channel the
+        // resting shade left free on purpose (see just above). Inset rather
+        // than the default outset so it draws inside the cell's own box and
+        // cannot overlap its neighbours across the 1.5 grid gap; `ring-*`
+        // rather than `border-*` because the border is already spoken for by
+        // every cell equally, and swapping its colour here would make today
+        // read as "a differently-outlined cell" instead of an added mark.
+        // Composes with the shade by construction: one paints `background`,
+        // the other `box-shadow`, so a resting day that is also today shows
+        // both at once — which is the case tests pin explicitly.
+        today && "ring-2 ring-primary ring-inset"
       )}
+      // The standard semantics for "this is the current date" in a grid of
+      // dates, so the ring is not the only channel carrying it — a screen
+      // reader announces today without seeing a single class.
+      aria-current={today ? "date" : undefined}
     >
-      <span className="text-sm font-medium text-muted-foreground">{dayNumber}</span>
+      <span
+        className={cn(
+          "text-sm font-medium",
+          // Today, treatment 2 of 2: the date number itself in a filled
+          // circle — the convention every calendar app has trained people to
+          // read — rather than merely recoloured text, which is invisible
+          // beside 27 other numbers. `size-6` fixes the circle's width so the
+          // span does not stretch to the cell in this flex column, and
+          // `inline-flex` + centring keeps the digits on its centre at both
+          // one and two digits.
+          today
+            ? "inline-flex size-6 items-center justify-center rounded-full bg-primary font-semibold text-primary-foreground"
+            : "text-muted-foreground"
+        )}
+      >
+        {dayNumber}
+      </span>
       {holidays.length > 0 && (
         // `flex-wrap` rather than a plain stack: two enabled countries can
         // land on one day, and in a column wide enough for both pills they

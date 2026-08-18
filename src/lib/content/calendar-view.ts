@@ -227,3 +227,32 @@ export function isRestingDay(month: string, dayNumber: number, weekStartsOn: Wee
   const weekday = new Date(year, monthNum - 1, dayNumber).getDay();
   return restingWeekdaysFor(weekStartsOn).includes(weekday);
 }
+
+/**
+ * Which day of `month` is today — or `null` when `month` is not the month
+ * `now` falls in. One function rather than a boolean per cell, because the
+ * "is this even the current month?" test is the part that is easy to forget:
+ * fold it in here and the caller cannot ask "is day 16 today?" without also
+ * having asked "of this month, in this year?".
+ *
+ * Unlike `isRestingDay` above, this is NOT timezone-invariant, and cannot be:
+ * "today" is a fact about the viewer's own zone and nothing else. At the
+ * single instant 2026-02-16T23:00+02:00 it is the 16th in Jerusalem and still
+ * the 16th — but hours earlier in the day — in London, while an hour later it
+ * is the 17th in Jerusalem and the 16th everywhere west of it. No one answer
+ * is right for two viewers in different zones. So it reads LOCAL components
+ * off `now`
+ * (`getFullYear`/`getMonth`/`getDate`) and compares them against the month
+ * string's own local calendar components — never `toISOString()`, never a UTC
+ * getter, either of which would answer for the machine's idea of the date and
+ * silently be a day out for half the world.
+ *
+ * Which is exactly why the caller must gate this behind hydration: on the
+ * server `now` is the SERVER's clock in the SERVER's zone, and rendering that
+ * ships one machine's today to every viewer. See `month-grid.tsx`.
+ */
+export function todayDayNumberIn(month: string, now: Date = new Date()): number | null {
+  const [year, monthNum] = month.split("-").map(Number);
+  if (now.getFullYear() !== year || now.getMonth() + 1 !== monthNum) return null;
+  return now.getDate();
+}
