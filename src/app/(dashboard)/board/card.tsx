@@ -115,18 +115,23 @@ function DragHandle({
   return (
     <button
       type="button"
-      // Hidden until the card is hovered, but with OPACITY, never `hidden`
-      // or `display:none`: the board carries a KeyboardSensor, so this
-      // button is the keyboard route into a drag. A removed element is not
-      // focusable, which would take keyboard dragging with it. Opacity also
-      // keeps the handle occupying layout, so the card does not shift as it
-      // fades in. `focus-visible` brings it back for anyone tabbing.
-      className="mt-0.5 shrink-0 cursor-grab touch-none text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 active:cursor-grabbing group-hover/card:opacity-100"
+      // Collapsed to zero width until the card is hovered, so the title sits
+      // flush against the card's own padding instead of behind a permanent
+      // gutter reserved for an invisible control. `w-5.5` is the icon plus its
+      // spacing, so hovering slides the title by exactly the handle's width.
+      //
+      // Width and opacity, never `hidden` or `display:none`: the board carries
+      // a KeyboardSensor, so this button is the keyboard route into a drag,
+      // and a removed element is not focusable — hiding it that way would take
+      // keyboard dragging with it. `focus-visible` expands it for anyone
+      // tabbing, so it is a real target at the moment it is focused rather
+      // than a zero-width one.
+      className="mt-0.5 w-0 shrink-0 cursor-grab overflow-hidden opacity-0 transition-all touch-none text-muted-foreground hover:text-foreground focus-visible:w-5.5 focus-visible:opacity-100 active:cursor-grabbing group-hover/card:w-5.5 group-hover/card:opacity-100"
       aria-label={`Move ${title}`}
       {...attributes}
       {...listeners}
     >
-      <GripVertical className="size-4" />
+      <GripVertical className="size-4 mr-1.5" />
     </button>
   );
 }
@@ -169,10 +174,10 @@ function BriefCardItem({ card, draggable }: { card: BoardBriefCard; draggable: b
     : undefined;
 
   return (
-    <div ref={setNodeRef} style={style} className={cn("group/card", isDragging && "opacity-40")}>
+    <div ref={setNodeRef} style={style} className={cn(isDragging && "opacity-40")}>
       <Card size="sm">
         <CardContent className="space-y-2">
-          <div className="flex items-start gap-1.5">
+          <div className="flex items-start">
             {draggable && (
               <DragHandle title={card.title} attributes={attributes} listeners={listeners} />
             )}
@@ -290,10 +295,10 @@ function PieceCardItem({
   const assignedMember = card.assignedTo ? members.find((m) => m.userId === card.assignedTo) : undefined;
 
   return (
-    <div ref={setNodeRef} style={style} className={cn("group/card", isDragging && "opacity-40")}>
+    <div ref={setNodeRef} style={style} className={cn(isDragging && "opacity-40")}>
       <Card size="sm">
         <CardContent className="space-y-2">
-          <div className="flex items-start gap-1.5">
+          <div className="flex items-start">
             {draggable && (
               <DragHandle title={card.title} attributes={attributes} listeners={listeners} />
             )}

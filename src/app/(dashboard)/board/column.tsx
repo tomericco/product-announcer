@@ -52,7 +52,7 @@ export function Column({
     <div className="flex min-w-48 flex-1 basis-0 flex-col gap-2">
       <div className="flex items-center gap-2 px-1">
         <h2 className="text-sm font-semibold">{title}</h2>
-        <Badge variant="secondary">{count}</Badge>
+        {count > 0 && <Badge variant="secondary">{count}</Badge>}
         {headerAction && <div className="ml-auto">{headerAction}</div>}
       </div>
       <div
