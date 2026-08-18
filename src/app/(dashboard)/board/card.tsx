@@ -115,7 +115,13 @@ function DragHandle({
   return (
     <button
       type="button"
-      className="mt-0.5 shrink-0 cursor-grab touch-none text-muted-foreground hover:text-foreground active:cursor-grabbing"
+      // Hidden until the card is hovered, but with OPACITY, never `hidden`
+      // or `display:none`: the board carries a KeyboardSensor, so this
+      // button is the keyboard route into a drag. A removed element is not
+      // focusable, which would take keyboard dragging with it. Opacity also
+      // keeps the handle occupying layout, so the card does not shift as it
+      // fades in. `focus-visible` brings it back for anyone tabbing.
+      className="mt-0.5 shrink-0 cursor-grab touch-none text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 active:cursor-grabbing group-hover/card:opacity-100"
       aria-label={`Move ${title}`}
       {...attributes}
       {...listeners}
@@ -163,7 +169,7 @@ function BriefCardItem({ card, draggable }: { card: BoardBriefCard; draggable: b
     : undefined;
 
   return (
-    <div ref={setNodeRef} style={style} className={cn(isDragging && "opacity-40")}>
+    <div ref={setNodeRef} style={style} className={cn("group/card", isDragging && "opacity-40")}>
       <Card size="sm">
         <CardContent className="space-y-2">
           <div className="flex items-start gap-1.5">
@@ -284,7 +290,7 @@ function PieceCardItem({
   const assignedMember = card.assignedTo ? members.find((m) => m.userId === card.assignedTo) : undefined;
 
   return (
-    <div ref={setNodeRef} style={style} className={cn(isDragging && "opacity-40")}>
+    <div ref={setNodeRef} style={style} className={cn("group/card", isDragging && "opacity-40")}>
       <Card size="sm">
         <CardContent className="space-y-2">
           <div className="flex items-start gap-1.5">
