@@ -1,0 +1,511 @@
+# Content Hub Pivot — Design
+
+**Date:** 2026-08-03
+**Status:** Approved. Decomposed into nine specs (see end).
+
+## Summary
+
+Versional pivots from a product-updates tool into a proactive content hub for
+software and AI companies. Agents watch a company's sources and propose what it
+should publish; a human turns proposals into shipped content.
+
+The company describes itself once at onboarding. Everything downstream — which
+sources matter, what counts as relevant, what angle to take, what voice to write
+in — derives from that description. No company-specific logic exists anywhere in
+the codebase.
+
+## The shape of the change
+
+The pivot generalizes the existing pipeline one level. It does not replace it.
+
+| Today (product updates) | After the pivot (content hub) |
+| --- | --- |
+| `change_events` — raw things that happened in code | **Signals** — raw things that happened anywhere |
+| tier-1 filter + tier-2 LLM enrichment | same two-tier pattern, scoring relevance against company context |
+| `atomic_updates` — deduped units of shipped work | **Briefs** — deduped content proposals, carrying their signals as evidence |
+| `releases` — a draft assembled from atomic updates | **Content pieces** — typed: product update / blog post / social post |
+| publish to Webflow / LinkedIn / webhook | same, plus per-channel variants |
+
+## Primary user
+
+A content marketer or content lead on a 2–5 person marketing team at a Series
+A/B software or AI company. They own the calendar, coordinate with PMM and
+engineering for source material, and are accountable for cadence and brand
+consistency.
+
+Their two pains: chasing context (what shipped, what competitors did, what the
+market is talking about) and keeping voice consistent. The first is what the
+signals layer solves; the second is what the company profile solves.
+
+## The loop
+
+```
+sources → signals → briefs (proposed) → [human gate] → content piece
+                                                       → draft → review → scheduled → published
+```
+
+The human is the gate between proposed and published, and never faces a blank
+page. This is a copilot, not autopilot: agents never publish, never schedule,
+and never create a content piece without a person accepting a brief.
+
+## Layers
+
+### 1. Company context
+
+Captured at onboarding, editable in settings. Bootstrapped rather than
+interrogated: the user supplies a website URL, an agent reads the homepage,
+product, about, and blog pages, and drafts the entire profile. The human
+corrects it. This extends the existing pattern of deriving brand style from an
+updates page URL.
+
+Captured:
+
+- **Identity** — one-line description, product names, category
+- **Positioning** — differentiators and the messages the company wants to own
+- **Audience** — ICPs, modelled by the existing `personas`
+- **Competitors** — proposed by the agent from the category, confirmed by the
+  human, each carrying the URLs to watch
+- **Topics** — the subjects in the company's lane
+- **Channels** — where they publish, mapping onto existing destinations
+- **Voice** — the existing `brand_profiles.guidelines`, unchanged
+
+Positioning and topics are not settings. They are the ranking function, and the
+only thing separating a proactive content hub from an RSS reader with a language
+model attached.
+
+### 2. Source agents
+
+Every agent implements the same five-step contract, which is the existing GitHub
+pipeline generalized:
+
+**fetch → extract → tier-1 drop → tier-2 relevance → write signal**
+
+Tier 1 is deterministic and free. Tier 2 is a single batched LLM call per run
+that scores survivors against the company profile and attaches a rationale.
+Items below the relevance floor are never written, only counted for
+observability.
+
+Three agents in v1:
+
+- **Shipped work** — already built, event-driven. GitHub and Notion flow through
+  `change_events` → `atomic_updates` unchanged. Rather than a creation-time hook,
+  a `syncShippedWorkSignals` reconciler upserts a signal for every non-hidden,
+  in-window atomic update and marks stale any signal whose atomic update was
+  hidden or is gone. It runs as a cron step, not at creation, because atomic
+  updates are inserted from three sites with no shared helper — hooking all
+  three means a fourth site added later silently stops producing signals.
+  Reconciling is idempotent, self-healing, and gets hide/unhide for free: a
+  hidden update's signal goes stale and comes back on unhide, without losing
+  whatever scored or cited it in the meantime. No relevance pass — dedupe and
+  enrichment already happened upstream.
+- **Competitor** — one per configured source, polled daily. RSS/Atom where
+  discoverable; HTML fetch with readable extraction and a content hash
+  otherwise. Watermark per source.
+- **News** — topic-driven, polled daily per tenant. Searches against the
+  tenant's own topics rather than a fixed feed list, because a curated feed list
+  per industry does not generalize to "any company". Optional user-supplied RSS
+  layered on.
+
+Sources carry a status the way the existing Notion and Webflow connections do,
+surfaced in settings rather than failing silently.
+
+Deferred past v1: customer voice (support, sales, community) and search/SEO
+demand.
+
+### 3. The brief agent
+
+Runs daily per tenant. Reads company context, signals in a 30-day window above
+the relevance floor, and what has already been proposed and published.
+
+1. **Correlate** — group related signals into clusters. The value is
+   disproportionately in the joins: "competitor shipped X" + "we shipped X a
+   year ago" is a comparison piece. Single-signal clusters are legitimate, but a
+   system that only ever produces them is a formatter, not an ideation engine.
+2. **Propose** — each cluster yields a complete brief: title, angle, why-now,
+   content type, audience, key points, target length, evidence.
+
+   **Briefs are capped: 3–5 key points, one sentence each.** A brief is a
+   commission, not a first draft. The spike produced 6.5 points averaging 27
+   words, which is something a writer skims rather than reads — and it doubles
+   the token cost of the highest-volume call in the system.
+3. **Dedupe** — a cluster matches against briefs with status `new` only. On a
+   match the brief absorbs the new signals, `lastEvidenceAt` is bumped, and it
+   re-ranks upward. Accepted and dismissed briefs are excluded from matching and
+   instead passed to the prompt as "already covered" and "previously rejected"
+   context. Without this the inbox repeats itself within a week and dies. The
+   existing `resolve-atomic-updates.ts` solves the identical problem.
+4. **Rank** — timeliness with decay, evidence strength, positioning fit, channel
+   gap.
+
+Briefs expire on their own so the inbox never accumulates debt.
+
+**Dismissal is training data.** Dismiss reasons feed the next run's prompt as
+negative examples. Cheap, compounds, and it is what makes the tool feel like a
+copilot.
+
+**Evidence is always visible** — reuse the atomic-update evidence popover.
+
+## Decisions
+
+- **Briefs, not ideas.** An earlier design split a thin "idea" from a later
+  expanded brief. Merged: the agent proposes a complete brief, the human reviews
+  and adjusts it, then approves. Two gates where one will do, and "brief" is the
+  language the ICP already uses. `content_pieces.brief` as a column is deleted;
+  brief content lives on the `briefs` row, referenced by `content_pieces.briefId`.
+- **The threshold trigger is removed entirely** — not relocated into ranking.
+  Shipped-work signals get no count-based special case.
+- **The cadence scheduler is retired.** Auto-composing drafts is autopilot, which
+  contradicts the human-gated model.
+- **Signal retention is 60 days** (`SIGNAL_WINDOW_DAYS` in `src/lib/signals/window.ts`
+  is the single source of truth), except signals cited by an accepted brief,
+  which are the evidence trail behind published content and are exempt.
+  **Deletion is deferred, not implemented**: today the window is enforced on
+  read only (every reader filters to the last 60 days by `createdAt`), and
+  nothing prunes the table yet. Whoever builds the purge job must read that
+  file first — it documents the reconciler's own dependency on the same bound.
+- **Manual creation goes through a brief, not around it.** `brief_signals` is
+  the only evidence join and `content_pieces.briefId` the only route from a piece
+  back to its sources. A second path would make evidence inconsistent depending
+  on how a piece was born.
+
+## Surfaces
+
+Three surfaces over two objects.
+
+- **Briefs inbox** — agent proposals, ranked, with evidence and accept/dismiss.
+  A collapsible rail pinned to the left of the board so proposals are always
+  visible without competing for board space.
+- **Pipeline board** — the home screen. Content pieces move through
+  `brief → draft → review → scheduled → published`. Status `brief` means
+  *approved, draft not yet generated*, so a lead can approve five briefs Monday
+  and generate drafts across the week.
+- **Calendar** — a read view over the same content pieces, scheduled and
+  published only, laid out by date and channel. Its job is coverage. A view, not
+  a third object.
+- **Signals browser** — everything the agents collected, filterable by kind,
+  competitor, topic, date, and relevance. Select signals to create a brief by
+  hand, or add a signal manually (a competitor post the agent missed, a webinar,
+  a conference talk). A debugging tool first and a feature second: an ingestion
+  pipeline you cannot see is undebuggable.
+
+## Data model
+
+Unchanged: `change_events`, `atomic_updates`, `repos`, all four connection
+tables, `delivery_attempts`, `llm_usage`, tenants/users/members/invites, and both
+seeded catalogs.
+
+### New tables
+
+- **`signals`** — `id, tenantId, sourceId?, kind (shipped_work|competitor_move|market_news|manual),
+  externalId, url, title, excerpt, occurredAt, atomicUpdateId?, competitorId?,
+  relevanceScore, relevanceRationale, topics[], status (new|used|stale), createdAt`.
+  Unique `(tenantId, kind, externalId)`; index `(tenantId, occurredAt)` and
+  `(tenantId, kind, occurredAt)`.
+  `used` is a reporting and pruning flag, **not** a consumption gate — ideation
+  reads every signal in the window regardless of status, because a signal cited
+  last week can join a new cluster this week.
+- **`sources`** — polled-source config: type, url, discovered feed url, watermark
+  (jsonb), status, `lastRunAt`, `lastError`.
+- **`competitors`** — name and site per competitor; watched URLs are `sources`
+  rows, so one competitor can have both a changelog and a blog.
+- **`briefs`** — see below.
+- **`brief_signals`** — the evidence join: `briefId, signalId, addedBy?, addedAt`,
+  PK on `(briefId, signalId)`. `addedBy` is null when the agent attached it.
+- **`channel_variants`** — `contentPieceId, channel, body, editedAt`. Holds
+  per-channel *content*; `delivery_attempts` continues to hold per-channel
+  *delivery*.
+
+### `briefs`
+
+```ts
+export const briefOriginEnum = pgEnum("brief_origin", ["agent", "manual"]);
+export const briefStatusEnum = pgEnum("brief_status", ["new", "accepted", "dismissed", "expired"]);
+export const contentTypeEnum = pgEnum("content_type", ["product_update", "blog_post", "social_post"]);
+export const briefDismissReasonEnum = pgEnum("brief_dismiss_reason", [
+  "off_topic", "wrong_angle", "already_covered", "not_our_voice", "other",
+]);
+```
+
+Columns: `id, tenantId, origin, createdBy?, contentType, title, angle, whyNow,
+suggestedChannel (text, not an enum — destinations will grow and Postgres has no
+DROP VALUE), audience?, keyPoints[], targetLength?, score,
+scoreRationale?, status, acceptedBy?, acceptedAt?, contentPieceId?,
+dismissReason?, dismissNote?, dismissedBy?, dismissedAt?, editedAt?,
+lastEvidenceAt, expiresAt, createdAt, updatedAt`.
+
+Indexes: `(tenantId, status, score)` for the inbox, `(tenantId, status, expiresAt)`
+for the expiry sweep, and a partial unique index on `contentPieceId where not
+null` so two briefs can never claim the same piece.
+
+`editedAt` follows the existing `summaryEditedAt`/`bodyEditedAt`/`sizeEditedAt`
+convention: a human edit freezes regeneration.
+
+Invariants enforced in the app, since each spans columns: `dismissReason` is set
+only when status is `dismissed`; `contentPieceId` only when `accepted`.
+
+`brief_signals` cascades on signal delete, which is precisely why accepted-brief
+signals are exempt from the 60-day purge — the exemption is what keeps the join
+honest.
+
+### Generalized tables
+
+- **`releases` → `content_pieces`.** Adds `type`, `briefId?`, `scheduledFor`
+  (what the calendar renders), `assignedTo`. Status widens from
+  `draft|approved|published|rejected` to
+  `brief|draft|review|scheduled|published|archived`. `reviewStatus`,
+  `reviewIssues`, `bodyEditedAt`, `composedAt`, `editedBy`, `publishedBy` carry
+  over unchanged. The `brief` text column is **not** added — brief content lives
+  on `briefs`.
+- **`brand_profiles` → `company_profiles`.** Keeps `guidelines`, `industry`,
+  `personas`. Gains `websiteUrl`, `oneLiner`, `category`, `positioning`,
+  `topics[]`.
+
+### Migration
+
+**The app is not in real use, so there is no production data to preserve.** This
+is a schema replacement, not a data migration — no backfill, no status remapping,
+no two-phase column drops, no verification step between them:
+
+1. Create `channel_variants` — the only one of the six new tables spec 1 needs.
+   `signals`, `sources`, `competitors`, `briefs`, and `brief_signals` are
+   deferred to specs 3 and 5, where their first consumers live: with no
+   production data there is no cost to adding tables later, and schema written
+   two specs ahead of its first use tends to be wrong.
+2. Drop `releases`; create `content_pieces` fresh with the full column set.
+3. Drop `linkedin_body` and `linkedin_body_edited_at` outright now that
+   `channel_variants` can hold the content.
+4. Point `atomic_updates` and `delivery_attempts` at `content_piece_id` directly.
+5. Drop `brand_profiles`; create `company_profiles` fresh.
+6. Strip `schedule_configs` to ideation cadence — drop `cadence`, `threshold`,
+   `thresholdEnabled`, `dayOfWeek`, `dayOfMonth`.
+
+In execution this became nine separate migrations rather than one generated
+diff — each mechanical step left the app compiling and the suite green, which
+a single collapsed migration spanning all of them would not have allowed.
+Spec 1 still drops from M to S.
+
+Optional cleanup while nothing depends on history: the 39 accumulated migrations
+in `src/db/migrations` can be squashed into a single baseline. Worth doing here
+or never.
+
+### What the clean slate does not solve
+
+`system_personas` and `system_update_examples` are **seeded global catalogs**, not
+tenant data. They must exist for generation to work, and six modules read them
+(`select-examples.ts`, `compose-prompt.ts`, `generation.ts`, `generation-context.ts`,
+`edit.ts`, `catch-up.ts`).
+
+`system_update_examples` is product-update-shaped: each row carries an
+`update_category` and a body written as a changelog entry. With three content
+types, few-shot selection needs examples per type.
+
+Decision for spec 1: rename to `system_content_examples`, add a `contentType`
+column, make `update_category` nullable (it is meaningful only for product
+updates), and re-seed. Blog and social exemplars can be seeded thin and grown
+later — but the **column** lands in spec 1 rather than forcing a second schema
+change midway through spec 9.
+
+## Specs
+
+| # | Spec | Delivers | Depends on | Size |
+| --- | --- | --- | --- | --- |
+| 1 | Content pieces foundation | The schema replacement above, plus the `system_content_examples` rename | — | S |
+| 2 | Company context & bootstrap | Profile fields, `competitors` CRUD, crawl-site bootstrap agent, onboarding | 1 | M |
+| 3 | Signals layer + competitor agent | `signals`/`sources`, retention job, shipped-work adapter, competitor agent, signals browser | 2 | L |
+| 4 | News agent | Topic-driven search, relevance, cross-source dedupe | 3 | M |
+| 5 | Brief agent + inbox | `briefs`/`brief_signals`, correlate→propose→dedupe→rank, expiry, inbox UI, accept→content piece | 3 | L |
+| 6 | Manual brief creation | Signal selection → brief, manual signals | 3, 5 | S |
+| 7 | Pipeline board | Board over content pieces, transitions, assignment | 1 | M |
+| 8 | Calendar view | `scheduledFor`, month view by channel | 7 | S |
+| 9 | Multi-type drafting & publishing | Draft-from-brief per type, channel variants UI, publish per channel | 1, 5 | L |
+
+Specs 4, 7, and 8 are off the critical path.
+
+The signals browser sits in spec 3 rather than with the manual-creation work it
+enables, because an ingestion pipeline you cannot see is undebuggable.
+
+Spec 1 comes first despite being pure refactor: every later spec writes against
+`content_pieces`, so doing it now means doing it once, against small data.
+
+## Validation spike (precedes spec 1)
+
+The premise the pivot rests on — *an agent, given a company profile and a pile of
+signals, produces briefs a content lead would accept* — is untested by specs 1–3.
+A throwaway spike answers it in half a day: hand-written profiles for two or
+three real companies, hand-collected real signals, the ideation prompt, briefs
+printed to a terminal and read by a human. No schema, no UI, nothing kept.
+
+Outcomes:
+
+- Sharp across all companies → the premise holds, proceed.
+- Sharp for one, generic for others → the company profile is not carrying enough
+  signal; spec 2 must capture more before spec 5 can work.
+- Generic everywhere → the ideation design is wrong, found before a migration was
+  written.
+
+### Result — run 2026-08-03
+
+**Outcome: sharp across all three companies. The premise holds; proceed.**
+
+Run against Linear, Vercel and Frontitude with hand-written profiles and real
+signals scraped from actual changelogs, competitor changelogs and industry press.
+6 briefs each, on Opus 5.
+
+| | multi-signal | cross-kind | signals cited | hallucinated IDs |
+| --- | --- | --- | --- | --- |
+| Linear | 6/6 | 4/6 | 14/17 | 0 |
+| Vercel | 5/6 | 3/6 | 13/18 | 0 |
+| Frontitude | 5/6 | 3/6 | 11/13 | 0 |
+
+Findings that change the specs:
+
+1. **Quantity is not self-limiting.** "Up to 6" produced exactly 6 every time.
+   Left as-is this manufactures content on quiet weeks — the exact failure mode
+   the human-gated model exists to avoid. **RESOLVED — see the quiet-week spike
+   below.**
+2. **Noise rejection works.** Planted low-value signals — Cloudflare V8 version
+   bumps, a "platform improvements and fixes" maintenance release, market-size
+   forecasts — were left uncited in every run. The ignore-noise rule earns its
+   place in the prompt.
+3. **Low ship velocity is not a blocker.** Frontitude had only 2 shipped-work
+   signals and still produced 6 strong briefs off competitor and market signals.
+   The product works for companies that do not ship often, which is most
+   marketing-led companies — and it means the competitor agent (spec 3), not the
+   shipped-work adapter, is the load-bearing source.
+4. **Competitor signals are not only good for comparison content.** The
+   highest-value Vercel brief was a response to a *competitor's* security
+   advisory about Next.js — Vercel's own framework. Do not narrow the competitor
+   agent to "what they shipped versus what we shipped".
+5. **Scores cluster narrowly** (0.66–0.92). Absolute scores will rank poorly once
+   a backlog accumulates. Spec 5 should rank relatively within a run rather than
+   trusting the absolute number.
+6. **Briefs came out far too long, and `outline` was dead weight.** Measured:
+   6.5 key points per brief averaging 27 words each, plus a separate 41-word
+   `outline` field that only restated them in compressed form. Two decisions
+   follow. **Cap key points at 3–5, one sentence each** — a brief is a
+   commission, not a first draft, and 175 words of instructions is something a
+   writer skims. **Drop the `outline` column entirely** — ordered key points
+   *are* the outline, and keeping both guarantees they drift apart once a human
+   edits one of them. Together this roughly halves the output tokens of the
+   highest-volume call in the system. Set `maxOutputTokens` explicitly
+   regardless: 6 uncapped briefs overflowed a 4096 default.
+7. **Excerpt quality drives brief quality.** The tier-2 relevance pass in spec 3
+   must preserve a meaningful excerpt, not just a score — the briefs lean on
+   excerpt detail heavily.
+
+### Quiet-week spike — run 2026-08-03
+
+Finding 1 above was the one that could invalidate the premise, so it was tested
+directly before building further. Three configurations, two companies (Linear,
+and Frontitude as the low-ship-velocity case), using real signals plus a
+hand-built quiet week of routine material — dependency bumps, a Safari label fix,
+a Jira maintenance patch, a competitor's cosmetic restyle, an analyst market-size
+report.
+
+| prompt | week | briefs returned |
+| --- | --- | --- |
+| v1 (as spiked) | thin | 4 (Linear), 5 (Frontitude) |
+| v2 (revised) | thin | **0, 0** |
+| v2 (revised) | rich | 3 (Linear), 2 (Frontitude) |
+
+**The failure is real and worse than "it pads".** On the quiet week, v1 proposed a
+blog post titled *"Dashboard refreshes and maintenance releases: what a quiet
+quarter in localization tooling actually means"* — a brief whose subject is the
+absence of anything to write about — and a product update justifying a
+stability-only release. That is not a marginal call; it is the tool inventing
+work.
+
+**The fix is achievable in the prompt alone. No code mechanism is needed.** v2
+returned zero briefs on both quiet weeks, with an honest one-line judgement
+instead: *"a dependency bump, a Safari label fix, a 'modest' sync improvement, a
+Jira maintenance patch, and a generic market forecast add up to a genuinely
+routine week, so Linear should publish nothing and keep its changelog
+credibility intact."*
+
+**Volume on a good week drops from 6 to 2–3, and that is the intended effect.**
+v2's briefs cite more evidence and reject weak material explicitly — Linear's
+top brief clusters eight signals, and the assessment names the funding and
+market-forecast signals as supporting nothing. Run 1's briefs 5 and 6 were
+already noted as compressed restatements of the flagship argument; those are what
+disappeared. Spec 5 should expect a handful of strong briefs per run, not an
+inbox that always looks full.
+
+**What v2 changed** (all at once — attribution between them is untested):
+
+- Removed the "up to 6" quota entirely: *"There is no target number."*
+- Licensed silence explicitly: *"Most weeks are quiet. Returning an empty list is
+  a correct and common outcome."*
+- Stated a bar: would you defend this to a skeptical head of marketing? If the
+  answer to "why publish this" is "because it is Tuesday", it fails.
+- Named padding as the worst outcome: *"Two strong briefs beat six padded ones;
+  zero strong briefs beat one padded one."*
+- Listed what never clears the bar alone: version bumps, maintenance releases,
+  generic market statistics, cosmetic competitor changes.
+- Added a required `weekAssessment` field, answered **before** the brief list, so
+  the model judges density before enumerating rather than filling a list.
+- Capped `keyPoints` at 3–5 structurally in the schema, and dropped `outline`.
+
+**`weekAssessment` should reach the UI.** It was added to force judgement, but it
+is also the right empty state: "Quiet week — nothing clears the bar", with the
+reasoning, is far better than a blank inbox that reads as broken. Keep the field
+whether or not it turns out to be load-bearing for the fix.
+
+Four prompt rules earned their place and should carry into spec 5 close to
+verbatim: favour clusters, the swap test ("if it reads the same with a
+competitor's name swapped in, do not propose it"), ignore noise, and why-now must
+point at something dated.
+
+---
+
+## Status — closed 2026-08-06
+
+All nine specs are complete on `feat/content-hub-pivot`. The pipeline runs end
+to end: agents collect signals → the brief agent proposes (or a human selects
+signals and gets a brief proposed from exactly those) → a human accepts →
+generation writes a draft → the board and calendar track it → it publishes to
+chosen destinations.
+
+### Spec 9 closed without further work
+
+Its three parts were already done or turned out not to be needed:
+
+- **Draft-from-brief per type** — built in the brief-drafting spec (5c).
+  `buildSystemPrompt` forks on `contentTypeEnum`.
+- **Publish per channel** — already existed. `dispatchAllDestinations` takes an
+  `only?: DestinationId[]`, and the publish modal renders configured
+  destinations as checkboxes with the button disabled until one is chosen.
+- **Channel variants UI** — deliberately NOT generalised. `channelVariants` is
+  keyed by a free-text `channel`, and LinkedIn is the only destination whose
+  copy differs from the body; it has had an editor since spec 1. Webflow and
+  the webhook take the body unchanged, so a generic per-channel editor would
+  ship one useful tab and two that duplicate the body, abstracting over
+  channels that do not exist. Build it when a second channel needs different
+  copy, not before.
+
+### The decompositions that changed during the build
+
+- **Specs 3 and 5 were each split in two** — the signals layer from the
+  competitor agent, and the brief agent from the inbox. Spec 5 split again for
+  drafting (5c).
+- **Spec 4 grew a second spec** for news candidate filtering, after live runs
+  showed the agent re-fetching articles it had already judged.
+- **Spec 6 (manual brief creation) turned out to be the most load-bearing of
+  the later specs**, not the smallest. Two live runs had the brief agent
+  correctly refuse to propose anything from a thin signal pool, which made a
+  human-initiated path the only way to exercise drafting at all.
+
+### What is NOT done
+
+- **Signal quality is the binding constraint on the automated path.** Live runs
+  surface portfolio pages, GitHub READMEs and LinkedIn posts against roughly one
+  substantive article. Spec 6 routes around this; nothing fixes it. Topic tuning
+  and the news agent's acquisition are the highest-value remaining work.
+- **No UI has ever been rendered.** The dev preview sits behind an OAuth wall,
+  so eight surfaces — the signals browser's selection, the brief inbox, the
+  brief form, the drafts states, the board, its scheduling dialog, the calendar,
+  the add-signal form — have shipped verified only by `tsc`, `eslint` and
+  `npm run build`.
+- Retention: nothing deletes signals, `rejected_articles`, or `brief_runs`.
+- Deferred and recorded in their own specs: auto-publishing a scheduled piece,
+  board ordering by last activity (no `updatedAt` column), regenerating a draft
+  after a human edit, and re-running the model on every `/briefs/new` render.

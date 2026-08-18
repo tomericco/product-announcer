@@ -7,11 +7,12 @@ import { db } from "@/db";
 import { repos, scheduleConfigs, tenants } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { requireRole } from "@/lib/workspace/active-tenant";
-import { computeNextScheduledAt, type Cadence } from "@/lib/scheduling/scheduler-decision";
 import { addSelectedRepos } from "@/lib/workspace/repo-sync";
 import { listRepoBranches } from "@/lib/integrations/github/github";
 import { createInvite, revokeActiveInvite } from "@/lib/workspace/invites";
 import { removeWorkspaceMember } from "@/lib/workspace/members";
+import { parseHour } from "@/lib/workspace/parse-hour";
+import { normalizeWeekStart, parseHolidayCountries } from "@/lib/workspace/calendar-settings";
 
 export async function saveWorkspaceName(formData: FormData) {
   const session = await requireSession();
@@ -20,6 +21,31 @@ export async function saveWorkspaceName(formData: FormData) {
 
   await db.update(tenants).set({ name }).where(eq(tenants.id, session.user.tenantId));
   revalidatePath("/settings");
+}
+
+/**
+ * The two workspace calendar settings, saved together because they share one
+ * card and one Save button. Both values are re-derived from the allow-lists in
+ * `calendar-settings.ts` rather than trusted from the form, so a stale or
+ * tampered submission can only ever land a value the UI itself offers.
+ *
+ * `/calendar` is revalidated too: it reads both columns on every render, so a
+ * save that only revalidated `/settings` would leave the grid showing the old
+ * week start until something else invalidated it.
+ */
+export async function saveCalendarSettings(formData: FormData) {
+  const session = await requireSession();
+
+  const weekStartsOn = normalizeWeekStart(formData.get("weekStartsOn"));
+  const holidayCountries = parseHolidayCountries(formData.getAll("holidayCountries"));
+
+  await db
+    .update(tenants)
+    .set({ weekStartsOn, holidayCountries })
+    .where(eq(tenants.id, session.user.tenantId));
+
+  revalidatePath("/settings");
+  revalidatePath("/calendar");
 }
 
 export async function addRepo(formData: FormData) {
@@ -42,7 +68,7 @@ export async function addRepo(formData: FormData) {
   await addSelectedRepos(session.user.tenantId, tenant.githubInstallationId, [{ fullName, branch }]);
 
   revalidatePath("/integrations");
-  revalidatePath("/atomic-updates");
+  revalidatePath("/company");
 }
 
 export async function updateRepoBranch(formData: FormData) {
@@ -72,47 +98,22 @@ export async function updateRepoBranch(formData: FormData) {
     .where(and(eq(repos.id, repoId), eq(repos.tenantId, session.user.tenantId)));
 
   revalidatePath("/integrations");
-  revalidatePath("/atomic-updates");
-}
-
-function parseIntOrNull(value: FormDataEntryValue | null): number | null {
-  if (value === null || value === "") return null;
-  const n = Number(value);
-  return Number.isFinite(n) ? Math.trunc(n) : null;
+  revalidatePath("/company");
 }
 
 export async function saveWorkspaceSchedule(formData: FormData) {
   const session = await requireSession();
-  const cadence = formData.get("cadence") as Cadence;
-  const thresholdRaw = formData.get("threshold");
-  const threshold = thresholdRaw ? Number(thresholdRaw) : null;
-
-  const hour = Math.min(23, Math.max(0, parseIntOrNull(formData.get("hour")) ?? 9));
-  const thresholdEnabled = formData.get("thresholdEnabled") === "on";
-  // Day-of-week is meaningful for the weekly and biweekly cadences, day-of-month
-  // for the monthly cadence — store null for the others so the data stays honest.
-  const dayOfWeek =
-    cadence === "weekly" || cadence === "biweekly" ? parseIntOrNull(formData.get("dayOfWeek")) : null;
-  const dayOfMonth = cadence === "monthly" ? parseIntOrNull(formData.get("dayOfMonth")) : null;
-
-  // Recompute the next run from now on every save so a changed hour/day/cadence
-  // takes effect immediately. Subsequent runs advance from this anchor.
-  const nextScheduledAt =
-    cadence === "none"
-      ? null
-      : computeNextScheduledAt(new Date(), cadence, { hour, dayOfWeek, dayOfMonth });
-
-  const values = { cadence, threshold, thresholdEnabled, hour, dayOfWeek, dayOfMonth, nextScheduledAt };
+  const hour = parseHour(formData.get("hour"));
 
   // onConflictDoUpdate (not a plain insert) so a concurrent first-time save can't
   // violate the one-per-tenant unique constraint — matches saveOnboardingSchedule.
   await db
     .insert(scheduleConfigs)
-    .values({ tenantId: session.user.tenantId, ...values })
-    .onConflictDoUpdate({ target: scheduleConfigs.tenantId, set: values });
+    .values({ tenantId: session.user.tenantId, hour })
+    .onConflictDoUpdate({ target: scheduleConfigs.tenantId, set: { hour } });
 
   revalidatePath("/settings");
-  revalidatePath("/atomic-updates");
+  revalidatePath("/company");
 }
 
 export async function generateInviteLink(): Promise<{ url: string; expiresAt: string }> {

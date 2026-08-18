@@ -1,9 +1,10 @@
 import { UnsavedChangesProvider, GuardedLink } from "./unsaved-changes";
-import { and, count, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { redirect } from "next/navigation";
 import { ChevronsUpDown } from "lucide-react";
 import { db } from "@/db";
-import { releases, tenants } from "@/db/schema";
+import { tenants } from "@/db/schema";
+import { readBoardNavCount } from "@/lib/content/board";
 import { requireSession } from "@/lib/workspace/session";
 import { isOnboardingComplete } from "@/lib/workspace/onboarding";
 import { Button } from "@/components/ui/button";
@@ -17,6 +18,7 @@ import {
 import { NavLinks } from "./nav-links";
 import { UserMenu } from "./user-menu";
 import { Logo } from "@/components/brand/logo";
+import { MainContainer } from "./main-container";
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
   const session = await requireSession();
@@ -25,11 +27,9 @@ export default async function DashboardLayout({ children }: { children: React.Re
 
   const [tenant] = await db.select().from(tenants).where(eq(tenants.id, session.user.tenantId)).limit(1);
 
-  const [draftCountRow] = await db
-    .select({ value: count() })
-    .from(releases)
-    .where(and(eq(releases.tenantId, session.user.tenantId), eq(releases.status, "draft")));
-  const draftCount = draftCountRow?.value ?? 0;
+  // See the doc comment on readBoardNavCount for what this counts and why
+  // it cannot honour /board's assignee filter.
+  const boardCount = await readBoardNavCount(session.user.tenantId);
 
   return (
     <UnsavedChangesProvider>
@@ -51,14 +51,14 @@ export default async function DashboardLayout({ children }: { children: React.Re
 
         <Separator className="my-2" />
 
-        <NavLinks draftCount={draftCount} />
+        <NavLinks boardCount={boardCount} />
 
         <div className="mt-auto pt-3">
           <UserMenu email={session.user.email!} name={session.user.name ?? null} />
         </div>
       </aside>
-        <main className="flex flex-1 flex-col p-8">
-          <div className="mx-auto flex w-full max-w-4xl flex-1 flex-col">{children}</div>
+        <main className="flex min-w-0 flex-1 flex-col p-8">
+          <MainContainer>{children}</MainContainer>
         </main>
       </div>
     </UnsavedChangesProvider>

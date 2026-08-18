@@ -27,7 +27,7 @@ export async function withTenantLock<T>(
  * sitting in an unpublished draft release is still open — nothing has been
  * communicated to users yet, so new evidence still belongs to it.
  *
- * Deliberately DOES NOT filter on `releaseId IS NULL` the way the compose-side
+ * Deliberately DOES NOT filter on `contentPieceId IS NULL` the way the compose-side
  * candidate sets do (`getOpenAtomicUpdates` in release-claim.ts, `listAtomicUpdates`
  * in atomic-updates/actions.ts). Those two hide an atomic update once it's
  * claimed into a draft, so it isn't offered for a second release. This query
@@ -35,7 +35,7 @@ export async function withTenantLock<T>(
  * atomic update that's already sitting in an in-progress draft (the
  * "evidence delta" a later commit can still contribute before the draft
  * ships) instead of spinning up a duplicate atomic update. Do NOT add a
- * releaseId filter here to "match" the others — that would break re-resolution
+ * contentPieceId filter here to "match" the others — that would break re-resolution
  * against open drafts.
  */
 export async function loadOpenAtomicUpdates(
@@ -120,7 +120,7 @@ export async function applyResolutionInTx(
       // tenant's change event to another tenant's atomic update. If the target
       // isn't this tenant's, the WHERE simply matches nothing and the event
       // stays unassigned rather than throwing.
-      // Also re-check `status = 'open'`: a claim (`claimReleaseFromAtomicUpdates`)
+      // Also re-check `status = 'open'`: a draft link (`linkAtomicUpdatesToPiece`)
       // does not take the tenant lock this resolver runs under, so the target
       // atomic update can flip to `released` while the resolver's LLM call is
       // in flight. If that happened, the EXISTS fails, the event stays

@@ -11,7 +11,7 @@ import {
 } from "@/lib/integrations/webflow/client";
 import { buildFieldData } from "@/lib/integrations/webflow/mapping";
 import { slugify, withSuffix } from "@/lib/publishing/slug";
-import type { Destination, DeliveryResult, DbClient, Release } from "./types";
+import type { Destination, DeliveryResult, DbClient, ContentPiece } from "./types";
 
 type WebflowConnection = typeof webflowConnections.$inferSelect;
 
@@ -126,13 +126,13 @@ export const webflowDestination: Destination<WebflowConnection> = {
     return connection ?? null;
   },
 
-  async deliver(release: Release, connection, externalId, database): Promise<DeliveryResult> {
+  async deliver(piece: ContentPiece, connection, externalId, database): Promise<DeliveryResult> {
     if (!connection.collectionId) {
       return { status: "permanent", error: "Webflow connection is missing a collection.", configFault: true };
     }
     // MDXEditor can submit a blank body on a parse failure (see resolveBody in
     // drafts/actions.ts). Publishing an empty CMS item is worse than failing.
-    if (!release.body.trim()) {
+    if (!piece.body.trim()) {
       return { status: "permanent", error: "Update body is empty; nothing to publish." };
     }
 
@@ -163,7 +163,7 @@ export const webflowDestination: Destination<WebflowConnection> = {
       // deleted in Webflow since setup would otherwise 400 with no explanation.
       const collection = await getCollection(token, connection.collectionId);
 
-      const baseSlug = slugify(release.title);
+      const baseSlug = slugify(piece.title);
       let lastError: DeliveryResult | null = null;
       // Tracks genuine slug-collision retries only. Kept separate from the
       // 404-fallback below so a deleted-item recovery never eats into this
@@ -172,7 +172,7 @@ export const webflowDestination: Destination<WebflowConnection> = {
 
       while (slugAttempt < MAX_SLUG_ATTEMPTS) {
         const fieldData = buildFieldData(
-          release,
+          piece,
           connection.fieldMapping,
           collection.fields,
           withSuffix(baseSlug, slugAttempt)

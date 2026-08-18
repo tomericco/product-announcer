@@ -1,11 +1,11 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, releases } from "../../../src/db/schema";
+import { tenants, contentPieces } from "../../../src/db/schema";
 
 const NAME = "Review Columns Test Tenant";
 
-describe("releases review columns", () => {
+describe("content_pieces review columns", () => {
   afterEach(async () => {
     await db.delete(tenants).where(eq(tenants.name, NAME));
   });
@@ -14,7 +14,7 @@ describe("releases review columns", () => {
     const [tenant] = await db.insert(tenants).values({ name: NAME }).returning();
 
     const [defaulted] = await db
-      .insert(releases)
+      .insert(contentPieces)
       .values({ tenantId: tenant.id, title: "t", body: "b" })
       .returning();
     expect(defaulted.reviewStatus).toBeNull();
@@ -22,7 +22,7 @@ describe("releases review columns", () => {
     expect(defaulted.reviewedAt).toBeNull();
 
     const [reviewed] = await db
-      .insert(releases)
+      .insert(contentPieces)
       .values({
         tenantId: tenant.id, title: "t2", body: "b2",
         reviewStatus: "failed", reviewIssues: ["too salesy", "wrong tone"], reviewedAt: new Date(),

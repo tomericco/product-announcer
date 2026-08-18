@@ -2,10 +2,11 @@
 
 import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
-import { releases, deliveryAttempts, users } from "@/db/schema";
+import { contentPieces, deliveryAttempts, users } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { destinationLabel } from "@/lib/publishing/dispatch";
 import { renderMarkdown } from "@/lib/markdown/render";
+import { readVariant } from "@/lib/publishing/channel-variants";
 
 export type ReleaseDestinationStatus = {
   destination: "webhook" | "webflow" | "linkedin";
@@ -24,28 +25,30 @@ export type ReleaseDetail = {
   destinations: ReleaseDestinationStatus[];
 };
 
-export async function getReleaseDetail(releaseId: string): Promise<ReleaseDetail | null> {
+export async function getReleaseDetail(contentPieceId: string): Promise<ReleaseDetail | null> {
   const session = await requireSession();
 
   const [row] = await db
     .select({
-      id: releases.id,
-      title: releases.title,
-      body: releases.body,
-      linkedinBody: releases.linkedinBody,
-      publishedAt: releases.publishedAt,
+      id: contentPieces.id,
+      title: contentPieces.title,
+      body: contentPieces.body,
+      publishedAt: contentPieces.publishedAt,
       publisherName: users.name,
       publisherEmail: users.email,
     })
-    .from(releases)
-    .leftJoin(users, eq(releases.publishedBy, users.id))
-    // Tenant-scoped: a release the caller doesn't own returns no row → null.
-    .where(and(eq(releases.id, releaseId), eq(releases.tenantId, session.user.tenantId)))
+    .from(contentPieces)
+    .leftJoin(users, eq(contentPieces.publishedBy, users.id))
+    // Tenant-scoped: a content piece the caller doesn't own returns no row → null.
+    .where(and(eq(contentPieces.id, contentPieceId), eq(contentPieces.tenantId, session.user.tenantId)))
     .limit(1);
   if (!row) return null;
 
-  // The release is confirmed the caller's above, so its delivery attempts
-  // (FK'd to it) are safe to read by releaseId alone.
+  // The content piece is confirmed the caller's above, so its channel variant
+  // and delivery attempts (both FK'd to it) are safe to read by
+  // contentPieceId alone.
+  const linkedinVariant = await readVariant(db, contentPieceId, "linkedin");
+
   const attempts = await db
     .select({
       destination: deliveryAttempts.destination,
@@ -53,14 +56,14 @@ export async function getReleaseDetail(releaseId: string): Promise<ReleaseDetail
       error: deliveryAttempts.lastError,
     })
     .from(deliveryAttempts)
-    .where(eq(deliveryAttempts.releaseId, releaseId))
+    .where(eq(deliveryAttempts.contentPieceId, contentPieceId))
     .orderBy(deliveryAttempts.destination);
 
   return {
     id: row.id,
     title: row.title,
     bodyHtml: renderMarkdown(row.body),
-    linkedinBody: row.linkedinBody,
+    linkedinBody: linkedinVariant?.body ?? null,
     publishedAt: row.publishedAt ? row.publishedAt.toISOString() : null,
     publisherName: row.publisherName ?? row.publisherEmail ?? null,
     destinations: attempts.map((a) => ({

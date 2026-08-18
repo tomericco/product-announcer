@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, releases, users } from "../../../src/db/schema";
+import { tenants, contentPieces, users } from "../../../src/db/schema";
 
 const TENANT_NAME = "Save Draft Test Tenant";
 const USER_EMAIL = "save-draft-test@example.com";
@@ -26,20 +26,20 @@ async function seed(body = "Original body") {
   currentTenantId = tenant.id;
   currentUserId = user.id;
   const [release] = await db
-    .insert(releases)
+    .insert(contentPieces)
     .values({ tenantId: tenant.id, title: "Original title", body })
     .returning();
   return { tenant, user, release };
 }
 
 async function rowFor(releaseId: string) {
-  const [row] = await db.select().from(releases).where(eq(releases.id, releaseId));
+  const [row] = await db.select().from(contentPieces).where(eq(contentPieces.id, releaseId));
   return row;
 }
 
 function formDataFor(releaseId: string, title: string, body: string) {
   const fd = new FormData();
-  fd.set("releaseId", releaseId);
+  fd.set("contentPieceId", releaseId);
   fd.set("title", title);
   fd.set("body", body);
   return fd;
@@ -101,9 +101,9 @@ describe("saveDraft draft-status gate", () => {
   it("refuses a published release and leaves its body untouched", async () => {
     const { release } = await seed("Published body");
     await db
-      .update(releases)
+      .update(contentPieces)
       .set({ status: "published", publishedAt: new Date() })
-      .where(eq(releases.id, release.id));
+      .where(eq(contentPieces.id, release.id));
 
     await expect(saveDraft(formDataFor(release.id, "Hijacked title", "Hijacked body"))).rejects.toThrow(
       /already been published/i
@@ -114,16 +114,52 @@ describe("saveDraft draft-status gate", () => {
     expect(row.title).toBe("Original title");
   });
 
-  it("refuses a rejected release and leaves its body untouched", async () => {
-    const { release } = await seed("Rejected body");
-    await db.update(releases).set({ status: "rejected" }).where(eq(releases.id, release.id));
+  it("refuses an archived piece and leaves its body untouched", async () => {
+    const { release } = await seed("Archived body");
+    await db.update(contentPieces).set({ status: "archived" }).where(eq(contentPieces.id, release.id));
 
     await expect(saveDraft(formDataFor(release.id, "Hijacked title", "Hijacked body"))).rejects.toThrow(
-      /rejected/i
+      /archived/i
     );
 
     const row = await rowFor(release.id);
-    expect(row.body).toBe("Rejected body");
+    expect(row.body).toBe("Archived body");
     expect(row.title).toBe("Original title");
+  });
+});
+
+// The competitor-name scan's warning (generationError on a "draft" piece) is
+// permanent unless something clears it — without this, editing the flagged
+// name back out of the body would never make the amber banner go away.
+describe("saveDraft clears the competitor-name warning", () => {
+  afterEach(async () => {
+    await db.delete(tenants).where(eq(tenants.name, TENANT_NAME));
+    await db.delete(users).where(eq(users.email, USER_EMAIL));
+  });
+
+  it("clears generationError when the saved body actually changes", async () => {
+    const { release } = await seed("Original body");
+    await db
+      .update(contentPieces)
+      .set({ generationError: "This draft may name a company from your competitors list: Acme." })
+      .where(eq(contentPieces.id, release.id));
+
+    await saveDraft(formDataFor(release.id, "Original title", "Edited body"));
+
+    const row = await rowFor(release.id);
+    expect(row.generationError).toBeNull();
+  });
+
+  it("leaves generationError in place when the saved body is unchanged", async () => {
+    const { release } = await seed("Original body");
+    await db
+      .update(contentPieces)
+      .set({ generationError: "This draft may name a company from your competitors list: Acme." })
+      .where(eq(contentPieces.id, release.id));
+
+    await saveDraft(formDataFor(release.id, "A new title", "Original body"));
+
+    const row = await rowFor(release.id);
+    expect(row.generationError).toBe("This draft may name a company from your competitors list: Acme.");
   });
 });

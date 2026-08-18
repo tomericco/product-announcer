@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, releases, users, atomicUpdates } from "../../../src/db/schema";
+import { tenants, contentPieces, users, atomicUpdates } from "../../../src/db/schema";
 
 const TENANT_NAME = "Reject Delete Actions Test Tenant";
 const USER_EMAIL = "reject-delete-actions-test@example.com";
@@ -31,7 +31,7 @@ async function seed(status: "draft" | "published" = "draft") {
   currentTenantId = tenant.id;
   currentUserId = user.id;
   const [release] = await db
-    .insert(releases)
+    .insert(contentPieces)
     .values({
       tenantId: tenant.id,
       title: "T",
@@ -44,7 +44,7 @@ async function seed(status: "draft" | "published" = "draft") {
     .insert(atomicUpdates)
     .values({
       tenantId: tenant.id,
-      releaseId: release.id,
+      contentPieceId: release.id,
       title: "CSV export",
       summary: "Export reports as CSV.",
       status: status === "published" ? "released" : "open",
@@ -55,12 +55,12 @@ async function seed(status: "draft" | "published" = "draft") {
 
 function formDataFor(releaseId: string) {
   const fd = new FormData();
-  fd.set("releaseId", releaseId);
+  fd.set("contentPieceId", releaseId);
   return fd;
 }
 
 async function releaseRow(releaseId: string) {
-  const [row] = await db.select().from(releases).where(eq(releases.id, releaseId));
+  const [row] = await db.select().from(contentPieces).where(eq(contentPieces.id, releaseId));
   return row;
 }
 
@@ -73,7 +73,7 @@ afterEach(async () => {
   const [tenant] = await db.select().from(tenants).where(eq(tenants.name, TENANT_NAME));
   if (tenant) {
     await db.delete(atomicUpdates).where(eq(atomicUpdates.tenantId, tenant.id));
-    await db.delete(releases).where(eq(releases.tenantId, tenant.id));
+    await db.delete(contentPieces).where(eq(contentPieces.tenantId, tenant.id));
   }
   await db.delete(tenants).where(eq(tenants.name, TENANT_NAME));
   await db.delete(users).where(eq(users.email, USER_EMAIL));
@@ -85,10 +85,10 @@ describe("rejectDraft", () => {
 
     await rejectDraft(formDataFor(release.id));
 
-    expect((await releaseRow(release.id)).status).toBe("rejected");
+    expect((await releaseRow(release.id)).status).toBe("archived");
     const reverted = await atomicRow(atomic.id);
     expect(reverted.status).toBe("open");
-    expect(reverted.releaseId).toBeNull();
+    expect(reverted.contentPieceId).toBeNull();
   });
 
   // The damage this prevents is specific: reverting a published release's
@@ -102,7 +102,7 @@ describe("rejectDraft", () => {
     expect((await releaseRow(release.id)).status).toBe("published");
     const untouched = await atomicRow(atomic.id);
     expect(untouched.status).toBe("released");
-    expect(untouched.releaseId).toBe(release.id);
+    expect(untouched.contentPieceId).toBe(release.id);
   });
 });
 
@@ -115,7 +115,7 @@ describe("deleteDraft", () => {
     expect(await releaseRow(release.id)).toBeUndefined();
     const reverted = await atomicRow(atomic.id);
     expect(reverted.status).toBe("open");
-    expect(reverted.releaseId).toBeNull();
+    expect(reverted.contentPieceId).toBeNull();
   });
 
   it("refuses a published release, leaving the row and its atomic updates intact", async () => {
@@ -126,6 +126,24 @@ describe("deleteDraft", () => {
     expect((await releaseRow(release.id)).status).toBe("published");
     const untouched = await atomicRow(atomic.id);
     expect(untouched.status).toBe("released");
-    expect(untouched.releaseId).toBe(release.id);
+    expect(untouched.contentPieceId).toBe(release.id);
+  });
+
+  // assertDraftEditable (which every other deleteDraft case in this file
+  // exercises indirectly through the "draft"/"published" statuses seed()
+  // produces) refuses "brief" outright. deleteDraft uses its own check
+  // instead specifically so a "brief" piece — one whose generation can never
+  // succeed, e.g. no linked brief or a persistent model failure — has a way
+  // out rather than sitting forever, undeletable, inflating the sidebar count.
+  it("deletes a \"brief\"-status piece, unlike assertDraftEditable's other callers", async () => {
+    const { release, atomic } = await seed("draft");
+    await db.update(contentPieces).set({ status: "brief" }).where(eq(contentPieces.id, release.id));
+
+    await deleteDraft(formDataFor(release.id));
+
+    expect(await releaseRow(release.id)).toBeUndefined();
+    const reverted = await atomicRow(atomic.id);
+    expect(reverted.status).toBe("open");
+    expect(reverted.contentPieceId).toBeNull();
   });
 });

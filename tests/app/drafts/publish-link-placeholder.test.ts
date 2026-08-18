@@ -8,9 +8,9 @@ vi.mock("next/headers", () => ({ cookies: vi.fn(async () => ({ get: () => undefi
 
 import { getServerSession } from "next-auth";
 import { db } from "../../../src/db";
-import { tenants, atomicUpdates, releases, users, tenantMembers } from "../../../src/db/schema";
-import { claimReleaseFromAtomicUpdates } from "../../../src/lib/change-events/release-claim";
-import { approveDraft, publishDraft, checkDraftLinks } from "../../../src/app/(dashboard)/drafts/actions";
+import { tenants, atomicUpdates, contentPieces, users, tenantMembers } from "../../../src/db/schema";
+import { linkAtomicUpdatesToPiece } from "../../../src/lib/change-events/release-claim";
+import { approveDraft, checkDraftLinks } from "../../../src/app/(dashboard)/drafts/actions";
 
 const TENANT_NAME = "Publish Invalid Links Test Tenant";
 const USER_EMAIL = "publish-invalid-links-test@example.com";
@@ -25,17 +25,14 @@ async function seed() {
 
 async function seedDraft(tenantId: string, body: string) {
   const [au] = await db.insert(atomicUpdates).values({ tenantId, title: "A", summary: "S" }).returning();
-  const release = await claimReleaseFromAtomicUpdates({
-    tenantId,
-    atomicUpdateIds: [au.id],
-    draft: { title: "R", body },
-  });
-  return { release: release!, atomicUpdateId: au.id };
+  const [release] = await db.insert(contentPieces).values({ tenantId, title: "R", body }).returning();
+  await linkAtomicUpdatesToPiece({ tenantId, contentPieceId: release.id, atomicUpdateIds: [au.id] });
+  return { release, atomicUpdateId: au.id };
 }
 
 function formDataFor(releaseId: string, body: string) {
   const fd = new FormData();
-  fd.set("releaseId", releaseId);
+  fd.set("contentPieceId", releaseId);
   fd.set("title", "R");
   fd.set("body", body);
   fd.set("publishedAt", "");
@@ -44,7 +41,7 @@ function formDataFor(releaseId: string, body: string) {
 }
 
 async function assertUnpublished(releaseId: string, atomicUpdateId: string) {
-  const [row] = await db.select().from(releases).where(eq(releases.id, releaseId));
+  const [row] = await db.select().from(contentPieces).where(eq(contentPieces.id, releaseId));
   expect(row.status).toBe("draft");
   expect(row.publishedAt).toBeNull();
   const [au] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, atomicUpdateId));
@@ -77,15 +74,15 @@ describe("publishing is blocked when the body has invalid links", () => {
     await assertUnpublished(release.id, atomicUpdateId);
   });
 
-  it("publishDraft returns problems for a stored body with an invalid link and does not publish", async () => {
+  it("approveDraft link-checks the stored body when the submitted one is blank, and does not publish", async () => {
     const { tenant } = await seed();
     const { release, atomicUpdateId } = await seedDraft(tenant.id, "Grab it here [add link].");
 
-    const fd = new FormData();
-    fd.set("releaseId", release.id);
-    fd.set("publishedAt", "");
-
-    const result = await publishDraft(fd);
+    // A blank submitted body is `resolveBody`'s fallback case: the body that
+    // would actually publish is the stored one, so that is what the link
+    // check has to see. Publishing an empty string past the check instead
+    // would be the worst of both.
+    const result = await approveDraft(formDataFor(release.id, ""));
 
     expect(result?.problems.length).toBeGreaterThan(0);
     await assertUnpublished(release.id, atomicUpdateId);
@@ -96,7 +93,7 @@ describe("publishing is blocked when the body has invalid links", () => {
     const { release, atomicUpdateId } = await seedDraft(tenant.id, "Original body");
 
     const fd = new FormData();
-    fd.set("releaseId", release.id);
+    fd.set("contentPieceId", release.id);
     fd.set("body", "See the docs [add link] here.");
 
     const { problems } = await checkDraftLinks(fd);
@@ -109,7 +106,7 @@ describe("publishing is blocked when the body has invalid links", () => {
     const { release } = await seedDraft(tenant.id, "Original body");
 
     const fd = new FormData();
-    fd.set("releaseId", release.id);
+    fd.set("contentPieceId", release.id);
     fd.set("body", "A perfectly clean body.");
 
     const { problems } = await checkDraftLinks(fd);
@@ -123,7 +120,7 @@ describe("publishing is blocked when the body has invalid links", () => {
     const result = await approveDraft(formDataFor(release.id, "A perfectly clean body."));
 
     expect(result).toBeUndefined();
-    const [row] = await db.select().from(releases).where(eq(releases.id, release.id));
+    const [row] = await db.select().from(contentPieces).where(eq(contentPieces.id, release.id));
     expect(row.status).toBe("published");
     const [au] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, atomicUpdateId));
     expect(au.status).toBe("released");

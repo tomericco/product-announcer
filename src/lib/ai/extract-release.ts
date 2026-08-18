@@ -1,11 +1,11 @@
 import { eq } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
-import { releases } from "@/db/schema";
+import { contentPieces } from "@/db/schema";
 import { prepareGenerationContext } from "@/lib/ai/generation-context";
 import { generateExtractedDraft } from "@/lib/ai/generation";
 import { reviewAndReconcile } from "@/lib/ai/review-draft";
 import { validateDraftLinks } from "@/lib/ai/validate-links";
-import type { OnDraftProgress } from "@/lib/scheduling/draft-progress";
+import type { OnDraftProgress } from "@/lib/drafting/draft-progress";
 
 type Database = typeof defaultDb;
 
@@ -36,7 +36,7 @@ export type ExtractDeps = {
  */
 export async function runExtractForRelease(
   args: {
-    releaseId: string;
+    contentPieceId: string;
     excerpt: string;
     remainingBody: string;
     instruction: string;
@@ -45,12 +45,12 @@ export async function runExtractForRelease(
   database: Database = defaultDb,
   onProgress?: OnDraftProgress,
   deps: ExtractDeps = {}
-): Promise<{ releaseId: string; title: string } | null> {
+): Promise<{ contentPieceId: string; title: string } | null> {
   const generateDraft = deps.generateDraft ?? generateExtractedDraft;
   const review = deps.review ?? reviewAndReconcile;
   const emit: OnDraftProgress = onProgress ?? (() => {});
 
-  const [source] = await database.select().from(releases).where(eq(releases.id, args.releaseId));
+  const [source] = await database.select().from(contentPieces).where(eq(contentPieces.id, args.contentPieceId));
   if (!source) {
     emit({ type: "error", message: "Update not found." });
     return null;
@@ -100,7 +100,7 @@ export async function runExtractForRelease(
   const now = new Date();
   const created = await database.transaction(async (tx) => {
     const [inserted] = await tx
-      .insert(releases)
+      .insert(contentPieces)
       .values({
         tenantId: source.tenantId,
         title: outcome.finalDraft.title,
@@ -116,14 +116,14 @@ export async function runExtractForRelease(
       .returning();
 
     await tx
-      .update(releases)
+      .update(contentPieces)
       .set({ body: args.remainingBody, bodyEditedAt: now, editedBy: args.editedBy })
-      .where(eq(releases.id, source.id));
+      .where(eq(contentPieces.id, source.id));
 
     return inserted;
   });
   emit({ type: "step", key: "saving", status: "done" });
 
   emit({ type: "done", updateId: created.id });
-  return { releaseId: created.id, title: created.title };
+  return { contentPieceId: created.id, title: created.title };
 }

@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { buildSystemPrompt } from "../../../src/lib/ai/compose-prompt";
 import { serializeAtomicUpdates, composeReleasePrompt, composeMergePrompt } from "../../../src/lib/ai/compose-prompt";
+import { composeBriefPrompt, serializeBriefEvidence } from "../../../src/lib/ai/compose-prompt";
 
 describe("buildSystemPrompt", () => {
   const baseBrand = { guidelines: null, industry: null, userPersonas: [] };
@@ -41,6 +42,16 @@ describe("buildSystemPrompt", () => {
       [{ category: "new", title: "Dark mode", body: "We shipped dark mode." } as never]
     );
     expect(system.indexOf("</brand-guidelines>")).toBeLessThan(system.indexOf("Dark mode"));
+  });
+
+  it("omits the category parenthetical for an example with a null category", () => {
+    const system = buildSystemPrompt(
+      baseBrand as never,
+      [],
+      [{ category: null, title: "New blog post", body: "Some body." } as never]
+    );
+    expect(system).toContain("Example:\nTitle: New blog post");
+    expect(system).not.toContain("Example (null)");
   });
 });
 
@@ -142,5 +153,238 @@ describe("size-aware composition", () => {
     expect(prompt).toContain(`"Tiny fix" (fix, S)`);
     expect(prompt).toContain(`"Unsized" (improvement)`); // no size token when null
     expect(prompt).toContain("gather them into a single bulleted list");
+  });
+});
+
+const PROFILE = {
+  tenantId: "t1",
+  industry: "Design tooling",
+  guidelines: null,
+  userPersonas: [],
+} as unknown as Parameters<typeof buildSystemPrompt>[0];
+
+describe("buildSystemPrompt content types", () => {
+  it("is byte-identical to the three-argument form when the type is omitted", () => {
+    // The three existing product-update paths (release, merge, edit, extract)
+    // call this with three arguments. If this ever differs, those prompts
+    // changed silently and their output changed with them.
+    expect(buildSystemPrompt(PROFILE, [], [])).toBe(buildSystemPrompt(PROFILE, [], [], "product_update"));
+  });
+
+  it("gives each content type its own role line", () => {
+    const update = buildSystemPrompt(PROFILE, [], [], "product_update");
+    const blog = buildSystemPrompt(PROFILE, [], [], "blog_post");
+    const social = buildSystemPrompt(PROFILE, [], [], "social_post");
+
+    expect(update).toContain("product update announcements");
+    expect(blog).not.toContain("product update announcements");
+    expect(social).not.toContain("product update announcements");
+    expect(blog).not.toBe(social);
+  });
+
+  it("keeps the grounding and link rules on EVERY content type", () => {
+    for (const type of ["product_update", "blog_post", "social_post"] as const) {
+      const system = buildSystemPrompt(PROFILE, [], [], type);
+      // Universal, and the reason relaxing the naming rule is safe: whatever a
+      // draft says about another company still has to come from the sources.
+      expect(system).toContain("never invent");
+      expect(system).toContain("[add link]");
+    }
+  });
+
+  it("carries the guidelines' voice but not their structure into a non-product piece", () => {
+    // The guidelines document is derived from the company's changelog, so it
+    // prescribes changelog conventions. Applying it wholesale to a blog post
+    // produced a fabricated "UX impact / May 15, 2025" header and a sign-off on
+    // the first live run — neither present in any source.
+    const withGuidelines = {
+      ...PROFILE,
+      guidelines: "## Voice\n\nHelpful and concrete.\n\n## Do\n\n- Open with what shipped\n",
+    } as unknown as Parameters<typeof buildSystemPrompt>[0];
+
+    const update = buildSystemPrompt(withGuidelines, [], [], "product_update");
+    expect(update).toContain("Follow these brand writing guidelines");
+    expect(update).not.toMatch(/not for this piece/i);
+
+    for (const type of ["blog_post", "social_post"] as const) {
+      const system = buildSystemPrompt(withGuidelines, [], [], type);
+      // The team's own words still reach the model — it is only their
+      // structural conventions that are disclaimed.
+      expect(system).toContain("Helpful and concrete.");
+      expect(system).toMatch(/written by the team for the company's PRODUCT UPDATES/);
+      expect(system).toMatch(/only the voice/i);
+      // The three artifacts observed live, named so the model cannot reproduce
+      // them by pattern-matching the guidelines' format.
+      expect(system).toMatch(/date line/i);
+      expect(system).toMatch(/sign-off/i);
+      expect(system).toMatch(/percentages or metrics/i);
+    }
+  });
+
+  it("emits no guidelines block at all when the team has written none", () => {
+    for (const type of ["product_update", "blog_post", "social_post"] as const) {
+      // PROFILE.guidelines is null. The disclaimer must not appear on its own,
+      // describing a document that was never supplied.
+      expect(buildSystemPrompt(PROFILE, [], [], type)).not.toContain("<brand-guidelines>");
+      expect(buildSystemPrompt(PROFILE, [], [], type)).not.toMatch(/PRODUCT UPDATES, not for this piece/);
+    }
+  });
+
+  it("forbids naming other companies in a product update, and permits it elsewhere", () => {
+    // Reversed on 2026-08-06. A product announcement has no business naming
+    // anyone else; an industry blog post that refuses to say who shipped the
+    // thing it is about reads as evasive.
+    expect(buildSystemPrompt(PROFILE, [], [], "product_update")).toMatch(
+      /never name, compare to, or reference/i
+    );
+
+    for (const type of ["blog_post", "social_post"] as const) {
+      const system = buildSystemPrompt(PROFILE, [], [], type);
+      expect(system).not.toMatch(/never name, compare to, or reference/i);
+      expect(system).toMatch(/may name other companies/i);
+      // Permission to name is not permission to invent: an unsupported
+      // comparison is still out of bounds.
+      expect(system).toMatch(/never state a comparison, ranking, or claim/i);
+    }
+  });
+});
+
+describe("composeBriefPrompt", () => {
+  const BRIEF = {
+    title: "Why localization breaks design systems",
+    body: "## Angle\nTeams discover it too late\n\n## Key points\n- Point one\n- Point two",
+    contentType: "blog_post" as const,
+    targetLength: 800,
+  };
+
+  it("separates the commission from the evidence", () => {
+    const { prompt } = composeBriefPrompt({
+      brief: BRIEF,
+      evidence: [{ title: "Phrase ships X", kind: "market_news", excerpt: "Body text." }],
+      brandProfile: PROFILE,
+      personas: [],
+      examples: [],
+    });
+
+    // The body is the INSTRUCTION to follow; the signals are source material to
+    // ground against. Merging them makes the model treat the commission as just
+    // more evidence.
+    expect(prompt).toContain("Teams discover it too late");
+    expect(prompt).toContain("Point one");
+    expect(prompt).toContain("Phrase ships X");
+    expect(prompt.indexOf("Teams discover it too late")).toBeLessThan(prompt.indexOf("Phrase ships X"));
+  });
+
+  it("carries the body verbatim, and keeps the title and shape instructions out of it", () => {
+    const { prompt } = composeBriefPrompt({
+      brief: BRIEF,
+      evidence: [],
+      brandProfile: PROFILE,
+      personas: [],
+      examples: [],
+    });
+
+    // Verbatim: the commission the model reads is the document the human
+    // edited, markdown headings and all — not a re-rendering of it.
+    expect(prompt).toContain(BRIEF.body);
+    // Title, target length and format guidance are instructions about the
+    // piece's shape, not commission prose, and stay as their own lines.
+    expect(prompt).toContain(`Write this piece. Title: "${BRIEF.title}".`);
+    expect(prompt).toContain("Target length: about 800 words.");
+  });
+
+  it("requires anything said about another company to come from the sources", () => {
+    const { prompt } = composeBriefPrompt({
+      brief: BRIEF,
+      evidence: [{ title: "Phrase ships X", kind: "market_news", excerpt: null }],
+      brandProfile: PROFILE,
+      personas: [],
+      examples: [],
+    });
+    // A blog post may now name companies, so the evidence block's job changed:
+    // it no longer forbids reproducing names, it anchors what may be said about
+    // them. Without this, permission to name reads as permission to invent.
+    expect(prompt).toMatch(/ground every factual claim/i);
+    expect(prompt).toMatch(/about another company/i);
+  });
+
+  /**
+   * The join between commission blocks. Nothing pinned this while every
+   * element was a single line, and a `"\n"` join survived the body landing
+   * among them — so a rendered prompt had `Target length:` sitting directly
+   * beneath the body's closing line and `FORMAT_GUIDANCE` directly beneath
+   * that. Instructions glued onto commission prose stop reading as
+   * instructions; when the body ends in a list they read as another bullet.
+   *
+   * The body here deliberately ends in a list, which is the worst case, and
+   * the negative assertions are the real pin: they fail the moment ANYTHING
+   * is joined onto the body's last line, whatever it happens to be.
+   */
+  const LIST_BODY = "## Angle\nTeams discover it too late\n\n## Key points\n- Point one\n- Point two";
+
+  it("puts a blank line between every commission block", () => {
+    const { prompt } = composeBriefPrompt({
+      brief: { ...BRIEF, body: LIST_BODY },
+      evidence: [],
+      brandProfile: PROFILE,
+      personas: [],
+      examples: [],
+    });
+
+    // Title line -> body: without the blank line the instruction runs straight
+    // into the body's first heading.
+    expect(prompt).toContain(`Write this piece. Title: "${BRIEF.title}".\n\n## Angle`);
+    // Body -> target length: the regression the reviewer caught in a dump.
+    expect(prompt).toContain("- Point two\n\nTarget length: about 800 words.");
+    // Target length -> format guidance.
+    expect(prompt).toMatch(/Target length: about 800 words\.\n\nFormat the body as Markdown/);
+    // Nothing at all is glued onto the body's last line. This is what fails if
+    // the join reverts to "\n", regardless of what follows the body.
+    expect(prompt).not.toMatch(/- Point two\n(?!\n)/);
+  });
+
+  it("still blank-line separates when there is no target length", () => {
+    // The path where FORMAT_GUIDANCE follows the body directly — with a "\n"
+    // join it becomes a third bullet under "## Key points".
+    const { prompt } = composeBriefPrompt({
+      brief: { ...BRIEF, body: LIST_BODY, targetLength: null },
+      evidence: [],
+      brandProfile: PROFILE,
+      personas: [],
+      examples: [],
+    });
+
+    expect(prompt).not.toContain("Target length");
+    expect(prompt).toMatch(/- Point two\n\nFormat the body as Markdown/);
+    expect(prompt).not.toMatch(/- Point two\n(?!\n)/);
+  });
+
+  it("uses the brief's own content type for the system prompt", () => {
+    const { system } = composeBriefPrompt({
+      brief: { ...BRIEF, contentType: "social_post" },
+      evidence: [],
+      brandProfile: PROFILE,
+      personas: [],
+      examples: [],
+    });
+    expect(system).toBe(buildSystemPrompt(PROFILE, [], [], "social_post"));
+  });
+});
+
+describe("serializeBriefEvidence", () => {
+  it("drops trailing items past the cap with a note rather than truncating mid-item", () => {
+    const items = Array.from({ length: 50 }, (_, i) => ({
+      title: `Signal ${i}`,
+      kind: "market_news",
+      excerpt: "x".repeat(200),
+    }));
+    const out = serializeBriefEvidence(items, 1_000);
+    expect(out.length).toBeLessThan(1_500);
+    expect(out).toMatch(/more signals not shown/);
+    expect(out).toContain("Signal 0");
+  });
+
+  it("handles an item with no excerpt", () => {
+    expect(() => serializeBriefEvidence([{ title: "T", kind: "shipped_work", excerpt: null }])).not.toThrow();
   });
 });

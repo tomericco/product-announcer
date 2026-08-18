@@ -15,13 +15,13 @@ import {
   DialogFooter,
   DialogClose,
 } from "@/components/ui/dialog";
-import { EDIT_STEPS, type DraftProgressEvent, type DraftStepKey } from "@/lib/scheduling/draft-progress";
+import { EDIT_STEPS, type DraftProgressEvent, type DraftStepKey } from "@/lib/drafting/draft-progress";
 import {
   ProgressChecklist,
   initialStepStatuses,
   type StepStatus,
 } from "@/components/draft-progress-checklist";
-import { readDraftProgress } from "@/lib/scheduling/read-draft-progress";
+import { readDraftProgress } from "@/lib/drafting/read-draft-progress";
 import { useUnsavedChanges } from "../../unsaved-changes";
 import { useAgentEdit } from "./agent-edit-context";
 
@@ -35,7 +35,7 @@ import { useAgentEdit } from "./agent-edit-context";
  * commit, the passage exists nowhere but this browser tab. The catch block's
  * restore is therefore load-bearing, not politeness.
  */
-export function ExtractDialog({ releaseId }: { releaseId: string }) {
+export function ExtractDialog({ contentPieceId }: { contentPieceId: string }) {
   const { state, close, ops } = useAgentEdit();
   const { notifySaved } = useUnsavedChanges();
   const router = useRouter();
@@ -70,7 +70,7 @@ export function ExtractDialog({ releaseId }: { releaseId: string }) {
       res = await fetch("/api/drafts/extract", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ releaseId, excerpt, remainingBody, instruction: trimmed }),
+        body: JSON.stringify({ contentPieceId, excerpt, remainingBody, instruction: trimmed }),
       });
     } catch {
       throw new Error("Couldn't start the extraction. Please try again.");
@@ -79,7 +79,7 @@ export function ExtractDialog({ releaseId }: { releaseId: string }) {
       throw new Error("Couldn't start the extraction. Please try again.");
     }
 
-    let newReleaseId: string | null = null;
+    let newContentPieceId: string | null = null;
     let errored: string | null = null;
     const handle = (event: DraftProgressEvent) => {
       if (event.type === "step") {
@@ -87,7 +87,7 @@ export function ExtractDialog({ releaseId }: { releaseId: string }) {
       } else if (event.type === "detail") {
         setDetail(event.text);
       } else if (event.type === "done") {
-        newReleaseId = event.updateId;
+        newContentPieceId = event.updateId;
       } else if (event.type === "error") {
         errored = event.message;
       }
@@ -96,8 +96,8 @@ export function ExtractDialog({ releaseId }: { releaseId: string }) {
     await readDraftProgress(res.body, handle);
 
     if (errored) throw new Error(errored);
-    if (newReleaseId == null) throw new Error("The extraction finished without creating a draft.");
-    return newReleaseId as string;
+    if (newContentPieceId == null) throw new Error("The extraction finished without creating a draft.");
+    return newContentPieceId as string;
   }
 
   function submit() {
@@ -133,13 +133,13 @@ export function ExtractDialog({ releaseId }: { releaseId: string }) {
           throw new Error("You can't extract the entire update — leave some text behind.");
         }
 
-        const newReleaseId = await runExtract(remainingBody, excerpt, trimmed);
+        const newContentPieceId = await runExtract(remainingBody, excerpt, trimmed);
 
         // The server persisted the trimmed source body, so the editor is in
         // sync with the DB again and the unsaved-changes guard must be cleared.
         notifySaved();
         toast.success("Extracted as a new draft", {
-          action: { label: "Open", onClick: () => router.push(`/drafts/${newReleaseId}`) },
+          action: { label: "Open", onClick: () => router.push(`/drafts/${newContentPieceId}`) },
         });
         reset();
       } catch (error) {

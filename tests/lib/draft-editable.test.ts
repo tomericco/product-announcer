@@ -1,21 +1,61 @@
 import { describe, it, expect } from "vitest";
-import { assertDraftEditable, notEditableMessage } from "../../src/lib/draft-editable";
+import { assertDraftEditable, assertDraftDeletable, notEditableMessage } from "../../src/lib/draft-editable";
 
 describe("assertDraftEditable", () => {
+  // "draft", "review" and "scheduled" are all planning states a human owns —
+  // the board can move a card freely among them, and none is a checkpoint
+  // that should freeze editing.
   it("permits a draft", () => {
     expect(() => assertDraftEditable({ status: "draft" })).not.toThrow();
+  });
+
+  it("permits a piece under review", () => {
+    expect(() => assertDraftEditable({ status: "review" })).not.toThrow();
+  });
+
+  it("permits a scheduled piece", () => {
+    expect(() => assertDraftEditable({ status: "scheduled" })).not.toThrow();
   });
 
   it("refuses a published release, naming publication", () => {
     expect(() => assertDraftEditable({ status: "published" })).toThrow(/already been published/i);
   });
 
-  it("refuses a rejected release", () => {
-    expect(() => assertDraftEditable({ status: "rejected" })).toThrow(/rejected/i);
+  it("refuses an archived piece", () => {
+    expect(() => assertDraftEditable({ status: "archived" })).toThrow(/archived/i);
   });
 
-  it("refuses an approved release", () => {
-    expect(() => assertDraftEditable({ status: "approved" })).toThrow(/approved/i);
+  it("refuses a \"brief\" piece — an ungenerated scaffold was never editable", () => {
+    expect(() => assertDraftEditable({ status: "brief" })).toThrow(/hasn't been generated yet/i);
+  });
+});
+
+describe("assertDraftDeletable", () => {
+  // The one place this differs from assertDraftEditable: a "brief" piece
+  // whose generation can never succeed needs an exit, or it inflates the
+  // drafts count forever with no way to leave.
+  it("permits a \"brief\" piece, unlike assertDraftEditable", () => {
+    expect(() => assertDraftDeletable({ status: "brief" })).not.toThrow();
+  });
+
+  it("permits a draft", () => {
+    expect(() => assertDraftDeletable({ status: "draft" })).not.toThrow();
+  });
+
+  it("permits a piece under review", () => {
+    expect(() => assertDraftDeletable({ status: "review" })).not.toThrow();
+  });
+
+  it("permits a scheduled piece", () => {
+    expect(() => assertDraftDeletable({ status: "scheduled" })).not.toThrow();
+  });
+
+  it("refuses a published release, naming publication", () => {
+    expect(() => assertDraftDeletable({ status: "published" })).toThrow(/already been published/i);
+  });
+
+  it("refuses an archived piece", () => {
+    expect(() => assertDraftDeletable({ status: "archived" })).toThrow(/archived/i);
   });
 });
 
@@ -25,5 +65,15 @@ describe("notEditableMessage", () => {
     // status, so only this one gets bespoke wording worth pinning.
     expect(notEditableMessage("published")).not.toMatch(/is published/);
     expect(notEditableMessage("published")).toMatch(/can no longer be edited/);
+  });
+
+  it("gives the brief case its own message instead of the generic 'can no longer be edited' fallback", () => {
+    // A "brief" was never editable in the first place, so the generic
+    // fallback's "can no longer be edited" (which implies it once was) would
+    // read oddly — this pins the dedicated branch added in Task 6.
+    const message = notEditableMessage("brief");
+    expect(message).toMatch(/hasn't been generated yet/i);
+    expect(message).not.toMatch(/^This update is brief/);
+    expect(message).not.toMatch(/can no longer be edited/);
   });
 });

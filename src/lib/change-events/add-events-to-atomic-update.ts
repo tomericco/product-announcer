@@ -90,7 +90,7 @@ export async function addEventsToExistingAtomicUpdate(
     const sourceAtomics =
       sourceAtomicUpdateIds.length > 0
         ? await tx
-            .select({ id: atomicUpdates.id, status: atomicUpdates.status, title: atomicUpdates.title, releaseId: atomicUpdates.releaseId })
+            .select({ id: atomicUpdates.id, status: atomicUpdates.status, title: atomicUpdates.title, contentPieceId: atomicUpdates.contentPieceId })
             .from(atomicUpdates)
             .where(and(inArray(atomicUpdates.id, sourceAtomicUpdateIds), eq(atomicUpdates.tenantId, tenantId)))
         : [];
@@ -110,7 +110,7 @@ export async function addEventsToExistingAtomicUpdate(
       const remainingOutsideBatch = remaining.filter((r) => !eventIdSet.has(r.id));
       if (remainingOutsideBatch.length === 0) {
         const source = sourceById.get(sourceId)!;
-        emptiedAtomicUpdates.push({ id: source.id, title: source.title, inDraft: source.releaseId !== null });
+        emptiedAtomicUpdates.push({ id: source.id, title: source.title, inDraft: source.contentPieceId !== null });
       }
     }
     if (emptiedAtomicUpdates.length > 0 && confirmEmptyDeletion !== true) {

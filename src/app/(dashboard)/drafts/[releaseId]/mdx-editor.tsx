@@ -1,13 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import {
-  viewMode$,
-  activeEditor$,
-  usePublisher,
-  useCellValue,
-  type MDXEditorMethods,
-} from "@mdxeditor/editor";
+import { activeEditor$, useCellValue, type MDXEditorMethods } from "@mdxeditor/editor";
 import { Sparkles, Split } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -19,25 +13,9 @@ import {
   type LexicalEditor,
   type RangeSelection,
 } from "lexical";
-import { useDraftEditorBridge } from "./draft-editor-context";
 import { useAgentEdit, type EditorOps } from "./agent-edit-context";
 import SharedMdxEditor from "@/components/markdown/mdx-editor";
-
-function ViewModeBridge() {
-  const viewMode = useCellValue(viewMode$);
-  const setViewMode = usePublisher(viewMode$);
-  const { setBridge } = useDraftEditorBridge();
-
-  useEffect(() => {
-    setBridge({
-      viewMode: viewMode === "source" ? "source" : "rich-text",
-      setViewMode,
-    });
-    return () => setBridge(null);
-  }, [viewMode, setViewMode, setBridge]);
-
-  return null;
-}
+import { ViewModeBridge } from "@/components/markdown/view-mode-bridge";
 
 /**
  * Registers imperative editor ops (used by the Ask AI modal) into the agent-edit

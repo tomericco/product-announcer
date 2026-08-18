@@ -1,0 +1,1 @@
+ALTER TABLE "content_pieces" ADD COLUMN "generation_step" text;

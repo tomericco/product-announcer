@@ -1,6 +1,6 @@
 import { and, asc, eq } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
-import { tenantMembers, users } from "@/db/schema";
+import { tenantMembers, users, contentPieces } from "@/db/schema";
 
 export type WorkspaceMember = {
   userId: string;
@@ -30,15 +30,21 @@ export async function listWorkspaceMembers(
 }
 
 /**
- * Remove a member from a workspace by deleting their membership row. Only the
- * membership is removed — the user keeps their other workspaces, and no
- * tenant-scoped data is touched (domain data belongs to the tenant, not the
- * user).
+ * Remove a member from a workspace by deleting their membership row, and
+ * clear `assignedTo` on any of this tenant's content pieces that named them
+ * — the user keeps their other workspaces and their history elsewhere is
+ * untouched, but a board card left pointing at a membership that no longer
+ * exists would render "Unassigned" (card.tsx resolves assignedTo against the
+ * live member list) while its `<Select value>` still names a user with no
+ * matching item.
+ *
+ * Both writes run in one transaction: a crash between them must not leave a
+ * removed membership with its assignments still dangling.
  *
  * Callers must already have authorized this as an owner action (via
  * requireRole). The self-removal guard here means the acting owner always
  * remains, so a workspace can never be left without an owner through this path.
- * Deleting a non-member is a harmless no-op.
+ * Deleting a non-member is a harmless no-op (and touches no content pieces).
  */
 export async function removeWorkspaceMember(
   tenantId: string,
@@ -50,10 +56,19 @@ export async function removeWorkspaceMember(
     throw new Error("You can't remove yourself from the workspace.");
   }
 
-  const deleted = await database
-    .delete(tenantMembers)
-    .where(and(eq(tenantMembers.tenantId, tenantId), eq(tenantMembers.userId, targetUserId)))
-    .returning({ userId: tenantMembers.userId });
+  return database.transaction(async (tx) => {
+    const deleted = await tx
+      .delete(tenantMembers)
+      .where(and(eq(tenantMembers.tenantId, tenantId), eq(tenantMembers.userId, targetUserId)))
+      .returning({ userId: tenantMembers.userId });
 
-  return { removed: deleted.length > 0 };
+    if (deleted.length > 0) {
+      await tx
+        .update(contentPieces)
+        .set({ assignedTo: null })
+        .where(and(eq(contentPieces.tenantId, tenantId), eq(contentPieces.assignedTo, targetUserId)));
+    }
+
+    return { removed: deleted.length > 0 };
+  });
 }

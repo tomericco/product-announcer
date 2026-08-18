@@ -3,34 +3,34 @@
 import { GuardedLink } from "./unsaved-changes";
 import { usePathname } from "next/navigation";
 import {
-  Activity,
-  FilePen,
+  Building2,
+  CalendarDays,
+  Columns3,
   History,
-  Palette,
   Plug,
-  ToyBrick,
+  Radar,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 const NAV = [
-  { href: "/change-events", label: "Change events", icon: Activity },
-  { href: "/atomic-updates", label: "Atomic updates", icon: ToyBrick },
-  { href: "/drafts", label: "Drafts", icon: FilePen },
+  { href: "/signals", label: "Signals", icon: Radar },
+  { href: "/board", label: "Board", icon: Columns3 },
+  { href: "/calendar", label: "Calendar", icon: CalendarDays },
   { href: "/history", label: "Release history", icon: History },
   { href: "/integrations", label: "Integrations", icon: Plug },
-  { href: "/brand-guidelines", label: "Brand guidelines", icon: Palette },
+  { href: "/company", label: "Company", icon: Building2 },
 ];
 
-export function NavLinks({ draftCount }: { draftCount: number }) {
+export function NavLinks({ boardCount }: { boardCount: number }) {
   const pathname = usePathname();
 
   return (
     <nav className="flex flex-col gap-1">
       {NAV.map((item) => {
         // Highlight the item for its own route and any nested route under it
-        // (e.g. /drafts/[updateId] keeps "Drafts" active).
+        // (e.g. a future /board/[id] would keep "Board" active).
         const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
         const Icon = item.icon;
         return (
@@ -52,9 +52,9 @@ export function NavLinks({ draftCount }: { draftCount: number }) {
                 colour is inherited instead. */}
             <Icon className={cn(!active && "text-muted-foreground")} />
             {item.label}
-            {item.href === "/drafts" && draftCount > 0 && (
+            {item.href === "/board" && boardCount > 0 && (
               <Badge variant="secondary" className="ml-auto">
-                {draftCount}
+                {boardCount}
               </Badge>
             )}
           </Button>

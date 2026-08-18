@@ -35,8 +35,8 @@ function useDismissed(storageKey: string): boolean {
  * to show it at all is decided server-side (Webflow is a live target AND the body
  * contains a code block); this component only adds the ability to dismiss it.
  */
-export function WebflowCodeWarning({ releaseId }: { releaseId: string }) {
-  const storageKey = `webflow-code-warning-dismissed:${releaseId}`;
+export function WebflowCodeWarning({ contentPieceId }: { contentPieceId: string }) {
+  const storageKey = `webflow-code-warning-dismissed:${contentPieceId}`;
   const dismissed = useDismissed(storageKey);
 
   if (dismissed) return null;

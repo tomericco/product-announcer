@@ -37,11 +37,11 @@ import { approveDraft, checkDraftLinks } from "../actions";
  * the live form via a ref to the in-form Publish button
  * (`triggerRef.current.form`) — capturing the current title/body/hidden fields
  * exactly as a submit would — then appends the chosen destinations and invokes
- * approveDraft in a transition. approveDraft's redirect("/drafts") navigates
+ * approveDraft in a transition. approveDraft's redirect("/board") navigates
  * the router on success (a server action invoked in a transition navigates;
  * see the Next server-actions guide).
  */
-export function PublishDialog({ releaseId, targets }: { releaseId: string; targets: PublishTarget[] }) {
+export function PublishDialog({ contentPieceId, targets }: { contentPieceId: string; targets: PublishTarget[] }) {
   const { ops } = useAgentEdit();
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState<Set<DestinationId>>(
@@ -101,7 +101,7 @@ export function PublishDialog({ releaseId, targets }: { releaseId: string; targe
   // visible content and the hidden body field update together), then persist it.
   async function saveFixes(patchedBody: string) {
     const authoritative = ops.current ? await ops.current.applyEdit("whole", patchedBody) : patchedBody;
-    await saveDraftBody({ releaseId, body: authoritative });
+    await saveDraftBody({ contentPieceId, body: authoritative });
     setFixTarget(null);
     toast.success("Links updated — you can publish now.");
   }

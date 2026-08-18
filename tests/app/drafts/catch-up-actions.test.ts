@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, releases, users } from "../../../src/db/schema";
+import { tenants, contentPieces, users } from "../../../src/db/schema";
 
 const TENANT_NAME = "Catch Up Actions Test Tenant";
 const OTHER_TENANT_NAME = "Catch Up Actions Test Tenant (Other)";
@@ -38,7 +38,7 @@ async function seed() {
   currentTenantId = tenant.id;
   currentUserId = user.id;
   const [release] = await db
-    .insert(releases)
+    .insert(contentPieces)
     .values({ tenantId: tenant.id, title: "Original title", body: "Original body" })
     .returning();
   return { tenant, user, release };
@@ -46,7 +46,7 @@ async function seed() {
 
 function formDataFor(releaseId: string) {
   const fd = new FormData();
-  fd.set("releaseId", releaseId);
+  fd.set("contentPieceId", releaseId);
   return fd;
 }
 
@@ -110,9 +110,9 @@ describe("catch-up actions (catchUp / startOver)", () => {
     it("catchUp refuses a published release — does not call catchUpRelease", async () => {
       const { release } = await seed();
       await db
-        .update(releases)
+        .update(contentPieces)
         .set({ status: "published", publishedAt: new Date() })
-        .where(eq(releases.id, release.id));
+        .where(eq(contentPieces.id, release.id));
 
       await expect(catchUp(formDataFor(release.id))).rejects.toThrow(/already been published/i);
 
@@ -120,11 +120,11 @@ describe("catch-up actions (catchUp / startOver)", () => {
       expect(revalidatePath).not.toHaveBeenCalled();
     });
 
-    it("startOver refuses a rejected release — does not call startOverRelease", async () => {
+    it("startOver refuses an archived piece — does not call startOverRelease", async () => {
       const { release } = await seed();
-      await db.update(releases).set({ status: "rejected" }).where(eq(releases.id, release.id));
+      await db.update(contentPieces).set({ status: "archived" }).where(eq(contentPieces.id, release.id));
 
-      await expect(startOver(formDataFor(release.id))).rejects.toThrow(/rejected/i);
+      await expect(startOver(formDataFor(release.id))).rejects.toThrow(/archived/i);
 
       expect(startOverRelease).not.toHaveBeenCalled();
       expect(revalidatePath).not.toHaveBeenCalled();

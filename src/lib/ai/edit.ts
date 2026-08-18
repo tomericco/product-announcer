@@ -1,12 +1,12 @@
 import { generateObject } from "ai";
 import { z } from "zod";
-import type { brandProfiles, ResolvedPersona, systemUpdateExamples } from "@/db/schema";
+import type { companyProfiles, ResolvedPersona, systemContentExamples } from "@/db/schema";
 import { composeScopedEditPrompt, composeWholeEditPrompt } from "./compose-prompt";
 import { resolveModel, modelId } from "./model";
 import { recordLlmUsage } from "./llm-usage";
 
-type BrandProfileRow = typeof brandProfiles.$inferSelect;
-type ExampleRow = typeof systemUpdateExamples.$inferSelect;
+type BrandProfileRow = typeof companyProfiles.$inferSelect;
+type ExampleRow = typeof systemContentExamples.$inferSelect;
 
 const EditResultSchema = z.object({ text: z.string() });
 

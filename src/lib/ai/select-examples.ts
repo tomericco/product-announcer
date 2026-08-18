@@ -1,10 +1,13 @@
-import type { systemUpdateExamples } from "@/db/schema";
+import type { systemContentExamples } from "@/db/schema";
 
-export type ExampleRow = typeof systemUpdateExamples.$inferSelect;
+export type ExampleRow = typeof systemContentExamples.$inferSelect;
 
 export type ExampleCriteria = {
   industry: string | null;
   personaKeys: string[];
+  // A blog prompt must never see changelog exemplars, so content type is a hard
+  // filter rather than a ranking signal like industry and persona.
+  contentType: ExampleRow["contentType"];
   categories?: string[];
 };
 
@@ -18,15 +21,17 @@ function score(example: ExampleRow, criteria: ExampleCriteria): number {
 }
 
 function categoryMatch(example: ExampleRow, criteria: ExampleCriteria): boolean {
-  return (criteria.categories ?? []).includes(example.category);
+  // category is null for blog and social exemplars — those never match.
+  return example.category !== null && (criteria.categories ?? []).includes(example.category);
 }
 
 /**
- * Strict, capped few-shot selection. An example is a candidate only if it matches
- * the tenant's industry OR one of their system persona keys. Candidates are ranked
- * by match strength (both tags > one tag), then by whether the example's category is
- * one the batch is about, then by sort_order ascending. Top `limit` returned; no
- * candidates → empty array.
+ * Strict, capped few-shot selection. An example is a candidate only if its
+ * content type matches the request AND it matches the tenant's industry OR one
+ * of their system persona keys. Candidates are ranked by match strength (both
+ * tags > one tag), then by whether the example's category is one the batch is
+ * about, then by sort_order ascending. Top `limit` returned; no candidates →
+ * empty array.
  */
 export function selectExamples(
   examples: ExampleRow[],
@@ -34,6 +39,7 @@ export function selectExamples(
   limit = 3
 ): ExampleRow[] {
   return examples
+    .filter((example) => example.contentType === criteria.contentType)
     .map((example) => ({ example, s: score(example, criteria), c: categoryMatch(example, criteria) }))
     .filter((candidate) => candidate.s > 0)
     .sort(

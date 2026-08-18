@@ -1,17 +1,17 @@
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
-import { atomicUpdates, releases, systemPersonas, systemUpdateExamples } from "@/db/schema";
+import { atomicUpdates, contentPieces, systemPersonas, systemContentExamples } from "@/db/schema";
 import type { AtomicUpdateForPrompt } from "@/lib/ai/compose-prompt";
 import { generateReleaseDraft, mergeReleaseDraft } from "@/lib/ai/generation";
 import { validateDraftLinks } from "@/lib/ai/validate-links";
-import { getOrCreateBrandProfile } from "@/lib/workspace/brand-profile";
+import { getOrCreateCompanyProfile } from "@/lib/workspace/company-profile";
 import { resolvePersonaRefs, systemPersonaKeys } from "@/lib/workspace/personas";
 import { selectExamples } from "@/lib/ai/select-examples";
 import { computeReleaseDelta } from "./release-deltas";
 
 type Database = typeof defaultDb;
 type Executor = Database | Parameters<Parameters<Database["transaction"]>[0]>[0];
-type Release = typeof releases.$inferSelect;
+type Release = typeof contentPieces.$inferSelect;
 type AtomicUpdateRow = typeof atomicUpdates.$inferSelect;
 
 export type CatchUpDeps = {
@@ -28,7 +28,9 @@ function toPromptItem(row: AtomicUpdateRow): AtomicUpdateForPrompt {
 
 /** Distinct non-null categories among a set of atomic updates, used to bias
  * example selection toward examples about the same kinds of changes — mirrors
- * `atomicUpdateCategories` in `src/lib/scheduling/run-schedule.ts`. */
+ * `atomicUpdateCategories` in `src/lib/briefs/draft.ts` (which is where it moved
+ * when `src/lib/drafting/compose-draft.ts` retired with the atomic-updates
+ * drafting path). */
 function distinctCategories(items: { category: string | null }[]): string[] {
   const seen = new Set<string>();
   for (const item of items) {
@@ -38,10 +40,10 @@ function distinctCategories(items: { category: string | null }[]): string[] {
 }
 
 async function loadPromptContext(tenantId: string) {
-  const brandProfile = await getOrCreateBrandProfile(tenantId, defaultDb);
+  const brandProfile = await getOrCreateCompanyProfile(tenantId, defaultDb);
   const catalog = await defaultDb.select().from(systemPersonas);
   const personas = resolvePersonaRefs(brandProfile.userPersonas, catalog);
-  const allExamples = await defaultDb.select().from(systemUpdateExamples);
+  const allExamples = await defaultDb.select().from(systemContentExamples);
   return { brandProfile, personas, allExamples };
 }
 
@@ -50,8 +52,8 @@ async function loadPromptContext(tenantId: string) {
  * Re-guards exclusivity: the ids came from `computeReleaseDelta`, read a
  * moment earlier, so between that read and this call another draft could have
  * claimed one, or it could have been published. Only rows still tenant-owned,
- * `status = 'open'`, and `releaseId IS NULL` are linked (same guard as
- * `claimReleaseFromAtomicUpdates`) — a row that no longer matches is dropped
+ * `status = 'open'`, and `contentPieceId IS NULL` are linked (same guard as
+ * `linkAtomicUpdatesToPiece`) — a row that no longer matches is dropped
  * from this catch-up, not force-stolen. Stays `status = 'open'`; publish still
  * owns the `released` transition.
  */
@@ -59,13 +61,13 @@ async function linkNewAtomicUpdates(tx: Executor, release: Release, newIds: stri
   if (newIds.length === 0) return;
   await tx
     .update(atomicUpdates)
-    .set({ releaseId: release.id, updatedAt: new Date() })
+    .set({ contentPieceId: release.id, updatedAt: new Date() })
     .where(
       and(
         inArray(atomicUpdates.id, newIds),
         eq(atomicUpdates.tenantId, release.tenantId),
         eq(atomicUpdates.status, "open"),
-        isNull(atomicUpdates.releaseId)
+        isNull(atomicUpdates.contentPieceId)
       )
     );
 }
@@ -87,13 +89,13 @@ async function linkNewAtomicUpdates(tx: Executor, release: Release, newIds: stri
  * Returns null if the release doesn't exist, or if there is nothing to catch
  * up on (`computeReleaseDelta` returns `count === 0`) — no mutation either way.
  */
-export async function catchUpRelease(releaseId: string, deps: CatchUpDeps = {}): Promise<Release | null> {
+export async function catchUpRelease(contentPieceId: string, deps: CatchUpDeps = {}): Promise<Release | null> {
   const mergeDraft = deps.mergeDraft ?? mergeReleaseDraft;
 
-  const [release] = await defaultDb.select().from(releases).where(eq(releases.id, releaseId));
+  const [release] = await defaultDb.select().from(contentPieces).where(eq(contentPieces.id, contentPieceId));
   if (!release) return null;
 
-  const delta = await computeReleaseDelta(releaseId);
+  const delta = await computeReleaseDelta(contentPieceId);
   if (delta.count === 0) return null;
 
   const { brandProfile, personas, allExamples } = await loadPromptContext(release.tenantId);
@@ -102,6 +104,7 @@ export async function catchUpRelease(releaseId: string, deps: CatchUpDeps = {}):
   const examples = selectExamples(allExamples, {
     industry: brandProfile.industry,
     personaKeys: systemPersonaKeys(brandProfile.userPersonas),
+    contentType: "product_update",
     categories: distinctCategories([...newItems, ...changedItems]),
   });
 
@@ -124,9 +127,9 @@ export async function catchUpRelease(releaseId: string, deps: CatchUpDeps = {}):
     await linkNewAtomicUpdates(tx, release, newIds);
 
     const [updated] = await tx
-      .update(releases)
+      .update(contentPieces)
       .set({ body: validatedBody, composedAt: new Date() })
-      .where(and(eq(releases.id, release.id), eq(releases.tenantId, release.tenantId)))
+      .where(and(eq(contentPieces.id, release.id), eq(contentPieces.tenantId, release.tenantId)))
       .returning();
 
     return updated ?? null;
@@ -153,13 +156,13 @@ export async function catchUpRelease(releaseId: string, deps: CatchUpDeps = {}):
  * Returns null if the release doesn't exist, or if there is nothing to catch
  * up on (`computeReleaseDelta` returns `count === 0`) — no mutation either way.
  */
-export async function startOverRelease(releaseId: string, deps: StartOverDeps = {}): Promise<Release | null> {
+export async function startOverRelease(contentPieceId: string, deps: StartOverDeps = {}): Promise<Release | null> {
   const generateDraft = deps.generateDraft ?? generateReleaseDraft;
 
-  const [release] = await defaultDb.select().from(releases).where(eq(releases.id, releaseId));
+  const [release] = await defaultDb.select().from(contentPieces).where(eq(contentPieces.id, contentPieceId));
   if (!release) return null;
 
-  const delta = await computeReleaseDelta(releaseId);
+  const delta = await computeReleaseDelta(contentPieceId);
   if (delta.count === 0) return null;
 
   const { brandProfile, personas, allExamples } = await loadPromptContext(release.tenantId);
@@ -167,13 +170,14 @@ export async function startOverRelease(releaseId: string, deps: StartOverDeps = 
 
   const fullItems = await defaultDb.transaction(async (tx) => {
     await linkNewAtomicUpdates(tx, release, newIds);
-    const rows = await tx.select().from(atomicUpdates).where(eq(atomicUpdates.releaseId, release.id));
+    const rows = await tx.select().from(atomicUpdates).where(eq(atomicUpdates.contentPieceId, release.id));
     return rows.map(toPromptItem);
   });
 
   const examples = selectExamples(allExamples, {
     industry: brandProfile.industry,
     personaKeys: systemPersonaKeys(brandProfile.userPersonas),
+    contentType: "product_update",
     categories: distinctCategories(fullItems),
   });
 
@@ -182,9 +186,9 @@ export async function startOverRelease(releaseId: string, deps: StartOverDeps = 
   const { body: validatedBody } = await validateDraftLinks(draft.body);
 
   const [updated] = await defaultDb
-    .update(releases)
+    .update(contentPieces)
     .set({ title: draft.title, body: validatedBody, composedAt: new Date(), bodyEditedAt: null })
-    .where(and(eq(releases.id, release.id), eq(releases.tenantId, release.tenantId)))
+    .where(and(eq(contentPieces.id, release.id), eq(contentPieces.tenantId, release.tenantId)))
     .returning();
 
   return updated ?? null;

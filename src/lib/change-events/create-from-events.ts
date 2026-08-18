@@ -115,7 +115,7 @@ export async function createAtomicUpdateFromEvents(
               id: atomicUpdates.id,
               status: atomicUpdates.status,
               title: atomicUpdates.title,
-              releaseId: atomicUpdates.releaseId,
+              contentPieceId: atomicUpdates.contentPieceId,
             })
             .from(atomicUpdates)
             .where(and(inArray(atomicUpdates.id, sourceAtomicUpdateIds), eq(atomicUpdates.tenantId, tenantId)))
@@ -144,7 +144,7 @@ export async function createAtomicUpdateFromEvents(
 
       if (remainingOutsideBatch.length === 0) {
         const source = sourceById.get(sourceId)!;
-        emptiedAtomicUpdates.push({ id: source.id, title: source.title, inDraft: source.releaseId !== null });
+        emptiedAtomicUpdates.push({ id: source.id, title: source.title, inDraft: source.contentPieceId !== null });
       }
     }
 

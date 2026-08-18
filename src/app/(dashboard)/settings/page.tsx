@@ -5,8 +5,10 @@ import { requireSession } from "@/lib/workspace/session";
 import { listWorkspaceMembers } from "@/lib/workspace/members";
 import { getActiveInvite } from "@/lib/workspace/invites";
 import { saveWorkspaceName } from "./actions";
+import { CalendarForm } from "./calendar-form";
 import { MembersSection } from "./members-section";
 import { ScheduleForm } from "./schedule-form";
+import { normalizeWeekStart } from "@/lib/workspace/calendar-settings";
 import { ToastForm } from "./toast-form";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -51,14 +53,22 @@ export default async function SettingsPage() {
           <CardTitle>Publishing schedule</CardTitle>
         </CardHeader>
         <CardContent>
-          <ScheduleForm
+          <ScheduleForm defaults={{ hour: workspaceSchedule?.hour ?? 9 }} />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Calendar</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {/* Workspace-level, like every other card on this page: the week
+              start and the holiday countries are properties of the shared
+              calendar, not of whoever happens to be looking at it. */}
+          <CalendarForm
             defaults={{
-              cadence: workspaceSchedule?.cadence ?? "weekly",
-              threshold: workspaceSchedule?.threshold ?? null,
-              thresholdEnabled: workspaceSchedule?.thresholdEnabled ?? false,
-              hour: workspaceSchedule?.hour ?? 9,
-              dayOfWeek: workspaceSchedule?.dayOfWeek ?? null,
-              dayOfMonth: workspaceSchedule?.dayOfMonth ?? null,
+              weekStartsOn: normalizeWeekStart(tenant?.weekStartsOn),
+              holidayCountries: tenant?.holidayCountries ?? [],
             }}
           />
         </CardContent>

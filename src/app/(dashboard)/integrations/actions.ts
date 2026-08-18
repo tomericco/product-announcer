@@ -58,7 +58,7 @@ export async function removeRepo(formData: FormData) {
   await db.delete(repos).where(and(eq(repos.id, repoId), eq(repos.tenantId, session.user.tenantId)));
 
   revalidatePath("/integrations");
-  revalidatePath("/atomic-updates");
+  revalidatePath("/company");
 }
 
 export async function saveWebhookConfig(formData: FormData): Promise<ActionResult> {

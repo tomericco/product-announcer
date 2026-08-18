@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { and, eq, inArray } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { users, tenants, tenantMembers } from "../../../src/db/schema";
+import { users, tenants, tenantMembers, contentPieces } from "../../../src/db/schema";
 import { listWorkspaceMembers, removeWorkspaceMember } from "../../../src/lib/workspace/members";
 
 describe("listWorkspaceMembers", () => {
@@ -98,5 +98,41 @@ describe("removeWorkspaceMember", () => {
     // A syntactically valid UUID that belongs to no member of this workspace.
     const result = await removeWorkspaceMember(t.id, owner.id, "00000000-0000-0000-0000-000000000000");
     expect(result).toEqual({ removed: false });
+  });
+
+  it("clears assignedTo on this tenant's content pieces that named the removed member", async () => {
+    const { t, owner, member } = await seed();
+    const [piece] = await db
+      .insert(contentPieces)
+      .values({ tenantId: t.id, title: "T", body: "B", status: "draft", assignedTo: member.id })
+      .returning();
+
+    await removeWorkspaceMember(t.id, owner.id, member.id);
+
+    const [after] = await db.select().from(contentPieces).where(eq(contentPieces.id, piece.id));
+    // Otherwise the board's assignee picker resolves assignedTo against the
+    // live member list, renders "Unassigned", while its own <Select value>
+    // still points at a user with no matching item.
+    expect(after.assignedTo).toBeNull();
+
+    await db.delete(contentPieces).where(eq(contentPieces.id, piece.id));
+  });
+
+  it("does not touch another tenant's content pieces assigned to the same user id", async () => {
+    const { t, owner, member } = await seed();
+    const [otherTenant] = await db.insert(tenants).values({ name: "Remove WS" }).returning();
+    tenantIds.push(otherTenant.id);
+    await db.insert(tenantMembers).values({ tenantId: otherTenant.id, userId: member.id, role: "owner" });
+    const [otherPiece] = await db
+      .insert(contentPieces)
+      .values({ tenantId: otherTenant.id, title: "T", body: "B", status: "draft", assignedTo: member.id })
+      .returning();
+
+    await removeWorkspaceMember(t.id, owner.id, member.id);
+
+    const [after] = await db.select().from(contentPieces).where(eq(contentPieces.id, otherPiece.id));
+    expect(after.assignedTo).toBe(member.id);
+
+    await db.delete(contentPieces).where(eq(contentPieces.id, otherPiece.id));
   });
 });

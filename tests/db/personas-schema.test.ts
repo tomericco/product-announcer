@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../src/db";
-import { tenants, brandProfiles } from "../../src/db/schema";
+import { tenants, companyProfiles } from "../../src/db/schema";
 
 describe("personas schema", () => {
   afterEach(async () => {
@@ -12,7 +12,7 @@ describe("personas schema", () => {
     const [tenant] = await db.insert(tenants).values({ name: "Personas Schema Test Tenant" }).returning();
 
     const [profile] = await db
-      .insert(brandProfiles)
+      .insert(companyProfiles)
       .values({
         tenantId: tenant.id,
         userPersonas: [

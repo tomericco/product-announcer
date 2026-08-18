@@ -67,8 +67,8 @@ export function HistoryList({ rows }: { rows: HistoryRow[] }) {
 
   return (
     <>
-      {/* Negative margin lets the hover highlight breathe past the text column,
-          matching the drafts list. */}
+      {/* Negative margin lets the hover highlight breathe past the text
+          column. */}
       <div className="-mx-3">
         {rows.map((r) => (
           <button

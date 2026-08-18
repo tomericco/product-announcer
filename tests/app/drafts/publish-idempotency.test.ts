@@ -8,9 +8,9 @@ vi.mock("next/headers", () => ({ cookies: vi.fn(async () => ({ get: () => undefi
 
 import { getServerSession } from "next-auth";
 import { db } from "../../../src/db";
-import { tenants, repos, releases, webhookConfigs, webflowConnections, deliveryAttempts, users, tenantMembers } from "../../../src/db/schema";
+import { tenants, repos, contentPieces, webhookConfigs, webflowConnections, deliveryAttempts, users, tenantMembers } from "../../../src/db/schema";
 import { encryptSecret } from "../../../src/lib/credentials/encryption";
-import { approveDraft, publishDraft } from "../../../src/app/(dashboard)/drafts/actions";
+import { approveDraft } from "../../../src/app/(dashboard)/drafts/actions";
 
 const TENANT_NAME = "Publish Idempotency Test Tenant";
 const OTHER_TENANT_NAME = "Publish Idempotency Test Tenant (Other)";
@@ -37,7 +37,7 @@ async function seed(tenantName = TENANT_NAME) {
     .returning();
   await db.insert(webhookConfigs).values({ tenantId: tenant.id, url: "https://example.com/hook", ...encryptedSecret() });
   const [update] = await db
-    .insert(releases)
+    .insert(contentPieces)
     .values({
       tenantId: tenant.id,
       repoId: repo.id,
@@ -63,17 +63,17 @@ async function seedOtherTenantMember() {
 }
 
 async function rowFor(releaseId: string) {
-  const [row] = await db.select().from(releases).where(eq(releases.id, releaseId));
+  const [row] = await db.select().from(contentPieces).where(eq(contentPieces.id, releaseId));
   return row;
 }
 
 async function deliveriesFor(releaseId: string) {
-  return db.select().from(deliveryAttempts).where(eq(deliveryAttempts.releaseId, releaseId));
+  return db.select().from(deliveryAttempts).where(eq(deliveryAttempts.contentPieceId, releaseId));
 }
 
 function approveFormData(releaseId: string, publishedAt: string, destinations: string[] = ["webhook"]) {
   const fd = new FormData();
-  fd.set("releaseId", releaseId);
+  fd.set("contentPieceId", releaseId);
   fd.set("title", "Original title");
   fd.set("body", "Original body");
   fd.set("publishedAt", publishedAt);
@@ -81,14 +81,7 @@ function approveFormData(releaseId: string, publishedAt: string, destinations: s
   return fd;
 }
 
-function publishFormData(releaseId: string, publishedAt: string) {
-  const fd = new FormData();
-  fd.set("releaseId", releaseId);
-  fd.set("publishedAt", publishedAt);
-  return fd;
-}
-
-describe("draft publish idempotency (approveDraft / publishDraft)", () => {
+describe("draft publish idempotency (approveDraft)", () => {
   beforeEach(() => {
     vi.stubGlobal("fetch", vi.fn());
   });
@@ -160,6 +153,72 @@ describe("draft publish idempotency (approveDraft / publishDraft)", () => {
       expect(deliveries[0].attempts).toBe(1);
     });
 
+    it("refuses a \"brief\"-status piece — an ungenerated scaffold must not be published as finished copy", async () => {
+      const { tenant, update, user } = await seed();
+      await db.update(contentPieces).set({ status: "brief" }).where(eq(contentPieces.id, update.id));
+      vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id, id: user.id } } as never);
+
+      await expect(approveDraft(approveFormData(update.id, ""))).rejects.toThrow(/hasn't been generated yet/i);
+
+      const row = await rowFor(update.id);
+      expect(row.status).toBe("brief");
+      expect(row.publishedAt).toBeNull();
+      // The delivery side effect, not just the return value — this is the
+      // part an ungenerated scaffold reaching a real destination would
+      // actually hurt.
+      expect(fetch).not.toHaveBeenCalled();
+      expect(await deliveriesFor(update.id)).toHaveLength(0);
+    });
+
+    it("still succeeds for a \"draft\"-status piece — the brief guard must not over-block", async () => {
+      const { tenant, update, user } = await seed();
+      vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id, id: user.id } } as never);
+      vi.mocked(fetch).mockResolvedValue({ ok: true } as Response);
+
+      await approveDraft(approveFormData(update.id, ""));
+
+      const row = await rowFor(update.id);
+      expect(row.status).toBe("published");
+      expect(fetch).toHaveBeenCalledTimes(1);
+    });
+
+    // The allowlist admits "review" and "scheduled" alongside "draft" and
+    // "published" — both are planning states a human owns, not checkpoints,
+    // and the board can move a card straight into either without it ever
+    // passing back through "draft". Only "brief" (an ungenerated scaffold)
+    // stays refused, exercised below.
+    it("accepts a \"review\"-status piece", async () => {
+      const { tenant, update, user } = await seed();
+      await db.update(contentPieces).set({ status: "review" }).where(eq(contentPieces.id, update.id));
+      vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id, id: user.id } } as never);
+      vi.mocked(fetch).mockResolvedValue({ ok: true } as Response);
+
+      await approveDraft(approveFormData(update.id, ""));
+
+      const row = await rowFor(update.id);
+      expect(row.status).toBe("published");
+      expect(fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("accepts a \"scheduled\"-status piece, and clears its stale scheduledFor on publish", async () => {
+      const { tenant, update, user } = await seed();
+      await db
+        .update(contentPieces)
+        .set({ status: "scheduled", scheduledFor: new Date("2026-09-01T09:00:00Z") })
+        .where(eq(contentPieces.id, update.id));
+      vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id, id: user.id } } as never);
+      vi.mocked(fetch).mockResolvedValue({ ok: true } as Response);
+
+      await approveDraft(approveFormData(update.id, ""));
+
+      const row = await rowFor(update.id);
+      expect(row.status).toBe("published");
+      // The calendar (spec 8) reads scheduledFor directly; a published piece
+      // must not still carry a date that reads as "still upcoming".
+      expect(row.scheduledFor).toBeNull();
+      expect(fetch).toHaveBeenCalledTimes(1);
+    });
+
     it("tenant isolation: another tenant cannot approve this update", async () => {
       const { update } = await seed();
       const { otherUser } = await seedOtherTenantMember();
@@ -210,76 +269,6 @@ describe("draft publish idempotency (approveDraft / publishDraft)", () => {
       vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id, id: user.id } } as never);
 
       await expect(approveDraft(approveFormData(update.id, "", ["bogus"]))).rejects.toThrow();
-
-      const row = await rowFor(update.id);
-      expect(row.status).toBe("draft");
-      expect(fetch).not.toHaveBeenCalled();
-    });
-  });
-
-  describe("publishDraft", () => {
-    it("first publish of a never-published draft works (expected published_at = null)", async () => {
-      const { tenant, update, user } = await seed();
-      vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id, id: user.id } } as never);
-      vi.mocked(fetch).mockResolvedValue({ ok: true } as Response);
-
-      await publishDraft(publishFormData(update.id, ""));
-
-      const row = await rowFor(update.id);
-      expect(row.status).toBe("published");
-      expect(row.publishedAt).not.toBeNull();
-      expect(row.publishedBy).toBe(user.id);
-
-      const deliveries = await deliveriesFor(update.id);
-      expect(deliveries).toHaveLength(1);
-      expect(deliveries[0].attempts).toBe(1);
-      expect(fetch).toHaveBeenCalledTimes(1);
-    });
-
-    it("two calls carrying the SAME expected published_at (a double submit) deliver exactly once", async () => {
-      const { tenant, update, user } = await seed();
-      vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id, id: user.id } } as never);
-      vi.mocked(fetch).mockResolvedValue({ ok: true } as Response);
-
-      await publishDraft(publishFormData(update.id, ""));
-      await publishDraft(publishFormData(update.id, ""));
-
-      const deliveries = await deliveriesFor(update.id);
-      expect(deliveries).toHaveLength(1);
-      expect(deliveries[0].attempts).toBe(1);
-      expect(fetch).toHaveBeenCalledTimes(1);
-    });
-
-    it("an intentional re-publish with the CURRENT published_at still delivers, reusing the same delivery_attempts row", async () => {
-      const { tenant, update, user } = await seed();
-      vi.mocked(getServerSession).mockResolvedValue({ user: { tenantId: tenant.id, id: user.id } } as never);
-      vi.mocked(fetch).mockResolvedValue({ ok: true } as Response);
-
-      await publishDraft(publishFormData(update.id, ""));
-      const [deliveryAfterFirst] = await deliveriesFor(update.id);
-
-      const current = await rowFor(update.id);
-      const currentPublishedAt = current.publishedAt!.toISOString();
-
-      await publishDraft(publishFormData(update.id, currentPublishedAt));
-
-      expect(fetch).toHaveBeenCalledTimes(2);
-      const deliveries = await deliveriesFor(update.id);
-      expect(deliveries).toHaveLength(1);
-      expect(deliveries[0].id).toBe(deliveryAfterFirst.id);
-    });
-
-    it("tenant isolation: another tenant cannot publish this update", async () => {
-      const { update } = await seed();
-      const { otherUser } = await seedOtherTenantMember();
-      vi.mocked(getServerSession).mockResolvedValue({ user: { id: otherUser.id } } as never);
-
-      // Must reject via the action's own `WHERE tenantId` guard
-      // (loadOwnedDraft), not some unrelated failure — otherwise this test
-      // would still pass even if that guard were deleted.
-      await expect(publishDraft(publishFormData(update.id, ""))).rejects.toThrow(
-        "Update not found for this tenant"
-      );
 
       const row = await rowFor(update.id);
       expect(row.status).toBe("draft");

@@ -1,11 +1,11 @@
 import { eq } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
-import { releases } from "@/db/schema";
+import { contentPieces } from "@/db/schema";
 import { prepareGenerationContext } from "@/lib/ai/generation-context";
 import { editReleaseBody } from "@/lib/ai/edit";
 import { reviewAndReconcile } from "@/lib/ai/review-draft";
 import { validateDraftLinks } from "@/lib/ai/validate-links";
-import type { OnDraftProgress } from "@/lib/scheduling/draft-progress";
+import type { OnDraftProgress } from "@/lib/drafting/draft-progress";
 
 type Database = typeof defaultDb;
 
@@ -29,7 +29,7 @@ export type WholeEditDeps = {
  * Returns the persisted body, or null if the release doesn't exist.
  */
 export async function runWholeEditForRelease(
-  args: { releaseId: string; instruction: string; fullBody: string; editedBy: string },
+  args: { contentPieceId: string; instruction: string; fullBody: string; editedBy: string },
   database: Database = defaultDb,
   onProgress?: OnDraftProgress,
   deps: WholeEditDeps = {}
@@ -38,7 +38,7 @@ export async function runWholeEditForRelease(
   const review = deps.review ?? reviewAndReconcile;
   const emit: OnDraftProgress = onProgress ?? (() => {});
 
-  const [release] = await database.select().from(releases).where(eq(releases.id, args.releaseId));
+  const [release] = await database.select().from(contentPieces).where(eq(contentPieces.id, args.contentPieceId));
   if (!release) {
     emit({ type: "error", message: "Update not found." });
     return null;
@@ -76,9 +76,9 @@ export async function runWholeEditForRelease(
   // with an empty one the review pipeline might hand back on a failure path.
   const body = finalBody.trim().length === 0 && release.body.trim().length > 0 ? release.body : finalBody;
   await database
-    .update(releases)
+    .update(contentPieces)
     .set({ body, editedBy: args.editedBy, bodyEditedAt: new Date() })
-    .where(eq(releases.id, release.id));
+    .where(eq(contentPieces.id, release.id));
   emit({ type: "step", key: "saving", status: "done" });
 
   emit({ type: "done", updateId: release.id, body });

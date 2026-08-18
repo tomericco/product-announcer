@@ -1,0 +1,1 @@
+ALTER TABLE "briefs" ALTER COLUMN "expires_at" DROP NOT NULL;

@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, releases } from "../../../src/db/schema";
+import { tenants, contentPieces } from "../../../src/db/schema";
+import { readVariant } from "../../../src/lib/publishing/channel-variants";
 
 vi.mock("../../../src/lib/workspace/session", () => ({ requireSession: vi.fn() }));
 vi.mock("../../../src/lib/ai/linkedin-copy", () => ({ generateLinkedinCopy: vi.fn() }));
@@ -16,7 +17,7 @@ const TENANT = "LinkedIn Drafts Actions Test Tenant";
 async function seedRelease() {
   const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
   const [release] = await db
-    .insert(releases)
+    .insert(contentPieces)
     .values({ tenantId: tenant.id, title: "T", body: "B", status: "draft" })
     .returning();
   return { tenantId: tenant.id, releaseId: release.id };
@@ -41,26 +42,26 @@ describe("linkedin draft actions", () => {
     const { tenantId, releaseId } = await seedRelease();
     vi.mocked(requireSession).mockResolvedValue({ user: { tenantId } } as never);
     vi.mocked(generateLinkedinCopy).mockResolvedValue("Generated post.");
-    await generateLinkedinCopyAction(fd({ releaseId }));
-    const [row] = await db.select().from(releases).where(eq(releases.id, releaseId));
-    expect(row.linkedinBody).toBe("Generated post.");
-    expect(row.linkedinBodyEditedAt).toBeNull();
+    await generateLinkedinCopyAction(fd({ contentPieceId: releaseId }));
+    const variant = await readVariant(db, releaseId, "linkedin");
+    expect(variant?.body).toBe("Generated post.");
+    expect(variant?.editedAt).toBeNull();
   });
 
   it("saves hand-edited copy and stamps the edited marker", async () => {
     const { tenantId, releaseId } = await seedRelease();
     vi.mocked(requireSession).mockResolvedValue({ user: { tenantId } } as never);
-    await saveLinkedinCopyAction(fd({ releaseId, linkedinBody: "My edit." }));
-    const [row] = await db.select().from(releases).where(eq(releases.id, releaseId));
-    expect(row.linkedinBody).toBe("My edit.");
-    expect(row.linkedinBodyEditedAt).not.toBeNull();
+    await saveLinkedinCopyAction(fd({ contentPieceId: releaseId, linkedinBody: "My edit." }));
+    const variant = await readVariant(db, releaseId, "linkedin");
+    expect(variant?.body).toBe("My edit.");
+    expect(variant?.editedAt).not.toBeNull();
   });
 
   it("refuses to touch a release from another tenant", async () => {
     const { releaseId } = await seedRelease();
     vi.mocked(requireSession).mockResolvedValue({ user: { tenantId: "00000000-0000-0000-0000-000000000000" } } as never);
-    await saveLinkedinCopyAction(fd({ releaseId, linkedinBody: "x" }));
-    const [row] = await db.select().from(releases).where(eq(releases.id, releaseId));
-    expect(row.linkedinBody).toBeNull();
+    await saveLinkedinCopyAction(fd({ contentPieceId: releaseId, linkedinBody: "x" }));
+    const variant = await readVariant(db, releaseId, "linkedin");
+    expect(variant).toBeNull();
   });
 });

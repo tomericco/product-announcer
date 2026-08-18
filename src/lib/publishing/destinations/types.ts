@@ -1,5 +1,5 @@
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
-import type { releases } from "@/db/schema";
+import type { contentPieces } from "@/db/schema";
 import type * as schema from "@/db/schema";
 
 export type DestinationId = "webhook" | "webflow" | "linkedin";
@@ -10,7 +10,7 @@ export type DestinationId = "webhook" | "webflow" | "linkedin";
 // transaction handle (`tx`) here too, and a `PgTransaction` has no `$client`.
 export type DbClient = NodePgDatabase<typeof schema>;
 
-export type Release = typeof releases.$inferSelect;
+export type ContentPiece = typeof contentPieces.$inferSelect;
 
 export type DeliveryResult =
   // `externalId` is stored so a later re-publish can update rather than duplicate.
@@ -31,7 +31,7 @@ export interface Destination<TConfig> {
   /** Human-readable name shown in the publish-destinations modal. */
   label: string;
   loadConfig(tenantId: string, database: DbClient): Promise<TConfig | null>;
-  deliver(release: Release, config: TConfig, externalId: string | null, database: DbClient): Promise<DeliveryResult>;
+  deliver(piece: ContentPiece, config: TConfig, externalId: string | null, database: DbClient): Promise<DeliveryResult>;
 }
 
 // One row in the publish modal: a destination and whether it is ready to

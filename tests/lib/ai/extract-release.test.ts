@@ -1,9 +1,9 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, releases, users, brandProfiles, atomicUpdates } from "../../../src/db/schema";
+import { tenants, contentPieces, users, companyProfiles, atomicUpdates } from "../../../src/db/schema";
 import { runExtractForRelease } from "../../../src/lib/ai/extract-release";
-import type { DraftProgressEvent } from "../../../src/lib/scheduling/draft-progress";
+import type { DraftProgressEvent } from "../../../src/lib/drafting/draft-progress";
 import type { ReviewOutcome } from "../../../src/lib/ai/review-draft";
 
 const TENANT_NAME = "Extract Release Test Tenant";
@@ -16,19 +16,19 @@ async function seed(body = SOURCE_BODY) {
   const [tenant] = await db.insert(tenants).values({ name: TENANT_NAME }).returning();
   const [user] = await db.insert(users).values({ email: USER_EMAIL }).returning();
   const [release] = await db
-    .insert(releases)
+    .insert(contentPieces)
     .values({ tenantId: tenant.id, title: "Source title", body })
     .returning();
   return { tenant, user, release };
 }
 
 async function rowFor(releaseId: string) {
-  const [row] = await db.select().from(releases).where(eq(releases.id, releaseId));
+  const [row] = await db.select().from(contentPieces).where(eq(contentPieces.id, releaseId));
   return row;
 }
 
 async function releasesFor(tenantId: string) {
-  return db.select().from(releases).where(eq(releases.tenantId, tenantId));
+  return db.select().from(contentPieces).where(eq(contentPieces.tenantId, tenantId));
 }
 
 const generateDraft = async () => ({ title: "Generated title", body: "generated body" });
@@ -43,8 +43,8 @@ describe("runExtractForRelease", () => {
     const [tenant] = await db.select().from(tenants).where(eq(tenants.name, TENANT_NAME));
     if (tenant) {
       await db.delete(atomicUpdates).where(eq(atomicUpdates.tenantId, tenant.id));
-      await db.delete(releases).where(eq(releases.tenantId, tenant.id));
-      await db.delete(brandProfiles).where(eq(brandProfiles.tenantId, tenant.id));
+      await db.delete(contentPieces).where(eq(contentPieces.tenantId, tenant.id));
+      await db.delete(companyProfiles).where(eq(companyProfiles.tenantId, tenant.id));
     }
     await db.delete(users).where(eq(users.email, USER_EMAIL));
     await db.delete(tenants).where(eq(tenants.name, TENANT_NAME));
@@ -56,7 +56,7 @@ describe("runExtractForRelease", () => {
 
     const result = await runExtractForRelease(
       {
-        releaseId: release.id,
+        contentPieceId: release.id,
         excerpt: "Extracted paragraph.",
         remainingBody: REMAINING,
         instruction: "keep it short",
@@ -70,7 +70,7 @@ describe("runExtractForRelease", () => {
     expect(result).not.toBeNull();
     expect(result!.title).toBe("Generated title");
 
-    const created = await rowFor(result!.releaseId);
+    const created = await rowFor(result!.contentPieceId);
     expect(created.title).toBe("Generated title");
     expect(created.body).toBe("reviewed body");
     expect(created.tenantId).toBe(tenant.id);
@@ -82,7 +82,7 @@ describe("runExtractForRelease", () => {
     const linked = await db
       .select()
       .from(atomicUpdates)
-      .where(eq(atomicUpdates.releaseId, created.id));
+      .where(eq(atomicUpdates.contentPieceId, created.id));
     expect(linked).toHaveLength(0);
 
     const source = await rowFor(release.id);
@@ -113,7 +113,7 @@ describe("runExtractForRelease", () => {
 
     const result = await runExtractForRelease(
       {
-        releaseId: release.id,
+        contentPieceId: release.id,
         excerpt: SOURCE_BODY,
         remainingBody: "   ",
         instruction: "",
@@ -139,7 +139,7 @@ describe("runExtractForRelease", () => {
     await expect(
       runExtractForRelease(
         {
-          releaseId: release.id,
+          contentPieceId: release.id,
           excerpt: "Extracted paragraph.",
           remainingBody: REMAINING,
           instruction: "",
@@ -157,11 +157,11 @@ describe("runExtractForRelease", () => {
     expect(source.bodyEditedAt).toBeNull();
   });
 
-  it("returns null for a release that does not exist", async () => {
+  it("returns null for a content piece that does not exist", async () => {
     const events: DraftProgressEvent[] = [];
     const result = await runExtractForRelease(
       {
-        releaseId: "00000000-0000-0000-0000-000000000000",
+        contentPieceId: "00000000-0000-0000-0000-000000000000",
         excerpt: "x",
         remainingBody: "y",
         instruction: "",

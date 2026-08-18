@@ -3,7 +3,8 @@ import { linkedinConnections } from "@/db/schema";
 import { getValidAccessToken } from "@/lib/integrations/linkedin/token";
 import { createPost, LinkedinApiError } from "@/lib/integrations/linkedin/client";
 import { slugify } from "@/lib/publishing/slug";
-import type { Destination, DeliveryResult, DbClient, Release } from "./types";
+import { readVariant } from "@/lib/publishing/channel-variants";
+import type { Destination, DeliveryResult, DbClient, ContentPiece } from "./types";
 
 type LinkedinConnection = typeof linkedinConnections.$inferSelect;
 
@@ -59,8 +60,8 @@ export const linkedinDestination: Destination<LinkedinConnection> = {
     return connection ?? null;
   },
 
-  async deliver(release: Release, connection, externalId, database): Promise<DeliveryResult> {
-    // Post-once: a release already posted to LinkedIn must never be re-posted
+  async deliver(piece: ContentPiece, connection, externalId, database): Promise<DeliveryResult> {
+    // Post-once: a piece already posted to LinkedIn must never be re-posted
     // (that would duplicate/spam), unlike Webflow which updates in place.
     if (externalId) return { status: "ok", externalId };
 
@@ -72,12 +73,13 @@ export const linkedinDestination: Destination<LinkedinConnection> = {
     if (!connection.organizationUrn.startsWith("urn:li:organization:")) {
       return { status: "permanent", error: "LinkedIn author must be an organization page.", configFault: true };
     }
-    if (!release.linkedinBody || !release.linkedinBody.trim()) {
+    const variant = await readVariant(database, piece.id, "linkedin");
+    if (!variant || !variant.body.trim()) {
       return { status: "permanent", error: "Generate a LinkedIn post before publishing." };
     }
 
-    const link = new URL(slugify(release.title), connection.baseUrl).toString();
-    const commentary = `${release.linkedinBody.trim()}\n\n${link}`;
+    const link = new URL(slugify(piece.title), connection.baseUrl).toString();
+    const commentary = `${variant.body.trim()}\n\n${link}`;
 
     // Acquire the token BEFORE the network try-block. getValidAccessToken can
     // fail two ways that must NOT be lumped in with a retryable network error:

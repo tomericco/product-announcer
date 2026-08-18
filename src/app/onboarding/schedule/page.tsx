@@ -1,9 +1,8 @@
 import { guardOnboardingStep } from "../guard";
 import { StepHeader } from "../steps";
 import { saveOnboardingSchedule, skipScheduleStep } from "../actions";
-import { CadenceSelect } from "./cadence-select";
+import { HourSelect } from "./hour-select";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
 export default async function ScheduleStepPage() {
@@ -14,16 +13,12 @@ export default async function ScheduleStepPage() {
       <StepHeader
         step={4}
         title="Choose your rhythm"
-        description="How often should we draft an update? Change it anytime in Settings."
+        description="What hour should the ideation agent run? Change it anytime in Settings."
       />
       <form action={saveOnboardingSchedule} className="space-y-6">
         <div className="space-y-2">
-          <Label>Cadence</Label>
-          <CadenceSelect defaultValue="none" />
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="threshold">Or after at least this many changes</Label>
-          <Input id="threshold" type="number" name="threshold" min={1} defaultValue={5} className="w-24" />
+          <Label>Run daily at</Label>
+          <HourSelect defaultValue="9" />
         </div>
         <Button type="submit" className="w-full">
           Finish setup

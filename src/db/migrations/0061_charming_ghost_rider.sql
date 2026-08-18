@@ -1,0 +1,1 @@
+ALTER TABLE "briefs" ADD COLUMN "body" text;

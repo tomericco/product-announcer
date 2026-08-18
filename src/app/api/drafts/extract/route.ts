@@ -5,10 +5,10 @@ import { authOptions } from "@/lib/workspace/auth";
 import { hasValidSession } from "@/lib/workspace/session";
 import { ACTIVE_TENANT_COOKIE, resolveActiveTenant } from "@/lib/workspace/active-tenant";
 import { db } from "@/db";
-import { releases } from "@/db/schema";
-import { notEditableMessage } from "@/lib/draft-editable";
+import { contentPieces } from "@/db/schema";
+import { assertDraftEditable } from "@/lib/draft-editable";
 import { runExtractForRelease } from "@/lib/ai/extract-release";
-import type { DraftProgressEvent } from "@/lib/scheduling/draft-progress";
+import type { DraftProgressEvent } from "@/lib/drafting/draft-progress";
 
 function unauthorized(): Response {
   return new Response(JSON.stringify({ error: "unauthorized" }), {
@@ -21,8 +21,8 @@ function unauthorized(): Response {
  * Splits a highlighted passage out of a draft into a new draft, streaming the
  * same stepped progress as the compose and whole-edit routes. Fetch/ndjson API,
  * so it fails with a plain 401 rather than a redirect (see the compose route).
- * The release id is re-checked against the resolved tenant — never trusted from
- * the request body.
+ * The content piece id is re-checked against the resolved tenant — never
+ * trusted from the request body.
  *
  * `remainingBody` is supplied by the client because only the editor knows the
  * selection's structure; see `runExtractForRelease` for why it isn't derived
@@ -43,7 +43,7 @@ export async function POST(req: Request): Promise<Response> {
   const editedBy = session.user.id;
 
   const body = await req.json().catch(() => null);
-  const releaseId = typeof body?.releaseId === "string" ? body.releaseId : "";
+  const contentPieceId = typeof body?.contentPieceId === "string" ? body.contentPieceId : "";
   const excerpt = typeof body?.excerpt === "string" ? body.excerpt : "";
   const remainingBody = typeof body?.remainingBody === "string" ? body.remainingBody : "";
   const instruction = typeof body?.instruction === "string" ? body.instruction.trim() : "";
@@ -54,7 +54,7 @@ export async function POST(req: Request): Promise<Response> {
       const emit = (event: DraftProgressEvent) =>
         controller.enqueue(encoder.encode(JSON.stringify(event) + "\n"));
       try {
-        if (!releaseId || excerpt.trim().length === 0) {
+        if (!contentPieceId || excerpt.trim().length === 0) {
           emit({ type: "error", message: "Missing an update to split or a passage to extract." });
           return;
         }
@@ -67,23 +67,24 @@ export async function POST(req: Request): Promise<Response> {
           return;
         }
         // Ownership + existence check against the resolved tenant, not the
-        // client-supplied id. `status` comes back too so a release that has
-        // left the draft state is refused here, before the pipeline runs —
-        // splitting a published release would rewrite text already delivered.
+        // client-supplied id. `status` comes back too so a piece outside the
+        // editable planning states ("draft", "review", "scheduled") is
+        // refused here, before the pipeline runs — splitting a published
+        // piece would rewrite text already delivered.
         const [owned] = await db
-          .select({ id: releases.id, status: releases.status })
-          .from(releases)
-          .where(and(eq(releases.id, releaseId), eq(releases.tenantId, tenantId)));
+          .select({ id: contentPieces.id, status: contentPieces.status })
+          .from(contentPieces)
+          .where(and(eq(contentPieces.id, contentPieceId), eq(contentPieces.tenantId, tenantId)));
         if (!owned) {
           emit({ type: "error", message: "Update not found for this tenant." });
           return;
         }
-        if (owned.status !== "draft") {
-          emit({ type: "error", message: notEditableMessage(owned.status) });
-          return;
-        }
+        // Throws for anything assertDraftEditable refuses; caught below and
+        // re-emitted as the same ndjson error event the manual check used to
+        // produce.
+        assertDraftEditable(owned);
         await runExtractForRelease(
-          { releaseId, excerpt, remainingBody, instruction, editedBy },
+          { contentPieceId, excerpt, remainingBody, instruction, editedBy },
           db,
           emit
         );

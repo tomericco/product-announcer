@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { composeExtractPrompt } from "../../../src/lib/ai/compose-prompt";
-import type { brandProfiles } from "../../../src/db/schema";
+import type { companyProfiles } from "../../../src/db/schema";
 
-type BrandProfileRow = typeof brandProfiles.$inferSelect;
+type BrandProfileRow = typeof companyProfiles.$inferSelect;
 
 // Minimal brand profile — buildSystemPrompt only reads these fields.
 const brandProfile = {

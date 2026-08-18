@@ -1,7 +1,8 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../src/db";
-import { tenants, users, releases, deliveryAttempts } from "../../src/db/schema";
+import { tenants, users, contentPieces, deliveryAttempts } from "../../src/db/schema";
+import { writeVariant } from "../../src/lib/publishing/channel-variants";
 
 const TENANT = "History Actions Test Tenant";
 let currentTenantId = "";
@@ -17,20 +18,20 @@ async function seed() {
   currentTenantId = tenant.id;
   const [pub] = await db.insert(users).values({ email: "pub@example.com", name: "Pat Publisher" }).returning({ id: users.id });
   const [rel] = await db
-    .insert(releases)
+    .insert(contentPieces)
     .values({
       tenantId: tenant.id,
       title: "Ship it",
       body: "# Notes\n\nWe **shipped**.",
-      linkedinBody: "We shipped 🎉",
       status: "published",
       publishedAt: new Date("2026-07-25T10:00:00Z"),
       publishedBy: pub.id,
     })
-    .returning({ id: releases.id });
+    .returning({ id: contentPieces.id });
+  await writeVariant(db, rel.id, "linkedin", "We shipped 🎉");
   await db.insert(deliveryAttempts).values([
-    { releaseId: rel.id, destination: "webhook", status: "success" },
-    { releaseId: rel.id, destination: "webflow", status: "failed", lastError: "401 Unauthorized" },
+    { contentPieceId: rel.id, destination: "webhook", status: "success" },
+    { contentPieceId: rel.id, destination: "webflow", status: "failed", lastError: "401 Unauthorized" },
   ]);
   return { tenantId: tenant.id, releaseId: rel.id };
 }
@@ -69,9 +70,9 @@ describe("getReleaseDetail", () => {
     const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning({ id: tenants.id });
     currentTenantId = tenant.id;
     const [rel] = await db
-      .insert(releases)
+      .insert(contentPieces)
       .values({ tenantId: tenant.id, title: "Old", body: "x", status: "published", publishedAt: new Date() })
-      .returning({ id: releases.id });
+      .returning({ id: contentPieces.id });
     const detail = await getReleaseDetail(rel.id);
     expect(detail!.publisherName).toBeNull();
   });

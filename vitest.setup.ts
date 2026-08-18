@@ -1,5 +1,16 @@
 import { config } from "dotenv";
 
+// Pin the test run to a non-UTC zone, set before anything below constructs a
+// `Date`. `tests/lib/content/calendar.test.ts`'s local-day tests only prove
+// anything when local time differs from UTC — a `getUTCDate()`
+// implementation would pass them just as well as the real `getDate()` one on
+// a UTC machine, which is exactly the bug this pin exists to catch.
+// Asia/Jerusalem observes DST (UTC+2 in winter, UTC+3 roughly late March -
+// late October); the calendar test's boundary cases use August/September
+// dates, which fall inside that UTC+3 window — see the comment there for why
+// the offset matters.
+process.env.TZ = "Asia/Jerusalem";
+
 config({ path: ".env.local" });
 
 // Tests run against real Postgres, and several of them call un-scoped, all-tenant

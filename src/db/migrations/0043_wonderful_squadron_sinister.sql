@@ -1,0 +1,1 @@
+DROP TABLE "brand_profiles" CASCADE;

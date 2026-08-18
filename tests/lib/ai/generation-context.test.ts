@@ -1,12 +1,13 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { tenants, brandProfiles, systemPersonas, systemUpdateExamples } from "../../../src/db/schema";
+import { tenants, companyProfiles, systemPersonas, systemContentExamples } from "../../../src/db/schema";
 import { prepareGenerationContext } from "../../../src/lib/ai/generation-context";
+import { seedTenant } from "../../helpers/fixtures";
 
 const TENANT_NAME = "Generation Context Test Tenant";
 
-// systemPersonas and systemUpdateExamples are GLOBAL seeded catalogs (no
+// systemPersonas and systemContentExamples are GLOBAL seeded catalogs (no
 // tenantId column) — rows inserted here are visible to every other test in
 // the suite for the duration of the test. Keys are unique to this file so
 // they can't collide with the real seed data or another test file, and every
@@ -18,27 +19,22 @@ const EXAMPLE_INDUSTRY = "Generation Context Test Industry";
 const EXAMPLE_KEY_NEW = "generation-context-test-example-new";
 const EXAMPLE_KEY_FIX = "generation-context-test-example-fix";
 
-async function seedTenant() {
-  const [tenant] = await db.insert(tenants).values({ name: TENANT_NAME }).returning();
-  return tenant;
-}
-
 describe("prepareGenerationContext", () => {
   afterEach(async () => {
     const [tenant] = await db.select().from(tenants).where(eq(tenants.name, TENANT_NAME));
     if (tenant) {
-      await db.delete(brandProfiles).where(eq(brandProfiles.tenantId, tenant.id));
+      await db.delete(companyProfiles).where(eq(companyProfiles.tenantId, tenant.id));
       await db.delete(tenants).where(eq(tenants.id, tenant.id));
     }
     // Safety net alongside each test's own try/finally: idempotent no-ops if
     // already cleaned up, but catches the case where cleanup was skipped.
     await db.delete(systemPersonas).where(eq(systemPersonas.key, PERSONA_KEY));
-    await db.delete(systemUpdateExamples).where(eq(systemUpdateExamples.key, EXAMPLE_KEY_NEW));
-    await db.delete(systemUpdateExamples).where(eq(systemUpdateExamples.key, EXAMPLE_KEY_FIX));
+    await db.delete(systemContentExamples).where(eq(systemContentExamples.key, EXAMPLE_KEY_NEW));
+    await db.delete(systemContentExamples).where(eq(systemContentExamples.key, EXAMPLE_KEY_FIX));
   });
 
   it("creates the brand profile on first use and returns personas and examples", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT_NAME);
 
     const context = await prepareGenerationContext(tenant.id, db);
 
@@ -46,13 +42,13 @@ describe("prepareGenerationContext", () => {
     expect(Array.isArray(context.personas)).toBe(true);
     expect(Array.isArray(context.examples)).toBe(true);
 
-    // getOrCreateBrandProfile persisted it, so a second call reuses the row.
-    const rows = await db.select().from(brandProfiles).where(eq(brandProfiles.tenantId, tenant.id));
+    // getOrCreateCompanyProfile persisted it, so a second call reuses the row.
+    const rows = await db.select().from(companyProfiles).where(eq(companyProfiles.tenantId, tenant.id));
     expect(rows).toHaveLength(1);
   });
 
   it("resolves the tenant's configured personas", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT_NAME);
 
     try {
       await db.insert(systemPersonas).values({
@@ -63,9 +59,9 @@ describe("prepareGenerationContext", () => {
       });
       await prepareGenerationContext(tenant.id, db);
       await db
-        .update(brandProfiles)
+        .update(companyProfiles)
         .set({ userPersonas: [{ type: "system", key: PERSONA_KEY }] })
-        .where(eq(brandProfiles.tenantId, tenant.id));
+        .where(eq(companyProfiles.tenantId, tenant.id));
 
       const context = await prepareGenerationContext(tenant.id, db);
 
@@ -80,7 +76,7 @@ describe("prepareGenerationContext", () => {
   });
 
   it("passes categories through to example selection", async () => {
-    const tenant = await seedTenant();
+    const tenant = await seedTenant(TENANT_NAME);
 
     try {
       // Both rows share an industry unique to this test, so both score
@@ -92,7 +88,7 @@ describe("prepareGenerationContext", () => {
       // the "new" example has the lower sort_order, so it sorts first when
       // no category is requested; requesting "fix" should promote the fix
       // example ahead of it despite its higher sort_order.
-      await db.insert(systemUpdateExamples).values([
+      await db.insert(systemContentExamples).values([
         {
           key: EXAMPLE_KEY_NEW,
           industry: EXAMPLE_INDUSTRY,
@@ -112,13 +108,13 @@ describe("prepareGenerationContext", () => {
           sortOrder: 1,
         },
       ]);
-      // getOrCreateBrandProfile only creates the row on first use, and the
+      // getOrCreateCompanyProfile only creates the row on first use, and the
       // industry update below requires it to already exist.
       await prepareGenerationContext(tenant.id, db);
       await db
-        .update(brandProfiles)
+        .update(companyProfiles)
         .set({ industry: EXAMPLE_INDUSTRY })
-        .where(eq(brandProfiles.tenantId, tenant.id));
+        .where(eq(companyProfiles.tenantId, tenant.id));
 
       const withNone = await prepareGenerationContext(tenant.id, db);
       const withFix = await prepareGenerationContext(tenant.id, db, ["fix"]);
@@ -126,8 +122,8 @@ describe("prepareGenerationContext", () => {
       expect(withNone.examples[0]?.key).toBe(EXAMPLE_KEY_NEW);
       expect(withFix.examples[0]?.key).toBe(EXAMPLE_KEY_FIX);
     } finally {
-      await db.delete(systemUpdateExamples).where(eq(systemUpdateExamples.key, EXAMPLE_KEY_NEW));
-      await db.delete(systemUpdateExamples).where(eq(systemUpdateExamples.key, EXAMPLE_KEY_FIX));
+      await db.delete(systemContentExamples).where(eq(systemContentExamples.key, EXAMPLE_KEY_NEW));
+      await db.delete(systemContentExamples).where(eq(systemContentExamples.key, EXAMPLE_KEY_FIX));
     }
   });
 });

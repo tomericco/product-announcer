@@ -28,7 +28,7 @@ describe("atomic_updates schema", () => {
       .returning();
 
     expect(atomic.status).toBe("open");
-    expect(atomic.releaseId).toBeNull();
+    expect(atomic.contentPieceId).toBeNull();
     expect(atomic.summaryEditedAt).toBeNull();
 
     const [event] = await db
