@@ -3,7 +3,7 @@ import type { DbClient } from "@/lib/publishing/destinations/types";
 import { recordLlmUsage } from "@/lib/ai/llm-usage";
 import { IMAGE_MODEL_DEFAULT, imageModelId, resolveImageModel } from "@/lib/ai/image-model";
 import { imageDimensions } from "@/lib/images/compress";
-import { IMAGE_ASPECT_RATIOS, type ImageSize } from "@/lib/images/prompt";
+import { IMAGE_ASPECT_RATIOS, IMAGE_SIZES, type ImageSize } from "@/lib/images/prompt";
 
 export type RenderImageArgs = {
   tenantId: string;
@@ -16,8 +16,12 @@ export type RenderImageArgs = {
   /** When set: image+instruction edit; `prompt` is the instruction. */
   editOf?: string | Buffer;
   /**
-   * Covers only. Measures what came back and re-asks once if the shape is off
-   * by more than ASPECT_TOLERANCE. Never crops — see the block above.
+   * Measures what came back and re-asks once if the shape is off by more than
+   * ASPECT_TOLERANCE. Never crops — see the block above. Defaults to `true`
+   * whenever `size` is `IMAGE_SIZES.cover` (the only size product owner
+   * decision 1 requires this for) — a caller rendering a cover does not need
+   * to remember to opt in, and only an explicit `false` turns the guard off
+   * for a cover-sized render. Bodies default to `false` unless passed `true`.
    */
   enforceAspect?: boolean;
   database?: DbClient;
@@ -103,6 +107,14 @@ export async function renderImage(args: RenderImageArgs, deps: RenderImageDeps =
       n: 1,
     });
 
+    // Surfaces provider-reported problems with the request itself (e.g. a
+    // provider that silently ignores `aspectRatio` and pushes a warning
+    // instead of failing) — previously dropped on the floor, which is exactly
+    // how a real, known @ai-sdk/openai warning here went unnoticed.
+    if (Array.isArray(result.warnings) && result.warnings.length > 0) {
+      console.warn("[ai/images] generateImage warnings:", result.warnings);
+    }
+
     await recordLlmUsage(
       {
         tenantId: args.tenantId,
@@ -122,14 +134,18 @@ export async function renderImage(args: RenderImageArgs, deps: RenderImageDeps =
   };
 
   const first = await renderOnce();
-  if (!args.enforceAspect) return first;
+  // Defaults to on for a cover-sized render (product owner decision 1: covers
+  // are never cropped, so a caller that forgets to pass `enforceAspect: true`
+  // must not silently lose the guard) — an explicit `false` still opts out.
+  const shouldEnforceAspect = args.enforceAspect ?? args.size === IMAGE_SIZES.cover;
+  if (!shouldEnforceAspect) return first;
 
   const wanted = targetAspect(args.size);
   const deviation = await aspectDeviation(first, wanted);
   if (deviation === null || deviation <= ASPECT_TOLERANCE) return first;
 
   console.warn(
-    `[ai/images] cover render came back off ${args.size} by ${(deviation * 100).toFixed(1)}%; asking once more with the size and aspect ratio restated`
+    `[ai/images] cover render came back off ${args.size} by ${(deviation * 100).toFixed(1)}%; retrying once with the identical, unmodified request`
   );
   const second = await renderOnce();
   const secondDeviation = await aspectDeviation(second, wanted);

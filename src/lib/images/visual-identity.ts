@@ -148,6 +148,26 @@ export function isVisualIdentityReady(vi: VisualIdentity | null): boolean {
 
 const HEX = /^#[0-9a-f]{6}$/;
 
+/**
+ * Style reference images must be `https://<store-id>.public.blob.vercel-storage.com/…`
+ * — the exact host `uploadPng`/`put()` returns (`blob.ts`'s `brandAssetPathname`
+ * lives under `tenants/{tenantId}/brand/…` on that same host) and the only host
+ * `next.config.ts`'s `images.remotePatterns` allow-lists. Anything else is
+ * rejected here rather than trusted as "some URL a tenant typed": `saveVisualIdentity`
+ * persists this array verbatim, and `removeStyleReference` later calls `del()`
+ * against a pathname derived from it, so an arbitrary host would let one tenant
+ * point at (and, via removal, delete) a blob outside this store entirely.
+ */
+const BLOB_HOST = /\.public\.blob\.vercel-storage\.com$/;
+const BLOB_URL_SCHEMA = z.url().refine((s) => {
+  try {
+    const url = new URL(s);
+    return url.protocol === "https:" && BLOB_HOST.test(url.hostname);
+  } catch {
+    return false;
+  }
+}, "must be an https URL from this app's blob storage");
+
 const RuleSchema = z.object({
   kind: z.enum(["do", "dont"]),
   text: z.string().transform((s) => s.trim()),
@@ -170,7 +190,7 @@ const VisualIdentitySchema = z.object({
     .array(z.string())
     .transform((words) => words.map((w) => w.trim()).filter(Boolean).slice(0, MAX_MOOD_WORDS)),
   allowTextInImages: z.boolean(),
-  styleReferenceImages: z.array(z.url()).max(MAX_REFERENCE_IMAGES),
+  styleReferenceImages: z.array(BLOB_URL_SCHEMA).max(MAX_REFERENCE_IMAGES),
   customStyleDescriptors: z
     .string()
     .transform((s) => s.trim())

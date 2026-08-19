@@ -13,6 +13,7 @@ import {
   uploadPng,
   validateUploadFile,
 } from "../../../src/lib/images/blob";
+import { MAX_DELIVERABLE_BYTES } from "../../../src/lib/images/compress";
 
 beforeEach(() => {
   vi.mocked(put).mockReset();
@@ -114,6 +115,24 @@ describe("uploadPng", () => {
       contentType: "image/png",
     });
     expect(result).toEqual({ url: "https://blob/x-abc.png", pathname: "tenants/t/x-abc.png" });
+  });
+
+  it("succeeds for a buffer under MAX_DELIVERABLE_BYTES", async () => {
+    vi.mocked(put).mockResolvedValue({ url: "https://blob/ok.png", pathname: "tenants/t/ok.png" } as never);
+    const png = Buffer.alloc(MAX_DELIVERABLE_BYTES - 1);
+    await expect(uploadPng("tenants/t/ok.png", png)).resolves.toEqual({
+      url: "https://blob/ok.png",
+      pathname: "tenants/t/ok.png",
+    });
+  });
+
+  it("throws for a buffer over MAX_DELIVERABLE_BYTES without ever calling put()", async () => {
+    // This is a backstop for a caller that skipped compressPng, not a
+    // re-check of compressPng's own MAX_IMAGE_BYTES (1 MB) ceiling — that
+    // pass can legitimately land slightly over 1 MB and must not throw here.
+    const png = Buffer.alloc(MAX_DELIVERABLE_BYTES + 1);
+    await expect(uploadPng("tenants/t/big.png", png)).rejects.toThrow(/exceeds/);
+    expect(put).not.toHaveBeenCalled();
   });
 });
 

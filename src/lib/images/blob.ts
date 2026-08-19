@@ -1,5 +1,6 @@
 import { put, del } from "@vercel/blob";
 import type { ImageRole } from "@/db/schema";
+import { MAX_DELIVERABLE_BYTES } from "@/lib/images/compress";
 
 const MAX_SLUG = 40;
 
@@ -67,8 +68,20 @@ export function blobPathnameFromUrl(url: string): string {
  * Uploads one already-compressed PNG. Public — these are marketing images
  * that go public at publish anyway; the random suffix is the access control
  * for unpublished drafts. Never overwrites: regeneration writes a new blob.
+ *
+ * The `MAX_DELIVERABLE_BYTES` (4 MB) check below is a sanity backstop, not a
+ * re-check of `compressPng`'s own ceiling: `compressPng` targets
+ * `MAX_IMAGE_BYTES` (1 MB) but its bounded loop can legitimately land slightly
+ * over that in its warn-not-throw path (already reviewed and accepted) — this
+ * must not reject that. It exists only to catch a caller that skipped
+ * compression entirely and handed this raw, multi-MB bytes by mistake.
  */
 export async function uploadPng(pathname: string, png: Buffer): Promise<{ url: string; pathname: string }> {
+  if (png.byteLength > MAX_DELIVERABLE_BYTES) {
+    throw new Error(
+      `uploadPng: ${png.byteLength} bytes exceeds the ${MAX_DELIVERABLE_BYTES}-byte ceiling — did this skip compressPng?`
+    );
+  }
   const blob = await put(pathname, png, { access: "public", addRandomSuffix: true, contentType: "image/png" });
   return { url: blob.url, pathname: blob.pathname };
 }

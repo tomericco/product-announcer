@@ -11,11 +11,15 @@ process.env.OPENAI_API_KEY ??= "test-key";
 const TENANT = "Render Image Test Tenant";
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
 
-function fakeGenerate(bytes: Buffer = PNG) {
+function fakeGenerate(bytes: Buffer = PNG, warnings: unknown[] = []) {
   const calls: unknown[] = [];
   const generate = vi.fn(async (opts: unknown) => {
     calls.push(opts);
-    return { images: [{ uint8Array: new Uint8Array(bytes), base64: "", mediaType: "image/png" }], usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30 } };
+    return {
+      images: [{ uint8Array: new Uint8Array(bytes), base64: "", mediaType: "image/png" }],
+      usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30 },
+      warnings,
+    };
   }) as unknown as NonNullable<RenderImageDeps["generate"]>;
   return { generate, calls: calls as { model: { modelId: string }; prompt: unknown; size?: string; aspectRatio?: string }[] };
 }
@@ -110,8 +114,9 @@ describe("renderImage", () => {
 
     const png = await renderImage({ tenantId: tenant.id, prompt: "p", size: "1200x630", enforceAspect: true }, { generate });
 
-    // Exactly two attempts — one retry, not a loop — and the size/aspect ratio
-    // are restated on the retry.
+    // Exactly two attempts — one retry, not a loop — and the retry is a
+    // byte-identical repeat of the same size/aspect ratio, not a strengthened
+    // second request.
     expect(calls).toHaveLength(2);
     expect(calls[1]).toMatchObject({ size: "1200x630", aspectRatio: "40:21" });
     // Still square, and returned untouched: no crop, no letterbox, no lie
@@ -134,6 +139,31 @@ describe("renderImage", () => {
     expect(calls[0].aspectRatio).toBe("4:3");
   });
 
+  it("defaults enforceAspect to true for a cover render even when the caller never passes it", async () => {
+    // A caller that forgets `enforceAspect: true` for a cover must not
+    // silently lose the no-crop guard (product owner decision 1) — the
+    // default now turns it on for any 1200x630 (IMAGE_SIZES.cover) render.
+    const tenant = await seedTenant(TENANT);
+    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const square = await realPng(1024, 1024);
+    const { generate, calls } = fakeGenerate(square);
+
+    await renderImage({ tenantId: tenant.id, prompt: "p", size: "1200x630" }, { generate });
+
+    expect(calls).toHaveLength(2);
+    consoleWarn.mockRestore();
+  });
+
+  it("an explicit enforceAspect: false still opts out of the guard for a cover render", async () => {
+    const tenant = await seedTenant(TENANT);
+    const square = await realPng(1024, 1024);
+    const { generate, calls } = fakeGenerate(square);
+
+    await renderImage({ tenantId: tenant.id, prompt: "p", size: "1200x630", enforceAspect: false }, { generate });
+
+    expect(calls).toHaveLength(1);
+  });
+
   it("stores unmeasurable bytes as-is rather than failing the render", async () => {
     // If sharp cannot read what came back, the guard has nothing to compare
     // and must not take the render down with it.
@@ -145,6 +175,31 @@ describe("renderImage", () => {
 
     expect(calls).toHaveLength(1);
     expect(png.equals(PNG)).toBe(true);
+    consoleWarn.mockRestore();
+  });
+
+  it("logs provider warnings instead of dropping them", async () => {
+    // e.g. @ai-sdk/openai pushing "This model does not support aspect ratio.
+    // Use `size` instead." on every call — previously never read or logged.
+    const tenant = await seedTenant(TENANT);
+    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const warnings = [{ type: "unsupported-setting", setting: "aspectRatio", details: "Use `size` instead." }];
+    const { generate } = fakeGenerate(PNG, warnings);
+
+    await renderImage({ tenantId: tenant.id, prompt: "p", size: "1200x900" }, { generate });
+
+    expect(consoleWarn).toHaveBeenCalledWith("[ai/images] generateImage warnings:", warnings);
+    consoleWarn.mockRestore();
+  });
+
+  it("does not warn when the provider returns no warnings", async () => {
+    const tenant = await seedTenant(TENANT);
+    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { generate } = fakeGenerate(PNG, []);
+
+    await renderImage({ tenantId: tenant.id, prompt: "p", size: "1200x900" }, { generate });
+
+    expect(consoleWarn).not.toHaveBeenCalled();
     consoleWarn.mockRestore();
   });
 

@@ -331,7 +331,19 @@ export async function uploadStyleReference(
   }
 }
 
-/** Removes one style reference: out of the array, and its blob deleted. */
+/**
+ * Removes one style reference: out of the array, and its blob deleted.
+ *
+ * Array membership alone is not proof of ownership: `saveVisualIdentity`
+ * accepts any `https://*.public.blob.vercel-storage.com/…` URL into this same
+ * array (validated only against the shared store's host, not any particular
+ * tenant), so a tenant could plant another tenant's public blob URL there and
+ * then call this action with it. Deletion is scoped to a single shared Blob
+ * store, so without a real ownership check that URL's blob — which may belong
+ * to a different tenant entirely — would be deleted for free. The pathname
+ * must therefore start with THIS tenant's own `tenants/{tenantId}/brand/`
+ * prefix (the shape `brandAssetPathname` produces) before anything is deleted.
+ */
 export async function removeStyleReference(
   url: string
 ): Promise<{ ok: true; styleReferenceImages: string[] } | { ok: false; error: string }> {
@@ -341,17 +353,21 @@ export async function removeStyleReference(
   // so a tenant with no saved identity yet gets an empty one here, not the
   // bare default -- that default is not assignable to the VisualIdentity column.
   const identity = profile.visualIdentity ?? { ...DEFAULT_VISUAL_IDENTITY, palette: [] };
-  const styleReferenceImages = identity.styleReferenceImages.filter((ref) => ref !== url);
-  if (styleReferenceImages.length === identity.styleReferenceImages.length) {
-    // Not ours — say nothing happened rather than deleting a blob by URL.
-    return { ok: true, styleReferenceImages };
+  const pathname = blobPathnameFromUrl(url);
+  const ownedByTenant = pathname.startsWith(`tenants/${session.user.tenantId}/brand/`);
+  const inArray = identity.styleReferenceImages.includes(url);
+  if (!inArray || !ownedByTenant) {
+    // Not ours (absent from the array, or present but pointing at another
+    // tenant's blob) — say nothing happened rather than deleting a blob by URL.
+    return { ok: true, styleReferenceImages: identity.styleReferenceImages };
   }
 
+  const styleReferenceImages = identity.styleReferenceImages.filter((ref) => ref !== url);
   await db
     .update(companyProfiles)
     .set({ visualIdentity: { ...identity, styleReferenceImages }, updatedAt: new Date() })
     .where(eq(companyProfiles.id, profile.id));
-  await deleteBlobs([blobPathnameFromUrl(url)]);
+  await deleteBlobs([pathname]);
 
   revalidatePath("/company");
   return { ok: true, styleReferenceImages };

@@ -181,4 +181,27 @@ describe("removeStyleReference", () => {
     expect(await removeStyleReference("https://blob.example/somebody/else.png")).toEqual({ ok: true, styleReferenceImages: [] });
     expect(deleteBlobs).not.toHaveBeenCalled();
   });
+
+  it("refuses to delete another tenant's blob even when it is (maliciously) in this tenant's own array", async () => {
+    // Attack: tenant A calls saveVisualIdentity with a styleReferenceImages
+    // entry pointing at tenant B's real blob-storage URL (same allow-listed
+    // host as `next.config.ts`, so it passes the schema's host check), then
+    // calls removeStyleReference with that same URL. Array membership alone
+    // used to be treated as proof of ownership; it is not — this must be
+    // rejected by the tenant-prefix check before `deleteBlobs` ever runs.
+    const otherTenantId = "00000000-0000-0000-0000-000000000099";
+    const foreignUrl = `https://example.public.blob.vercel-storage.com/tenants/${otherTenantId}/brand/cover-abc123.png`;
+
+    const tenant = await seedTenant(TENANT);
+    currentTenantId = tenant.id;
+
+    expect(await saveVisualIdentity({ ...IDENTITY, styleReferenceImages: [foreignUrl] })).toEqual({ ok: true });
+
+    const result = await removeStyleReference(foreignUrl);
+    expect(result).toEqual({ ok: true, styleReferenceImages: [foreignUrl] });
+    expect(deleteBlobs).toHaveBeenCalledTimes(0);
+
+    const [profile] = await db.select().from(companyProfiles).where(eq(companyProfiles.tenantId, tenant.id));
+    expect(profile.visualIdentity?.styleReferenceImages).toEqual([foreignUrl]);
+  });
 });
