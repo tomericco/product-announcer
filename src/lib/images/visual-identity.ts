@@ -170,7 +170,7 @@ const VisualIdentitySchema = z.object({
     .array(z.string())
     .transform((words) => words.map((w) => w.trim()).filter(Boolean).slice(0, MAX_MOOD_WORDS)),
   allowTextInImages: z.boolean(),
-  styleReferenceImages: z.array(z.string().url()).max(MAX_REFERENCE_IMAGES),
+  styleReferenceImages: z.array(z.url()).max(MAX_REFERENCE_IMAGES),
   customStyleDescriptors: z
     .string()
     .transform((s) => s.trim())
