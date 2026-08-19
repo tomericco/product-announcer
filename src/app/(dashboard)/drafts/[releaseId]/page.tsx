@@ -30,6 +30,7 @@ import { linkedinDestination } from "@/lib/publishing/destinations/linkedin";
 import { readVariant } from "@/lib/publishing/channel-variants";
 import { slugify } from "@/lib/publishing/slug";
 import { LinkedinPanel } from "./linkedin-panel";
+import { FailedIllustrationsNotice } from "./failed-illustrations-notice";
 
 export default async function DraftDetailPage({ params }: { params: Promise<{ releaseId: string }> }) {
   const session = await requireSession();
@@ -288,6 +289,12 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
               <p>{update.generationError}</p>
             </div>
           )}
+
+          {/* Illustrations the agent could not render (spec 2026-08-18 §4).
+              Server-rendered from `content_images`; a Retry re-renders from the
+              stored concept and splices at the stored anchor. Only ever shows
+              on a real draft — the "brief" branch returned above. */}
+          <FailedIllustrationsNotice tenantId={session.user.tenantId} contentPieceId={update.id} />
 
           {showCodeWarning && <WebflowCodeWarning contentPieceId={update.id} />}
 
