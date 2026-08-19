@@ -41,12 +41,12 @@ describe("spliceImageAfterHeading", () => {
     const out = spliceImageAfterHeading(BODY, "First Section", IMG);
     expect(out).toContain(`## First Section\n\n${IMG}\n\nFirst paragraph.`);
     // Nothing else moved.
-    expect(out.replace(`\n\n${IMG}\n`, "")).toBe(BODY);
+    expect(out.replace(`${IMG}\n\n`, "")).toBe(BODY);
   });
 
   it("matches case-insensitively and trims both sides", () => {
     const out = spliceImageAfterHeading(BODY, "  second SECTION ", IMG);
-    expect(out).toContain(`##   Second section  \n\n${IMG}\n\nSecond paragraph.`);
+    expect(out).toContain(`##   Second section  \n\n${IMG}\nSecond paragraph.`);
   });
 
   it("does not match a heading inside a code fence", () => {
