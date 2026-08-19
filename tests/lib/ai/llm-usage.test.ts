@@ -76,4 +76,26 @@ describe("recordLlmUsage", () => {
 
     expect(consoleError).toHaveBeenCalled();
   });
+
+  it("records an image count for image_generation rows and null tokens", async () => {
+    const tenant = await seed();
+
+    await recordLlmUsage({
+      tenantId: tenant.id,
+      operation: "image_generation",
+      model: "gpt-image-2",
+      imageCount: 1,
+    });
+
+    const [row] = await db.select().from(llmUsage).where(eq(llmUsage.tenantId, tenant.id));
+    expect(row).toMatchObject({ operation: "image_generation", model: "gpt-image-2", imageCount: 1, inputTokens: null });
+  });
+
+  it("stores a null image count on text rows", async () => {
+    const tenant = await seed();
+    await recordLlmUsage({ tenantId: tenant.id, operation: "illustration_plan", model: "claude-sonnet-4-5", usage: { inputTokens: 5 } });
+    const [row] = await db.select().from(llmUsage).where(eq(llmUsage.tenantId, tenant.id));
+    expect(row.imageCount).toBeNull();
+    expect(row.inputTokens).toBe(5);
+  });
 });

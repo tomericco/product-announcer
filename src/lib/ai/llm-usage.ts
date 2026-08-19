@@ -1,5 +1,6 @@
 import { db as defaultDb } from "@/db";
 import { llmUsage } from "@/db/schema";
+import type { DbClient } from "@/lib/publishing/destinations/types";
 
 export type LlmOperation =
   | "generation"
@@ -15,7 +16,12 @@ export type LlmOperation =
   | "news_selection"
   | "ideation"
   | "brief_draft"
-  | "brief_proposal";
+  | "brief_proposal"
+  // Image spec §9. `illustration_plan` is a normal token row (the text model
+  // planning which images a draft needs); `image_generation` bills per image
+  // and sets `imageCount` instead of the token columns.
+  | "illustration_plan"
+  | "image_generation";
 
 /** The subset of the SDK's usage object we persist. Every field is optional. */
 export type TokenUsage = {
@@ -38,8 +44,13 @@ export async function recordLlmUsage(
     operation: LlmOperation;
     model: string;
     usage?: TokenUsage;
+    /** Number of images rendered by this call. Only image operations set it. */
+    imageCount?: number;
   },
-  database: typeof defaultDb = defaultDb
+  // Widened from `typeof defaultDb`: image and illustration-plan callers hold a
+  // `DbClient` (no `$client`), which is not assignable to `typeof defaultDb`.
+  // `db` is assignable to `DbClient`, so every existing caller is unaffected.
+  database: DbClient = defaultDb
 ): Promise<void> {
   try {
     await database.insert(llmUsage).values({
@@ -49,6 +60,7 @@ export async function recordLlmUsage(
       inputTokens: entry.usage?.inputTokens ?? null,
       outputTokens: entry.usage?.outputTokens ?? null,
       totalTokens: entry.usage?.totalTokens ?? null,
+      imageCount: entry.imageCount ?? null,
     });
   } catch (error) {
     console.error(`Failed to record ${entry.operation} token usage:`, error);
