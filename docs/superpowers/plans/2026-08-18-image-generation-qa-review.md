@@ -88,8 +88,8 @@ absolute `deletedPaths()` check that works whether the guard passes `[]` or
 skips the call; added a case proving the deleted image's *own* unshared blobs
 are still removed; changed Step 2's expectation to "**two** cases fail".
 
-### 4. MAJOR — nothing produces, checks, or even records a 1200×630 cover
-**Where:** spec §7 / Plan 1 Tasks 6+7 / Plan 4 Task 2. **Needs a human decision.**
+### 4. MAJOR — nothing produces, checks, or even records a 1200×630 cover — **RESOLVED (decision 1)**
+**Where:** spec §7 / Plan 1 Tasks 6+7+9 / Plan 2 Task 4 / Plan 3 Task 4 / Plan 4 Task 2.
 **Wrong:** `renderImage` passes `size: "1200x630"` to `generateImage`, but
 gpt-image models round to their own supported sizes (1024×1024, 1536×1024, …).
 `compressPng(raw, 1200)` resizes by **width only, with
@@ -99,28 +99,39 @@ webhook as `coverImage: { width: 1024, height: 1024 }`, sent to LinkedIn as the
 post image, and rehosted by Webflow as the blog hero. Spec §7's "one 1200×630
 master serves hero + og:image + LinkedIn" and its centre-safe-zone reasoning
 both quietly stop being true. No test anywhere asserted a cover's dimensions.
-**Changed:** documented the gap prominently in Plan 1 Task 7 (a "two things this
-function deliberately does NOT do" block), added a test that pins the current
-behaviour honestly (`a square render stays square`), and added a Plan 4 test
-asserting `loadCoverImagePayload` reports the render's *actual* dimensions.
-**Decision needed:** add a cover-only crop/extend to exactly 1200×630 inside
-`compressPng` (or a `compressCover`), or amend the spec. I did not add the crop
-— it changes pixels the UX review just signed off on.
+**Resolved (product owner, 2026-08-19): generate wide, never crop.** Cropping
+was rejected outright — it cuts detail the concept deliberately placed. Instead:
+every render states its shape twice (`size` + the new `IMAGE_ASPECT_RATIOS`
+entry, Plan 1 Task 6); cover renders pass `enforceAspect: true` and
+`renderImage` measures the returned bytes, warns and **re-asks once** if the
+aspect is off 1.91:1 by more than `ASPECT_TOLERANCE` (2%), then stores whatever
+comes back **with its true width/height** (Plan 1 Task 9). The guard lives in
+the one render seam so Plan 2's `illustratePiece` and Plan 3's `renderAndStore`
+cannot drift; `compressPng` keeps its width-only resize and now asserts the
+no-crop invariant. The Plan 4 test pinning the render's *actual* dimensions
+stays, re-commented as the deliberate outcome rather than a gap.
 
-### 5. MAJOR — the "4 MB guaranteed" claim is not guaranteed and not tested
-**Where:** spec §8 / Plan 1 Task 7 / Plan 4 Task 5. **Partly needs a decision.**
+### 5. MAJOR — the "4 MB guaranteed" claim is not guaranteed and not tested — **RESOLVED (decision 2)**
+**Where:** spec §7 + §8 / Plan 1 Task 7 / Plan 3 Task 4 / Plan 4 Task 5.
 **Wrong:** spec §8 says Webflow's 4 MB rehost cap is "guaranteed by the
 compression pass"; LinkedIn's is 5 MB. `compressPng` resizes to ≤1200 px and
 palette-quantises, which makes a flat graphic tiny — but Plan 3's
 `uploadImageFile` accepts **up to 10 MB** of JPEG/WebP and pushes it through the
 same function, and a photograph quantised to PNG at 1200 px can exceed 4 MB.
 Webflow would then 400 at publish with a message the user cannot act on.
-**Changed:** exported `MAX_DELIVERABLE_BYTES = 4 * 1024 * 1024` from
-`compress.ts`, added a test pinning that a realistic flat cover is far under it,
-added a JPEG-in/PNG-out test, and wrote the caveat into the task.
-**Decision needed:** whether `storeRenderBytes` should re-encode (lower
-`maxWidth`, or JPEG for uploads) when the compressed result exceeds the cap, or
-whether uploads simply are not allowed to be covers. Not fixed here.
+**Resolved (product owner, 2026-08-19): a 1 MB ceiling on every image we
+store — generated AND uploaded.** The owner asked for "a 1MB limit for the
+generated images we create"; it is applied to *everything stored* because that
+is the only way the Webflow 4 MB cap is actually guaranteed (an uploaded
+photograph goes through the same `compressPng`) and because it keeps one code
+path instead of two. `compressPng` now enforces `MAX_IMAGE_BYTES = 1_000_000`:
+palette step-down, then bounded width step-down (×0.85, ≤4 iterations),
+**never** a change of aspect ratio; if it still cannot get under, it returns the
+smallest result it achieved and logs — it never throws, because a slightly-over
+image beats a failed draft. `uploadImageFile` keeps its 10 MB *input*
+validation and stores through `storeRenderBytes` → `compressPng` (verified in
+Plan 3 Task 4), so nothing over 1 MB reaches Blob. `MAX_DELIVERABLE_BYTES`
+stays exported as the external contract the ceiling satisfies.
 
 ### 6. MAJOR — the cover's partial unique index has no guard on any of its three writers
 **Where:** Plan 3 Task 4 (`generateCover`, `setCoverFromImage`, `uploadImageFile`).
@@ -217,18 +228,30 @@ re-generate; never renumber by hand) and a final-task step in Plans 2 and 4 that
 verifies the index and the journal's last `idx`. Also added the reminder that
 nothing in CI runs `npm run db:migrate:test`.
 
-### 12. MAJOR — a spec user story is not implemented by any task
-**Where:** spec §2 / Plan 1 Task 12 / Plan 3. **Needs a human decision.**
+### 12. MAJOR — a spec user story is not implemented by any task — **RESOLVED (decision 3)**
+**Where:** spec §2 / Plan 1 Tasks 8 + 12 / Plan 3 Task 1.
 **Wrong:** *"As a content lead, I upload two or three of our existing blog
 illustrations as references"* (§2 `styleReferenceImages`, described as the
 strongest consistency mechanism). Plan 1 Task 12 ships URL inputs and says file
 upload "arrives with Plan 3's `uploadImageFile`" — but **no task in Plan 3
 touches `visual-identity-editor.tsx`**. The story ships as "paste a public URL",
 which most users cannot do for a file on their desktop.
-**Changed:** recorded as an open gap in Plan 1's self-review with the concrete
-follow-up (a file input on the reference list calling `uploadImageFile` with
-`role: "library"` and appending `result.url`). Not built — it is a UX surface
-and the UX review has already passed over this card.
+**Resolved (product owner, 2026-08-19): built in Plan 1, so the card is
+self-contained.** Plan 1 Task 12 gains `uploadStyleReference(formData)` and
+`removeStyleReference(url)` on `company/actions.ts` (the standard
+`requireSession` → tenant scope → mutate → `revalidatePath` preamble), and the
+Advanced section's URL inputs are replaced by a file input plus thumbnails with
+a Remove each. Storage is a new `brandAssetPathname` →
+`tenants/{tenantId}/brand/{slug}.png` with **no `content_images` row**: these
+are brand inputs, not content, so they never surface in the library. They still
+go through `compressPng` + `uploadPng`, so decision 2's ceiling covers them.
+The cap of `MAX_REFERENCE_IMAGES` (4) is enforced *before* the upload with a
+message that says what to do. The upload validator moved to Plan 1's `blob.ts`
+(`UPLOAD_MAX_BYTES` / `UPLOAD_MIME_TYPES` / `validateUploadFile`) and Plan 3
+Task 1 **re-exports** it rather than defining a second copy. Plan 1 Task 12 also
+now owns `next.config.ts`'s `images.remotePatterns` and
+`serverActions.bodySizeLimit` (the thumbnails and the upload need them first);
+Plan 3 Task 8 states them as a no-op check.
 
 ### 13. MINOR — an order-dependent assertion in Plan 3 Task 2
 **Where:** `tests/lib/images/suggest.test.ts`, second case.
@@ -295,15 +318,26 @@ fine to grow the poll budget later without revisiting.
 the escape hatch named (return `retryable` with the URN sooner and let the sweep
 own the wait).
 
-### 19. MINOR — `deleteLibraryImage` stamps `bodyEditedAt`, freezing regeneration
-**Where:** Plan 3 Task 10. **Flagged, not changed.**
-Deleting an image from the library rewrites the piece's body and stamps
-`editedBy` + `bodyEditedAt`. That is a defensible reading ("a human removed
-content"), and the plan comments it — but the consequence is not stated: it
-permanently freezes whole-draft regeneration for that piece
-(`generateDraftForPiece` refuses a hand-edited body, `src/lib/briefs/draft.ts`).
-Deleting one image the agent generated is a thin reason to retire the draft's
-Generate button. Worth a product call; adjacent to UX review open decision 5.
+### 19. MINOR — `deleteLibraryImage` stamps `bodyEditedAt`, freezing regeneration — **RESOLVED (decision 4)**
+**Where:** Plan 1 Task 10 / Plan 3 Task 10 / spec §5b.
+Deleting an image from the library rewrote the piece's body and stamped
+`editedBy` + `bodyEditedAt`, which permanently freezes whole-draft regeneration
+for that piece (`generateDraftForPiece` refuses a hand-edited body,
+`src/lib/briefs/draft.ts`). Deleting one image the agent generated is a thin
+reason to retire the draft's Generate button.
+**Resolved (product owner, 2026-08-19): images enter the library only after a
+draft is completed**, i.e. the piece's `status` is anything other than `brief`
+or `draft` (the enum is `brief|draft|review|scheduled|published|archived`,
+`src/db/schema.ts:89-97`); standalone `role: "library"` images always appear.
+A new `listLibraryImages(tenantId, filter, database)` in Plan 1's `store.ts`
+applies that predicate — a dedicated function rather than a flag, so the
+editor's per-piece `listImages` cannot be filtered by accident — and Plan 3's
+library page and "From library" picker both call it. Because a library image can
+no longer belong to an in-flight draft, `deleteLibraryImage` **stops stamping
+`bodyEditedAt`** (and `editedBy`): it still strips the dead markdown reference,
+still refuses images referenced by a published piece. The editor-side body swaps
+in `regenerateImage` / `restoreRender` / the retry action are unchanged — they
+already never stamped, and they act on a draft their author has open.
 
 ### 20. MINOR — a paid model call fires from a menu click, on any owned piece
 **Where:** Plan 3 Task 4 `suggestImagePrompt` / Task 9 `openPrompt`.
@@ -326,27 +360,27 @@ only unauthenticated-by-editability model call the feature adds.
 | `visual-identity.ts` | `tests/lib/images/visual-identity.test.ts` (P1 T4) | defaults match spec; `compileStyleBlock` full/one-line/deterministic, **empty palette**, **6-colour palette in role order**, **newline-bearing descriptors and rules**, **hex lowercasing**, no-`Always`, no-rules; readiness at 2/3 colours; `parseVisualIdentity` normalise + reject bad hex/preset/>6/>200/non-URL/>4 refs/non-object; empty palette allowed | — |
 | `policy.ts` | `tests/lib/images/policy.test.ts` (P1 T5) | defaults match the §6 table; **every `contentTypeEnum` value resolves** (totality); null/missing fallback; `auto`→3, `off`→0, number→itself; parse accepts partial, rejects unknown type / cap 4 / wrong types / array | — |
 | `prompt.ts` | `tests/lib/images/prompt.test.ts` (P1 T6) | ordering concept→style→composition→aspect→no-text; body composition + 4:3; no-text dropped when allowed; sizes | — |
-| `compress.ts` | `tests/lib/images/compress.test.ts` (P1 T7) | resize to width keeping aspect; never enlarge; never grows a flat graphic; **under `MAX_DELIVERABLE_BYTES`**; **JPEG in → PNG out**; **square stays square (documents defect 4)**; **non-image bytes reject** | Real gpt-image output sizes — provider-dependent, cannot be pinned offline |
-| `blob.ts` | `tests/lib/images/blob.test.ts` (P1 T8) | pathname with/without piece; slug lowercase/hyphenate/clamp/fallback; **path-traversal cannot escape the tenant prefix**; `put` options exactly `{access, addRandomSuffix, contentType}`; `del` batched, no-op on empty, swallows + logs | Real Blob quota behaviour; `addRandomSuffix` semantics |
-| `image-model.ts` / `images.ts` (`renderImage`) | `tests/lib/ai/image-model.test.ts`, `tests/lib/ai/images.test.ts` (P1 T9) | prefix strip; provider/model id; string prompt + size; reference images downloaded to bytes; **`editOf` path**; usage row `imageCount: 1`; failure records nothing | Whether `openai.image` or `openai.imageModel` exists (Task 1 Step 2 checks at install) |
-| `store.ts` | `tests/lib/images/store.test.ts` (P1 T10) | create→pending→ready; cross-tenant `getImage` null; prune keeps newest 5 + deletes blobs; **exactly at 5 prunes nothing, at 6 prunes one**; **restored-oldest render pruned without dangling `currentRenderId`**; published piece never prunes; restore; mark failed; cover lookup; list + 3 filters + piece title; `findImageByRenderUrl` hit/miss; **`findImageByRenderUrl` cross-tenant null**; **`getCoverImage`/`listImages` cross-tenant empty**; delete rows+blobs; refuse published; not_found cross-tenant | — |
+| `compress.ts` | `tests/lib/images/compress.test.ts` (P1 T7) | resize to width keeping aspect; never enlarge; never grows a flat graphic; **under `MAX_IMAGE_BYTES` (1 MB)**; **JPEG in → PNG out**; **square stays square — the no-crop invariant (decision 1)**; **a large noisy photo lands under 1 MB with the aspect intact (decision 2)**; **an already-small image is left alone**; **the bounded loop returns its best rather than throwing**; **non-image bytes reject**; `imageDimensions` reads real dimensions / throws on junk | Real gpt-image output sizes — provider-dependent, cannot be pinned offline |
+| `blob.ts` | `tests/lib/images/blob.test.ts` (P1 T8) | pathname with/without piece; **`brandAssetPathname` keeps brand inputs out of the content tree and inside the tenant prefix**; slug lowercase/hyphenate/clamp/fallback; **path-traversal cannot escape the tenant prefix**; **`validateUploadFile` mime + 10 MB cap (the one shared definition, decision 3)**; **`blobPathnameFromUrl` round-trip**; `put` options exactly `{access, addRandomSuffix, contentType}`; `del` batched, no-op on empty, swallows + logs | Real Blob quota behaviour; `addRandomSuffix` semantics |
+| `image-model.ts` / `images.ts` (`renderImage`) | `tests/lib/ai/image-model.test.ts`, `tests/lib/ai/images.test.ts` (P1 T9) | prefix strip; provider/model id; string prompt + size **+ aspectRatio**; reference images downloaded to bytes; **`editOf` path**; usage row `imageCount: 1`; failure records nothing; **cover aspect guard: right shape → one call; square → one retry then stored at its true 1024×1024 with two usage rows; body renders unguarded; unmeasurable bytes stored as-is (decision 1)** | Whether `openai.image` or `openai.imageModel` exists, and whether the provider accepts `size`+`aspectRatio` together (Task 1 Step 2 / Task 9 Step 5 check at install) |
+| `store.ts` | `tests/lib/images/store.test.ts` (P1 T10) | **`listLibraryImages` excludes brief/draft pieces, includes review/scheduled/published/archived and standalone, honours filters + tenant scope, and leaves `listImages` unfiltered (decision 4)**; create→pending→ready; cross-tenant `getImage` null; prune keeps newest 5 + deletes blobs; **exactly at 5 prunes nothing, at 6 prunes one**; **restored-oldest render pruned without dangling `currentRenderId`**; published piece never prunes; restore; mark failed; cover lookup; list + 3 filters + piece title; `findImageByRenderUrl` hit/miss; **`findImageByRenderUrl` cross-tenant null**; **`getCoverImage`/`listImages` cross-tenant empty**; delete rows+blobs; refuse published; not_found cross-tenant | — |
 | Shared fixtures | `tests/lib/images/fixtures-smoke.test.ts` (P1 T10b) | ready identity; null identity; idempotent per tenant; image with/without render; distinct blob URLs per seed | — |
 | `derive-visual-identity.ts` | `tests/lib/workspace/derive-visual-identity.test.ts` (P1 T11) | colour extraction (hex/`#rgb`/`rgb()`/theme-color weight/order/cap/none); analyzer returns proposal + records `brand_analysis`; null on model throw; full derive merged over defaults; heuristic fallback; scrape error passthrough; no-colors | SSRF itself — inherited from `fetchPageText`, already covered by `tests/lib/workspace/fetch-page.test.ts:50-201` |
-| `/company` visual identity actions | `tests/app/company-visual-identity-actions.test.ts` (P1 T12) | validate+normalise+persist; reject invalid without writing; derive passes tenant + trimmed URL and writes nothing; empty URL refused | The card UI (OAuth wall) |
+| `/company` visual identity actions | `tests/app/company-visual-identity-actions.test.ts` (P1 T12) | validate+normalise+persist; reject invalid without writing; derive passes tenant + trimmed URL and writes nothing; empty URL refused; **`uploadStyleReference` stores under the brand prefix, appends to the identity and writes no `content_images` row; rejects bad mime / >10 MB without storing; refuses the 5th with a readable cap message; `removeStyleReference` drops the URL + deletes the blob and is a no-op for a foreign URL (decision 3)** | The card UI (OAuth wall) |
 | `/settings` image policy action | `tests/app/settings-image-policy-actions.test.ts` (P1 T13) | persist valid matrix; reject cap 9 without writing | The card UI |
 | `splice.ts` | `tests/lib/images/splice.test.ts` (P2 T1) | H2 list order + fence skip + other levels; insert after matched heading; case-insensitive + trim; **fenced heading not matched**; missing heading no-op; **duplicate heading uses first only**; two splices independent; **prefix does not match** | — |
 | `plan.ts` | `tests/lib/images/plan.test.ts` (P2 T3) | prompts built in code, model has no prompt field; title + H2 list + rules in the call; **anchor canonicalised, non-existent anchor dropped**; **cap truncation + cover dropped**; **duplicate anchor dropped**; alt policy enforced (length + "image of"); no model call when nothing wanted; usage recorded | Model output quality; "never pad to quota" adherence |
-| `illustrate.ts` | `tests/lib/images/illustrate.test.ts` (P2 T4) | skip: no identity / policy off; cover-first sizes + references; body parallel with cover pinned; rows + anchors + splice; cover absent from body; **one silent retry**; twice-failed body kept `failed` + omitted + counted; failed cover → coverless, body renders without it; `pinStyleToCover: false`; policy `wantCover/bodyCap` forwarded; **leftover cleanup incl. blobs via the injected seam**; **uploaded leftovers spared**; **pathname length clamped**; tenant scoping | Real parallelism against the model |
+| `illustrate.ts` | `tests/lib/images/illustrate.test.ts` (P2 T4) | skip: no identity / policy off; cover-first sizes + references **+ `enforceAspect` on the cover only (decision 1)**; body parallel with cover pinned; rows + anchors + splice; cover absent from body; **one silent retry**; twice-failed body kept `failed` + omitted + counted; failed cover → coverless, body renders without it; `pinStyleToCover: false`; policy `wantCover/bodyCap` forwarded; **leftover cleanup incl. blobs via the injected seam**; **uploaded leftovers spared**; **pathname length clamped**; tenant scoping | Real parallelism against the model |
 | Loader step | `tests/components/paced-steps.test.tsx` (P2 T5) | `illustrating` present and `slow` | Visual pacing |
 | `generateDraftForPiece` + illustration | `tests/lib/briefs/draft.test.ts` (P2 T6) | step written; reviewed body handed over; spliced body saved; release branch; illustrate throw → warning not failure; **failed renders NOT in `generationError`**; competitor + images warnings compose; not run when generation failed; real default skips with no identity; **end-to-end: real `illustratePiece`, faked network, image markdown in the saved body + rows** | — |
-| Retry / dismiss actions | `tests/app/drafts/illustration-actions.test.ts` (P2 T7) | re-render from concept + current style; splice at stored anchor; **no `bodyEditedAt` stamp**; cover retry leaves body alone; anchor gone → `placed:false`; not-failed refused; cross-tenant refused; wrong-piece refused; non-editable refused; two failures → `failed` + error; **cover used as reference for a body retry**; **not for a cover retry**; dismiss deletes failed generated rows only; cross-tenant | The notice UI |
-| `actions-support.ts` | `tests/lib/images/actions-support.test.ts` (P3 T1) | edit-prompt history chaining; upload mime/size validation; alt from concept (first sentence, prefix strip, 125 cap, empty); `sliceAroundHeading` (section bounds, case, fallback, cap); `stripImageFromMarkdown` (line + inline + no-op); **`imageSlug` ≡ `slugForImage`**; **traversal-safe**; role→size | — |
+| Retry / dismiss actions | `tests/app/drafts/illustration-actions.test.ts` (P2 T7) | re-render from concept + current style; **a cover retry is aspect-guarded at 1200x630, a body retry is not (decision 1)**; splice at stored anchor; **no `bodyEditedAt` stamp**; cover retry leaves body alone; anchor gone → `placed:false`; not-failed refused; cross-tenant refused; wrong-piece refused; non-editable refused; two failures → `failed` + error; **cover used as reference for a body retry**; **not for a cover retry**; dismiss deletes failed generated rows only; cross-tenant | The notice UI |
+| `actions-support.ts` | `tests/lib/images/actions-support.test.ts` (P3 T1) | edit-prompt history chaining; **`validateUploadFile` is Plan 1's function re-exported, not a second copy (decision 3)**; upload mime/size validation; alt from concept (first sentence, prefix strip, 125 cap, empty); `sliceAroundHeading` (section bounds, case, fallback, cap); `stripImageFromMarkdown` (line + inline + no-op); **`imageSlug` ≡ `slugForImage`**; **traversal-safe**; role→size | — |
 | `suggest.ts` | `tests/lib/images/suggest.test.ts` (P3 T2) | grounded prompt + system copy; injected generator + cover wording; **usage recorded against the caller's handle**; **trimming**; **model failure propagates** | Suggestion quality |
 | Shared-blob guard | `tests/lib/images/store-shared-blob.test.ts` (P3 T3) | `deleteImage` spares a shared pathname, then deletes it; **own unshared blobs still deleted**; **prune spares a shared pathname while pruning the row**; **prune deletes an unshared one** | — |
-| `generate.ts` | `tests/lib/images/generate.test.ts` (P3 T4) | render→compress→upload→current; `storedPrompt` vs sent prompt; `editOf` passthrough; `storeRenderBytes` skips the model; `markdownImage` bracket strip | — |
+| `generate.ts` | `tests/lib/images/generate.test.ts` (P3 T4) | render→compress→upload→current; **`enforceAspect` set for a cover and not for a body/library render (decision 1)**; `storedPrompt` vs sent prompt; `editOf` passthrough; `storeRenderBytes` skips the model; `markdownImage` bracket strip | — |
 | Draft image actions | `tests/app/drafts/image-actions.test.ts` (P3 T4) | body generate (row + refs + markdown); no identity → refuse + no row; render fail → row deleted; published → throws; suggest slices to the section; regenerate `same`/`edit`/`prompt` + body URL swap + no `bodyEditedAt`; cross-tenant not-found; restore swaps back; cover from_post/prompt/remove/from-library-no-upload; `updateCoverAlt` trim + not-found; upload mime reject / stored as uploaded / cover replace; **non-image bytes → no orphan row**; **>10 MB rejected before the DB**; **upload at another tenant's piece refused**; `lookupImageBySrc` hit/miss; **`lookupImageBySrc` cross-tenant null**; **cover uniqueness under concurrency (3 cases, expected RED until the guard lands)** | Editor bridge ops, toolbar, cover panel, dialogs — jsdom cannot render Base UI popovers without observer stubs that do not exist |
 | `nearestHeadingAbove` | `tests/components/nearest-heading.test.tsx` (P3 T6, **new**) | nearest preceding heading; nested inline caret; heading after caret ignored; above first heading → null; outside editor → null; no selection → null; trimming + whitespace-only heading | — |
-| Library actions | `tests/app/images/actions.test.ts` (P3 T10) | delete removes row + blobs + the markdown line; refuse for a published piece; cross-tenant not_found; generate library row (no piece, library pathname); refuse without identity; picker lists only rows with a current render | Grid, filters, detail dialog (UI) |
+| Library actions | `tests/app/images/actions.test.ts` (P3 T10) | delete removes row + blobs + the markdown line **and leaves `bodyEditedAt`/`editedBy` null (decision 4)**; refuse for a published piece; cross-tenant not_found; generate library row (no piece, library pathname); refuse without identity; picker lists only rows with a current render **and never a still-drafting piece's image** | Grid, filters, detail dialog (UI) |
 | Nav | `tests/components/nav-links.test.tsx` (P3 T10) | `/images` entry | — |
 | `cover-image.ts` | `tests/lib/publishing/cover-image.test.ts` (P4 T2) | ready cover → payload; no row → null; failed → null; **ready but no current render → null**; **empty alt passes through**; **actual dimensions reported**; cross-tenant → null | — |
 | Webhook payload | `tests/lib/publishing/destinations/webhook.test.ts` + `dispatch.test.ts` (P4 T3) | `coverImage: null` + exact key set; full `coverImage`; reader called with tenant+piece+db; dispatch's exact-keys assertion updated | Receiver behaviour |
@@ -450,13 +484,20 @@ else is the known flakiness.
 
 ## (d) Residual risks
 
-1. **Cover aspect ratio (defect 4).** Until someone decides, covers may ship
-   square. LinkedIn and OG consumers will letterbox or centre-crop them, and the
-   spec's centre-safe-zone prompt language is doing work it cannot guarantee.
-   Highest-consequence open item.
-2. **Byte ceilings (defect 5).** An uploaded photo used as a cover can exceed
-   Webflow's 4 MB and LinkedIn's 5 MB. The failure mode is a publish-time error
-   the user cannot act on, discovered at the worst moment.
+1. **Cover aspect ratio (defect 4 — resolved, residue remains).** The guard
+   asks twice and never crops, so a cover can still legitimately ship square if
+   the provider insists twice. That is now a *known, recorded* outcome (true
+   dimensions everywhere) rather than a silent one, and the log line is the
+   signal. If it turns out to happen often, the lever is the prompt and the
+   provider, not a crop. Cost: a guarded retry is a second billed image, and
+   Plan 2's silent retry wraps it, so a pathological cover can cost four
+   renders.
+2. **Byte ceilings (defect 5 — resolved).** Every stored PNG is held to 1 MB by
+   a bounded loop that never throws, so the worst case is an image slightly over
+   1 MB — still far under Webflow's 4 MB and LinkedIn's 5 MB. The residual risk
+   is quality, not failure: a photograph upload can be stepped down to ~60% of
+   its requested width before the ceiling is met. Watch for the
+   `[images/compress]` warning.
 3. **Cover unique-index race (defect 6)** is fixed only if the implementer
    actually adds the 23505 guard. The tests are written to force it, but they
    are the only thing standing between a double-click and an unhandled Server
@@ -490,3 +531,85 @@ else is the known flakiness.
    files to a suite with no isolation. Each uses a unique tenant name (checked),
    so they should not collide — but they do add load to the shared Postgres, and
    "run it twice" is now the standing instruction in four places.
+
+---
+
+## Resolutions (product owner, 2026-08-19)
+
+The four items above that needed a human call were decided. Each was applied
+surgically to the spec and the plans; nothing else in those documents moved.
+
+### Decision 1 — covers are GENERATED wide, never cropped (defect 4)
+
+Cropping to 1200×630 was rejected: it cuts detail the concept deliberately
+placed. The render must come back wide.
+
+| Where | What changed |
+|---|---|
+| spec §7 | The dimensions paragraph now says covers are generated at 1200×630 natively, describes the measure-and-re-ask guard and the store-the-truth fallback, and states that nothing anywhere crops, extends or letterboxes. |
+| Plan 1 Task 6 | New `IMAGE_ASPECT_RATIOS` (`1200x630` → `40:21`, `1200x900` → `4:3`) + a test that the ratios agree with the sizes. |
+| Plan 1 Task 7 | The "two things this function does NOT do" block became the two guarantees it *does* make; the square-stays-square test is now the no-crop invariant rather than a documented gap. |
+| Plan 1 Task 9 | `RenderImageArgs.enforceAspect`, exported `ASPECT_TOLERANCE = 0.02`, every call sends `size` **and** `aspectRatio`, and the guard (measure → warn → one retry → store as-is) lives here, in the one render seam. Four new tests, including "square render → exactly two calls, stored 1024×1024, two usage rows". |
+| Plan 2 Task 4 | The cover branch passes `enforceAspect: true`; the fakes record it and the happy-path test asserts cover-guarded / body-unguarded. |
+| Plan 2 Task 7 | The retry action derives `enforceAspect` from the role; two new tests. |
+| Plan 3 Task 4 | `renderAndStore` sets `enforceAspect: a.role === "cover"` — by construction, so no call site can forget — plus a cover test and an assertion that a library render is unguarded. |
+| Plan 4 Task 2 | The "actual dimensions" test comment now describes the deliberate outcome instead of an open decision. |
+
+**Consequence a reader should know:** a guarded cover can cost two billed
+renders (and up to four when Plan 2's silent retry wraps it), and a cover may
+still be stored non-1.91:1 — with honest `width`/`height` — if the provider
+returns the wrong shape twice.
+
+### Decision 2 — a 1 MB ceiling on every image we store (defect 5)
+
+The owner asked for a 1 MB limit on generated images; it is applied to **all**
+stored PNGs, uploads included, because that is the only way Webflow's 4 MB cap
+is genuinely guaranteed and it keeps one code path.
+
+| Where | What changed |
+|---|---|
+| spec §7 | New bullet: the 1 MB ceiling, the bounded palette-then-width step-down, "never the aspect ratio", and why it covers uploads. The Hobby-quota bullet now says "hard-capped at 1 MB". |
+| spec §8 | Webflow's "4 MB cap — guaranteed by the compression pass" now names the 1 MB ceiling and says it applies to uploaded images too. |
+| Plan 1 Task 7 | `MAX_IMAGE_BYTES = 1_000_000`; `compressPng` loops palette 256→128→64 then width ×0.85 (≤4 steps, floor 400 px), returns the smallest result and logs rather than throwing; `imageDimensions` exported for decision 1's guard; four new tests (large noisy photo under the ceiling with aspect intact, small image untouched, bounded-failure returns, dimensions helper). `MAX_DELIVERABLE_BYTES` stays as the external contract. |
+| Plan 1 Global Constraints | Ceiling stated up front. |
+| Plan 3 Global Constraints + Task 4 | The 10 MB check is explicitly *input* validation; `uploadImageFile` → `storeRenderBytes` → `compressPng` was **verified** to be the storage path, so no change was needed there. |
+
+**Consequence:** uploads are re-encoded harder than before — a photograph can
+lose width to meet the ceiling. Nothing over 1 MB reaches Blob.
+
+### Decision 3 — style-reference upload is built in Plan 1 (defect 12)
+
+| Where | What changed |
+|---|---|
+| spec §2 | The `styleReferenceImages` row says they are uploaded from the card, stored as brand assets, absent from the library, and saved immediately. |
+| Plan 1 Task 8 | `brandAssetPathname({tenantId, slug})` → `tenants/{tenantId}/brand/{slug}.png`; `blobPathnameFromUrl`; and the **single** upload validator (`UPLOAD_MAX_BYTES`, `UPLOAD_MIME_TYPES`, `validateUploadFile`) with tests. |
+| Plan 1 Task 12 | `uploadStyleReference(formData)` and `removeStyleReference(url)` with the standard action preamble; the Advanced section's URL rows replaced by thumbnails + a file input with a Remove each; both actions re-baseline the card's dirty tracking; `next.config.ts` gains `images.remotePatterns` and `serverActions.bodySizeLimit`; six new action tests; manual checklist extended. |
+| Plan 3 Task 1 | Re-exports the validator from `blob.ts` instead of defining it, with a test asserting it is literally the same function. |
+| Plan 3 Task 8 | Its `next.config.ts` step is now a "verify, don't duplicate" check. |
+| Plan 1 Self-review | The "open gap (defect 12)" paragraph is replaced by what was built. |
+
+**Consequence:** reference images are the one thing on the Visual identity card
+that saves without pressing Save, and they get no `content_images` row, so they
+never appear in the /images library.
+
+### Decision 4 — images enter the library only after a draft is completed (defect 19)
+
+"Completed" is concrete: `status` is not `brief` and not `draft`, using the
+`content_piece_status` enum verbatim (`src/db/schema.ts:89-97`).
+
+| Where | What changed |
+|---|---|
+| spec §5b | States the completed-piece rule, why it makes the library safe for in-flight drafts, and the tradeoff in one line. The Delete bullet says the body cleanup happens without `bodyEditedAt`. |
+| Plan 1 Task 10 | `listLibraryImages(tenantId, filter, database)` + `LIBRARY_HIDDEN_PIECE_STATUSES` + `ImageFilter`, sharing one private query builder with `listImages`; three new tests covering every status, standalone images, filters and tenant scope. A dedicated function, not a flag, so the editor's listing cannot be filtered by accident. |
+| Plan 3 Task 10 | The library page, `listImagesForPicker` and the actions module read `listLibraryImages`; `deleteLibraryImage` no longer stamps `bodyEditedAt` or `editedBy` (it still strips the markdown reference and still refuses published pieces); the test seed defaults to `review`; new tests for the no-stamp rule and for the picker skipping a drafting piece. |
+| Plan 3 Task 11 | Two manual checks added. |
+
+**Consequences:** (1) the /images page and every "From library" picker are
+smaller than before — an image in a piece you are still drafting lives in that
+draft's editor only; (2) the `bodyEditedAt` freeze problem is moot for library
+actions, and the editor-side swaps (`regenerateImage`, `restoreRender`, the
+Plan 2 retry) are untouched — they already never stamped.
+
+**Not re-litigated:** UX review open decision 5 (does a user-initiated AI
+*insert* count as a hand edit?) is a different path — the editor's own
+`saveDraftBody` — and is still open.

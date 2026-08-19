@@ -167,7 +167,7 @@ One jsonb column on `company_profiles`:
 
 | Field | Type | Default | Why |
 |---|---|---|---|
-| `styleReferenceImages` | 1–4 Blob URLs | none | Strongest consistency mechanism; passed as reference images on every render |
+| `styleReferenceImages` | 1–4 Blob URLs | none | Strongest consistency mechanism; passed as reference images on every render. **Uploaded from the card itself** (PNG/JPEG/WebP, ≤10 MB in), stored as brand assets under `tenants/{tenantId}/brand/` with no `content_images` row — they are brand inputs, not content, so they never appear in the library. Upload and remove save immediately rather than with the card. |
 | `customStyleDescriptors` | string ≤200 chars | empty | Escape hatch for brands with a named look |
 | `imageGenerationRules` | `{kind: "do" \| "dont", text}[]` | don'ts: `no photorealism`, `no stock-photo look`, `no 3D render`, `no clip-art` | Living list of dos and don'ts, appended verbatim to every prompt as "Always: …" / "Never: …" |
 | `backgroundTreatment` | `solid \| subtle_pattern \| scene` | `solid` | Images sitting side by side must share a ground |
@@ -395,9 +395,22 @@ img` rule (none exists today).
 
 ## 5b. Image library
 
-A new **Images** entry in the nav (`nav-links.tsx`), listing every
-`content_images` row for the tenant — generated and uploaded, across all
-pieces — newest first, as a thumbnail grid.
+A new **Images** entry in the nav (`nav-links.tsx`), listing the tenant's
+`content_images` rows — generated and uploaded — newest first, as a thumbnail
+grid.
+
+**What counts as "in the library": an image enters it once its piece is
+completed**, meaning the piece's status is anything other than `brief` or
+`draft` (review, scheduled, published, archived). Standalone `role: "library"`
+images have no piece and are always listed. This is one rule with two payoffs:
+the library is a shelf of finished assets rather than a window onto everyone's
+work in progress, and — because a library image can never belong to a draft
+someone is mid-way through — **no library action ever has to rewrite an
+in-flight body**, so none of them stamps `bodyEditedAt` and none of them can
+freeze a draft's whole-post regeneration. The tradeoff, accepted: an image in a
+piece you are still writing is reachable in that draft's editor (where its
+author is), not in the library or the "From library" picker, until the piece
+moves on.
 
 - **Filters**: by piece, by role (cover / body / library), by source
   (generated / uploaded).
@@ -406,15 +419,16 @@ pieces — newest first, as a thumbnail grid.
   history strip and the same three edit actions as the editor (§5).
 - **Delete**: removes the row and its renders' blobs (`del()` on every
   `blobPathname`). If the image is referenced by a piece, the confirm dialog
-  says so and the piece's markdown line / cover pointer is removed too. Images
-  referenced by a *published* piece cannot be deleted from the library
+  says so and the piece's markdown line / cover pointer is removed too — as a
+  cleanup write, without `bodyEditedAt` (see the completed-piece rule above).
+  Images referenced by a *published* piece cannot be deleted from the library
   (Webflow hotlink safety, §8) — the button explains why rather than failing
   silently.
 - **Generate new**: a standalone prompt → render flow producing a
   `role: "library"` row with no piece. The editor's insert block and the
-  cover menu gain a **From library** option listing these (plus any piece's
-  images) so a generated-once asset can be reused anywhere; reuse inserts the
-  existing blob URL, no new render.
+  cover menu gain a **From library** option listing these (plus the images of
+  any completed piece) so a generated-once asset can be reused anywhere; reuse
+  inserts the existing blob URL, no new render.
 
 Server actions live in `src/app/(dashboard)/images/actions.ts`, following the
 `requireSession` → tenant-scoped load → mutate → `revalidatePath` preamble.
@@ -460,15 +474,36 @@ New dependency `@vercel/blob` + `BLOB_READ_WRITE_TOKEN`; images are public.
 - **Hobby limits are the binding constraint**: 1 GB storage, 10 GB transfer,
   10K simple + 2K advanced ops/month, and breaching a limit **cuts Blob off
   for 30 days**. Mandatory mitigations: a **compression pass before `put()`**
-  (sharp: resize to target width, palette-quantized PNG — models emit
-  multi-MB PNGs; compression turns ~300 storable images into thousands) and
-  delete-on-prune above.
-- **Dimensions/format**: one master per image. Cover **1200×630 (1.91:1)** —
-  one render serves blog hero, `og:image`, and the LinkedIn post image (a 16:9
-  hero would force a second OG render; not worth 2× cost in v1). Body images
-  **~1200 px wide**. **PNG masters, no WebP** — LinkedIn's image API rejects
-  WebP, and flat graphics quantize well. Keep cover subjects inside a center
-  safe zone; platforms crop edges.
+  (sharp: resize to target width, palette-quantized PNG, hard-capped at 1 MB —
+  models emit multi-MB PNGs; compression turns ~300 storable images into
+  thousands) and delete-on-prune above.
+- **Dimensions/format**: one master per image. Cover **1200×630 (1.91:1),
+  generated at that size natively and never cropped** — one render serves blog
+  hero, `og:image`, and the LinkedIn post image (a 16:9 hero would force a
+  second OG render; not worth 2× cost in v1). Every cover request states the
+  shape twice, as `size: "1200x630"` and as the matching `aspectRatio`
+  (gpt-image-2 supports flexible sizes). Because providers sometimes round to
+  their own supported sizes, `renderImage` **measures** what came back for a
+  cover and, if the aspect ratio is off 1.91:1 by more than 2%, warns and
+  re-issues the request once with size and aspect ratio restated. If the second
+  answer is still off, it is stored **as-is with its true width and height** —
+  which is what the webhook, Webflow and LinkedIn then receive. Nothing crops,
+  extends or letterboxes anywhere in the pipeline: cropping would cut detail
+  the concept deliberately placed, and reporting 1200×630 for a 1024×1024 file
+  would break every downstream consumer. Body images **~1200 px wide**. **PNG
+  masters, no WebP** — LinkedIn's image API rejects WebP, and flat graphics
+  quantize well. Keep cover subjects inside a center safe zone; platforms crop
+  edges.
+- **Byte ceiling: 1 MB on every image we store**, generated and uploaded alike.
+  The compression pass resizes to the target width, palette-quantizes, and — if
+  the result is still over 1 MB — steps the palette down and then the width down
+  in a bounded loop (never the aspect ratio), returning the smallest result it
+  reached and logging if it could not get under. One ceiling on one code path is
+  what makes the destination limits below actually guaranteed: uploads (up to
+  10 MB of JPEG/WebP in) go through the same function as renders. 1 MB clears
+  Webflow's 4 MB rehost cap and LinkedIn's 5 MB upload cap with wide margin, and
+  it is the difference between hundreds and thousands of stored images on the
+  Hobby quota.
 - No custom domain in v1 (Blob doesn't support one natively; proxying costs
   more and buys nothing for CMS-bound images).
 
@@ -484,7 +519,8 @@ allowlists http(s) srcs; `markdown-to-html.ts`'s Webflow tag set includes
 **Pass the Blob URL in `fieldData`; skip the assets API entirely.** Webflow's
 image field type accepts `{ url, alt }` with a public URL and **fetches +
 rehosts the file on Webflow's CDN** (4 MB cap — guaranteed by the compression
-pass). This goes through the CMS item endpoints, which need only `cms:write`
+pass's 1 MB ceiling, which applies to uploaded images as well as generated
+ones; §7). This goes through the CMS item endpoints, which need only `cms:write`
 — **existing pasted Site API tokens keep working**; the assets flow would
 require `assets:write` and force every tenant to reconnect.
 

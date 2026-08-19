@@ -25,7 +25,7 @@
   `@vercel/blob`'s `del()`. It is a silent no-op only while the leftover row has
   no renders; a leftover row *with* a render (the realistic regenerate case)
   fires a real network call from the test process. Hence the explicit dep below.
-- Exact values from the spec: cover size `1200x630`; body size `1200x900`, compressed to 1200 px wide; body cap default 3 (`resolveImagePolicy`: `"auto"` → 3, `"off"` → 0); one silent retry per render; plan model = `GENERATION_MODEL` (default `anthropic/claude-sonnet-4-5`, `resolveModel`/`modelId` from `src/lib/ai/model.ts`); usage rows: `illustration_plan` (token usage) — `image_generation` rows are written by Plan 1's `renderImage`, not here; alt text ≤125 chars, never starts with "image of"; new step `{ key: "illustrating", label: "Creating images", slow: true }` between `"reviewing"` and `"saving"`; the illustration agent runs **only** inside `generateDraftForPiece` (never on agent edits, extract, catch-up).
+- Exact values from the spec: cover size `1200x630` **generated natively, never cropped** — cover renders pass `enforceAspect: true` to `renderImage`, which restates the size + aspect ratio and re-asks once if the answer is off by more than 2% (product owner decision 1, 2026-08-19); body size `1200x900`, compressed to 1200 px wide; `compressPng` also holds every stored PNG to `MAX_IMAGE_BYTES` (1 MB) without ever changing the aspect ratio (decision 2); body cap default 3 (`resolveImagePolicy`: `"auto"` → 3, `"off"` → 0); one silent retry per render; plan model = `GENERATION_MODEL` (default `anthropic/claude-sonnet-4-5`, `resolveModel`/`modelId` from `src/lib/ai/model.ts`); usage rows: `illustration_plan` (token usage) — `image_generation` rows are written by Plan 1's `renderImage`, not here; alt text ≤125 chars, never starts with "image of"; new step `{ key: "illustrating", label: "Creating images", slow: true }` between `"reviewing"` and `"saving"`; the illustration agent runs **only** inside `generateDraftForPiece` (never on agent edits, extract, catch-up).
 - `"use server"` files may export ONLY async functions. Never import a runtime value from a server module into a `"use client"` file — `import type` only.
 - Tenant scoping in the WHERE clause is the security boundary; every lib function takes `tenantId` and an injectable `database` defaulting to `db` from `@/db`.
 - `npm run typecheck && npm run lint` are gates on every task; `npm run build` on the task that touches page/route files (Task 7).
@@ -804,7 +804,7 @@ async function seed(opts: { visualIdentity?: VisualIdentity | null; imagePolicy?
 
 /** Fakes for every network seam. `renderImage` records what it was asked for. */
 function fakes(overrides: Partial<IllustrateDeps> & { failPrompts?: string[] } = {}) {
-  const renderCalls: { prompt: string; size: string; referenceImages: (string | Buffer)[] }[] = [];
+  const renderCalls: { prompt: string; size: string; referenceImages: (string | Buffer)[]; enforceAspect?: boolean }[] = [];
   const uploadCalls: string[] = [];
   const failing = new Set(overrides.failPrompts ?? []);
   // Every pathname is distinct: two body images rendered in parallel would
@@ -814,8 +814,13 @@ function fakes(overrides: Partial<IllustrateDeps> & { failPrompts?: string[] } =
   const deleteBlobs = vi.fn(async (_pathnames: string[]) => {});
   const deps: Required<IllustrateDeps> = {
     planIllustrations: vi.fn(async () => PLAN),
-    renderImage: vi.fn(async (args: { prompt: string; size: string; referenceImages?: (string | Buffer)[] }) => {
-      renderCalls.push({ prompt: args.prompt, size: args.size, referenceImages: args.referenceImages ?? [] });
+    renderImage: vi.fn(async (args: { prompt: string; size: string; referenceImages?: (string | Buffer)[]; enforceAspect?: boolean }) => {
+      renderCalls.push({
+        prompt: args.prompt,
+        size: args.size,
+        referenceImages: args.referenceImages ?? [],
+        enforceAspect: args.enforceAspect,
+      });
       if (failing.has(args.prompt)) throw new Error(`render failed: ${args.prompt}`);
       return Buffer.from(`PNG:${args.prompt}`);
     }) as never,
@@ -872,14 +877,18 @@ describe("illustratePiece", () => {
     expect(result.failures).toBe(0);
     expect(result.skipped).toBeUndefined();
 
-    // Cover first, at 1200x630, with only the brand references.
-    expect(renderCalls[0]).toMatchObject({ prompt: "PROMPT cover", size: "1200x630" });
+    // Cover first, at 1200x630, with only the brand references — and asking
+    // renderImage to hold it to that shape (product owner decision 1: the
+    // cover is GENERATED wide, never cropped afterwards).
+    expect(renderCalls[0]).toMatchObject({ prompt: "PROMPT cover", size: "1200x630", enforceAspect: true });
     expect(renderCalls[0].referenceImages).toEqual(["https://blob.example/ref-1.png"]);
     // Body renders after, at 1200x900, brand refs + the fresh cover bytes (pinStyleToCover).
     const bodyCalls = renderCalls.slice(1);
     expect(bodyCalls.map((c) => c.prompt).sort()).toEqual(["PROMPT alpha", "PROMPT beta"]);
     for (const call of bodyCalls) {
       expect(call.size).toBe("1200x900");
+      // Body images have no fixed shape to hold; only covers are guarded.
+      expect(call.enforceAspect).toBeFalsy();
       expect(call.referenceImages[0]).toBe("https://blob.example/ref-1.png");
       expect(Buffer.isBuffer(call.referenceImages[1])).toBe(true);
     }
@@ -1277,6 +1286,13 @@ export async function illustratePiece(
         prompt: cover.prompt,
         size: COVER_SIZE,
         referenceImages: brandReferences,
+        // Covers are generated wide, never cropped (product owner decision 1,
+        // 2026-08-19). `renderImage` sends the size AND the aspect ratio, and
+        // re-asks once if what comes back is off 1.91:1 by more than 2%. The
+        // guard lives there, in the one render seam, so this call site and
+        // Plan 3's `renderAndStore` cannot drift. `compressPng` below still
+        // only resizes by width — nothing anywhere crops.
+        enforceAspect: true,
         database,
       });
       const { png, width, height } = await compress(raw, COVER_MAX_WIDTH);
@@ -1854,7 +1870,7 @@ vi.mock("../../../src/lib/workspace/session", () => ({
 }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 
-type RenderArgs = { prompt: string; size: string; referenceImages?: (string | Buffer)[] };
+type RenderArgs = { prompt: string; size: string; referenceImages?: (string | Buffer)[]; enforceAspect?: boolean };
 const renderImage = vi.fn(async (_args: RenderArgs) => Buffer.from("PNG"));
 vi.mock("../../../src/lib/ai/images", () => ({ renderImage: (a: RenderArgs) => renderImage(a) }));
 vi.mock("../../../src/lib/images/compress", () => ({
@@ -2013,6 +2029,22 @@ describe("retryFailedIllustration", () => {
     expect(renderImage.mock.calls[0][0].referenceImages).toContain("https://blob.example/cover.png");
   });
 
+  it("holds a retried COVER to 1200x630", async () => {
+    // Product owner decision 1: covers are generated wide, never cropped —
+    // and a retry is a generation like any other, so it asks for the shape
+    // the same way (renderImage restates size + aspect ratio and re-asks once).
+    const { piece, image } = await seed({ role: "cover", anchor: null });
+    await retryFailedIllustration({ contentPieceId: piece.id, imageId: image.id });
+    expect(renderImage.mock.calls[0][0]).toMatchObject({ size: "1200x630", enforceAspect: true });
+  });
+
+  it("does not guard the shape of a retried body image", async () => {
+    const { piece, image } = await seed();
+    await retryFailedIllustration({ contentPieceId: piece.id, imageId: image.id });
+    expect(renderImage.mock.calls[0][0]).toMatchObject({ size: "1200x900" });
+    expect(renderImage.mock.calls[0][0].enforceAspect).toBeFalsy();
+  });
+
   it("does NOT pass the cover as a reference when retrying the cover itself", async () => {
     const { piece, image } = await seed({ role: "cover", anchor: null });
     await retryFailedIllustration({ contentPieceId: piece.id, imageId: image.id });
@@ -2155,13 +2187,18 @@ export async function retryFailedIllustration(input: {
     if (cover?.current) referenceImages.push(cover.current.blobUrl);
   }
 
+  // A retried COVER goes through the same aspect guard as a generated one
+  // (product owner decision 1): size + aspect ratio stated, one measured
+  // re-ask, never a crop.
+  const enforceAspect = image.role === "cover";
+
   let url: string;
   try {
     let raw: Buffer;
     try {
-      raw = await renderImage({ tenantId, prompt, size, referenceImages });
+      raw = await renderImage({ tenantId, prompt, size, referenceImages, enforceAspect });
     } catch {
-      raw = await renderImage({ tenantId, prompt, size, referenceImages });
+      raw = await renderImage({ tenantId, prompt, size, referenceImages, enforceAspect });
     }
     const { png, width, height } = await compressPng(raw, 1200);
     const uploaded = await uploadPng(

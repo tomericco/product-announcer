@@ -16,7 +16,11 @@
 
 - Run `npm install` in the worktree before anything (no node_modules).
 - Plans 1 and 2 are merged: `src/lib/images/{visual-identity,policy,compress,blob,prompt,store}.ts`, `src/lib/ai/{image-model,images}.ts`, the `content_images` / `image_renders` tables (with Plan 2's nullable `anchorHeading` on `content_images`) all exist with the signatures in the shared contract. Consume them; never redefine. **Before Task 3 and Task 4, open `src/lib/images/store.ts` and confirm the exported names and the `database: DbClient = db` last-arg convention** — this plan cites the contract, not line numbers, for that file.
-- Body images: `1200x900` renders, `compressPng(raw, 1200)`. Cover: `1200x630`, `compressPng(raw, 1200)`. Library images render at the body size. Uploads: `image/png`, `image/jpeg`, `image/webp`, ≤ 10 MB, converted to PNG via `compressPng`.
+- Body images: `1200x900` renders, `compressPng(raw, 1200)`. Cover: `1200x630`, `compressPng(raw, 1200)`. Library images render at the body size. Uploads: `image/png`, `image/jpeg`, `image/webp`, ≤ 10 MB **input**, converted to PNG via `compressPng`.
+- **Product owner decisions, 2026-08-19 — three things this plan must not undo:**
+  1. Covers are generated at 1200×630 natively and **never cropped**. `renderAndStore` sets `enforceAspect` from the role; `renderImage` owns the guard. Nothing in this plan resizes, crops or letterboxes an image.
+  2. `compressPng` holds every stored PNG to `MAX_IMAGE_BYTES` (1 MB) — uploads included, since `uploadImageFile` stores through `storeRenderBytes` → `compressPng`. The 10 MB check is an *input* validation only; it does not decide what lands in Blob.
+  3. The library lists `listLibraryImages`, not `listImages`: images of pieces still in `brief`/`draft` are not in the library, so **no library action ever stamps `bodyEditedAt`**.
 - The user-facing "prompt" in insert / cover / library **is a concept-level description**; the server wraps it with `buildImagePrompt({ styleBlock, concept, role, allowText })`. `regenerateImage` mode `"prompt"` is the exception: it takes the **stored full prompt** (spec §5 "Edit prompt opens the current render's stored prompt") and sends it verbatim. Mode `"edit"` stores `${previous}\n\nEdit: ${instruction}`.
 - Generation requires `isVisualIdentityReady(profile.visualIdentity)`; otherwise actions return `{ ok: false, error: "Set up your visual identity in Company settings before generating images." }` and the UI shows that sentence.
 - Every write to a piece's body or cover goes through `requireSession()` → tenant-scoped load → `assertDraftEditable(piece)` (exactly as `requestAgentEdit` does, `src/app/(dashboard)/drafts/[releaseId]/actions.ts:65-96`). Library images (`contentPieceId === null`) skip `assertDraftEditable`.
@@ -38,13 +42,12 @@
 - Test: `tests/lib/images/actions-support.test.ts`
 
 **Interfaces:**
-- Consumes: `slugify` from `src/lib/publishing/slug.ts:3` (`slugify(title: string): string`).
+- Consumes: `slugForImage`, `UPLOAD_MAX_BYTES`, `UPLOAD_MIME_TYPES`, `validateUploadFile` from `src/lib/images/blob.ts` (Plan 1 Task 8). **The upload validator is Plan 1's** (product owner decision 3, 2026-08-19): the Visual identity card's style-reference upload needed it first, and two definitions of "what may be uploaded" is the same drift the QA review's defect 8 was about. This module re-exports the three names so nothing downstream has to know where they live.
 - Produces:
   ```ts
   export function editPromptHistory(previous: string, instruction: string): string;
-  export const UPLOAD_MAX_BYTES: number;                       // 10 * 1024 * 1024
-  export const UPLOAD_MIME_TYPES: readonly ["image/png", "image/jpeg", "image/webp"];
-  export function validateUploadFile(file: { type: string; size: number }): { ok: true } | { ok: false; error: string };
+  // Re-exported from Plan 1's src/lib/images/blob.ts — never redefined here:
+  export { UPLOAD_MAX_BYTES, UPLOAD_MIME_TYPES, validateUploadFile } from "@/lib/images/blob";
   export function altFromConcept(concept: string): string;     // ≤125 chars, one sentence, no "image of"
   export function sliceAroundHeading(markdown: string, heading: string | null, maxChars?: number): string;
   export function stripImageFromMarkdown(markdown: string, urls: string[]): string;
@@ -68,7 +71,7 @@ import {
   sizeForRole,
   UPLOAD_MAX_BYTES,
 } from "../../../src/lib/images/actions-support";
-import { slugForImage } from "../../../src/lib/images/blob";
+import { slugForImage, validateUploadFile as validateFromBlob } from "../../../src/lib/images/blob";
 
 describe("editPromptHistory", () => {
   it("appends the instruction as an Edit line after a blank line", () => {
@@ -81,6 +84,11 @@ describe("editPromptHistory", () => {
 });
 
 describe("validateUploadFile", () => {
+  it("is Plan 1's function, re-exported — not a second copy of the rules", () => {
+    // Product owner decision 3: one definition of what may be uploaded, shared
+    // by the editor and the Visual identity card.
+    expect(validateUploadFile).toBe(validateFromBlob);
+  });
   it("accepts png, jpeg and webp under the cap", () => {
     for (const type of ["image/png", "image/jpeg", "image/webp"]) {
       expect(validateUploadFile({ type, size: 1024 })).toEqual({ ok: true });
@@ -214,18 +222,12 @@ export function editPromptHistory(previous: string, instruction: string): string
   return `${previous.trimEnd()}\n\nEdit: ${instruction.trim()}`;
 }
 
-export const UPLOAD_MAX_BYTES = 10 * 1024 * 1024;
-export const UPLOAD_MIME_TYPES = ["image/png", "image/jpeg", "image/webp"] as const;
-
-export function validateUploadFile(file: { type: string; size: number }): { ok: true } | { ok: false; error: string } {
-  if (!(UPLOAD_MIME_TYPES as readonly string[]).includes(file.type)) {
-    return { ok: false, error: "Only PNG, JPEG or WebP images can be uploaded." };
-  }
-  if (file.size > UPLOAD_MAX_BYTES) {
-    return { ok: false, error: "Images must be 10 MB or smaller." };
-  }
-  return { ok: true };
-}
+/**
+ * What may be uploaded is defined ONCE, in Plan 1's `blob.ts`, because the
+ * Visual identity card uploads through it too (product owner decision 3).
+ * Re-exported here so the editor actions keep importing from one module.
+ */
+export { UPLOAD_MAX_BYTES, UPLOAD_MIME_TYPES, validateUploadFile } from "@/lib/images/blob";
 
 /** Spec §2 alt policy: one sentence, ≤125 chars, meaning not style, no
  * "image of". Written from the concept we authored, never vision-captioned. */
@@ -331,7 +333,7 @@ export function sizeForRole(role: "cover" | "body" | "library"): "1200x630" | "1
 Run: `npx vitest run tests/lib/images/actions-support.test.ts`
 Expected: PASS. Importing `slugForImage` from `@/lib/images/blob` pulls in `@vercel/blob` at module load — that is an import, not a call, so no network happens and no token is needed. If that ever becomes a problem, move `slugForImage` into its own tiny module rather than forking a second slug rule.
 
-**Interfaces:** `- Consumes: slugify from src/lib/publishing/slug.ts:3` above is superseded — this module consumes `slugForImage` from `src/lib/images/blob.ts` (Plan 1 Task 8) instead.
+Note: this module deliberately does **not** consume `slugify` from `src/lib/publishing/slug.ts` — that is the public CMS slug (200 chars, `"update"` fallback). Everything path-related comes from `src/lib/images/blob.ts`.
 
 - [ ] **Step 5: Commit**
 
@@ -798,6 +800,8 @@ describe("renderAndStore", () => {
     );
 
     expect(renderImage.mock.calls[0][0]).toMatchObject({ tenantId: tenant.id, prompt: "FULL PROMPT", size: "1200x900", referenceImages: ["https://blob.example/ref.png"] });
+    // Only covers ask renderImage to hold the shape.
+    expect(renderImage.mock.calls[0][0].enforceAspect).toBe(false);
     expect(compressPng).toHaveBeenCalledWith(Buffer.from("RAW"), 1200);
     expect(uploadPng.mock.calls[0][0]).toBe(`tenants/${tenant.id}/content/library/library-a-rocket.png`);
     expect(render).toMatchObject({ imageId: image.id, prompt: "FULL PROMPT", width: 1200, height: 900, bytes: 4 });
@@ -806,6 +810,31 @@ describe("renderAndStore", () => {
     const stored = await getImage(tenant.id, image.id);
     expect(stored?.currentRenderId).toBe(render.id);
     expect(stored?.status).toBe("ready");
+  });
+
+  it("asks renderImage to hold the 1.91:1 shape for a cover — generated wide, never cropped", async () => {
+    // Product owner decision 1 (2026-08-19). Derived from the role inside
+    // renderAndStore, so every cover path in this plan is guarded without each
+    // call site remembering. compressPng still only ever resizes by width.
+    const { tenant, image } = await seed();
+    const renderImage = vi.fn(async () => Buffer.from("RAW"));
+    const compressPng = vi.fn(async (png: Buffer, maxWidth: number) => ({ png, width: maxWidth, height: 630 }));
+
+    await renderAndStore(
+      {
+        tenantId: tenant.id,
+        imageId: image.id,
+        contentPieceId: null,
+        role: "cover",
+        slug: "a-rocket",
+        prompt: "FULL PROMPT",
+        size: "1200x630",
+      },
+      { renderImage, compressPng, uploadPng: async (pathname) => ({ url: `https://blob.example/${pathname}`, pathname }) }
+    );
+
+    expect(renderImage.mock.calls[0][0]).toMatchObject({ size: "1200x630", enforceAspect: true });
+    expect(compressPng).toHaveBeenCalledWith(Buffer.from("RAW"), 1200);
   });
 
   it("stores `storedPrompt` (the edit history) rather than the instruction it sent, and passes editOf through", async () => {
@@ -946,6 +975,12 @@ export async function renderAndStore(
     size: a.size,
     referenceImages: a.referenceImages,
     editOf: a.editOf,
+    // Covers are generated at 1200x630 natively and never cropped (product
+    // owner decision 1, 2026-08-19). Derived from the role HERE rather than
+    // passed by each caller, so every cover path in this plan — generate,
+    // regenerate, edit, prompt — is guarded by construction, and Plan 2's
+    // agent path sets the same flag at its own cover render.
+    enforceAspect: a.role === "cover",
     database: a.database,
   });
   return storeRenderBytes(
@@ -3084,7 +3119,11 @@ In `src/app/globals.css`, after the `.mdx-content hr` block (line 278) add:
 
 - [ ] **Step 3: `next.config.ts`**
 
-Replace the file with:
+**Plan 1 Task 12 Step 7 already added `images.remotePatterns` and
+`serverActions.bodySizeLimit`** (the Visual identity card's reference
+thumbnails and uploads need them). Open the file first: if both keys are
+present, this step is a no-op — do not duplicate them. Otherwise the file
+should end up exactly as below:
 
 ```ts
 import type { NextConfig } from "next";
@@ -3545,7 +3584,7 @@ git commit -m "feat: cover image panel above the draft title"
 - Test: `tests/app/images/actions.test.ts`
 
 **Interfaces:**
-- Consumes: `listImages`, `getImage`, `deleteImage`, `createImage` (store); `renderAndStore` (Task 4 helper); `stripImageFromMarkdown`, `imageSlug`, `sizeForRole` (Task 1); `buildImagePrompt`, `compileStyleBlock`, `isVisualIdentityReady`, `getOrCreateCompanyProfile`; `regenerateImage`, `restoreRender`, `lookupImageBySrc`, `setCoverFromImage` (Task 4 — imported by client components as Server Function references, the same way `board/card.tsx:21` imports `generateDraft` from a sibling route); `SearchParamsRecord` shape (`company/filter-params.ts:28`); `Select*` (`select.tsx:190-201`), `Dialog*`, `Badge`, `Card`, `EmptyState` (`src/components/ui/empty-state.tsx` — read its props before use; fall back to a plain `<p>` if it doesn't fit).
+- Consumes: `listLibraryImages` (store — **not** `listImages`; see the Global Constraints note on decision 4), `getImage`, `deleteImage`, `createImage` (store); `renderAndStore` (Task 4 helper); `stripImageFromMarkdown`, `imageSlug`, `sizeForRole` (Task 1); `buildImagePrompt`, `compileStyleBlock`, `isVisualIdentityReady`, `getOrCreateCompanyProfile`; `regenerateImage`, `restoreRender`, `lookupImageBySrc`, `setCoverFromImage` (Task 4 — imported by client components as Server Function references, the same way `board/card.tsx:21` imports `generateDraft` from a sibling route); `SearchParamsRecord` shape (`company/filter-params.ts:28`); `Select*` (`select.tsx:190-201`), `Dialog*`, `Badge`, `Card`, `EmptyState` (`src/components/ui/empty-state.tsx` — read its props before use; fall back to a plain `<p>` if it doesn't fit).
 - Produces:
   ```ts
   // images/actions.ts
@@ -3607,7 +3646,13 @@ const VI: VisualIdentity = {
   ],
 };
 
-async function seed(opts: { published?: boolean } = {}) {
+/**
+ * Default status is "review", not "draft": the library only lists images of
+ * pieces past drafting (product owner decision 4), so a draft-status piece is
+ * the wrong fixture for a library test. `status: "draft"` is passed explicitly
+ * where the exclusion itself is what is being tested.
+ */
+async function seed(opts: { published?: boolean; status?: "brief" | "draft" | "review" | "scheduled" | "archived" } = {}) {
   const [tenant] = await db.insert(tenants).values({ name: TENANT_NAME }).returning();
   const [user] = await db.insert(users).values({ email: USER_EMAIL }).returning();
   currentTenantId = tenant.id;
@@ -3620,7 +3665,7 @@ async function seed(opts: { published?: boolean } = {}) {
       type: "blog_post",
       title: "Piece",
       body: "## A\n\n![Gears](https://blob.example/gears.png)\n\nText.",
-      status: opts.published ? "published" : "draft",
+      status: opts.published ? "published" : (opts.status ?? "review"),
       publishedAt: opts.published ? new Date() : null,
     })
     .returning();
@@ -3636,13 +3681,22 @@ afterEach(async () => {
 });
 
 describe("deleteLibraryImage", () => {
-  it("removes the row, its blobs, and the image line from the piece body", async () => {
+  it("removes the row, its blobs, and the image line from the piece body — without stamping bodyEditedAt", async () => {
     const { tenant, piece, image } = await seed();
     expect(await deleteLibraryImage(image.id)).toEqual({ ok: true });
     expect(await getImage(tenant.id, image.id)).toBeNull();
     expect(deleteBlobs).toHaveBeenLastCalledWith(["p/gears.png"]);
-    const [row] = await db.select({ body: contentPieces.body }).from(contentPieces).where(eq(contentPieces.id, piece.id));
+    const [row] = await db
+      .select({ body: contentPieces.body, bodyEditedAt: contentPieces.bodyEditedAt, editedBy: contentPieces.editedBy })
+      .from(contentPieces)
+      .where(eq(contentPieces.id, piece.id));
     expect(row.body).toBe("## A\n\nText.");
+    // Product owner decision 4 (2026-08-19): a library delete is a cleanup
+    // write, not an authored edit. Stamping would freeze whole-draft
+    // regeneration for that piece forever (`generateDraftForPiece` refuses a
+    // hand-edited body) over one deleted image.
+    expect(row.bodyEditedAt).toBeNull();
+    expect(row.editedBy).toBeNull();
   });
 
   it("refuses an image referenced by a published piece, leaving body and row alone", async () => {
@@ -3692,6 +3746,19 @@ describe("listImagesForPicker", () => {
     expect(out[0]).toMatchObject({ url: "https://blob.example/gears.png", concept: "gears", role: "body", pieceTitle: "Piece" });
     expect(piece.id).toBeTruthy();
   });
+
+  it("does not offer an image belonging to a piece that is still being drafted", async () => {
+    // Product owner decision 4: in-progress drafts keep their images to
+    // themselves. The picker reads `listLibraryImages`, so this is the same
+    // rule the /images page enforces — asserted here because the picker is the
+    // path that would otherwise paste an in-flight draft's image elsewhere.
+    const { tenant } = await seed({ status: "draft" });
+    const standalone = await createImage({ tenantId: tenant.id, contentPieceId: null, role: "library", concept: "compass", altText: "", sourceKind: "generated" });
+    await addRender({ imageId: standalone.id, prompt: "p", blobUrl: "https://blob.example/compass.png", blobPathname: "p/compass.png", width: 1, height: 1, bytes: 1, model: "m" });
+
+    const out = await listImagesForPicker();
+    expect(out.map((i) => i.concept)).toEqual(["compass"]);
+  });
 });
 ```
 
@@ -3716,7 +3783,7 @@ import { getOrCreateCompanyProfile } from "@/lib/workspace/company-profile";
 import { compileStyleBlock, isVisualIdentityReady } from "@/lib/images/visual-identity";
 import { buildImagePrompt } from "@/lib/images/prompt";
 import { renderAndStore } from "@/lib/images/generate";
-import { createImage, deleteImage, getImage, listImages } from "@/lib/images/store";
+import { createImage, deleteImage, getImage, listLibraryImages } from "@/lib/images/store";
 import { altFromConcept, imageSlug, sizeForRole, stripImageFromMarkdown } from "@/lib/images/actions-support";
 
 const NO_IDENTITY = "Set up your visual identity in Company settings before generating images.";
@@ -3744,12 +3811,15 @@ export async function deleteLibraryImage(imageId: string): Promise<{ ok: true } 
       .where(eq(contentPieces.id, image.contentPieceId));
     if (piece) {
       const next = stripImageFromMarkdown(piece.body, image.renders.map((r) => r.blobUrl));
-      // A human chose to remove content from the draft: stamp it like saveDraftBody does.
+      // The dead reference still has to go, or the piece renders a 404 image.
+      // But NOTHING here stamps `bodyEditedAt` (product owner decision 4,
+      // 2026-08-19): the library only ever lists images of pieces past
+      // drafting, so this can never be a body someone is mid-way through
+      // writing — and stamping would retire that piece's Generate button for
+      // good over one deleted image. `editedBy` is left alone for the same
+      // reason: this is a cleanup write, not an authored edit.
       if (next !== piece.body) {
-        await db
-          .update(contentPieces)
-          .set({ body: next, editedBy: session.user.id, bodyEditedAt: new Date() })
-          .where(eq(contentPieces.id, image.contentPieceId));
+        await db.update(contentPieces).set({ body: next }).where(eq(contentPieces.id, image.contentPieceId));
       }
     }
     revalidatePath(`/drafts/${image.contentPieceId}`);
@@ -3795,10 +3865,16 @@ export async function generateLibraryImage(a: {
 
 export type PickerImage = { imageId: string; url: string; concept: string; role: ImageRole; pieceTitle: string | null };
 
-/** What "From library" lists (spec §5b): every image with a current render, newest first. */
+/**
+ * What "From library" lists (spec §5b): every LIBRARY image with a current
+ * render, newest first. `listLibraryImages`, not `listImages` — an image
+ * belonging to a piece someone is still drafting is not offered for reuse
+ * anywhere (product owner decision 4); it is reachable in that draft's own
+ * editor, which is where its owner is.
+ */
 export async function listImagesForPicker(): Promise<PickerImage[]> {
   const session = await requireSession();
-  const rows = await listImages(session.user.tenantId);
+  const rows = await listLibraryImages(session.user.tenantId);
   return rows
     .filter((r) => r.current !== null)
     .map((r) => ({ imageId: r.id, url: r.current!.blobUrl, concept: r.concept, role: r.role as ImageRole, pieceTitle: r.pieceTitle }));
@@ -3842,7 +3918,7 @@ function labelFor(options: { value: string; label: string }[], value: string) {
 /**
  * Same shape as company/change-events-filters.tsx: values come from the
  * server-rendered page (searchParams is the source of truth); a change pushes
- * a new URL and the Server Component re-runs `listImages`.
+ * a new URL and the Server Component re-runs `listLibraryImages`.
  */
 export function ImageFilters({ state, pieces }: { state: ImageFilterState; pieces: { id: string; title: string }[] }) {
   const router = useRouter();
@@ -3919,7 +3995,7 @@ import { and, desc, eq, isNotNull } from "drizzle-orm";
 import { db } from "@/db";
 import { contentPieces, type ImageRole, type ImageSourceKind } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
-import { listImages } from "@/lib/images/store";
+import { listLibraryImages } from "@/lib/images/store";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState, EmptyStateDescription, EmptyStateTitle } from "@/components/ui/empty-state";
 import { ImageFilters } from "./image-filters";
@@ -3942,7 +4018,10 @@ export default async function ImagesPage({
   const pieceId = sp.pieceId && sp.pieceId !== "all" ? sp.pieceId : undefined;
 
   const [rows, pieces, publishedRows] = await Promise.all([
-    listImages(tenantId, { contentPieceId: pieceId, role, sourceKind: source }),
+    // The library shows images of pieces past drafting, plus standalone
+    // library images (product owner decision 4, spec §5b). A draft you are
+    // still writing keeps its images in its own editor.
+    listLibraryImages(tenantId, { contentPieceId: pieceId, role, sourceKind: source }),
     db
       .select({ id: contentPieces.id, title: contentPieces.title })
       .from(contentPieces)
@@ -4616,8 +4695,10 @@ Library:
 - [ ] Nav shows "Images"; the page lists every image newest first; role / source / piece filters narrow it and Clear resets the URL.
 - [ ] Click a card → detail with history strip; Regenerate here → the draft's body (open it in another tab, reload) points at the new URL.
 - [ ] Generate new → a Library-role image appears with no piece.
+- [ ] An image generated into a piece that is still a draft does **not** appear on /images or in "From library"; move that piece to Review and it appears. (Product owner decision 4 — it stays reachable in that draft's editor the whole time.)
 - [ ] Delete an image used in a draft → confirm text names the draft; after delete the draft's body no longer has the line.
 - [ ] Publish a piece (or set `published_at` on one) → its images' Delete is replaced by the "published" explanation.
+- [ ] Delete a library image used by a Review-status piece → the line goes from that piece's body **and its Generate button still works** (deleting from the library never counts as a hand edit).
 
 - [ ] **Step 3: Commit anything the checklist changed, then finish the branch**
 
@@ -4640,11 +4721,12 @@ Expected: eleven commits on top of Plans 1–2, one per task; a clean tree. Hand
 - Cover: Add cover → Generate from post → Write a prompt (prefilled, never empty) → Upload (+ From library); hover Change / Remove; Change reopens with the previous concept; first-class `role:"cover"` row; gated by the type's policy — Tasks 4, 9. `next.config.ts` `images.remotePatterns` and the `.mdx-content img` rule — Task 8.
 
 **Spec coverage — §5b Library**
-- Nav "Images"; every row for the tenant newest first; filters by piece / role / source; card = thumbnail, concept, piece link, date; detail = history strip + the three edit actions; delete removes rows + blobs and the piece's markdown line, confirm names the piece, published pieces' images can't be deleted and the UI says why; Generate new → `role:"library"`; From library in the insert panel and the cover menu, reusing the blob URL with no new render — Tasks 4, 10 (+ Task 3's shared-blob guard so a reused blob survives either row's deletion).
+- Nav "Images"; every LIBRARY row for the tenant newest first (`listLibraryImages`: standalone images plus images of pieces past `brief`/`draft` — product owner decision 4, so the library never disturbs an in-flight draft and no library action stamps `bodyEditedAt`); filters by piece / role / source; card = thumbnail, concept, piece link, date; detail = history strip + the three edit actions; delete removes rows + blobs and the piece's markdown line, confirm names the piece, published pieces' images can't be deleted and the UI says why; Generate new → `role:"library"`; From library in the insert panel and the cover menu, reusing the blob URL with no new render — Tasks 4, 10 (+ Task 3's shared-blob guard so a reused blob survives either row's deletion).
 
 **Contract deviations (all additive)**
 - `suggestImagePrompt` gains optional `heading` and `role`; `lookupImageBySrc` returns render history; `setCoverFromImage`, `listImagesForPicker` and `updateCoverAlt` are new (the last because the cover's alt — published by Plan 4 — has no other edit path; spec §2 requires alt to be human-editable); `image-actions.ts` exports the `ImageLookup` type. Signatures in the contract are otherwise exact.
 - `regenerateImage` / `restoreRender` also rewrite the stored piece body's URL server-side (no `bodyEditedAt`) so the library's edit actions are correct for images sitting in a draft; the editor's `replaceImageSrc` + `saveDraftBody` on top is then a no-op write.
+- **Product owner decisions applied (2026-08-19):** covers are generated at 1200×630 natively and never cropped — `renderAndStore` sets `enforceAspect` from the role, `renderImage` owns the guard (decision 1); the 1 MB `MAX_IMAGE_BYTES` ceiling covers uploads too, since `uploadImageFile` stores through `storeRenderBytes` → `compressPng` (decision 2); the upload validator is Plan 1's, re-exported from `actions-support.ts` rather than redefined (decision 3); the library and picker read `listLibraryImages` and `deleteLibraryImage` no longer stamps `bodyEditedAt` (decision 4, closing QA review defect 19). The tradeoff on the last one: an image in a piece you are still drafting is reachable in that draft's editor, not in the library.
 
 **Judgement calls to flag**
 - A render that fails for a row created by the same action deletes that row (nothing to retry from; the prompt is still on screen). Regeneration failures keep the row.

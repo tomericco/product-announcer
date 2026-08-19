@@ -35,7 +35,9 @@
 - Env: `process.env.X ?? default` at the call site; every new var gets a commented line in `.env.example`. New vars: `IMAGE_MODEL` (default `openai/gpt-image-2`), `OPENAI_API_KEY`, `BLOB_READ_WRITE_TOKEN`.
 - Model default `IMAGE_MODEL_DEFAULT = "openai/gpt-image-2"`; `imageModelId` strips a leading `openai/`.
 - Sizes: cover `1200x630`, body `1200x900`; `MAX_RENDER_HISTORY = 5`; palette 3–6 entries (ready when ≥ 3); `styleReferenceImages` 0–4; `customStyleDescriptors` ≤ 200 chars.
-- Blob pathname `tenants/{tenantId}/content/{contentPieceId ?? "library"}/{role}-{slug}.png`, uploaded with `{ access: "public", addRandomSuffix: true, contentType: "image/png" }`. Never overwrite a blob; never call `list()`.
+- **Covers are GENERATED wide, never cropped** (product owner, 2026-08-19). `renderImage` asks for `size: "1200x630"` *and* the matching `aspectRatio`, and — for covers only — measures what came back and retries once if it is off 1.91:1 by more than `ASPECT_TOLERANCE` (2%). Nothing anywhere crops or letterboxes: `compressPng` resizes by width alone, and a stubbornly square render is stored with its true `width`/`height`.
+- **Every stored PNG is ≤ `MAX_IMAGE_BYTES` (1 MB)** — generated and uploaded alike (product owner, 2026-08-19). `compressPng` enforces it in a bounded loop and never changes the aspect ratio to get there. 1 MB clears Webflow's 4 MB rehost cap and LinkedIn's 5 MB upload cap with room to spare.
+- Blob pathname `tenants/{tenantId}/content/{contentPieceId ?? "library"}/{role}-{slug}.png`, uploaded with `{ access: "public", addRandomSuffix: true, contentType: "image/png" }`. Brand assets (style reference images) live under `tenants/{tenantId}/brand/{slug}.png` and get no `content_images` row. Never overwrite a blob; never call `list()`.
 - `recordLlmUsage` never throws. TS unions over free-text columns. jsonb columns typed with `$type<...>()`. Drizzle `db` from `@/db`; the `DbClient` type from `src/lib/publishing/destinations/types.ts` (line 11: `export type DbClient = NodePgDatabase<typeof schema>`).
 - No test may reach OpenAI, Vercel Blob or Anthropic. `renderImage` takes an injected `generate`; blob and LLM tests use `vi.mock`.
 - Server actions live in the colocated `actions.ts`, `"use server"`, exporting only async functions, `requireSession()` → tenant-scoped load → mutate → `revalidatePath`. Never import a runtime value from a server module into a `"use client"` file — `import type` only.
@@ -1128,7 +1130,7 @@ git commit -m "feat: per-content-type image policy defaults and resolver"
 - Test: `tests/lib/images/prompt.test.ts`
 
 **Interfaces:**
-- Produces: `buildImagePrompt(a: { styleBlock: string; concept: string; role: "cover" | "body"; allowText: boolean }): string`; also `IMAGE_SIZES = { cover: "1200x630", body: "1200x900" } as const` and `NO_TEXT_CLAUSE`.
+- Produces: `buildImagePrompt(a: { styleBlock: string; concept: string; role: "cover" | "body"; allowText: boolean }): string`; also `IMAGE_SIZES = { cover: "1200x630", body: "1200x900" } as const`, `IMAGE_ASPECT_RATIOS` (the same two shapes in `{width}:{height}` form, for `generateImage`'s `aspectRatio`) and `NO_TEXT_CLAUSE`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1136,7 +1138,7 @@ Create `tests/lib/images/prompt.test.ts`:
 
 ```ts
 import { describe, it, expect } from "vitest";
-import { buildImagePrompt, IMAGE_SIZES, NO_TEXT_CLAUSE } from "../../../src/lib/images/prompt";
+import { buildImagePrompt, IMAGE_ASPECT_RATIOS, IMAGE_SIZES, NO_TEXT_CLAUSE } from "../../../src/lib/images/prompt";
 
 describe("buildImagePrompt", () => {
   it("orders concept, style block, composition, aspect, then the no-text clause for a cover", () => {
@@ -1166,6 +1168,20 @@ describe("buildImagePrompt", () => {
   it("exposes the two render sizes", () => {
     expect(IMAGE_SIZES).toEqual({ cover: "1200x630", body: "1200x900" });
   });
+
+  it("exposes an aspect ratio for every size, in generateImage's {w}:{h} form", () => {
+    // Covers are generated wide, never cropped (product owner decision 1), so
+    // the request states the shape twice: `size` for providers that take exact
+    // pixels, `aspectRatio` for providers that take a ratio. The two must
+    // agree, or a provider honouring the ratio would return a different shape
+    // from one honouring the size.
+    expect(IMAGE_ASPECT_RATIOS).toEqual({ "1200x630": "40:21", "1200x900": "4:3" });
+    for (const [size, ratio] of Object.entries(IMAGE_ASPECT_RATIOS)) {
+      const [sw, sh] = size.split("x").map(Number);
+      const [rw, rh] = ratio.split(":").map(Number);
+      expect(Math.abs(sw / sh - rw / rh)).toBeLessThan(0.001);
+    }
+  });
 });
 ```
 
@@ -1182,6 +1198,20 @@ Create `src/lib/images/prompt.ts`:
 /** One master per image (spec §7): the cover serves hero + og:image + LinkedIn. */
 export const IMAGE_SIZES = { cover: "1200x630", body: "1200x900" } as const;
 export type ImageSize = (typeof IMAGE_SIZES)[keyof typeof IMAGE_SIZES];
+
+/**
+ * The same two shapes as `IMAGE_SIZES`, in `generateImage`'s `{w}:{h}` form.
+ * `renderImage` sends BOTH `size` and `aspectRatio` (spec §7, product owner
+ * decision 1: covers are generated at 1200×630 natively and are never
+ * cropped) — gpt-image-2 supports flexible sizes, and a provider that ignores
+ * one of the two settings reports it in `result.warnings` rather than
+ * throwing, so stating the shape twice costs nothing and buys the wide render
+ * from providers that only understand ratios.
+ */
+export const IMAGE_ASPECT_RATIOS = {
+  "1200x630": "40:21",
+  "1200x900": "4:3",
+} as const satisfies Record<ImageSize, `${number}:${number}`>;
 
 export const NO_TEXT_CLAUSE = "No text, letters, words, logos or watermarks.";
 
@@ -1237,34 +1267,36 @@ git commit -m "feat: image prompt template"
 - Test: `tests/lib/images/compress.test.ts`
 
 **Interfaces:**
-- Produces: `compressPng(input: Buffer, maxWidth: number): Promise<{ png: Buffer; width: number; height: number }>`; `MAX_DELIVERABLE_BYTES = 4 * 1024 * 1024`.
+- Produces: `compressPng(input: Buffer, maxWidth: number): Promise<{ png: Buffer; width: number; height: number }>`; `MAX_IMAGE_BYTES = 1_000_000`; `MAX_DELIVERABLE_BYTES = 4 * 1024 * 1024`; `imageDimensions(input: Buffer): Promise<{ width: number; height: number }>`.
 
-> **Two things this function deliberately does NOT do, and both are load-bearing
-> downstream — read before implementing.**
+> **The two guarantees this function makes — both load-bearing downstream, read
+> before implementing.** (Product owner decisions 1 and 2, 2026-08-19.)
 >
-> 1. **It does not change the aspect ratio.** `renderImage` asks the provider for
->    `1200x630`, but gpt-image models round to their own supported sizes, so the
->    bytes that come back may be 1024×1024. `compressPng(raw, 1200)` with
->    `withoutEnlargement` then stores `width: 1024, height: 1024` — and those are
->    the numbers Plan 4 publishes as `coverImage.width/height` and LinkedIn
->    renders. Spec §7 promises a 1.91:1 cover. The tests below pin the current
->    behaviour honestly; **whether to add a cover-only cover-crop to 1200×630 is
->    an open decision for the product owner** (see the QA review, defect 4).
-> 2. **It does not guarantee a byte cap.** Spec §8 says Webflow's 4 MB limit is
->    "guaranteed by the compression pass" and LinkedIn's is 5 MB. Palette
->    quantisation at ≤1200 px makes a flat graphic tiny, but an uploaded
->    photograph (`uploadImageFile` accepts up to 10 MB of JPEG, Plan 3) can stay
->    above 4 MB after conversion to PNG. The test below pins the flat-graphic
->    case and the exported constant gives callers something to check against.
+> 1. **It NEVER changes the aspect ratio.** It resizes by width only, with
+>    `withoutEnlargement: true`. No crop, no extend, no letterbox — anywhere in
+>    this codebase. Covers come out of the model at 1200×630 because
+>    `renderImage` asks for that size *and* that aspect ratio and re-asks once
+>    if the answer is the wrong shape (Task 9); if a provider still returns a
+>    square, it is stored square with its true `width`/`height` and Plan 4
+>    publishes those true numbers. Cropping was rejected because it cuts detail
+>    the concept put there on purpose.
+> 2. **Every returned PNG is ≤ `MAX_IMAGE_BYTES` (1 MB), or it is the smallest
+>    this function could make it.** The ceiling applies to *everything stored* —
+>    model renders and user uploads alike — because that is the only way spec
+>    §8's "4 MB — guaranteed by the compression pass" is actually guaranteed: an
+>    upload of a 10 MB photograph (`uploadImageFile`, Plan 3) goes through this
+>    same function. One ceiling, one code path, and both Webflow (4 MB) and
+>    LinkedIn (5 MB) clear it with room to spare. The loop is bounded and never
+>    throws — a slightly-over image beats a failed draft.
 
 - [ ] **Step 1: Write the failing test**
 
 Create `tests/lib/images/compress.test.ts`:
 
 ```ts
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import sharp from "sharp";
-import { MAX_DELIVERABLE_BYTES, compressPng } from "../../../src/lib/images/compress";
+import { MAX_DELIVERABLE_BYTES, MAX_IMAGE_BYTES, compressPng, imageDimensions } from "../../../src/lib/images/compress";
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
 
@@ -1306,36 +1338,86 @@ describe("compressPng", () => {
     expect(out.png.byteLength).toBeLessThanOrEqual(input.byteLength);
   });
 
-  it("keeps a realistic flat cover far under the 4 MB Webflow/5 MB LinkedIn ceiling", async () => {
+  it("keeps a realistic flat cover far under the 1 MB ceiling (and so under Webflow's 4 MB / LinkedIn's 5 MB)", async () => {
     // The cover master the agent produces: 1200 px wide, flat fills. This is
-    // the claim spec §8 makes ("4 MB cap — guaranteed by the compression
-    // pass"); pin it so a future change to the sharp options can't quietly
-    // break Webflow rehosting.
+    // the claim spec §8 makes ("guaranteed by the compression pass"); pin it so
+    // a future change to the sharp options can't quietly break Webflow
+    // rehosting.
     const out = await compressPng(await solidPng(2400, 1260), 1200);
-    expect(out.png.byteLength).toBeLessThan(MAX_DELIVERABLE_BYTES);
+    expect(out.png.byteLength).toBeLessThan(MAX_IMAGE_BYTES);
+    expect(MAX_IMAGE_BYTES).toBe(1_000_000);
     expect(MAX_DELIVERABLE_BYTES).toBe(4 * 1024 * 1024);
   });
 
   it("accepts a JPEG input and emits a PNG (the upload path, spec §5 uploads)", async () => {
     const out = await compressPng(await noisyJpeg(1600, 900), 1200);
     expect(out.png.subarray(0, 4).equals(PNG_SIGNATURE)).toBe(true);
-    expect(out.width).toBe(1200);
+    expect(out.width).toBeLessThanOrEqual(1200);
     expect(await sharp(out.png).metadata().then((m) => m.format)).toBe("png");
   });
 
-  it("does NOT change the aspect ratio — a square render stays square", async () => {
-    // Documents the gap between what renderImage asks for ("1200x630") and what
-    // is actually stored when the provider rounds to a square supported size.
-    // Plan 4 publishes these numbers as coverImage.width/height. See the note
-    // above this task and QA review defect 4.
+  it("NEVER changes the aspect ratio — a square render stays square", async () => {
+    // The no-crop guarantee (product owner decision 1). Providers sometimes
+    // round a 1200x630 request to a square supported size; `renderImage` asks
+    // again once (Task 9) and, if the answer is still square, we store it
+    // square rather than cut pixels the concept asked for. Plan 4 publishes
+    // exactly these numbers as coverImage.width/height.
     const out = await compressPng(await solidPng(1024, 1024), 1200);
     expect({ width: out.width, height: out.height }).toEqual({ width: 1024, height: 1024 });
+  });
+
+  it("brings a large noisy image under 1 MB with the aspect ratio intact", async () => {
+    // A photograph upload — the worst case for PNG and the reason the ceiling
+    // exists at all (a quantised 1200 px photo can otherwise exceed 4 MB and
+    // Webflow 400s at publish with a message the user cannot act on).
+    const input = await noisyJpeg(3000, 2000);
+    const out = await compressPng(input, 1200);
+    expect(out.png.byteLength).toBeLessThanOrEqual(MAX_IMAGE_BYTES);
+    // 3:2 in, 3:2 out — the ceiling is met by width + palette, never by crop.
+    expect(Math.abs(out.width / out.height - 3 / 2)).toBeLessThan(0.02);
+    const meta = await sharp(out.png).metadata();
+    expect({ width: meta.width, height: meta.height }).toEqual({ width: out.width, height: out.height });
+  });
+
+  it("leaves an already-small image essentially alone — no needless quality loss", async () => {
+    // The common case must not pay for the ceiling: a 600x300 flat graphic is
+    // already well under 1 MB, so the first encode returns and no step-down
+    // loop runs.
+    const input = await solidPng(600, 300);
+    const out = await compressPng(input, 1200);
+    expect({ width: out.width, height: out.height }).toEqual({ width: 600, height: 300 });
+    expect(out.png.byteLength).toBeLessThanOrEqual(MAX_IMAGE_BYTES);
+  });
+
+  it("returns the smallest result it achieved rather than throwing when the ceiling is unreachable", async () => {
+    // Bounded attempts: if even the last width step is over the ceiling we
+    // return that result and log — a slightly-over image beats a failed draft.
+    // Forced by asking for a ceiling-busting width on noise: maxWidth is
+    // honoured downward, so this exercises the same loop with a tiny budget.
+    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const input = await noisyJpeg(4000, 3000);
+    const out = await compressPng(input, 4000);
+    expect(Buffer.isBuffer(out.png)).toBe(true);
+    expect(out.width).toBeGreaterThan(0);
+    // Either it got under the ceiling, or it warned and returned its best.
+    if (out.png.byteLength > MAX_IMAGE_BYTES) expect(consoleWarn).toHaveBeenCalled();
+    consoleWarn.mockRestore();
   });
 
   it("rejects bytes that are not an image, so an upload of a renamed file fails before Blob", async () => {
     // `uploadImageFile` (Plan 3) trusts the browser-supplied mime type; this
     // throw is what actually stops non-image bytes reaching Vercel Blob.
     await expect(compressPng(Buffer.from("not an image at all"), 1200)).rejects.toThrow();
+  });
+});
+
+describe("imageDimensions", () => {
+  it("reads the real pixel dimensions (what the cover aspect guard measures)", async () => {
+    expect(await imageDimensions(await solidPng(1200, 630))).toEqual({ width: 1200, height: 630 });
+  });
+
+  it("throws on bytes sharp cannot parse — callers decide what that means", async () => {
+    await expect(imageDimensions(Buffer.from("nope"))).rejects.toThrow();
   });
 });
 ```
@@ -1353,25 +1435,97 @@ Create `src/lib/images/compress.ts`:
 import sharp from "sharp";
 
 /**
- * The ceiling every delivered image must sit under: Webflow rehosts at most
- * 4 MB (spec §8) and LinkedIn's Images API at most 5 MB, so 4 MB is the binding
- * one. Exported for callers that want to check rather than assume — this
- * function resizes and quantises, it does not enforce a byte budget.
+ * The hard ceiling on EVERY PNG we store — generated renders and user uploads
+ * alike (product owner, 2026-08-19). One ceiling on one code path is the only
+ * way spec §8's "guaranteed by the compression pass" is true of uploads too:
+ * `uploadImageFile` (Plan 3) accepts 10 MB of JPEG and pushes it through this
+ * same function.
+ */
+export const MAX_IMAGE_BYTES = 1_000_000;
+
+/**
+ * What the destinations themselves allow: Webflow rehosts at most 4 MB
+ * (spec §8) and LinkedIn's Images API at most 5 MB. Kept exported as the
+ * external contract this module's own, much lower ceiling satisfies — nothing
+ * enforces it separately, because nothing needs to.
  */
 export const MAX_DELIVERABLE_BYTES = 4 * 1024 * 1024;
+
+/**
+ * Palette sizes tried in order before touching the width. Fewer colours is a
+ * free win on flat marketing graphics and barely visible on photographs at
+ * this scale.
+ */
+const PALETTE_STEPS = [256, 128, 64] as const;
+/** Last resort, applied only after the palette steps: shrink and re-encode. */
+const WIDTH_STEP_FACTOR = 0.85;
+const MAX_WIDTH_STEPS = 4;
+const MIN_WIDTH = 400;
+
+async function encode(input: Buffer, width: number, colors: number) {
+  const { data, info } = await sharp(input)
+    // Width only — `withoutEnlargement` keeps a small source small, and the
+    // height follows the source ratio. This is the no-crop guarantee: nothing
+    // in this file may ever pass `height`, `fit`, `extend` or `extract`.
+    .resize({ width, withoutEnlargement: true })
+    .png({ palette: true, colors, compressionLevel: 9, effort: 7 })
+    .toBuffer({ resolveWithObject: true });
+  return { png: data, width: info.width, height: info.height };
+}
 
 /**
  * The mandatory pass before every Blob `put()` (spec §7). Models emit multi-MB
  * PNGs; a resize to the target width plus a palette-quantized PNG turns the
  * Hobby plan's ~300 storable images into thousands. PNG, never WebP: LinkedIn's
  * image API rejects WebP and flat graphics quantize well.
+ *
+ * Two invariants (product owner decisions 1 and 2):
+ * - **The aspect ratio is never changed.** No crop, no extend, ever.
+ * - **The result is ≤ MAX_IMAGE_BYTES**, or the smallest of a bounded set of
+ *   attempts. It never throws for being too big: a slightly-over image beats a
+ *   failed draft, and the one caller that could produce one (a photograph
+ *   upload) still lands far under Webflow's 4 MB.
  */
 export async function compressPng(input: Buffer, maxWidth: number): Promise<{ png: Buffer; width: number; height: number }> {
-  const { data, info } = await sharp(input)
-    .resize({ width: maxWidth, withoutEnlargement: true })
-    .png({ palette: true, compressionLevel: 9, effort: 7 })
-    .toBuffer({ resolveWithObject: true });
-  return { png: data, width: info.width, height: info.height };
+  // Throws for bytes sharp cannot read — the guard that stops a renamed
+  // non-image upload from reaching Blob.
+  const meta = await sharp(input).metadata();
+  let width = Math.min(maxWidth, meta.width ?? maxWidth);
+
+  let best = await encode(input, width, PALETTE_STEPS[0]);
+  if (best.png.byteLength <= MAX_IMAGE_BYTES) return best;
+
+  for (const colors of PALETTE_STEPS.slice(1)) {
+    const candidate = await encode(input, width, colors);
+    if (candidate.png.byteLength < best.png.byteLength) best = candidate;
+    if (best.png.byteLength <= MAX_IMAGE_BYTES) return best;
+  }
+
+  for (let step = 0; step < MAX_WIDTH_STEPS; step++) {
+    const next = Math.max(MIN_WIDTH, Math.round(width * WIDTH_STEP_FACTOR));
+    if (next === width) break;
+    width = next;
+    const candidate = await encode(input, width, PALETTE_STEPS[PALETTE_STEPS.length - 1]);
+    if (candidate.png.byteLength < best.png.byteLength) best = candidate;
+    if (best.png.byteLength <= MAX_IMAGE_BYTES) return best;
+  }
+
+  console.warn(
+    `[images/compress] could not get below ${MAX_IMAGE_BYTES} bytes after ${PALETTE_STEPS.length + MAX_WIDTH_STEPS} attempts; storing ${best.png.byteLength} bytes at ${best.width}x${best.height}`
+  );
+  return best;
+}
+
+/**
+ * The real pixel dimensions of some bytes. Used by `renderImage`'s cover
+ * aspect guard (Task 9) — it lives here so `sharp` is imported in exactly one
+ * module. Throws on unparseable bytes; the guard treats that as "cannot
+ * measure" and stores as-is.
+ */
+export async function imageDimensions(input: Buffer): Promise<{ width: number; height: number }> {
+  const meta = await sharp(input).metadata();
+  if (!meta.width || !meta.height) throw new Error("Image has no readable dimensions");
+  return { width: meta.width, height: meta.height };
 }
 ```
 
@@ -1384,7 +1538,7 @@ Expected: PASS.
 
 ```bash
 git add src/lib/images/compress.ts tests/lib/images/compress.test.ts
-git commit -m "feat: sharp compression pass for image uploads"
+git commit -m "feat: sharp compression pass with a 1 MB ceiling and no aspect change"
 ```
 
 ---
@@ -1396,7 +1550,8 @@ git commit -m "feat: sharp compression pass for image uploads"
 - Test: `tests/lib/images/blob.test.ts`
 
 **Interfaces:**
-- Produces: `imagePathname({ tenantId, contentPieceId, role, slug })`, `slugForImage(text): string`, `uploadPng(pathname, png): Promise<{ url; pathname }>`, `deleteBlobs(pathnames): Promise<void>`.
+- Produces: `imagePathname({ tenantId, contentPieceId, role, slug })`, `brandAssetPathname({ tenantId, slug })`, `slugForImage(text): string`, `uploadPng(pathname, png): Promise<{ url; pathname }>`, `deleteBlobs(pathnames): Promise<void>`, `blobPathnameFromUrl(url): string`, and the upload validator shared with Plan 3: `UPLOAD_MAX_BYTES`, `UPLOAD_MIME_TYPES`, `validateUploadFile(file)`.
+- The validator lives **here**, not in Plan 3's `actions-support.ts`, because Plan 1 Task 12 needs it first (style-reference upload) and two copies of "what may be uploaded" is exactly the kind of drift the QA review's defect 8 was about. Plan 3 Task 1 re-exports these three names so its own consumers' imports are unchanged.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1408,7 +1563,16 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 vi.mock("@vercel/blob", () => ({ put: vi.fn(), del: vi.fn() }));
 
 import { put, del } from "@vercel/blob";
-import { imagePathname, slugForImage, uploadPng, deleteBlobs } from "../../../src/lib/images/blob";
+import {
+  UPLOAD_MAX_BYTES,
+  blobPathnameFromUrl,
+  brandAssetPathname,
+  deleteBlobs,
+  imagePathname,
+  slugForImage,
+  uploadPng,
+  validateUploadFile,
+} from "../../../src/lib/images/blob";
 
 beforeEach(() => {
   vi.mocked(put).mockReset();
@@ -1426,6 +1590,51 @@ describe("imagePathname", () => {
     expect(imagePathname({ tenantId: "t1", contentPieceId: null, role: "library", slug: "x" })).toBe(
       "tenants/t1/content/library/library-x.png"
     );
+  });
+});
+
+describe("brandAssetPathname", () => {
+  it("keeps brand inputs out of the content tree", () => {
+    // Style reference images are brand INPUTS, not content output: they get no
+    // content_images row and no piece, so they get their own prefix (product
+    // owner decision 3).
+    expect(brandAssetPathname({ tenantId: "t1", slug: "hero-illustration" })).toBe("tenants/t1/brand/hero-illustration.png");
+  });
+
+  it("stays inside the tenant prefix for a hostile file name", () => {
+    const path = brandAssetPathname({ tenantId: "t1", slug: slugForImage("../../../etc/passwd") });
+    expect(path.startsWith("tenants/t1/brand/")).toBe(true);
+    expect(path).not.toContain("..");
+  });
+});
+
+describe("validateUploadFile", () => {
+  it("accepts png, jpeg and webp under the cap", () => {
+    for (const type of ["image/png", "image/jpeg", "image/webp"]) {
+      expect(validateUploadFile({ type, size: 1024 })).toEqual({ ok: true });
+    }
+  });
+  it("rejects other mime types with a readable error", () => {
+    const result = validateUploadFile({ type: "image/gif", size: 10 });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/PNG, JPEG or WebP/);
+  });
+  it("rejects files over the 10 MB input cap", () => {
+    const result = validateUploadFile({ type: "image/png", size: UPLOAD_MAX_BYTES + 1 });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/10 MB/);
+    expect(UPLOAD_MAX_BYTES).toBe(10 * 1024 * 1024);
+  });
+});
+
+describe("blobPathnameFromUrl", () => {
+  it("recovers the pathname a blob URL was stored under", () => {
+    expect(blobPathnameFromUrl("https://abc.public.blob.vercel-storage.com/tenants/t1/brand/a-b12ce.png")).toBe(
+      "tenants/t1/brand/a-b12ce.png"
+    );
+  });
+  it("passes a bare pathname through unchanged", () => {
+    expect(blobPathnameFromUrl("tenants/t1/brand/a.png")).toBe("tenants/t1/brand/a.png");
   });
 });
 
@@ -1522,6 +1731,46 @@ export function imagePathname(a: { tenantId: string; contentPieceId: string | nu
 }
 
 /**
+ * `tenants/{tenantId}/brand/{slug}.png` — style reference images and any other
+ * brand INPUT. Deliberately outside the `content/` tree: these are not content
+ * output, they have no `content_images` row and no piece, and putting them in
+ * `content/library/` would make them show up as library images that cannot be
+ * regenerated (product owner decision 3, 2026-08-19).
+ */
+export function brandAssetPathname(a: { tenantId: string; slug: string }): string {
+  return `tenants/${a.tenantId}/brand/${a.slug}.png`;
+}
+
+/** What may be uploaded, in bytes and mime types. Shared with Plan 3's editor
+ * uploads — one definition, re-exported there. The 10 MB is the INPUT cap; the
+ * stored PNG is capped separately at `MAX_IMAGE_BYTES` by `compressPng`. */
+export const UPLOAD_MAX_BYTES = 10 * 1024 * 1024;
+export const UPLOAD_MIME_TYPES = ["image/png", "image/jpeg", "image/webp"] as const;
+
+export function validateUploadFile(file: { type: string; size: number }): { ok: true } | { ok: false; error: string } {
+  if (!(UPLOAD_MIME_TYPES as readonly string[]).includes(file.type)) {
+    return { ok: false, error: "Only PNG, JPEG or WebP images can be uploaded." };
+  }
+  if (file.size > UPLOAD_MAX_BYTES) {
+    return { ok: false, error: "Images must be 10 MB or smaller." };
+  }
+  return { ok: true };
+}
+
+/**
+ * The pathname a stored blob URL corresponds to. `del()` accepts either, but
+ * `deleteBlobs` takes pathnames, and the visual identity card stores reference
+ * images as URLs only (no row carries their pathname), so removal needs this.
+ */
+export function blobPathnameFromUrl(url: string): string {
+  try {
+    return new URL(url).pathname.replace(/^\/+/, "");
+  } catch {
+    return url;
+  }
+}
+
+/**
  * Uploads one already-compressed PNG. Public — these are marketing images
  * that go public at publish anyway; the random suffix is the access control
  * for unpublished drafts. Never overwrites: regeneration writes a new blob.
@@ -1569,7 +1818,23 @@ git commit -m "feat: vercel blob wrappers for image uploads"
 
 **Interfaces:**
 - Consumes: `generateImage` from `ai` (7.0.22; `node_modules/ai/dist/index.d.ts` line 7063: `generateImage({ model, prompt, n, size, ... }): Promise<GenerateImageResult>`; prompt is `string | { images: DataContent[]; text?: string; mask? }` where `DataContent = string | Uint8Array | ArrayBuffer | Buffer`; result `images[0].uint8Array`, `usage: { inputTokens?, outputTokens?, totalTokens? }`). `recordLlmUsage` from Task 3.
-- Produces: `IMAGE_MODEL_DEFAULT`, `imageModelId(spec)`, `resolveImageModel(spec)`, `RenderImageArgs`, `RenderImageDeps = { generate?: typeof generateImage; fetchImpl?: typeof fetch }`, `renderImage(args, deps?): Promise<Buffer>`.
+- Produces: `IMAGE_MODEL_DEFAULT`, `imageModelId(spec)`, `resolveImageModel(spec)`, `RenderImageArgs` (with `enforceAspect?: boolean`), `RenderImageDeps = { generate?: typeof generateImage; fetchImpl?: typeof fetch }`, `ASPECT_TOLERANCE`, `renderImage(args, deps?): Promise<Buffer>`.
+
+> **The cover aspect guard lives HERE, in the one render seam** (product owner
+> decision 1, 2026-08-19) — not in `illustratePiece` and not in Plan 3's
+> `renderAndStore`, because both of those render covers and a guard in two
+> places drifts. Every call passes `size` **and** the matching
+> `aspectRatio` from `IMAGE_ASPECT_RATIOS`; cover calls additionally pass
+> `enforceAspect: true`, which makes `renderImage` measure the returned bytes
+> and, if the shape is off by more than `ASPECT_TOLERANCE` (2%), warn and
+> re-issue the request once with the size and aspect ratio restated. If the
+> second answer is still the wrong shape it is returned **as-is** and stored
+> with its true dimensions. **Nothing crops.** Two consequences to hold in your
+> head: a guarded retry is a second billed image (it records its own
+> `image_generation` usage row, which is correct — two images were generated),
+> and Plan 2's silent per-render retry wraps this one, so a pathological cover
+> can cost up to four renders. That is the accepted worst case for never
+> shipping a cropped or mis-shaped cover.
 - Note on references: `ai` accepts `http(s)` strings as `{ type: "url" }` files (`toImageModelV4File`, `node_modules/ai/dist/index.js` line 11725), but whether the OpenAI *edits* endpoint (multipart) accepts URL files is provider-dependent. `renderImage` therefore downloads string references to bytes itself before calling `generate`, so what reaches the provider is always bytes.
 
 - [ ] **Step 1: Write the failing tests**
@@ -1603,6 +1868,7 @@ Create `tests/lib/ai/images.test.ts`:
 ```ts
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { eq } from "drizzle-orm";
+import sharp from "sharp";
 import { db } from "../../../src/db";
 import { llmUsage } from "../../../src/db/schema";
 import { seedTenant, dropTenant } from "../../helpers/fixtures";
@@ -1613,13 +1879,20 @@ process.env.OPENAI_API_KEY ??= "test-key";
 const TENANT = "Render Image Test Tenant";
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
 
-function fakeGenerate() {
+function fakeGenerate(bytes: Buffer = PNG) {
   const calls: unknown[] = [];
   const generate = vi.fn(async (opts: unknown) => {
     calls.push(opts);
-    return { images: [{ uint8Array: new Uint8Array(PNG), base64: "", mediaType: "image/png" }], usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30 } };
+    return { images: [{ uint8Array: new Uint8Array(bytes), base64: "", mediaType: "image/png" }], usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30 } };
   }) as unknown as NonNullable<RenderImageDeps["generate"]>;
-  return { generate, calls: calls as { model: { modelId: string }; prompt: unknown; size?: string }[] };
+  return { generate, calls: calls as { model: { modelId: string }; prompt: unknown; size?: string; aspectRatio?: string }[] };
+}
+
+/** A REAL png of the given shape — the aspect guard measures pixels with sharp. */
+async function realPng(width: number, height: number): Promise<Buffer> {
+  return sharp({ create: { width, height, channels: 4, background: { r: 10, g: 20, b: 30, alpha: 1 } } })
+    .png()
+    .toBuffer();
 }
 
 afterEach(async () => {
@@ -1638,6 +1911,10 @@ describe("renderImage", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0].prompt).toBe("a lighthouse");
     expect(calls[0].size).toBe("1200x630");
+    // Covers are generated wide NATIVELY, never cropped later: the request
+    // states the shape both ways so a provider honouring either one returns
+    // 1.91:1 (product owner decision 1).
+    expect(calls[0].aspectRatio).toBe("40:21");
     expect(calls[0].model.modelId).toBe("gpt-image-2");
   });
 
@@ -1681,6 +1958,62 @@ describe("renderImage", () => {
 
     const [row] = await db.select().from(llmUsage).where(eq(llmUsage.tenantId, tenant.id));
     expect(row).toMatchObject({ operation: "image_generation", model: "gpt-image-2", imageCount: 1, inputTokens: 10, totalTokens: 30 });
+  });
+
+  it("accepts a cover that came back the right shape without a second call", async () => {
+    const tenant = await seedTenant(TENANT);
+    const { generate, calls } = fakeGenerate(await realPng(1200, 630));
+
+    const png = await renderImage({ tenantId: tenant.id, prompt: "p", size: "1200x630", enforceAspect: true }, { generate });
+
+    expect(calls).toHaveLength(1);
+    expect((await sharp(png).metadata()).width).toBe(1200);
+  });
+
+  it("retries a cover ONCE when the provider returns a square, then stores the true dimensions — never a crop", async () => {
+    const tenant = await seedTenant(TENANT);
+    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const square = await realPng(1024, 1024);
+    const { generate, calls } = fakeGenerate(square);
+
+    const png = await renderImage({ tenantId: tenant.id, prompt: "p", size: "1200x630", enforceAspect: true }, { generate });
+
+    // Exactly two attempts — one retry, not a loop — and the size/aspect ratio
+    // are restated on the retry.
+    expect(calls).toHaveLength(2);
+    expect(calls[1]).toMatchObject({ size: "1200x630", aspectRatio: "40:21" });
+    // Still square, and returned untouched: no crop, no letterbox, no lie
+    // about the dimensions. Plan 4 publishes 1024x1024 for this cover.
+    const meta = await sharp(png).metadata();
+    expect({ width: meta.width, height: meta.height }).toEqual({ width: 1024, height: 1024 });
+    expect(consoleWarn).toHaveBeenCalled();
+    // Two images were generated, so two usage rows: the retry is billed.
+    expect(await db.select().from(llmUsage).where(eq(llmUsage.tenantId, tenant.id))).toHaveLength(2);
+    consoleWarn.mockRestore();
+  });
+
+  it("does not guard a body render — only covers pass enforceAspect", async () => {
+    const tenant = await seedTenant(TENANT);
+    const { generate, calls } = fakeGenerate(await realPng(1024, 1024));
+
+    await renderImage({ tenantId: tenant.id, prompt: "p", size: "1200x900" }, { generate });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].aspectRatio).toBe("4:3");
+  });
+
+  it("stores unmeasurable bytes as-is rather than failing the render", async () => {
+    // If sharp cannot read what came back, the guard has nothing to compare
+    // and must not take the render down with it.
+    const tenant = await seedTenant(TENANT);
+    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { generate, calls } = fakeGenerate(PNG); // 7 bytes, not a real PNG
+
+    const png = await renderImage({ tenantId: tenant.id, prompt: "p", size: "1200x630", enforceAspect: true }, { generate });
+
+    expect(calls).toHaveLength(1);
+    expect(png.equals(PNG)).toBe(true);
+    consoleWarn.mockRestore();
   });
 
   it("propagates a model failure and records nothing", async () => {
@@ -1737,20 +2070,29 @@ import { generateImage } from "ai";
 import type { DbClient } from "@/lib/publishing/destinations/types";
 import { recordLlmUsage } from "@/lib/ai/llm-usage";
 import { IMAGE_MODEL_DEFAULT, imageModelId, resolveImageModel } from "@/lib/ai/image-model";
-import type { ImageSize } from "@/lib/images/prompt";
+import { imageDimensions } from "@/lib/images/compress";
+import { IMAGE_ASPECT_RATIOS, type ImageSize } from "@/lib/images/prompt";
 
 export type RenderImageArgs = {
   tenantId: string;
   /** The FULL prompt, style block already included (buildImagePrompt). */
   prompt: string;
-  /** cover | body master sizes; the provider may round to its nearest supported size. */
+  /** cover | body master sizes; sent as BOTH `size` and `aspectRatio`. */
   size: ImageSize;
   /** Style references — blob URLs or bytes. Passed via prompt {images, text}. */
   referenceImages?: (string | Buffer)[];
   /** When set: image+instruction edit; `prompt` is the instruction. */
   editOf?: string | Buffer;
+  /**
+   * Covers only. Measures what came back and re-asks once if the shape is off
+   * by more than ASPECT_TOLERANCE. Never crops — see the block above.
+   */
+  enforceAspect?: boolean;
   database?: DbClient;
 };
+
+/** How far off 1.91:1 a cover may be before we ask again. 2% ≈ 1.87–1.94:1. */
+export const ASPECT_TOLERANCE = 0.02;
 
 /** Injectable for tests. `generate` is `ai`'s generateImage; `fetchImpl` downloads URL references. */
 export type RenderImageDeps = {
@@ -1765,6 +2107,27 @@ async function toBytes(ref: string | Buffer, fetchImpl: typeof fetch): Promise<B
   return Buffer.from(await res.arrayBuffer());
 }
 
+/** The shape `size` asks for, as a number. "1200x630" -> 1.904…  */
+function targetAspect(size: ImageSize): number {
+  const [width, height] = size.split("x").map(Number);
+  return width / height;
+}
+
+/**
+ * How far the bytes deviate from `wanted`, as a fraction. `null` means the
+ * bytes could not be measured at all — the guard then stands down rather than
+ * failing a render over a missing metadata read.
+ */
+async function aspectDeviation(png: Buffer, wanted: number): Promise<number | null> {
+  try {
+    const { width, height } = await imageDimensions(png);
+    return Math.abs(width / height - wanted) / wanted;
+  } catch (error) {
+    console.warn("[ai/images] could not measure the rendered image; storing it as-is:", error);
+    return null;
+  }
+}
+
 /**
  * The single seam every render goes through (spec §1): prompt + references
  * in, raw PNG bytes out, one `image_generation` usage row per call. Callers
@@ -1774,6 +2137,13 @@ async function toBytes(ref: string | Buffer, fetchImpl: typeof fetch): Promise<B
  * References are downloaded to bytes here rather than passed as URLs so the
  * provider's edits endpoint (multipart) always receives file data regardless
  * of how it treats URL files.
+ *
+ * The request states the shape twice — `size` (exact pixels) and
+ * `aspectRatio` — because gpt-image-2 supports flexible sizes and a provider
+ * that honours only one of the two still returns the right shape. With
+ * `enforceAspect` (covers), the answer is measured and re-asked for once if it
+ * is off; a still-wrong second answer is returned as-is with its true
+ * dimensions. NOTHING here or downstream crops (product owner, 2026-08-19).
  */
 export async function renderImage(args: RenderImageArgs, deps: RenderImageDeps = {}): Promise<Buffer> {
   const generate = deps.generate ?? generateImage;
@@ -1791,24 +2161,55 @@ export async function renderImage(args: RenderImageArgs, deps: RenderImageDeps =
     prompt = args.prompt;
   }
 
-  const result = await generate({ model, prompt, size: args.size, n: 1 });
+  /** One billed render: the model call plus its usage row. */
+  const renderOnce = async (): Promise<Buffer> => {
+    const result = await generate({
+      model,
+      prompt,
+      size: args.size,
+      aspectRatio: IMAGE_ASPECT_RATIOS[args.size],
+      n: 1,
+    });
 
-  await recordLlmUsage(
-    {
-      tenantId: args.tenantId,
-      operation: "image_generation",
-      model: imageModelId(spec),
-      usage: {
-        inputTokens: result.usage?.inputTokens,
-        outputTokens: result.usage?.outputTokens,
-        totalTokens: result.usage?.totalTokens,
+    await recordLlmUsage(
+      {
+        tenantId: args.tenantId,
+        operation: "image_generation",
+        model: imageModelId(spec),
+        usage: {
+          inputTokens: result.usage?.inputTokens,
+          outputTokens: result.usage?.outputTokens,
+          totalTokens: result.usage?.totalTokens,
+        },
+        imageCount: 1,
       },
-      imageCount: 1,
-    },
-    args.database
-  );
+      args.database
+    );
 
-  return Buffer.from(result.images[0].uint8Array);
+    return Buffer.from(result.images[0].uint8Array);
+  };
+
+  const first = await renderOnce();
+  if (!args.enforceAspect) return first;
+
+  const wanted = targetAspect(args.size);
+  const deviation = await aspectDeviation(first, wanted);
+  if (deviation === null || deviation <= ASPECT_TOLERANCE) return first;
+
+  console.warn(
+    `[ai/images] cover render came back off ${args.size} by ${(deviation * 100).toFixed(1)}%; asking once more with the size and aspect ratio restated`
+  );
+  const second = await renderOnce();
+  const secondDeviation = await aspectDeviation(second, wanted);
+  if (secondDeviation !== null && secondDeviation > ASPECT_TOLERANCE) {
+    // Store the truth. Cropping to 1200x630 would cut detail the concept put
+    // there on purpose, and lying about width/height would break every
+    // downstream consumer (Plan 4 publishes these numbers verbatim).
+    console.warn(
+      `[ai/images] cover render is still off ${args.size} after one retry; storing it as-is with its true dimensions (no crop)`
+    );
+  }
+  return second;
 }
 ```
 
@@ -1818,6 +2219,14 @@ export async function renderImage(args: RenderImageArgs, deps: RenderImageDeps =
 
 Run: `npx vitest run tests/lib/ai/image-model.test.ts tests/lib/ai/images.test.ts && npx tsc --noEmit`
 Expected: PASS, tsc clean.
+
+`generateImage` forwards both `size` and `aspectRatio` to the provider
+(`node_modules/ai/dist/index.js:11583-11621`), and the SDK convention for a
+setting a provider does not support is an entry in `result.warnings`, not a
+throw. Confirm that at the first real render: if `@ai-sdk/openai` instead
+*rejects* the pair, drop `aspectRatio` from the call (leaving `size`, which
+gpt-image-2 honours) and say so in the commit message — the guard below still
+does its job, it just has one fewer lever to pull.
 
 - [ ] **Step 6: Commit**
 
@@ -1838,8 +2247,9 @@ git commit -m "feat: renderImage — the one seam to the image model"
 - Consumes: `contentImages`, `imageRenders`, `contentPieces`, types from `@/db/schema`; `deleteBlobs` from Task 8; `DbClient`.
 - Produces (contract; `database: DbClient = db` is the last *positional* param, an optional `deps` object follows only where blobs are deleted):
   - `MAX_RENDER_HISTORY = 5`
-  - `createImage(a, database?)`, `addRender(a, database?, deps?)`, `setCurrentRender(imageId, renderId, database?)`, `markImageFailed(imageId, database?)`, `getImage(tenantId, imageId, database?)`, `getCoverImage(tenantId, contentPieceId, database?)`, `listImages(tenantId, filter?, database?)`, `deleteImage(tenantId, imageId, database?, deps?)`, `findImageByRenderUrl(tenantId, url, database?)`
-  - `StoreDeps = { deleteBlobs?: (pathnames: string[]) => Promise<void> }`
+  - `createImage(a, database?)`, `addRender(a, database?, deps?)`, `setCurrentRender(imageId, renderId, database?)`, `markImageFailed(imageId, database?)`, `getImage(tenantId, imageId, database?)`, `getCoverImage(tenantId, contentPieceId, database?)`, `listImages(tenantId, filter?, database?)`, `listLibraryImages(tenantId, filter?, database?)`, `deleteImage(tenantId, imageId, database?, deps?)`, `findImageByRenderUrl(tenantId, url, database?)`
+  - `StoreDeps = { deleteBlobs?: (pathnames: string[]) => Promise<void> }`, `ImageFilter`, `LIBRARY_HIDDEN_PIECE_STATUSES`
+  - **`listImages` vs `listLibraryImages`** (product owner decision 4): same filters, same tenant scope, one extra predicate. `listImages` is the editor's view and keeps a draft's own images visible while it is being written. `listLibraryImages` is what `/images` and the "From library" picker call — it drops images whose piece is still `brief` or `draft`, so a library deletion can never touch an in-progress body. A dedicated function rather than a flag: the editor's listing must be impossible to filter by accident.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1860,6 +2270,7 @@ import {
   getImage,
   getCoverImage,
   listImages,
+  listLibraryImages,
   deleteImage,
   findImageByRenderUrl,
 } from "../../../src/lib/images/store";
@@ -2050,6 +2461,58 @@ describe("getCoverImage / listImages / findImageByRenderUrl", () => {
   });
 });
 
+describe("listLibraryImages", () => {
+  // Product owner decision 4 (2026-08-19): an image enters the library only
+  // once its piece is past drafting. That is what makes deleting from the
+  // library safe — it can never rewrite a body someone is still writing.
+  async function seedImageOnPieceWithStatus(tenantId: string, status: (typeof STATUSES)[number]) {
+    const [piece] = await db
+      .insert(contentPieces)
+      .values({ tenantId, title: `Piece ${status}`, body: "B", type: "blog_post", status })
+      .returning();
+    const image = await createImage({ tenantId, contentPieceId: piece.id, role: "body", concept: status, altText: "a", sourceKind: "generated" });
+    await addRender({ ...renderArgs(image.id, 1), blobUrl: `https://blob/${status}.png`, blobPathname: `tenants/t/${status}.png` });
+    return image;
+  }
+
+  const STATUSES = ["brief", "draft", "review", "scheduled", "published", "archived"] as const;
+
+  it("excludes images of pieces still in brief or draft, and includes every later status", async () => {
+    const tenant = await seedTenant(TENANT);
+    const byStatus = new Map<string, string>();
+    for (const status of STATUSES) {
+      byStatus.set(status, (await seedImageOnPieceWithStatus(tenant.id, status)).id);
+    }
+
+    const concepts = (await listLibraryImages(tenant.id)).map((i) => i.concept).sort();
+    expect(concepts).toEqual(["archived", "published", "review", "scheduled"]);
+
+    // The editor's own listing is untouched — a draft's images stay reachable
+    // where they are being written.
+    expect(await listImages(tenant.id)).toHaveLength(STATUSES.length);
+    expect(byStatus.size).toBe(STATUSES.length);
+  });
+
+  it("always includes a standalone library image, which has no piece to be in progress", async () => {
+    const tenant = await seedTenant(TENANT);
+    const standalone = await createImage({ tenantId: tenant.id, contentPieceId: null, role: "library", concept: "compass", altText: "a", sourceKind: "generated" });
+    await addRender(renderArgs(standalone.id, 1));
+    await seedImageOnPieceWithStatus(tenant.id, "draft");
+
+    expect((await listLibraryImages(tenant.id)).map((i) => i.id)).toEqual([standalone.id]);
+  });
+
+  it("applies the same filters and tenant scope as listImages", async () => {
+    const tenant = await seedTenant(TENANT);
+    const other = await seedTenant(OTHER);
+    const published = await seedImageOnPieceWithStatus(tenant.id, "published");
+
+    expect((await listLibraryImages(tenant.id, { role: "body" })).map((i) => i.id)).toEqual([published.id]);
+    expect(await listLibraryImages(tenant.id, { role: "cover" })).toHaveLength(0);
+    expect(await listLibraryImages(other.id)).toHaveLength(0);
+  });
+});
+
 describe("deleteImage", () => {
   it("deletes rows and blobs for an unpublished piece", async () => {
     const tenant = await seedTenant(TENANT);
@@ -2089,7 +2552,7 @@ Expected: FAIL — module not found.
 Create `src/lib/images/store.ts`:
 
 ```ts
-import { and, asc, desc, eq, inArray, ne } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, ne, notInArray, or, type SQL } from "drizzle-orm";
 import { db } from "@/db";
 import {
   contentImages,
@@ -2247,15 +2710,19 @@ export async function getCoverImage(
   return { ...row.image, current: row.current };
 }
 
-export async function listImages(
+export type ImageFilter = { contentPieceId?: string; role?: ImageRole; sourceKind?: ImageSourceKind };
+
+async function selectImages(
   tenantId: string,
-  filter: { contentPieceId?: string; role?: ImageRole; sourceKind?: ImageSourceKind } = {},
-  database: DbClient = db
+  filter: ImageFilter,
+  database: DbClient,
+  extra: (SQL | undefined)[] = []
 ): Promise<(ContentImage & { current: ImageRender | null; pieceTitle: string | null })[]> {
-  const conditions = [eq(contentImages.tenantId, tenantId)];
+  const conditions: (SQL | undefined)[] = [eq(contentImages.tenantId, tenantId)];
   if (filter.contentPieceId) conditions.push(eq(contentImages.contentPieceId, filter.contentPieceId));
   if (filter.role) conditions.push(eq(contentImages.role, filter.role));
   if (filter.sourceKind) conditions.push(eq(contentImages.sourceKind, filter.sourceKind));
+  conditions.push(...extra);
 
   const rows = await database
     .select({ image: contentImages, current: imageRenders, pieceTitle: contentPieces.title })
@@ -2265,6 +2732,49 @@ export async function listImages(
     .where(and(...conditions))
     .orderBy(desc(contentImages.createdAt), desc(contentImages.id));
   return rows.map((r) => ({ ...r.image, current: r.current, pieceTitle: r.pieceTitle ?? null }));
+}
+
+/**
+ * Every image for the tenant. This is the EDITOR's view — a draft's own images
+ * are visible while the draft is being written, which is the whole point of
+ * the per-piece listing. The library uses `listLibraryImages` instead.
+ */
+export async function listImages(
+  tenantId: string,
+  filter: ImageFilter = {},
+  database: DbClient = db
+): Promise<(ContentImage & { current: ImageRender | null; pieceTitle: string | null })[]> {
+  return selectImages(tenantId, filter, database);
+}
+
+/**
+ * The piece statuses whose images are NOT in the library yet: a piece still
+ * being briefed or drafted is in flight, and its images belong to the person
+ * writing it (spec §5b, product owner decision 4, 2026-08-19). `contentPieces`
+ * has exactly six statuses (`src/db/schema.ts:89-97`) — the other four
+ * (review, scheduled, published, archived) are "completed" for this purpose.
+ */
+export const LIBRARY_HIDDEN_PIECE_STATUSES = ["brief", "draft"] as const;
+
+/**
+ * What the /images library and the "From library" picker list: standalone
+ * `role: "library"` images (which have no piece and are always shown) plus the
+ * images of pieces that are past drafting. Keeping in-flight drafts out is what
+ * makes the library safe — deleting a library image can never mutate a body
+ * someone is writing, so no library action ever has to stamp `bodyEditedAt`
+ * and freeze that draft's regeneration.
+ */
+export async function listLibraryImages(
+  tenantId: string,
+  filter: ImageFilter = {},
+  database: DbClient = db
+): Promise<(ContentImage & { current: ImageRender | null; pieceTitle: string | null })[]> {
+  return selectImages(tenantId, filter, database, [
+    or(
+      isNull(contentImages.contentPieceId),
+      notInArray(contentPieces.status, [...LIBRARY_HIDDEN_PIECE_STATUSES])
+    ),
+  ]);
 }
 
 /**
@@ -2891,15 +3401,31 @@ git commit -m "feat: derive a visual identity draft from the company website"
 ### Task 12: Visual identity card on /company
 
 **Files:**
-- Modify: `src/app/(dashboard)/company/actions.ts` — imports (lines 1–14), append two actions after `setNewsWatching` (ends line 236)
+- Modify: `src/app/(dashboard)/company/actions.ts` — imports (lines 1–14), append four actions after `setNewsWatching` (ends line 236)
 - Create: `src/app/(dashboard)/company/visual-identity-editor.tsx`
 - Modify: `src/app/(dashboard)/company/page.tsx` — imports (lines 7–19), insert a card between "Guidelines" (ends line 195) and "Change events" (starts line 202)
+- Modify: `next.config.ts` — `images.remotePatterns` for the Blob host and a raised Server Action body limit (the reference thumbnails and the upload need both; Plan 3 Task 8 re-states the same file and is then a no-op for these two keys)
 - Test: `tests/app/company-visual-identity-actions.test.ts`
 
 **Interfaces:**
-- Consumes: `parseVisualIdentity`, `DEFAULT_VISUAL_IDENTITY`, the option lists (Task 4); `deriveVisualIdentityFromPage` (Task 11); `getOrCreateCompanyProfile`; `requireSession`; `useUnsavedChanges` from `src/app/(dashboard)/unsaved-changes.tsx` (`setSectionDirty(key, dirty)`); UI: `Button`, `Input`, `Label`, `Textarea`, `Switch` (`checked`/`onCheckedChange`, as `news-toggle.tsx` uses it), `Select`/`SelectTrigger`/`SelectValue`/`SelectContent`/`SelectItem` (as `settings/calendar-form.tsx` uses them), `Card*`.
-- Produces: `saveVisualIdentity(input: unknown): Promise<{ ok: true } | { ok: false; reason: "invalid" }>`, `deriveVisualIdentityFromUrl(url: string): Promise<{ ok: true; identity: VisualIdentity } | { ok: false; reason: string }>`, `<VisualIdentityEditor initial={VisualIdentity | null} defaultWebsiteUrl={string} />`.
-- Note: reference images are URL inputs in this plan. File upload of references arrives with Plan 3's `uploadImageFile` action; the field's help text says so.
+- Consumes: `parseVisualIdentity`, `DEFAULT_VISUAL_IDENTITY`, `MAX_REFERENCE_IMAGES`, the option lists (Task 4); `deriveVisualIdentityFromPage` (Task 11); `compressPng` (Task 7); `brandAssetPathname`, `blobPathnameFromUrl`, `deleteBlobs`, `slugForImage`, `uploadPng`, `validateUploadFile` (Task 8); `getOrCreateCompanyProfile`; `requireSession`; `useUnsavedChanges` from `src/app/(dashboard)/unsaved-changes.tsx` (`setSectionDirty(key, dirty)`); UI: `Button`, `Input`, `Label`, `Textarea`, `Switch` (`checked`/`onCheckedChange`, as `news-toggle.tsx` uses it), `Select`/`SelectTrigger`/`SelectValue`/`SelectContent`/`SelectItem` (as `settings/calendar-form.tsx` uses them), `Card*`, `next/image`.
+- Produces: `saveVisualIdentity(input: unknown): Promise<{ ok: true } | { ok: false; reason: "invalid" }>`, `deriveVisualIdentityFromUrl(url: string): Promise<{ ok: true; identity: VisualIdentity } | { ok: false; reason: string }>`, `uploadStyleReference(formData: FormData): Promise<{ ok: true; styleReferenceImages: string[] } | { ok: false; error: string }>`, `removeStyleReference(url: string): Promise<{ ok: true; styleReferenceImages: string[] } | { ok: false; error: string }>`, `<VisualIdentityEditor initial={VisualIdentity | null} defaultWebsiteUrl={string} />`.
+
+> **Style reference images are UPLOADED here, in this card** (product owner
+> decision 3, 2026-08-19). Spec §2 calls them the strongest consistency
+> mechanism and the user story is *"I upload two or three of our existing blog
+> illustrations"* — a URL field does not serve someone with a file on their
+> desktop, and no Plan 3 task ever comes back for this surface. Three
+> consequences to hold:
+> - They are brand **inputs**, not content: they go to
+>   `tenants/{tenantId}/brand/{slug}.png` via `brandAssetPathname` and get
+>   **no `content_images` row**, so they never appear in the /images library
+>   and have no render history.
+> - They still go through `compressPng` + `uploadPng` like every other stored
+>   image, so the 1 MB ceiling (decision 2) covers them too.
+> - Upload and remove write the profile **immediately** (they are not part of
+>   the card's Save), so the client updates both its dirty-tracking baselines
+>   from the returned list. Everything else on the card still saves on Save.
 
 - [ ] **Step 1: Write the failing action test**
 
@@ -2909,7 +3435,7 @@ Create `tests/app/company-visual-identity-actions.test.ts`:
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../src/db";
-import { companyProfiles } from "../../src/db/schema";
+import { companyProfiles, contentImages } from "../../src/db/schema";
 import { seedTenant, dropTenant } from "../helpers/fixtures";
 import { DEFAULT_VISUAL_IDENTITY } from "../../src/lib/images/visual-identity";
 
@@ -2924,7 +3450,26 @@ vi.mock("../../src/lib/workspace/derive-visual-identity", () => ({
   deriveVisualIdentityFromPage: (...args: unknown[]) => deriveMock(...args),
 }));
 
-import { saveVisualIdentity, deriveVisualIdentityFromUrl } from "../../src/app/(dashboard)/company/actions";
+// No test may reach sharp's real work or Vercel Blob (Global Constraints).
+vi.mock("../../src/lib/images/compress", () => ({
+  compressPng: vi.fn(async (png: Buffer, maxWidth: number) => ({ png, width: maxWidth, height: 900 })),
+}));
+const deleteBlobs = vi.fn(async (_pathnames: string[]) => {});
+vi.mock("../../src/lib/images/blob", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/lib/images/blob")>();
+  return {
+    ...actual,
+    uploadPng: vi.fn(async (pathname: string) => ({ url: `https://blob.example/${pathname}`, pathname })),
+    deleteBlobs: (pathnames: string[]) => deleteBlobs(pathnames),
+  };
+});
+
+import {
+  saveVisualIdentity,
+  deriveVisualIdentityFromUrl,
+  uploadStyleReference,
+  removeStyleReference,
+} from "../../src/app/(dashboard)/company/actions";
 
 const TENANT = "Visual Identity Actions Test Tenant";
 
@@ -2984,6 +3529,93 @@ describe("deriveVisualIdentityFromUrl", () => {
     expect(deriveMock).not.toHaveBeenCalled();
   });
 });
+
+describe("uploadStyleReference", () => {
+  function form(file: File): FormData {
+    const fd = new FormData();
+    fd.set("file", file);
+    return fd;
+  }
+  const png = (name = "illustration.png") => new File([Buffer.from("PNG")], name, { type: "image/png" });
+
+  async function seedWithIdentity() {
+    const tenant = await seedTenant(TENANT);
+    currentTenantId = tenant.id;
+    await saveVisualIdentity(IDENTITY);
+    return tenant;
+  }
+
+  it("stores the file under the tenant's brand prefix and appends it to the identity", async () => {
+    const tenant = await seedWithIdentity();
+
+    const result = await uploadStyleReference(form(png("Our Hero Illustration.png")));
+
+    expect(result).toEqual({
+      ok: true,
+      styleReferenceImages: [`https://blob.example/tenants/${tenant.id}/brand/our-hero-illustration.png`],
+    });
+    const [profile] = await db.select().from(companyProfiles).where(eq(companyProfiles.tenantId, tenant.id));
+    expect(profile.visualIdentity?.styleReferenceImages).toEqual(result.ok ? result.styleReferenceImages : []);
+    // Brand inputs are not content: no content_images row is written.
+    expect(await db.select().from(contentImages).where(eq(contentImages.tenantId, tenant.id))).toHaveLength(0);
+  });
+
+  it("rejects a wrong mime type and an oversized file without storing anything", async () => {
+    const tenant = await seedWithIdentity();
+
+    const gif = await uploadStyleReference(form(new File([Buffer.from("GIF")], "a.gif", { type: "image/gif" })));
+    expect(gif.ok).toBe(false);
+    if (!gif.ok) expect(gif.error).toMatch(/PNG, JPEG or WebP/);
+
+    const huge = new File([Buffer.from("PNG")], "big.png", { type: "image/png" });
+    Object.defineProperty(huge, "size", { value: 11 * 1024 * 1024 });
+    const tooBig = await uploadStyleReference(form(huge));
+    expect(tooBig.ok).toBe(false);
+    if (!tooBig.ok) expect(tooBig.error).toMatch(/10 MB/);
+
+    const [profile] = await db.select().from(companyProfiles).where(eq(companyProfiles.tenantId, tenant.id));
+    expect(profile.visualIdentity?.styleReferenceImages).toEqual([]);
+  });
+
+  it("refuses the fifth reference with a message that says what to do", async () => {
+    // The schema allows 1–4 (Task 4, MAX_REFERENCE_IMAGES); the cap is
+    // enforced BEFORE the upload so a refused add never leaves a paid orphan.
+    await seedWithIdentity();
+    for (let i = 0; i < 4; i++) {
+      expect((await uploadStyleReference(form(png(`ref-${i}.png`)))).ok).toBe(true);
+    }
+
+    const fifth = await uploadStyleReference(form(png("ref-5.png")));
+    expect(fifth.ok).toBe(false);
+    if (!fifth.ok) expect(fifth.error).toMatch(/up to 4 .*Remove one/i);
+  });
+});
+
+describe("removeStyleReference", () => {
+  it("drops the url from the identity and deletes its blob", async () => {
+    const tenant = await seedTenant(TENANT);
+    currentTenantId = tenant.id;
+    await saveVisualIdentity(IDENTITY);
+    const fd = new FormData();
+    fd.set("file", new File([Buffer.from("PNG")], "a.png", { type: "image/png" }));
+    const added = await uploadStyleReference(fd);
+    const url = added.ok ? added.styleReferenceImages[0] : "";
+
+    expect(await removeStyleReference(url)).toEqual({ ok: true, styleReferenceImages: [] });
+    expect(deleteBlobs).toHaveBeenCalledWith([`tenants/${tenant.id}/brand/a.png`]);
+    const [profile] = await db.select().from(companyProfiles).where(eq(companyProfiles.tenantId, tenant.id));
+    expect(profile.visualIdentity?.styleReferenceImages).toEqual([]);
+  });
+
+  it("is a no-op for a url this tenant does not have", async () => {
+    const tenant = await seedTenant(TENANT);
+    currentTenantId = tenant.id;
+    await saveVisualIdentity(IDENTITY);
+
+    expect(await removeStyleReference("https://blob.example/somebody/else.png")).toEqual({ ok: true, styleReferenceImages: [] });
+    expect(deleteBlobs).not.toHaveBeenCalled();
+  });
+});
 ```
 
 - [ ] **Step 2: Run it to verify it fails**
@@ -2996,8 +3628,10 @@ Expected: FAIL — `saveVisualIdentity` is not exported.
 In `src/app/(dashboard)/company/actions.ts`, add imports after line 14:
 
 ```ts
-import { parseVisualIdentity } from "@/lib/images/visual-identity";
+import { DEFAULT_VISUAL_IDENTITY, MAX_REFERENCE_IMAGES, parseVisualIdentity } from "@/lib/images/visual-identity";
 import { deriveVisualIdentityFromPage } from "@/lib/workspace/derive-visual-identity";
+import { compressPng } from "@/lib/images/compress";
+import { blobPathnameFromUrl, brandAssetPathname, deleteBlobs, slugForImage, uploadPng, validateUploadFile } from "@/lib/images/blob";
 import type { VisualIdentity } from "@/db/schema";
 ```
 
@@ -3039,6 +3673,81 @@ export async function deriveVisualIdentityFromUrl(
   if (!trimmed) return { ok: false, reason: "empty" };
   return deriveVisualIdentityFromPage(session.user.tenantId, trimmed);
 }
+
+const RENDER_MAX_WIDTH = 1200;
+
+/**
+ * Uploads one style reference image (spec §2's strongest consistency
+ * mechanism; product owner decision 3). Unlike everything else on this card
+ * it writes immediately rather than at Save — the blob exists the moment it is
+ * uploaded, so leaving the array unsaved would strand a paid file. The client
+ * takes the returned list as its new baseline.
+ *
+ * These are brand INPUTS: `tenants/{tenantId}/brand/…`, no `content_images`
+ * row, no render history. They still go through `compressPng`, so the 1 MB
+ * ceiling applies to them like everything else we store.
+ */
+export async function uploadStyleReference(
+  formData: FormData
+): Promise<{ ok: true; styleReferenceImages: string[] } | { ok: false; error: string }> {
+  const session = await requireSession();
+  const file = formData.get("file");
+  if (!(file instanceof File)) return { ok: false, error: "Choose an image file to upload." };
+  const valid = validateUploadFile({ type: file.type, size: file.size });
+  if (!valid.ok) return { ok: false, error: valid.error };
+
+  const profile = await getOrCreateCompanyProfile(session.user.tenantId);
+  const identity = profile.visualIdentity ?? DEFAULT_VISUAL_IDENTITY;
+  // Checked BEFORE the upload: a refused add must not leave a paid orphan.
+  if (identity.styleReferenceImages.length >= MAX_REFERENCE_IMAGES) {
+    return {
+      ok: false,
+      error: `You can keep up to ${MAX_REFERENCE_IMAGES} style reference images. Remove one to add another.`,
+    };
+  }
+
+  try {
+    const { png } = await compressPng(Buffer.from(await file.arrayBuffer()), RENDER_MAX_WIDTH);
+    const slug = slugForImage(file.name.replace(/\.[a-z0-9]+$/i, ""));
+    const { url } = await uploadPng(brandAssetPathname({ tenantId: session.user.tenantId, slug }), png);
+    const styleReferenceImages = [...identity.styleReferenceImages, url];
+
+    await db
+      .update(companyProfiles)
+      .set({ visualIdentity: { ...identity, styleReferenceImages }, updatedAt: new Date() })
+      .where(eq(companyProfiles.id, profile.id));
+
+    revalidatePath("/company");
+    return { ok: true, styleReferenceImages };
+  } catch {
+    // compressPng throws for bytes that are not an image, whatever the
+    // browser claimed the mime type was.
+    return { ok: false, error: "That file couldn't be read as an image — try a PNG, JPEG or WebP." };
+  }
+}
+
+/** Removes one style reference: out of the array, and its blob deleted. */
+export async function removeStyleReference(
+  url: string
+): Promise<{ ok: true; styleReferenceImages: string[] } | { ok: false; error: string }> {
+  const session = await requireSession();
+  const profile = await getOrCreateCompanyProfile(session.user.tenantId);
+  const identity = profile.visualIdentity ?? DEFAULT_VISUAL_IDENTITY;
+  const styleReferenceImages = identity.styleReferenceImages.filter((ref) => ref !== url);
+  if (styleReferenceImages.length === identity.styleReferenceImages.length) {
+    // Not ours — say nothing happened rather than deleting a blob by URL.
+    return { ok: true, styleReferenceImages };
+  }
+
+  await db
+    .update(companyProfiles)
+    .set({ visualIdentity: { ...identity, styleReferenceImages }, updatedAt: new Date() })
+    .where(eq(companyProfiles.id, profile.id));
+  await deleteBlobs([blobPathnameFromUrl(url)]);
+
+  revalidatePath("/company");
+  return { ok: true, styleReferenceImages };
+}
 ```
 
 - [ ] **Step 4: Run the action test**
@@ -3053,10 +3762,11 @@ Create `src/app/(dashboard)/company/visual-identity-editor.tsx`:
 ```tsx
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import Image from "next/image";
 import { Loader2, Plus, Sparkles, X } from "lucide-react";
 import { toast } from "sonner";
-import { saveVisualIdentity, deriveVisualIdentityFromUrl } from "./actions";
+import { saveVisualIdentity, deriveVisualIdentityFromUrl, removeStyleReference, uploadStyleReference } from "./actions";
 import { useUnsavedChanges } from "../unsaved-changes";
 import type { ImageRule, PaletteRole, VisualIdentity } from "@/db/schema";
 import {
@@ -3090,8 +3800,9 @@ function labelOf<T extends string>(options: readonly { value: T; label: string }
  * Save — so the derive button needs no confirm dialog, unlike
  * BrandStyleImport, which overwrites on the server.
  *
- * Reference images are URLs for now; file upload of references lands with the
- * editor's upload path (Plan 3), which will reuse this list.
+ * The one exception to card-owns-its-save: style reference images upload and
+ * delete immediately (a blob exists the moment it is uploaded), so those two
+ * actions re-baseline the dirty tracking from the list they return.
  */
 export function VisualIdentityEditor({
   initial,
@@ -3109,6 +3820,8 @@ export function VisualIdentityEditor({
   const [derivedNote, setDerivedNote] = useState<{ ok: boolean; text: string } | null>(null);
   const [url, setUrl] = useState(defaultWebsiteUrl);
   const [advanced, setAdvanced] = useState(false);
+  const [uploadingReference, setUploadingReference] = useState(false);
+  const referenceInputRef = useRef<HTMLInputElement>(null);
   const { setSectionDirty } = useUnsavedChanges();
 
   const dirty = JSON.stringify(identity) !== JSON.stringify(saved);
@@ -3140,16 +3853,51 @@ export function VisualIdentityEditor({
   const addRule = (kind: ImageRule["kind"]) => update({ imageGenerationRules: [...identity.imageGenerationRules, { kind, text: "" }] });
   const removeRule = (i: number) => update({ imageGenerationRules: identity.imageGenerationRules.filter((_, j) => j !== i) });
 
-  const setReference = (i: number, value: string) => {
-    const next = [...identity.styleReferenceImages];
-    next[i] = value;
-    update({ styleReferenceImages: next });
+  /**
+   * Reference images are uploaded, not typed (product owner decision 3), and
+   * both actions persist immediately — so the returned list becomes the new
+   * baseline on BOTH `identity` and `saved`, or the card would either look
+   * dirty for a change already stored, or overwrite the stored list on the
+   * next Save.
+   */
+  const applyReferences = (styleReferenceImages: string[]) => {
+    setIdentity((v) => ({ ...v, styleReferenceImages }));
+    setSaved((v) => ({ ...v, styleReferenceImages }));
   };
-  const addReference = () => {
-    if (identity.styleReferenceImages.length >= MAX_REFERENCE_IMAGES) return;
-    update({ styleReferenceImages: [...identity.styleReferenceImages, ""] });
-  };
-  const removeReference = (i: number) => update({ styleReferenceImages: identity.styleReferenceImages.filter((_, j) => j !== i) });
+
+  async function addReferenceFiles(files: File[]) {
+    if (files.length === 0 || uploadingReference) return;
+    setUploadingReference(true);
+    try {
+      // One at a time: the action enforces the cap of MAX_REFERENCE_IMAGES and
+      // the message for the one that doesn't fit should name that, not fail
+      // the whole drop.
+      for (const file of files) {
+        const fd = new FormData();
+        fd.set("file", file);
+        const res = await uploadStyleReference(fd);
+        if (!res.ok) {
+          toast.error(res.error);
+          break;
+        }
+        applyReferences(res.styleReferenceImages);
+      }
+    } catch {
+      toast.error("Couldn't upload that image — try again");
+    } finally {
+      setUploadingReference(false);
+    }
+  }
+
+  async function removeReference(url: string) {
+    try {
+      const res = await removeStyleReference(url);
+      if (res.ok) applyReferences(res.styleReferenceImages);
+      else toast.error(res.error);
+    } catch {
+      toast.error("Couldn't remove that image — try again");
+    }
+  }
 
   async function derive() {
     const trimmed = url.trim();
@@ -3159,7 +3907,9 @@ export function VisualIdentityEditor({
     try {
       const res = await deriveVisualIdentityFromUrl(trimmed);
       if (res.ok) {
-        setIdentity(res.identity);
+        // Keep the uploaded references: they are already stored (and paid for
+        // on Blob), and a derived proposal has nothing to say about them.
+        setIdentity({ ...res.identity, styleReferenceImages: identity.styleReferenceImages });
         setMoodText(res.identity.moodWords.join(", "));
         setDerivedNote({ ok: true, text: "Proposed from your site — review below and Save to keep it." });
       } else {
@@ -3173,11 +3923,11 @@ export function VisualIdentityEditor({
   async function save() {
     setSaving(true);
     try {
-      // Drop blank reference rows and blank rules before validating; a blank
-      // URL row is a half-typed input, not an invalid identity.
+      // Drop blank rules before validating; a half-typed rule is not an
+      // invalid identity. Reference images need no cleaning — they are blob
+      // URLs written by their own actions, never typed.
       const clean: VisualIdentity = {
         ...identity,
-        styleReferenceImages: identity.styleReferenceImages.map((s) => s.trim()).filter(Boolean),
         imageGenerationRules: identity.imageGenerationRules.filter((r) => r.text.trim()),
       };
       const res = await saveVisualIdentity(clean);
@@ -3187,7 +3937,7 @@ export function VisualIdentityEditor({
         setDerivedNote(null);
         toast.success("Visual identity saved");
       } else {
-        toast.error("Check the palette (hex like #1a73e8) and reference image URLs, then try again");
+        toast.error("Check the palette (hex like #1a73e8), then try again");
       }
     } catch {
       toast.error("Couldn't save visual identity — try again");
@@ -3290,19 +4040,61 @@ export function VisualIdentityEditor({
           <div className="space-y-2">
             <Label>Style reference images</Label>
             <p className="text-xs text-muted-foreground">
-              Up to {MAX_REFERENCE_IMAGES} public image URLs of illustrations you already use; every generated image is steered toward them.
-              Uploading files here arrives with the editor&apos;s image upload.
+              Up to {MAX_REFERENCE_IMAGES} images you already use; every generated image is steered toward them. PNG, JPEG or WebP,
+              10 MB or smaller. These save as soon as they upload.
             </p>
-            {identity.styleReferenceImages.map((ref, i) => (
-              <div key={i} className="flex gap-2">
-                <Input type="url" value={ref} onChange={(e) => setReference(i, e.target.value)} placeholder="https://…/illustration.png" className="flex-1" />
-                <Button type="button" variant="ghost" size="sm" aria-label="Remove reference" onClick={() => removeReference(i)}>
-                  <X className="size-4" />
-                </Button>
-              </div>
-            ))}
-            <Button type="button" variant="outline" size="sm" onClick={addReference} disabled={identity.styleReferenceImages.length >= MAX_REFERENCE_IMAGES}>
-              <Plus /> Add reference URL
+            {identity.styleReferenceImages.length > 0 && (
+              <ul className="flex flex-wrap gap-2">
+                {identity.styleReferenceImages.map((ref) => (
+                  <li key={ref} className="group relative">
+                    <Image
+                      src={ref}
+                      alt=""
+                      width={96}
+                      height={72}
+                      className="h-[72px] w-24 rounded border object-cover"
+                      unoptimized
+                    />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      aria-label="Remove image"
+                      className="absolute right-0 top-0 bg-background/80"
+                      onClick={() => void removeReference(ref)}
+                    >
+                      <X className="size-4" />
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {/* A hidden file input behind a Button: the app has no file-input
+                primitive, and a bare <input type="file"> would be the only
+                unstyled control on the page. */}
+            <input
+              ref={referenceInputRef}
+              type="file"
+              accept="image/png,image/jpeg,image/webp"
+              multiple
+              className="hidden"
+              onChange={(e) => {
+                // Copy out of the live FileList before clearing the input, so
+                // picking the same file twice in a row still fires a change.
+                const files = Array.from(e.target.files ?? []);
+                e.target.value = "";
+                void addReferenceFiles(files);
+              }}
+            />
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => referenceInputRef.current?.click()}
+              disabled={uploadingReference || identity.styleReferenceImages.length >= MAX_REFERENCE_IMAGES}
+            >
+              {uploadingReference ? <Loader2 className="size-4 animate-spin" /> : <Plus />}
+              {uploadingReference ? "Uploading…" : "Add image"}
             </Button>
           </div>
 
@@ -3446,18 +4238,52 @@ Insert between the Guidelines card (closes `</Card>` at line 195) and the Change
       </Card>
 ```
 
-- [ ] **Step 7: Verify**
+- [ ] **Step 7: Blob host for `next/image`, and room for a 10 MB upload**
+
+The reference thumbnails render from the Blob host through `next/image`, and
+`uploadStyleReference` posts a file through a Server Action whose body limit
+defaults to 1 MB — both need `next.config.ts`. Add these two keys, keeping
+everything already in the file:
+
+```ts
+  // Reference thumbnails, covers and library images render through next/image
+  // from Vercel Blob. Store hosts are `<store-id>.public.blob.vercel-storage.com`.
+  images: {
+    remotePatterns: [{ protocol: "https", hostname: "*.public.blob.vercel-storage.com", search: "" }],
+  },
+```
+
+and inside the existing `experimental.serverActions` object:
+
+```ts
+      // Image uploads accept files up to 10 MB (UPLOAD_MAX_BYTES); the default
+      // 1 MB action body would reject them. Headroom for multipart framing.
+      bodySizeLimit: "11mb",
+```
+
+Plan 3 Task 8 Step 3 states the same two keys — once this lands, that step is
+a no-op for them and must not duplicate them.
+
+- [ ] **Step 8: Verify**
 
 Run: `npx tsc --noEmit && npm run lint && npm run build`
-Expected: all clean. If `Switch`'s `onCheckedChange` callback is typed with a second `event` argument, `(v) => update({...})` still typechecks (extra params are ignored); if `SelectValue` complains about children, mirror `calendar-form.tsx` line 50 exactly.
+Expected: all clean. If `Switch`'s `onCheckedChange` callback is typed with a second `event` argument, `(v) => update({...})` still typechecks (extra params are ignored); if `SelectValue` complains about children, mirror `calendar-form.tsx` line 50 exactly. `next build` validates the config keys, so a typo in Step 7 surfaces here.
 
-Manual verification (dev server, signed in): open /company; the Visual identity card appears after Guidelines; add three colors, pick a style, Save → toast "Visual identity saved" and the values survive a reload; Derive with the company URL fills the palette/style/mood and shows the "Proposed from your site" note without saving; navigating away with unsaved edits prompts (unsaved-changes guard); Advanced toggles the disclosure; an invalid hex shows the error toast on Save.
+Manual verification (dev server, signed in, `BLOB_READ_WRITE_TOKEN` set): open /company; the Visual identity card appears after Guidelines; add three colors, pick a style, Save → toast "Visual identity saved" and the values survive a reload; Derive with the company URL fills the palette/style/mood and shows the "Proposed from your site" note without saving; navigating away with unsaved edits prompts (unsaved-changes guard); Advanced toggles the disclosure; an invalid hex shows the error toast on Save.
 
-- [ ] **Step 8: Commit**
+Style reference images (Advanced):
+- [ ] Add image → pick a PNG → a thumbnail appears and **survives a reload without pressing Save** (it is stored on upload).
+- [ ] Adding it does not make the card dirty — navigating away straight after an upload does not prompt.
+- [ ] The X on a thumbnail removes it, and it is gone after a reload (its blob is deleted too).
+- [ ] With four thumbnails present, "Add image" is disabled; forcing a fifth through (select five files at once) shows "You can keep up to 4 style reference images. Remove one to add another."
+- [ ] A GIF shows "Only PNG, JPEG or WebP…"; a 12 MB PNG shows the 10 MB message; neither leaves a thumbnail.
+- [ ] With references saved, a later draft's images visibly follow them (checked again in Plan 2's manual pass).
+
+- [ ] **Step 9: Commit**
 
 ```bash
-git add "src/app/(dashboard)/company/actions.ts" "src/app/(dashboard)/company/visual-identity-editor.tsx" "src/app/(dashboard)/company/page.tsx" tests/app/company-visual-identity-actions.test.ts
-git commit -m "feat: visual identity card on /company"
+git add "src/app/(dashboard)/company/actions.ts" "src/app/(dashboard)/company/visual-identity-editor.tsx" "src/app/(dashboard)/company/page.tsx" next.config.ts tests/app/company-visual-identity-actions.test.ts
+git commit -m "feat: visual identity card on /company with style reference uploads"
 ```
 
 ---
@@ -3796,25 +4622,27 @@ Report which of `openai.image` / `openai.imageModel` exists (Task 1 Step 2), and
 **Spec coverage owned by this plan**
 
 - §1 Engine and routing — `image-model.ts` (Task 9) mirrors `model.ts`, `IMAGE_MODEL` env + default, direct `@ai-sdk/openai`; `renderImage` in `images.ts` is the single call surface using `generateImage` for both generation and image+instruction edits, and records usage. Deviation from §1's wording "compressed PNG out": per the shared contract, `renderImage` returns the model's raw PNG and callers run `compressPng` before `uploadPng` — kept so the compression pass sits next to the upload it protects.
-- §2 Visual brand guidelines — schema type + `visual_identity` column (Task 2); defaults, `compileStyleBlock`, readiness and validation (Task 4); the card with palette/preset/mood/allowText/advanced fields (Task 12); website bootstrap via `fetchPageText`'s `html` + LLM (Task 11) with the derive → prefill → confirm → save flow. Alt-text *policy* (≤125 chars, from concept) is prompt guidance for Plan 2's planner; nothing here to build. Reference images are URL inputs; file upload of references is handed to Plan 3 (`uploadImageFile`).
-  **Open gap (QA review defect 12):** Plan 3 as written never comes back for it —
-  it adds `uploadImageFile` but no task touches `visual-identity-editor.tsx`, so
-  the §2 user story *"I upload two or three of our existing blog illustrations
-  as references"* ships as "paste a public URL". Either add a follow-up task to
-  Plan 3 (a file input on the reference list calling
-  `uploadImageFile` with `role: "library"` and appending `result.url`), or amend
-  the story out of v1. Product owner's call.
+- §2 Visual brand guidelines — schema type + `visual_identity` column (Task 2); defaults, `compileStyleBlock`, readiness and validation (Task 4); the card with palette/preset/mood/allowText/advanced fields (Task 12); website bootstrap via `fetchPageText`'s `html` + LLM (Task 11) with the derive → prefill → confirm → save flow. Alt-text *policy* (≤125 chars, from concept) is prompt guidance for Plan 2's planner; nothing here to build.
+  **Style reference images are uploaded in this plan** (product owner decision 3,
+  resolving QA review defect 12): `uploadStyleReference` /
+  `removeStyleReference` in Task 12, storing under `tenants/{tenantId}/brand/`
+  with no `content_images` row, capped at `MAX_REFERENCE_IMAGES`. The §2 user
+  story *"I upload two or three of our existing blog illustrations as
+  references"* is therefore complete here and nothing about it is deferred to
+  Plan 3. The upload validator (`validateUploadFile`, `UPLOAD_MAX_BYTES`,
+  `UPLOAD_MIME_TYPES`) lives in `blob.ts` and Plan 3 re-exports it.
 - §3 Data model — both tables, partial unique cover index, `currentRenderId` without FK, `llm_usage.image_count` (Task 2); render history cap 5, prune-with-blob-delete unless published (Task 10, `addRender`); "body images join by blob URL" is `findImageByRenderUrl`.
 - §6 Per-type settings — `policy.ts` defaults/resolver/parser (Task 5), `image_policy` column (Task 2), Content images card + `saveImagePolicy` (Task 13). Deviation: the spec names `src/lib/content/image-policy.ts`; the shared contract fixes `src/lib/images/policy.ts`, which is what every plan imports.
-- §7 Storage — `blob.ts` pathname/put/del wrappers (Task 8), `compress.ts` sharp pass (Task 7), sizes in `prompt.ts` (Task 6), env var (Task 1). No `list()` anywhere.
+- §7 Storage — `blob.ts` pathname/put/del wrappers + the brand-asset prefix and upload validator (Task 8), `compress.ts` sharp pass with the 1 MB ceiling (Task 7), sizes and aspect ratios in `prompt.ts` (Task 6), env var (Task 1). No `list()` anywhere. **Product owner decisions 1 and 2 (2026-08-19) land here:** covers are generated at 1200×630 natively (`size` + `aspectRatio`, one measured retry in `renderImage`, Task 9) and nothing crops; every stored PNG is ≤ 1 MB, uploads included.
+- §5b Image library — `listLibraryImages` (Task 10) is the library's reader: standalone library images plus images of pieces past `brief`/`draft` (product owner decision 4). `listImages` stays the editor's unfiltered view.
 - §9 Cost tracking — `LlmOperation` additions and `imageCount` (Task 3), recorded by `renderImage` (Task 9). Structural caps live in Plan 2 (≤1 cover + bodyCap) and Task 10 (≤5 renders).
 
-**Contract additions beyond the brief** (harmless, all exported): `parseVisualIdentity`, option lists and `MAX_*` constants in `visual-identity.ts`; `parseImagePolicy`, `IMAGE_POLICY_ROWS`, `BODY_SETTING_OPTIONS`, `AUTO_BODY_CAP` in `policy.ts`; `slugForImage` in `blob.ts`; `IMAGE_SIZES`/`ImageSize`/`NO_TEXT_CLAUSE` in `prompt.ts`; `RenderImageDeps.fetchImpl`; `StoreDeps` as a trailing `deps` param on `addRender`/`deleteImage` (the `database` param stays in the contract's position, so `addRender(a)` and `addRender(a, db)` both work).
+**Contract additions beyond the brief** (harmless, all exported): `parseVisualIdentity`, option lists and `MAX_*` constants in `visual-identity.ts`; `parseImagePolicy`, `IMAGE_POLICY_ROWS`, `BODY_SETTING_OPTIONS`, `AUTO_BODY_CAP` in `policy.ts`; `slugForImage`, `brandAssetPathname`, `blobPathnameFromUrl`, `UPLOAD_MAX_BYTES`/`UPLOAD_MIME_TYPES`/`validateUploadFile` in `blob.ts`; `MAX_IMAGE_BYTES` and `imageDimensions` in `compress.ts`; `IMAGE_SIZES`/`ImageSize`/`IMAGE_ASPECT_RATIOS`/`NO_TEXT_CLAUSE` in `prompt.ts`; `ASPECT_TOLERANCE` and `RenderImageArgs.enforceAspect` in `images.ts`; `listLibraryImages`/`ImageFilter`/`LIBRARY_HIDDEN_PIECE_STATUSES` in `store.ts`; `uploadStyleReference`/`removeStyleReference` on /company; `RenderImageDeps.fetchImpl`; `StoreDeps` as a trailing `deps` param on `addRender`/`deleteImage` (the `database` param stays in the contract's position, so `addRender(a)` and `addRender(a, db)` both work).
 
 **Handed to other plans**
 
 - Plan 2: `illustration_plan` usage recording call site, `DRAFT_STEPS` `"illustrating"` step, planner + splice + `illustratePiece`, `isVisualIdentityReady` gate and `resolveImagePolicy` consumption in `generateDraftForPiece`.
-- Plan 3: `uploadImageFile` (also to be offered for style reference images on the Visual identity card), editor insert/edit/cover, `/images` library, `next.config.ts` `images.remotePatterns` for the Blob host, `.mdx-content img` CSS.
+- Plan 3: `uploadImageFile`, editor insert/edit/cover, `/images` library (reading `listLibraryImages`, and re-exporting this plan's upload validator), `.mdx-content img` CSS. `next.config.ts`'s `images.remotePatterns` and `serverActions.bodySizeLimit` are added **here** (Task 12 Step 7) because the reference thumbnails and uploads need them first.
 - Plan 4: `getCoverImage` in Webflow/LinkedIn/webhook dispatch.
 
 **Unverified until install:** exact export names/typings of `@ai-sdk/openai` (`openai.image` vs `openai.imageModel`) and `@vercel/blob` (`put` options, `del` accepting an array) — Task 1 Step 2 checks both before any code depends on them, and Tasks 8/9 say what to change if they differ.

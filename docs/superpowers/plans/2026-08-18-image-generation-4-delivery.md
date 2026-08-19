@@ -35,6 +35,18 @@ export async function getCoverImage(tenantId: string, contentPieceId: string, da
 // src/db/schema.ts (Plan 1): contentImages, imageRenders tables
 ```
 
+Two guarantees from Plan 1 this plan relies on and must not restate its own
+version of (product owner, 2026-08-19):
+
+- **`width`/`height` on a render are the file's TRUE dimensions.** Covers are
+  generated at 1200×630 natively (`renderImage` states size + aspect ratio and
+  re-asks once), and nothing anywhere crops or resizes to a shape — so a cover
+  that came back square is stored and published square. Report what is on the
+  row; never substitute 1200×630.
+- **`bytes` is ≤ 1 MB for every stored image**, uploads included
+  (`MAX_IMAGE_BYTES` in `compress.ts`). That is what makes Webflow's 4 MB
+  rehost cap and LinkedIn's 5 MB upload cap safe without a check here.
+
 ## Publish-order sanity (spec §8, checked, no change)
 
 `src/lib/publishing/dispatch.ts:12` registers `[webhookDestination, webflowDestination, linkedinDestination]` — Webflow delivers **before** LinkedIn, so by the time the LinkedIn post goes out the blog page (and its og:image, if the tenant mapped it) already exists. Native image posts don't depend on this, but keep the order; `tests/lib/publishing/dispatch.test.ts:166-170` pins it.
@@ -383,11 +395,13 @@ describe("loadCoverImagePayload", () => {
   });
 
   it("reports the render's ACTUAL dimensions, not the requested 1200x630", async () => {
-    // gpt-image models round to their own supported sizes and `compressPng`
-    // does not re-crop (Plan 1 Task 7), so a cover can legitimately be stored
-    // square. Whatever is on the row is what receivers get — pin that so a
-    // reader of the webhook payload is never told 1200x630 about a 1024x1024
-    // file. See QA review defect 4 for the open decision.
+    // Covers are generated wide and NEVER cropped (product owner decision 1,
+    // 2026-08-19): `renderImage` restates the size + aspect ratio and re-asks
+    // once, and `compressPng` only ever resizes by width. If a provider still
+    // returns a square, that square is stored with its true dimensions rather
+    // than cut — so whatever is on the row is exactly what receivers get. Pin
+    // that: a reader of the webhook payload must never be told 1200x630 about
+    // a 1024x1024 file.
     const { tenant, piece } = await seedPiece();
     const [image] = await db
       .insert(contentImages)
