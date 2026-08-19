@@ -1,4 +1,4 @@
-export type DraftStepKey = "collecting" | "preparing" | "generating" | "reviewing" | "saving";
+export type DraftStepKey = "collecting" | "preparing" | "generating" | "reviewing" | "illustrating" | "saving";
 
 export type DraftProgressEvent =
   | { type: "step"; key: DraftStepKey; status: "start" | "done" }
@@ -46,6 +46,13 @@ export const DRAFT_STEPS: ProgressStep<DraftStepKey>[] = [
   // of a wait that was already as long as it was going to be — and a failure
   // out of the review would have been held behind that floor.
   { key: "reviewing", label: "Reviewing against brand guidelines", slow: true },
+  // The illustration agent (spec 2026-08-18 §4): one text-model plan call,
+  // then a cover render and the body renders in parallel — two image
+  // round trips, ~30-60 s. Blocks draft readiness by design (the body is one
+  // text column with hand-edit-freeze semantics; splicing images in after
+  // save would race the human's first edit). `slow` for the same reason as
+  // the two above: nothing here is bookkeeping.
+  { key: "illustrating", label: "Creating images", slow: true },
   { key: "saving", label: "Saving the draft" },
 ];
 

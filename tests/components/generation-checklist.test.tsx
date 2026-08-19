@@ -112,6 +112,7 @@ describe("stepsToAnnounce", () => {
       "preparing",
       "generating",
       "reviewing",
+      "illustrating",
       "saving",
     ]);
   });

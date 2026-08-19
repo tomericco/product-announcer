@@ -251,9 +251,11 @@ describe("usePacedStatuses — the model call is never paced", () => {
     // a second model call, not bookkeeping, and pacing it charged an 800ms
     // floor against a wait that had already happened. The membership test is
     // "is this step a model call", not "is it the slowest one".
+    // "illustrating" is the image plan + renders (src/lib/images/illustrate.ts) — two model round trips, the longest wait in the list.
     expect(DRAFT_STEPS.filter((step) => step.slow).map((step) => step.key)).toEqual([
       "generating",
       "reviewing",
+      "illustrating",
     ]);
     expect(PROPOSAL_STEPS.filter((step) => step.slow).map((step) => step.key)).toEqual([
       "proposing",
