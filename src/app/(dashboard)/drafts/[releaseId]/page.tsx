@@ -322,7 +322,7 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
                 otherwise have no heading at all — give screen readers a real h1. */}
             <h1 className="sr-only">{update.title || "Untitled draft"}</h1>
             <DraftTitleField defaultValue={update.title} />
-            <DraftBodyEditor defaultValue={update.body} />
+            <DraftBodyEditor defaultValue={update.body} contentPieceId={update.id} />
             <div className="flex items-center gap-3 pt-4">
               <RejectButton />
               <SaveChangesButton />

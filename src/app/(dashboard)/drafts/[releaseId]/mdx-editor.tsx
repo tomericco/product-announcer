@@ -17,6 +17,7 @@ import {
 import { useAgentEdit, type EditorOps } from "./agent-edit-context";
 import SharedMdxEditor from "@/components/markdown/mdx-editor";
 import { ViewModeBridge } from "@/components/markdown/view-mode-bridge";
+import { GenerateImageButton } from "./generate-image-button";
 
 /**
  * Registers imperative editor ops (used by the Ask AI modal) into the agent-edit
@@ -249,9 +250,11 @@ function ExtractSelectionButton() {
 export default function MdxEditor({
   markdown,
   onChange,
+  contentPieceId,
 }: {
   markdown: string;
   onChange: (md: string, initialMarkdownNormalize: boolean) => void;
+  contentPieceId: string;
 }) {
   // The bridges need this ref, and they're built here rather than inside the
   // shared editor, so ownership of the ref sits here too.
@@ -275,6 +278,7 @@ export default function MdxEditor({
           <ExtractSelectionButton />
         </>
       }
+      insertExtras={<GenerateImageButton contentPieceId={contentPieceId} />}
     />
   );
 }

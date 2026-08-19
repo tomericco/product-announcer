@@ -6,7 +6,7 @@ import { useUnsavedChanges } from "../../unsaved-changes";
 
 const MdxEditor = dynamic(() => import("./mdx-editor"), { ssr: false });
 
-export function DraftBodyEditor({ defaultValue }: { defaultValue: string }) {
+export function DraftBodyEditor({ defaultValue, contentPieceId }: { defaultValue: string; contentPieceId: string }) {
   const [body, setBody] = useState(defaultValue);
   const { setSectionDirty, cleanToken } = useUnsavedChanges();
   // What the body should compare against, and the newest value to compare.
@@ -28,6 +28,7 @@ export function DraftBodyEditor({ defaultValue }: { defaultValue: string }) {
       <input type="hidden" name="body" value={body} />
       <MdxEditor
         markdown={body}
+        contentPieceId={contentPieceId}
         onChange={(md, initialMarkdownNormalize) => {
           setBody(md);
           latest.current = md;

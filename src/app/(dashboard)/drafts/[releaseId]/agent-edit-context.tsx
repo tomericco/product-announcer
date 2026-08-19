@@ -54,7 +54,9 @@ export type EditorOps = {
    * Restores the captured caret and inserts markdown there; resolves with the
    * editor's authoritative body AFTER Lexical commits (same deferred-commit
    * caveat as `applyEdit`). Resolves with the unchanged body when nothing was
-   * captured.
+   * captured. If the captured point was a non-collapsed selection rather than
+   * a caret, the insert replaces that selection's content — the same
+   * behavior `applyEdit` has for `"selection"` mode, not a point insert.
    */
   insertAtCursor: (markdown: string) => Promise<string>;
   /**

@@ -340,6 +340,15 @@
   transform: translate(-2px, -2px);
 }
 
+/* The Generate-image panel hangs below the insert surface, left-aligned with
+   it. It is a child of the surface on purpose (see generate-image-button.tsx)
+   so the surface's "focus is inside me" check keeps both open. */
+.mdx-surface-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+}
+
 /* MDXEditor's content-editable root (._contentEditable_*) ships
    `padding: var(--spacing-3)` (0.75rem) in its own lazily-loaded stylesheet.
    Our contentEditableClassName ("mdx-content …") lands on that same element,
