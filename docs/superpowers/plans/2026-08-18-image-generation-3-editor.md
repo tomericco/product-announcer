@@ -33,7 +33,7 @@
 - Migrations: this plan adds **no** schema and must generate **no** migration. If `npm run db:generate` ever produces a file while working on this plan, something drifted — investigate rather than commit it.
 - Test fixtures: use `seedTenant`, `dropTenant`, `seedVisualIdentity`, `READY_VISUAL_IDENTITY`, `seedContentPiece`, `seedContentImage` from `tests/helpers/fixtures.ts` (Plan 1 Task 10b). The test bodies below still spell out their local `seed()` wrappers for readability, but those wrappers must delegate to the shared helpers rather than re-implementing the inserts.
 - Every DB-backed test file needs a tenant name **unique to that file** — there is no truncation between tests, only `dropTenant(name)` cascades (`tests/helpers/fixtures.ts:5-10`). Where a test needs a second tenant, give it its own `OTHER_NAME` constant and drop both; do not insert two tenants under the same name.
-- `npm run typecheck && npm run lint && npm run build` are the gates for every task touching a route or component. The dev preview sits behind an OAuth wall — the manual checklist (Task 11) is run by the user.
+- `npm run typecheck && npm run lint && npm run build` are the gates for every task touching a route or component. The dev preview sits behind an OAuth wall — the manual checklist (Task 12) is run by the user.
 - Commit after every task; message style: lowercase imperative, `feat:`/`fix:`/`test:`/`docs:` prefix, no Co-Authored-By needed.
 
 - **User-facing naming (enforced across all four plans).** Every string a user reads must use these words. Code identifiers (`illustratePiece`, `illustration_plan`, `imageRenders`, step key `illustrating`) deliberately keep their internal names — this table governs UI copy only.
@@ -1975,7 +1975,7 @@ git commit -m "feat: image server actions for the draft editor and cover"
 - Modify: `src/components/markdown/mdx-editor.tsx` — `EditorSurfaces` props/insert surface (lines 174-226), `MdxEditor` props (lines 228-258), the `imagePlugin()` call (line 293), the `toolbarContents` render (line 301).
 - Modify: `src/app/(dashboard)/drafts/[releaseId]/agent-edit-context.tsx` — `EditorOps` type (lines 26-47).
 - Modify: `src/app/(dashboard)/drafts/[releaseId]/mdx-editor.tsx` — `AgentEditBridge` ops object (lines 36-139), imports (lines 4-15).
-- Test: none new — `tests/components/new-brief-editor.test.tsx:55` mocks the editor module and nothing under `tests/components` renders `AgentEditBridge`, so the bridge stays covered by typecheck + the manual checklist (Task 11), exactly as `applyEdit`/`removeSelection` are today.
+- Test: none new — `tests/components/new-brief-editor.test.tsx:55` mocks the editor module and nothing under `tests/components` renders `AgentEditBridge`, so the bridge stays covered by typecheck + the manual checklist (Task 12), exactly as `applyEdit`/`removeSelection` are today.
 
 **Interfaces:**
 - Consumes: `imagePlugin` params `imageUploadHandler?: (image: File) => Promise<string>` and `EditImageToolbar?: (() => JSX.Element) | React.FC` — verified in `node_modules/@mdxeditor/editor/dist/index.d.ts:1524-1534`; the toolbar props MDXEditor passes are `{ nodeKey, imageSource, initialImagePath, title, alt, width?, height? }` (`dist/index.d.ts:1131-1139`, a non-exported `declare interface`, rendered by `dist/plugins/image/ImageEditor.js` whenever the editor isn't read-only). `MDXEditorMethods.getMarkdown/insertMarkdown` (`dist/index.d.ts:2288-2318`). `insertMarkdown$` reads `$getSelection()` in the active editor and works with focus elsewhere (`dist/plugins/core/index.js:158-181`), which is what makes the restore-then-insert pattern below valid. `ImageNode` (`getSrc()/setSrc()`, `dist/index.d.ts:1473-1512`) and `$nodesOfType` from `lexical` (`node_modules/lexical/dist/LexicalUtils.d.ts:196`; `lexical` is a hoisted transitive dependency the drafts wrapper already imports from, `mdx-editor.tsx:7-15`).
@@ -3201,7 +3201,7 @@ git commit -m "feat: image uploads from the editor, blob host for next/image, im
 **Files:**
 - Create: `src/app/(dashboard)/drafts/[releaseId]/cover-panel.tsx` (`"use client"`)
 - Modify: `src/app/(dashboard)/drafts/[releaseId]/page.tsx` — imports (after line 32), data loads (after the LinkedIn loads, lines 240-241), and the editor branch: render `<CoverPanel>` right before `<ToastForm` (line 299) so it sits above the title without nesting inside the save form.
-- Not modified: `src/app/(dashboard)/board/card.tsx`. The board card thumbnail (spec §3 "read by … the board card thumbnail") needs `BoardCard` (`src/lib/content/board.ts:49-68`) to carry a `coverUrl`, a join in the board query and its tests — a self-contained follow-up, noted in Self-review, not squeezed into a UI task.
+- Not modified: `src/app/(dashboard)/board/card.tsx`. The cover on the board card is spec §3's third reader of the same row and it needs the board query changed, not this panel — it is **Task 10**, immediately after this one.
 
 **Interfaces:**
 - Consumes: `getOrCreateCompanyProfile` (`src/lib/workspace/company-profile.ts:5`), `resolveImagePolicy(policy, type)` (`src/lib/images/policy.ts`), `getCoverImage` (store), `generateCover`, `removeCover`, `uploadImageFile`, `suggestImagePrompt` (Task 4), `next/image` (host allowed in Task 8), `DropdownMenu*` (`src/components/ui/dropdown-menu.tsx:252-268`, trigger via `render` as in `layout.tsx:43`), `Dialog*` (`src/components/ui/dialog.tsx:150-161`), `useRouter().refresh` — the actions `revalidatePath` the page but the panel also keeps local state so the new cover shows the moment the action returns.
@@ -3221,7 +3221,7 @@ git commit -m "feat: image uploads from the editor, blob host for next/image, im
 >    through `PickerImage` (preferred), or omit the field and let the server
 >    round-trip supply it on refresh. Never display a guessed provenance.
 
-Behaviour (spec §5 Cover): no cover → **Add cover** → menu **Generate from post** → **Write a prompt** (dialog pre-filled: the previous concept when changing, otherwise `promptSeed` — the concept of a failed agent cover (spec §4: "the Add-cover menu pre-filled with the failed prompt") — otherwise `suggestImagePrompt({ role: "cover" })`; never empty) → **Upload**. A cover shows via `next/image` (1200×630) with hover **Change** (reopens the menu with the previous concept) / **Alt text** (a small dialog editing the cover row's alt — the cover is not in the markdown, so unlike body images this is its only alt edit path, and this alt is what Plan 4 publishes) / **Remove** (a question-form confirm Dialog first: Remove deletes the row, its version history AND its blobs — real data loss, so it follows the app's destructive-confirm pattern, unlike Notion's instant remove where nothing is lost). Rendered only when the type's policy has `cover: true` (spec §6). Task 10 adds **From library** to this menu.
+Behaviour (spec §5 Cover): no cover → **Add cover** → menu **Generate from post** → **Write a prompt** (dialog pre-filled: the previous concept when changing, otherwise `promptSeed` — the concept of a failed agent cover (spec §4: "the Add-cover menu pre-filled with the failed prompt") — otherwise `suggestImagePrompt({ role: "cover" })`; never empty) → **Upload**. A cover shows via `next/image` (1200×630) with hover **Change** (reopens the menu with the previous concept) / **Alt text** (a small dialog editing the cover row's alt — the cover is not in the markdown, so unlike body images this is its only alt edit path, and this alt is what Plan 4 publishes) / **Remove** (a question-form confirm Dialog first: Remove deletes the row, its version history AND its blobs — real data loss, so it follows the app's destructive-confirm pattern, unlike Notion's instant remove where nothing is lost). Rendered only when the type's policy has `cover: true` (spec §6). Task 11 adds **From library** to this menu.
 
 - [ ] **Step 1: The panel**
 
@@ -3601,7 +3601,540 @@ git commit -m "feat: cover image panel above the draft title"
 
 ---
 
-### Task 10: Image library — nav entry, `/images`, detail, generate, delete, picker
+### Task 10: The cover on the board card
+
+**Files:**
+- Modify: `src/lib/images/store.ts` — one new export, `getCoverImagesForPieces`, next to `getCoverImage` (Plan 1; the file is already modified by Task 3, so this is the second and last change this plan makes to it). Nothing existing is redefined.
+- Modify: `src/lib/content/board.ts` — `BoardCard` (lines 49-68) gains `cover`; `readBoard` (lines 95-188) fills it in one query after the published slice (line 185).
+- Modify: `src/app/(dashboard)/board/card.tsx` — `PieceCardItem`'s `<Card size="sm">` (lines 350-352) gets the image as its first child. `BriefCardItem` (lines 199-254) is **not** touched: a brief has no piece and therefore no cover row.
+- Verify, do not edit: `next.config.ts` — `images.remotePatterns` must already allow `*.public.blob.vercel-storage.com` (added by Plan 1 Task 12 Step 7, re-checked by Task 8 Step 3). This task adds no config; it only fails loudly if that host is missing, because `next/image` throws at render for an unconfigured host and the board would go blank rather than degrade.
+- Modify: `tests/components/board-briefs.test.tsx` — its `pieceCard` fixture (lines 190-205) builds a full `BoardCard` literal, so the new required field lands on it too. `tsconfig.json` includes `**/*.tsx` (lines 25-32), so this is a typecheck failure, not a soft one.
+- Test: `tests/lib/images/store-covers-for-pieces.test.ts` (create), `tests/lib/content/board.test.ts` (modify — the existing `readBoard` suite), `tests/components/board-card-cover.test.tsx` (create).
+
+**Interfaces:**
+- Consumes: `contentImages`, `imageRenders` (`@/db/schema`), `DbClient` (`src/lib/publishing/destinations/types.ts:11`), `db` — all already imported by `store.ts`, as are `and`, `eq` and `inArray`. `Card` / `CardContent` (`src/components/ui/card.tsx:5-22` — `has-[>img:first-child]:pt-0` and `*:[img:first-child]:rounded-t-xl` are both on the `Card` root at line 16, and both select a **direct first-child `<img>`**). `next/image`, which renders a bare `<img>` with no wrapper element (`node_modules/next/dist/client/image-component.js:283-296` — the `<img>` is the first child of a Fragment, so it stays `Card`'s first DOM child). Test fixtures `seedTenant`, `dropTenant`, `seedContentPiece`, `seedContentImage` (`tests/helpers/fixtures.ts`, Plan 1 Task 10b).
+- Produces:
+  ```ts
+  // src/lib/images/store.ts
+  export async function getCoverImagesForPieces(
+    tenantId: string,
+    contentPieceIds: string[],
+    database?: DbClient
+  ): Promise<Map<string, { url: string; alt: string }>>;
+
+  // src/lib/content/board.ts — BoardCard gains one field:
+  cover: { url: string; alt: string } | null;
+  ```
+
+**The N+1, and which way it is answered.** The board draws every column at once — up to `PUBLISHED_COLUMN_LIMIT` (20) published cards plus the whole of four uncapped columns — so a per-card `getCoverImage(tenantId, pieceId)` would be one round trip per card. **Chosen: a batch helper in `store.ts`, called once by `readBoard`**, not a join written into the board query: `store.ts` already owns the rule for *which row is a piece's cover* (`getCoverImage`'s `role = "cover"` + `currentRenderId` join), and a second copy of that rule inside `src/lib/content/board.ts` is exactly the drift Task 3's shared-blob guard exists to prevent. The board ends at three queries regardless of card count.
+
+Behaviour (spec §3 — the cover row is "read by the draft page, publish dispatch, and the board card thumbnail"; this task is the third reader):
+- A piece with a ready cover shows it at the top of its card, flush to the card's edges, above the drag handle / title row.
+- **Nothing crops.** Product owner decision 1 forbids it everywhere, so the image is sized `1200×630` with `h-auto w-full` — the browser keeps the native 1.91:1 and reserves that box from the width/height attributes before the bytes land, so a card does not jump when its cover loads. No `object-cover`, no fixed-height frame, no letterbox.
+- A piece with **no** cover renders no `<img>` at all, and its card is byte-for-byte what it is today: `Card`'s `pt` and rounding rules are `has-[…]`/`*:` selectors that simply do not match, so there is no empty frame, no placeholder and no reserved gap. Most pieces are in this state — product updates and social posts have `cover: false` in their policy (spec §6), and so does any piece whose cover generation failed (a `role:"cover"` row with `currentRenderId === null`).
+
+**Alt text: `alt=""` on the board card, and the stored alt still travels with the card.** Spec §2 — "Decorative images get empty alt". On this surface the cover *is* decorative: it sits directly above the piece's linked title, which is the card's accessible name, so announcing the cover's description first would make a screen-reader pass over the board read every artwork before every title. The row's `altText` is still what Plan 4 publishes and what the cover panel edits (Task 9) — it is decorative *here*, not in general, which is why `BoardCard.cover` carries it: the query stays neutral and the view makes the call, one line from the comment that explains it.
+
+- [ ] **Step 1: Write the failing test for the batch read**
+
+Create `tests/lib/images/store-covers-for-pieces.test.ts`:
+
+```ts
+import { describe, it, expect, afterEach } from "vitest";
+import { db } from "../../../src/db";
+import { getCoverImage, getCoverImagesForPieces } from "../../../src/lib/images/store";
+import { dropTenant, seedContentImage, seedContentPiece, seedTenant } from "../../helpers/fixtures";
+
+// Unique to this file — there is no truncation between tests, only
+// dropTenant's cascade (tests/helpers/fixtures.ts:5-10).
+const TENANT = "Board Cover Batch Test Tenant";
+const OTHER_TENANT = "Board Cover Batch Other Test Tenant";
+
+afterEach(async () => {
+  await dropTenant(TENANT);
+  await dropTenant(OTHER_TENANT);
+});
+
+describe("getCoverImagesForPieces", () => {
+  it("returns one entry per piece that has a cover with a current render", async () => {
+    const tenant = await seedTenant(TENANT);
+    const a = await seedContentPiece(tenant.id, { title: "A" });
+    const b = await seedContentPiece(tenant.id, { title: "B" });
+    const bare = await seedContentPiece(tenant.id, { title: "Bare" });
+    const coverA = await seedContentImage({
+      tenantId: tenant.id,
+      contentPieceId: a.id,
+      role: "cover",
+      overrides: { altText: "Lighthouse beam over a grid of tiles" },
+    });
+    const coverB = await seedContentImage({ tenantId: tenant.id, contentPieceId: b.id, role: "cover" });
+
+    const covers = await getCoverImagesForPieces(tenant.id, [a.id, b.id, bare.id], db);
+    expect(covers.get(a.id)).toEqual({ url: coverA.render!.blobUrl, alt: "Lighthouse beam over a grid of tiles" });
+    expect(covers.get(b.id)).toEqual({ url: coverB.render!.blobUrl, alt: coverB.image.altText });
+    // A piece with no cover row is ABSENT, not present-and-null: the board
+    // turns a miss into `cover: null` itself.
+    expect(covers.has(bare.id)).toBe(false);
+  });
+
+  it("skips a cover row whose generation never produced a render", async () => {
+    const tenant = await seedTenant(TENANT);
+    const piece = await seedContentPiece(tenant.id);
+    // Exactly the failed-agent-cover state Task 9's `coverPromptSeed` reads:
+    // the row exists, `currentRenderId` is null. There is nothing to draw.
+    await seedContentImage({ tenantId: tenant.id, contentPieceId: piece.id, role: "cover", withRender: false });
+
+    expect(await getCoverImagesForPieces(tenant.id, [piece.id], db)).toEqual(new Map());
+  });
+
+  it("ignores body and library images", async () => {
+    const tenant = await seedTenant(TENANT);
+    const piece = await seedContentPiece(tenant.id);
+    await seedContentImage({ tenantId: tenant.id, contentPieceId: piece.id, role: "body" });
+    await seedContentImage({ tenantId: tenant.id, contentPieceId: null, role: "library" });
+
+    expect(await getCoverImagesForPieces(tenant.id, [piece.id], db)).toEqual(new Map());
+  });
+
+  it("is scoped to the tenant and short-circuits an empty id list", async () => {
+    const mine = await seedTenant(TENANT);
+    const other = await seedTenant(OTHER_TENANT);
+    const theirs = await seedContentPiece(other.id, { title: "Theirs" });
+    await seedContentImage({ tenantId: other.id, contentPieceId: theirs.id, role: "cover" });
+
+    // The id is real, the tenant is not the owner — the row must not leak.
+    expect(await getCoverImagesForPieces(mine.id, [theirs.id], db)).toEqual(new Map());
+    expect(await getCoverImagesForPieces(mine.id, [], db)).toEqual(new Map());
+  });
+
+  it("agrees with getCoverImage — one rule for what a piece's cover is, not two", async () => {
+    const tenant = await seedTenant(TENANT);
+    const piece = await seedContentPiece(tenant.id);
+    await seedContentImage({ tenantId: tenant.id, contentPieceId: piece.id, role: "cover" });
+
+    const single = await getCoverImage(tenant.id, piece.id, db);
+    const batched = await getCoverImagesForPieces(tenant.id, [piece.id], db);
+    expect(batched.get(piece.id)).toEqual({ url: single!.current!.blobUrl, alt: single!.altText });
+  });
+});
+```
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run: `npx vitest run tests/lib/images/store-covers-for-pieces.test.ts`
+Expected: FAIL — `getCoverImagesForPieces` is not exported from `store.ts`.
+
+- [ ] **Step 3: Implement the batch read**
+
+In `src/lib/images/store.ts`, directly after `getCoverImage` (and before `export type ImageFilter`):
+
+```ts
+/**
+ * Every one of these pieces' covers in a single query. Same rule as
+ * `getCoverImage` — the `role: "cover"` row, resolved through
+ * `currentRenderId` — batched because the board asks for a whole screen of
+ * pieces at once and calling `getCoverImage` per card would be an N+1 against
+ * these same two tables.
+ *
+ * An `innerJoin`, deliberately: a cover row whose generation never landed has
+ * `currentRenderId = null` and nothing to draw, so it must be absent from the
+ * map rather than present with a null url. Pieces with no cover at all are
+ * absent for the same reason — the caller decides what a miss renders as.
+ */
+export async function getCoverImagesForPieces(
+  tenantId: string,
+  contentPieceIds: string[],
+  database: DbClient = db
+): Promise<Map<string, { url: string; alt: string }>> {
+  // The board hits this with an empty list whenever every column is empty;
+  // there is no query worth sending for it.
+  if (contentPieceIds.length === 0) return new Map();
+
+  const rows = await database
+    .select({
+      contentPieceId: contentImages.contentPieceId,
+      altText: contentImages.altText,
+      blobUrl: imageRenders.blobUrl,
+    })
+    .from(contentImages)
+    .innerJoin(imageRenders, eq(imageRenders.id, contentImages.currentRenderId))
+    .where(
+      and(
+        eq(contentImages.tenantId, tenantId),
+        eq(contentImages.role, "cover"),
+        inArray(contentImages.contentPieceId, contentPieceIds)
+      )
+    );
+
+  const covers = new Map<string, { url: string; alt: string }>();
+  for (const row of rows) {
+    // `contentPieceId` is nullable on the table (library images have none);
+    // the `inArray` above already excludes nulls, so this only narrows the type.
+    if (!row.contentPieceId) continue;
+    covers.set(row.contentPieceId, { url: row.blobUrl, alt: row.altText });
+  }
+  return covers;
+}
+```
+
+- [ ] **Step 4: Run it to verify it passes**
+
+Run: `npx vitest run tests/lib/images/store-covers-for-pieces.test.ts`
+Expected: PASS.
+
+- [ ] **Step 5: Write the failing test for the board query**
+
+Append to `tests/lib/content/board.test.ts`, inside the existing `describe("readBoard", …)` block (after "carries the fields a card renders", which is the same kind of assertion). Add `seedContentImage` to the fixtures import on line 16:
+
+```ts
+import { seedTenant, dropTenant, seedContentImage } from "../../helpers/fixtures";
+```
+
+```ts
+  it("carries a piece's cover, and null for a piece without one", async () => {
+    const tenant = await seedTenant(TENANT);
+    const covered = await seedPiece(tenant.id, { title: "Covered", status: "draft" });
+    await seedPiece(tenant.id, { title: "Bare", status: "draft" });
+    const { image, render } = await seedContentImage({
+      tenantId: tenant.id,
+      contentPieceId: covered.id,
+      role: "cover",
+      overrides: { altText: "Lighthouse beam over a grid of tiles" },
+    });
+
+    const board = await readBoard(tenant.id, db);
+    // Spec §3: the cover row is read by the draft page, publish dispatch and
+    // the board card. This is the board's half.
+    expect(board.draft.find((c) => c.title === "Covered")?.cover).toEqual({
+      url: render!.blobUrl,
+      alt: image.altText,
+    });
+    // Most pieces have no cover — product updates and social posts don't get
+    // one at all (spec §6). Their cards must render exactly as before.
+    expect(board.draft.find((c) => c.title === "Bare")?.cover).toBeNull();
+  });
+
+  it("leaves the cover null for a body image and for a cover that never rendered", async () => {
+    const tenant = await seedTenant(TENANT);
+    const bodyOnly = await seedPiece(tenant.id, { title: "Body only", status: "review" });
+    const failedCover = await seedPiece(tenant.id, { title: "Failed cover", status: "review" });
+    await seedContentImage({ tenantId: tenant.id, contentPieceId: bodyOnly.id, role: "body" });
+    await seedContentImage({
+      tenantId: tenant.id,
+      contentPieceId: failedCover.id,
+      role: "cover",
+      withRender: false,
+    });
+
+    const board = await readBoard(tenant.id, db);
+    // A body image is not a cover, and a failed cover has nothing to draw —
+    // neither may put a broken image on a card.
+    expect(board.review.map((c) => c.cover)).toEqual([null, null]);
+  });
+
+  it("covers the published column AFTER it is capped, not the pieces the cap drops", async () => {
+    const tenant = await seedTenant(TENANT);
+    for (let i = 0; i < PUBLISHED_COLUMN_LIMIT + 2; i++) {
+      const piece = await seedPiece(tenant.id, { title: `P${i}`, status: "published" });
+      await seedContentImage({ tenantId: tenant.id, contentPieceId: piece.id, role: "cover" });
+    }
+    const board = await readBoard(tenant.id, db);
+    // Every card the board actually returns has its cover; the two the cap
+    // dropped were never looked up. (`toHaveLength` is the cap's own test —
+    // this one is about the covers being attached to the survivors.)
+    expect(board.published).toHaveLength(PUBLISHED_COLUMN_LIMIT);
+    expect(board.published.every((c) => c.cover !== null)).toBe(true);
+  });
+```
+
+- [ ] **Step 6: Run it to verify it fails**
+
+Run: `npx vitest run tests/lib/content/board.test.ts`
+Expected: FAIL — `cover` does not exist on `BoardCard` (typecheck-level in the test file, and `undefined` at runtime).
+
+- [ ] **Step 7: Carry the cover on the board query**
+
+In `src/lib/content/board.ts`, add the import beside the existing ones (after line 5):
+
+```ts
+import { getCoverImagesForPieces } from "@/lib/images/store";
+```
+
+Add the field to `BoardCard`, after `createdAt` (line 67):
+
+```ts
+  // The piece's `role:"cover"` image, or null — spec §3's third reader of
+  // that row, after the draft page and publish dispatch. Filled by one
+  // batched query per board (see the bottom of readBoard), never by a
+  // per-card read. `alt` is the row's stored alt text; the board card renders
+  // it decorative (see card.tsx) but the query stays neutral about that.
+  cover: { url: string; alt: string } | null;
+```
+
+In the grouping loop (line 174-179), seed it:
+
+```ts
+    board[row.status].push({
+      kind: "piece",
+      ...row,
+      status: row.status,
+      generationStep: row.generationStep as DraftStepKey | null,
+      // Filled in below, in one query for the whole board.
+      cover: null,
+    });
+```
+
+And after the published slice (line 185), before `return board;`:
+
+```ts
+  // One query for every card on the board. Deliberately AFTER the published
+  // slice and the assignee filter: the covers fetched are then exactly the
+  // covers rendered, instead of a lookup for pieces the cap has already
+  // dropped. `store.ts` owns the "which row is this piece's cover" rule —
+  // this file must never grow its own copy of that join.
+  const covers = await getCoverImagesForPieces(
+    tenantId,
+    BOARD_COLUMNS.flatMap((column) => board[column].map((card) => card.id)),
+    database
+  );
+  for (const column of BOARD_COLUMNS) {
+    for (const card of board[column]) card.cover = covers.get(card.id) ?? null;
+  }
+
+  return board;
+```
+
+- [ ] **Step 8: Run it to verify it passes**
+
+Run: `npx vitest run tests/lib/content/board.test.ts tests/lib/images/store-covers-for-pieces.test.ts`
+Expected: PASS. Re-run once — the shared-Postgres suite is flaky and a failure that doesn't repeat is not yours.
+
+- [ ] **Step 9: Write the failing test for the card**
+
+Create `tests/components/board-card-cover.test.tsx`:
+
+```tsx
+import { describe, it, expect, vi } from "vitest";
+import { render, screen } from "@testing-library/react";
+import type { BoardCard } from "../../src/lib/content/board";
+
+/**
+ * The cover on a board card (spec §3). Mounts the real `BoardCardItem`
+ * rather than asserting on class strings, because what can break here is
+ * wiring: an image that is not `Card`'s first child gets neither the flush
+ * top nor the rounded corners, and a coverless card that renders an empty
+ * frame is a regression on every product update and social post.
+ *
+ * Mocked for the same reasons `board-briefs.test.tsx` gives (lines 22-45):
+ * the `"use server"` modules the card imports each reach `@/db`, which opens
+ * a `pg` Pool at import time and the jsdom project has no DATABASE_URL;
+ * `next/navigation` has no router outside an app render; and `@dnd-kit`'s
+ * `useDraggable` has no measurable rect in jsdom.
+ *
+ * `next/image` is stubbed to a prop-forwarding `<img>`: outside a Next build
+ * its loader has no image config, and the assertions below are about what
+ * this card asks for (a 1200x630 box, an empty alt, an uncropped fit), not
+ * about Next's optimizer.
+ */
+vi.mock("../../src/app/(dashboard)/board/actions", () => ({
+  moveCard: vi.fn(),
+  assignCard: vi.fn(),
+  acceptBriefCard: vi.fn(),
+  deleteCard: vi.fn(),
+  deleteBriefCard: vi.fn(),
+}));
+vi.mock("../../src/app/(dashboard)/briefs/actions", () => ({ generateDraft: vi.fn() }));
+vi.mock("../../src/app/(dashboard)/progress-actions", () => ({ pollGenerationProgress: vi.fn() }));
+vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: vi.fn(), push: vi.fn() }) }));
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+vi.mock("@dnd-kit/core", () => ({
+  useDraggable: () => ({
+    attributes: {},
+    listeners: {},
+    setNodeRef: () => {},
+    transform: null,
+    isDragging: false,
+  }),
+}));
+vi.mock("next/image", () => ({
+  default: (props: Record<string, unknown>) => {
+    const { src, alt, ...rest } = props as { src: string; alt: string };
+    // eslint-disable-next-line @next/next/no-img-element
+    return <img src={src} alt={alt} {...rest} />;
+  },
+}));
+
+import { BoardCardItem } from "../../src/app/(dashboard)/board/card";
+
+const BARE: BoardCard = {
+  kind: "piece",
+  id: "piece-1",
+  title: "Search got faster",
+  type: "blog_post",
+  status: "draft",
+  assignedTo: null,
+  scheduledFor: null,
+  generationError: null,
+  generatedAt: null,
+  generationStep: null,
+  createdAt: new Date("2026-08-01T00:00:00Z"),
+  cover: null,
+};
+
+const COVERED: BoardCard = {
+  ...BARE,
+  cover: { url: "https://blob.example/cover-1.png", alt: "Lighthouse beam over a grid of tiles" },
+};
+
+function renderCard(card: BoardCard) {
+  return render(
+    <BoardCardItem
+      card={card}
+      members={[]}
+      draggable
+      onGenerated={() => {}}
+      onAssigned={() => {}}
+      onDelete={() => {}}
+    />
+  );
+}
+
+describe("a card whose piece has a cover", () => {
+  it("renders the cover as the card's first child, which is what the flush-top rule keys on", () => {
+    const { container } = renderCard(COVERED);
+    const card = container.querySelector('[data-slot="card"]');
+    expect(card).not.toBeNull();
+    // `has-[>img:first-child]:pt-0` and `*:[img:first-child]:rounded-t-xl`
+    // (src/components/ui/card.tsx:16) match a DIRECT first-child <img> only —
+    // put the image after CardContent, or inside it, and both silently stop.
+    expect(card!.firstElementChild?.tagName).toBe("IMG");
+    expect(card!.querySelector("img")?.getAttribute("src")).toBe("https://blob.example/cover-1.png");
+  });
+
+  it("asks for the cover's native 1200x630 and never crops it", () => {
+    const { container } = renderCard(COVERED);
+    const img = container.querySelector("img")!;
+    // The real render size. With width/height set, the browser reserves the
+    // 1.91:1 box before the bytes arrive — no layout shift on load.
+    expect(img.getAttribute("width")).toBe("1200");
+    expect(img.getAttribute("height")).toBe("630");
+    // Product owner decision 1: nothing in this plan crops or letterboxes.
+    expect(img.className).toContain("h-auto");
+    expect(img.className).not.toContain("object-cover");
+  });
+
+  it("gives the cover an empty alt — the linked title is the card's name", () => {
+    const { container } = renderCard(COVERED);
+    // Spec §2: decorative images get empty alt. The description stored on the
+    // row is what publishing uses; announcing it above every title here would
+    // read the artwork of the whole board before any of its work.
+    expect(container.querySelector("img")!.getAttribute("alt")).toBe("");
+    expect(screen.getByRole("link", { name: "Search got faster" })).toBeInTheDocument();
+  });
+});
+
+describe("a card whose piece has no cover", () => {
+  it("renders no image and no placeholder for it", () => {
+    const { container } = renderCard(BARE);
+    // Most pieces are in this state (product updates, social posts, and any
+    // piece whose cover generation failed). Their cards must be exactly what
+    // they are today: CardContent first, no frame, no reserved gap.
+    expect(container.querySelector("img")).toBeNull();
+    const card = container.querySelector('[data-slot="card"]')!;
+    expect(card.firstElementChild?.getAttribute("data-slot")).toBe("card-content");
+  });
+});
+```
+
+- [ ] **Step 10: Run it to verify it fails**
+
+Run: `npx vitest run tests/components/board-card-cover.test.tsx`
+Expected: FAIL — the covered card's first child is `card-content`, not `IMG` (the coverless case already passes, which is the point of having it).
+
+- [ ] **Step 11: Render the cover**
+
+In `src/app/(dashboard)/board/card.tsx`, add to the imports (after `Link`, line 4):
+
+```tsx
+import Image from "next/image";
+```
+
+In `PieceCardItem`, between `<Card size="sm">` and `<CardContent …>` (lines 351-352):
+
+```tsx
+      <Card size="sm">
+        {/* The piece's cover (spec §3). It must stay the FIRST child of
+            `Card`: the primitive drops its own top padding and rounds the
+            top corners for a direct first-child <img>
+            (`has-[>img:first-child]:pt-0`, `*:[img:first-child]:rounded-t-xl`
+            — src/components/ui/card.tsx:16), which is what makes this sit
+            flush instead of inside the card's padding. Moving it below
+            CardContent, or wrapping it in a div, turns both rules off with
+            no error.
+
+            Rendered only when there is one, and that is the common case
+            inverted: product updates and social posts have no cover at all
+            (spec §6), and neither does a piece whose cover generation
+            failed. Those cards keep exactly today's layout, because the two
+            rules above are conditional selectors that simply do not match.
+
+            `width`/`height` are the cover's real 1200x630 (never cropped —
+            product owner decision 1), so the browser reserves the 1.91:1 box
+            from the attributes and the card does not jump when the image
+            lands. `sizes` keeps a ~300px column from pulling the 1200px
+            master.
+
+            `alt=""` — the cover is decorative HERE (spec §2). The card's
+            accessible name is the title link immediately below it; the
+            row's real alt text rides along on `card.cover.alt` for anything
+            that needs it, and is what Task 9's dialog edits and Plan 4
+            publishes. */}
+        {card.cover && (
+          <Image
+            src={card.cover.url}
+            alt=""
+            width={1200}
+            height={630}
+            sizes="(max-width: 1024px) 50vw, 320px"
+            className="h-auto w-full"
+          />
+        )}
+        <CardContent className="space-y-2">
+```
+
+Then close the hole the new required field opens in the existing board test: in `tests/components/board-briefs.test.tsx`, add one line to the `pieceCard` fixture (after `createdAt`, line 202):
+
+```ts
+    cover: null,
+```
+
+That file's cards are about drag rules, not covers — `null` keeps every one of its assertions rendering the card it renders today.
+
+- [ ] **Step 12: Run it to verify it passes**
+
+Run: `npx vitest run tests/components/board-card-cover.test.tsx tests/components/board-briefs.test.tsx`
+Expected: PASS. `board-briefs.test.tsx` is in the list because it mounts the same card through the real `Board`: it proves the coverless path is untouched by everything above.
+
+- [ ] **Step 13: Verify the blob host is already allowed**
+
+Run: `grep -n "remotePatterns" -A 2 next.config.ts`
+Expected: the `*.public.blob.vercel-storage.com` pattern from Plan 1 Task 12 Step 7 / Task 8 Step 3. **Add nothing** — if it is missing, go back and finish Task 8 Step 3 rather than writing a second `images` key here.
+
+- [ ] **Step 14: Gates**
+
+Run: `npm run typecheck && npm run lint && npm run build`
+Expected: clean. Typecheck is the real gate on the new `BoardCard` field — `board.tsx:279` builds a `BoardCardType` by spreading the original card, so the optimistic move keeps the cover automatically, and anywhere that does not spread will fail here.
+
+- [ ] **Step 15: Commit**
+
+```bash
+git add src/lib/images/store.ts src/lib/content/board.ts "src/app/(dashboard)/board/card.tsx" tests/lib/images/store-covers-for-pieces.test.ts tests/lib/content/board.test.ts tests/components/board-card-cover.test.tsx tests/components/board-briefs.test.tsx
+git commit -m "feat: show a piece's cover on its board card"
+```
+
+---
+
+### Task 11: Image library — nav entry, `/images`, detail, generate, delete, picker
 
 **Files:**
 - Modify: `src/app/(dashboard)/nav-links.tsx` — `NAV` (lines 17-24) gains `{ href: "/images", label: "Images", icon: Images }` after Calendar; import `Images` from lucide (lines 5-12).
@@ -4670,7 +5203,7 @@ git commit -m "feat: image library with filters, detail edits, delete, generate 
 
 ---
 
-### Task 11: Final gates and manual verification
+### Task 12: Final gates and manual verification
 
 **Files:** none new.
 
@@ -4687,13 +5220,17 @@ npx vitest run \
   tests/lib/images/generate.test.ts \
   tests/app/drafts/image-actions.test.ts \
   tests/app/images/actions.test.ts \
+  tests/lib/images/store-covers-for-pieces.test.ts \
+  tests/lib/content/board.test.ts \
+  tests/components/board-card-cover.test.tsx \
+  tests/components/board-briefs.test.tsx \
   tests/components/nav-links.test.tsx \
   tests/components/nearest-heading.test.tsx
 ```
 
 Expected: all clean / PASS. **Run the vitest line twice** — the shared-Postgres suite is flaky, and a failure that doesn't repeat is not yours.
 
-Task 3 changed `store.ts` and Task 1 re-pointed `imageSlug` at `slugForImage`, so also re-run everything Plans 1 and 2 built on top of those:
+Tasks 3 and 10 changed `store.ts` and Task 1 re-pointed `imageSlug` at `slugForImage`, so also re-run everything Plans 1 and 2 built on top of those:
 
 ```bash
 npx vitest run tests/lib/images tests/app/drafts/illustration-actions.test.ts
@@ -4733,6 +5270,15 @@ Cover:
 - [ ] Set the type's cover to off in Settings → Content images → the panel disappears from the draft page.
 - [ ] Clear the visual identity in Company settings → the draft page shows the "This draft has no images" pointer (linking to Company → Visual identity) instead of Add cover.
 
+Board (the same cover row, third reader — spec §3):
+- [ ] With that cover set, open /board → the piece's card shows it across the top, flush to the card's edges (no padding above it, top corners rounded with the card) and the title sits underneath.
+- [ ] The cover is the whole 1200×630 frame — nothing trimmed off the sides or top, no bars added. Compare it against the same cover on the draft page; they show the same picture.
+- [ ] A product update or social post (no cover by policy), and a piece whose cover generation failed → their cards look exactly as they did before this branch: no image, no empty frame, no extra gap.
+- [ ] Reload /board on a slow connection (DevTools → Network → Slow 4G): the covered cards keep their height while the images load — no jump, and nothing below them moves.
+- [ ] Remove the cover from that draft, return to /board → the card loses the image and nothing else about it changes.
+- [ ] Drag a covered card to another column → it moves with its cover and the card does not reflow mid-drag.
+- [ ] Tab through the board with a screen reader (or VoiceOver's rotor): each covered card announces its title once — the cover itself is silent.
+
 Library:
 - [ ] Nav shows "Images"; the page lists every image newest first; role / source / piece filters narrow it and Clear resets the URL.
 - [ ] Click a card → detail with history strip; Regenerate here → the draft's body (open it in another tab, reload) points at the new URL.
@@ -4749,7 +5295,7 @@ git status
 git log --oneline main..HEAD
 ```
 
-Expected: eleven commits on top of Plans 1–2, one per task; a clean tree. Hand off per superpowers:finishing-a-development-branch.
+Expected: twelve commits on top of Plans 1–2, one per task; a clean tree. Hand off per superpowers:finishing-a-development-branch.
 
 ---
 
@@ -4763,7 +5309,12 @@ Expected: eleven commits on top of Plans 1–2, one per task; a clean tree. Hand
 - Cover: Add cover → Generate from post → Write a prompt (prefilled, never empty) → Upload (+ From library); hover Change / Remove; Change reopens with the previous concept; first-class `role:"cover"` row; gated by the type's policy — Tasks 4, 9. `next.config.ts` `images.remotePatterns` and the `.mdx-content img` rule — Task 8.
 
 **Spec coverage — §5b Library**
-- Nav "Images"; every LIBRARY row for the tenant newest first (`listLibraryImages`: standalone images plus images of pieces past `brief`/`draft` — product owner decision 4, so the library never disturbs an in-flight draft and no library action stamps `bodyEditedAt`); filters by piece / role / source; card = thumbnail, concept, piece link, date; detail = history strip + the three edit actions; delete removes rows + blobs and the piece's markdown line, confirm names the piece, published pieces' images can't be deleted and the UI says why; Generate new → `role:"library"`; From library in the insert panel and the cover menu, reusing the blob URL with no new render — Tasks 4, 10 (+ Task 3's shared-blob guard so a reused blob survives either row's deletion).
+- Nav "Images"; every LIBRARY row for the tenant newest first (`listLibraryImages`: standalone images plus images of pieces past `brief`/`draft` — product owner decision 4, so the library never disturbs an in-flight draft and no library action stamps `bodyEditedAt`); filters by piece / role / source; card = thumbnail, concept, piece link, date; detail = history strip + the three edit actions; delete removes rows + blobs and the piece's markdown line, confirm names the piece, published pieces' images can't be deleted and the UI says why; Generate new → `role:"library"`; From library in the insert panel and the cover menu, reusing the blob URL with no new render — Tasks 4, 11 (+ Task 3's shared-blob guard so a reused blob survives either row's deletion).
+
+**Spec coverage — §3, all three readers of the cover row**
+- The cover row (`role: "cover"`) is "read by the draft page, publish dispatch, and the board card thumbnail". The draft page is Task 9, publish dispatch is Plan 4, and **the board card is Task 10** — no longer deferred (product owner, 2026-08-19: keep it). `BoardCard` gains `cover: { url, alt } | null`, `readBoard` fills it, and `PieceCardItem` renders it as `Card`'s first child so the primitive's `has-[>img:first-child]:pt-0` / `*:[img:first-child]:rounded-t-xl` give it a flush top for free. Covered by `tests/lib/images/store-covers-for-pieces.test.ts`, three new cases in `tests/lib/content/board.test.ts`, and `tests/components/board-card-cover.test.tsx`.
+- **The N+1 was answered with a batch read, not a join.** `getCoverImagesForPieces(tenantId, pieceIds, database?)` is one new export in `store.ts` (the module that already owns "which row is a piece's cover"), called once by `readBoard` after the published slice — so covers are fetched for exactly the cards returned, and the board stays at three queries however many cards it draws. Writing the join into `src/lib/content/board.ts` instead would have put a second copy of that rule in a second module; Task 3 exists because of what that costs.
+- **The board card renders `alt=""`.** Spec §2: decorative images get empty alt, and on the board the cover sits directly above the piece's linked title, which is the card's accessible name. The row's real alt is still carried on `BoardCard.cover.alt` (the query stays neutral; the view decides), still edited by Task 9's dialog and still published by Plan 4. Nothing crops: the card asks for the native 1200×630 with `h-auto w-full`, which also means the 1.91:1 box is reserved from the attributes and a loading cover cannot shift the column (product owner decision 1).
 
 **Contract deviations (all additive)**
 - `suggestImagePrompt` gains optional `heading` and `role`; `lookupImageBySrc` returns render history; `setCoverFromImage`, `listImagesForPicker` and `updateCoverAlt` are new (the last because the cover's alt — published by Plan 4 — has no other edit path; spec §2 requires alt to be human-editable); `image-actions.ts` exports the `ImageLookup` type. Signatures in the contract are otherwise exact.
@@ -4779,6 +5330,5 @@ Expected: eleven commits on top of Plans 1–2, one per task; a clean tree. Hand
 - The library detail's Delete for a *cover* leaves the piece coverless (the row IS the cover pointer); the confirm copy branches for covers ("that draft will lose its cover") vs body images ("it will be removed from that draft too").
 
 **Handed elsewhere / not done**
-- Board card cover thumbnail (spec §3): needs `BoardCard.coverUrl` in `src/lib/content/board.ts:49-68`, the board query and its tests — follow-up.
 - Failed-illustration notice/retry on the draft page and the agent's own placement are Plan 2 (its Task 7); publish-time transfer of the cover (Webflow field, LinkedIn media, webhook) is Plan 4.
-- Component coverage: the one piece of client logic that is testable without the editor realm — `nearestHeadingAbove` — is extracted to `src/lib/images/nearest-heading.ts` and covered in the jsdom project (Task 6 Steps 2a–2b). Everything else in `tests/components` mocks the MDXEditor module wholesale (`new-brief-editor.test.tsx:55`) and nothing there renders the realm bridge, so `AgentEditBridge`'s three new ops, `ImageEditToolbar`, `CoverPanel`, `LibraryPicker` and the library grid stay gated by typecheck + build + the manual checklist — exactly as the existing Ask AI bridge is. **Rendering any of them in jsdom would need `ResizeObserver`/`matchMedia` stubs that `vitest.setup.jsdom.ts` does not have** (verified: no such stub exists anywhere in the repo), so adding them is its own task, not a step here.
+- Component coverage: the board card's cover is rendered in the jsdom project against the real `BoardCardItem` (Task 10) — it is outside the editor realm, and `board-briefs.test.tsx` already mounts that component today, so it needs no new stubs. The one piece of *editor* client logic that is testable without the realm — `nearestHeadingAbove` — is extracted to `src/lib/images/nearest-heading.ts` and covered the same way (Task 6 Steps 2a–2b). Everything else in `tests/components` mocks the MDXEditor module wholesale (`new-brief-editor.test.tsx:55`) and nothing there renders the realm bridge, so `AgentEditBridge`'s three new ops, `ImageEditToolbar`, `CoverPanel`, `LibraryPicker` and the library grid stay gated by typecheck + build + the manual checklist — exactly as the existing Ask AI bridge is. **Rendering any of them in jsdom would need `ResizeObserver`/`matchMedia` stubs that `vitest.setup.jsdom.ts` does not have** (verified: no such stub exists anywhere in the repo), so adding them is its own task, not a step here.

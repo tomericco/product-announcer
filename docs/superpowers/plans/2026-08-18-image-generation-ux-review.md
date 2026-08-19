@@ -114,8 +114,8 @@ Code identifiers (`illustratePiece`, `illustration_plan`, `imageRenders`, step k
 
 ## (c) Open decisions for the product owner
 
-1. **Board card cover thumbnail** — spec §3 says the cover row is "read by … the board card thumbnail", but Plan 3 explicitly defers it (needs `BoardCard.coverUrl`, a board-query join, tests). The `Card` primitive already supports a flush top image (`has-[>img:first-child]:pt-0`). Decide: schedule the follow-up, or amend the spec out of v1.
-2. **Loader label** — I changed "Creating illustrations" → **"Creating images"** for glossary consistency; the spec (and one user story) quotes the old label verbatim. Approve the deviation or revert my Plan 2 edit (3 strings).
+1. **Board card cover thumbnail — RESOLVED (product owner, 2026-08-19): build it in v1.** Plan 3 gained a dedicated task for it; the deferral note is gone.
+2. **Loader label — RESOLVED (product owner, 2026-08-19): keep "Creating images".** The spec (§4 and the drafting user story) was updated to match, so spec and plans now agree. The step key stays `illustrating`.
 3. **"Flagged copy" board badge** — any `generationError` on a draft still renders that badge (`board/card.tsx`), including the new "Images could not be generated" whole-pass warning. Misleading label for a non-copy warning; fixing it means widening the badge logic/copy outside these plans' scope. I left it.
 4. **Amber warnings vs. the brand guide** — `docs/brand-style-guide.md` says "Do not introduce an amber warning colour", but the draft page's three existing banners and the new failed-images notice all use amber. The plans follow the de facto pattern; someone should reconcile the guide or the app.
 5. **Does inserting an AI image freeze regeneration?** The editor insert path persists via `saveDraftBody`, which stamps `bodyEditedAt` and freezes whole-draft regeneration — while the server-side swap paths (retry, regenerate, restore) deliberately don't stamp. Is a user-initiated AI insert a "hand edit"? Contract-frozen territory; I changed nothing.

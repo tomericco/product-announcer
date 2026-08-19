@@ -50,7 +50,7 @@ calendar, accountable for brand consistency, no design resource on call.
 **Drafting**
 
 - *As a content lead accepting a brief, I watch the loader go through
-  drafting → review → "Creating illustrations", and the draft opens with a
+  drafting → review → "Creating images", and the draft opens with a
   cover and 2–3 on-topic illustrations already placed under the right
   headings — I never see an image-less draft and then wait for pictures.*
   (§4)
@@ -295,7 +295,10 @@ render round-trips (~30–60 s) regardless of image count.
 A new step key between `"reviewing"` and `"saving"`:
 
 - `DraftStepKey` and `DRAFT_STEPS` in `src/lib/drafting/draft-progress.ts`
-  gain `{ key: "illustrating", label: "Creating illustrations", slow: true }`.
+  gain `{ key: "illustrating", label: "Creating images", slow: true }`.
+  The step *key* stays `illustrating` (internal), while the user-facing label
+  says "images" — the one word this feature uses for a picture everywhere a
+  user reads it (ratified 2026-08-19).
   No migration — `generationStep` is deliberately free text. The persisted-
   step poller (`GenerationChecklist` → `pollGenerationProgress`) picks it up
   with zero changes; `slow: true` exempts it from step pacing.
