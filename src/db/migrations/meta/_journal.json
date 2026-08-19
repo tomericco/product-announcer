@@ -442,6 +442,13 @@
       "when": 1787062299787,
       "tag": "0062_next_dazzler",
       "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1787148671569,
+      "tag": "0063_fearless_the_leader",
+      "breakpoints": true
     }
   ]
 }

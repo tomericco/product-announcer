@@ -11,6 +11,45 @@ export type PersonaRef = SystemPersonaRef | CustomPersona;
 // The flattened shape consumed by the generation prompt and the settings UI.
 export type ResolvedPersona = { name: string; brief: string; description?: string };
 
+// ---- Images (spec 2026-08-18-image-generation-design.md §2, §3, §6) ----
+//
+// The vocabulary lives in TypeScript; the columns below are free-form text and
+// jsonb, matching the repo convention (see `llmUsage.operation`).
+
+export type PaletteRole = "primary" | "secondary" | "accent" | "background" | "neutral";
+export type ImageRule = { kind: "do" | "dont"; text: string };
+export type VisualIdentity = {
+  // 3–6 entries; roles let the compiled style block say "background in X,
+  // accents in Y". `isVisualIdentityReady` gates generation on >= 3.
+  palette: { hex: string; role: PaletteRole }[];
+  stylePreset: "flat" | "geometric" | "line_art" | "isometric" | "gradient" | "duotone" | "hand_drawn";
+  moodWords: string[];
+  allowTextInImages: boolean;
+  // Blob URLs, 0–4. Passed as reference images on every render.
+  styleReferenceImages: string[];
+  // <= 200 chars; "" when unset.
+  customStyleDescriptors: string;
+  // Appended verbatim to every prompt as "Always: …" / "Never: …".
+  imageGenerationRules: ImageRule[];
+  backgroundTreatment: "solid" | "subtle_pattern" | "scene";
+  texture: "none" | "grain" | "paper" | "halftone";
+  peopleStyle: "none" | "abstract_figures" | "diverse_characters";
+  // Reuse a piece's cover as a style reference for its body images.
+  pinStyleToCover: boolean;
+};
+
+// "auto" means "up to the default cap (3)"; a number is an explicit cap.
+export type BodyIllustrationSetting = "off" | "auto" | 1 | 2 | 3;
+// Partial: the column stays null (or sparse) until a tenant changes
+// something; `resolveImagePolicy` fills the gaps from the TypeScript defaults.
+export type ImagePolicy = Partial<
+  Record<(typeof contentTypeEnum.enumValues)[number], { cover: boolean; body: BodyIllustrationSetting }>
+>;
+
+export type ImageRole = "cover" | "body" | "library";
+export type ImageSourceKind = "generated" | "uploaded";
+export type ImageStatus = "pending" | "ready" | "failed";
+
 export const tenantRoleEnum = pgEnum("tenant_role", ["owner", "member"]);
 
 export const tenants = pgTable("tenants", {
@@ -262,6 +301,13 @@ export const companyProfiles = pgTable("company_profiles", {
   industry: text("industry"),
   updatesPageUrl: text("updates_page_url"),
   userPersonas: jsonb("user_personas").$type<PersonaRef[]>().notNull().default([]),
+  // Visual brand guidelines feeding every image generation (image spec §2).
+  // Null until the first save, like `guidelines`; while null, drafts get no
+  // images and the draft page points at the setup card.
+  visualIdentity: jsonb("visual_identity").$type<VisualIdentity>(),
+  // Per-content-type cover/body-illustration policy (image spec §6). Null means
+  // "the TypeScript defaults in src/lib/images/policy.ts".
+  imagePolicy: jsonb("image_policy").$type<ImagePolicy>(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
@@ -662,6 +708,66 @@ export const channelVariants = pgTable(
   ]
 );
 
+export const contentImages = pgTable(
+  "content_images",
+  {
+    id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    // Null for standalone library images; set when the image belongs to a
+    // piece. Cascade keeps piece deletion tidy; library images outlive pieces.
+    contentPieceId: uuid("content_piece_id").references(() => contentPieces.id, { onDelete: "cascade" }),
+    role: text("role").notNull(), // ImageRole
+    // What the image is for — survives regeneration, powers alt text and retry.
+    concept: text("concept").notNull(),
+    altText: text("alt_text").notNull(),
+    sourceKind: text("source_kind").notNull(), // ImageSourceKind
+    status: text("status").notNull(), // ImageStatus
+    // Points at the image_renders row currently in use. Deliberately NO foreign
+    // key: image_renders references content_images, and a constraint back the
+    // other way would make the two tables circular for inserts and deletes.
+    // src/lib/images/store.ts is the only writer and keeps it consistent.
+    currentRenderId: uuid("current_render_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("content_images_tenant_created_idx").on(table.tenantId, table.createdAt),
+    // One cover per piece. Partial because body images share the piece id, and
+    // library images have no piece at all (NULLs are distinct in Postgres).
+    uniqueIndex("content_images_cover_unique")
+      .on(table.contentPieceId)
+      .where(sql`${table.role} = 'cover'`),
+  ]
+);
+
+export type ContentImage = typeof contentImages.$inferSelect;
+
+export const imageRenders = pgTable(
+  "image_renders",
+  {
+    id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    imageId: uuid("image_id")
+      .notNull()
+      .references(() => contentImages.id, { onDelete: "cascade" }),
+    // The exact prompt sent to the model (style block + concept + any user
+    // instruction). Full reproducibility per render; "edit prompt" reopens this.
+    prompt: text("prompt").notNull(),
+    blobUrl: text("blob_url").notNull(),
+    // What @vercel/blob's del() takes.
+    blobPathname: text("blob_pathname").notNull(),
+    width: integer("width").notNull(),
+    height: integer("height").notNull(),
+    bytes: integer("bytes").notNull(),
+    model: text("model").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("image_renders_image_created_idx").on(table.imageId, table.createdAt)]
+);
+
+export type ImageRender = typeof imageRenders.$inferSelect;
+
 export const webhookDeliveryStatusEnum = pgEnum("webhook_delivery_status", ["pending", "success", "failed"]);
 
 export const webhookConfigs = pgTable("webhook_configs", {
@@ -722,6 +828,9 @@ export const llmUsage = pgTable("llm_usage", {
   inputTokens: integer("input_tokens"),
   outputTokens: integer("output_tokens"),
   totalTokens: integer("total_tokens"),
+  // Image renders bill per image, not per token. Set on "image_generation"
+  // rows; null on every text row, whose token columns stay populated instead.
+  imageCount: integer("image_count"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
