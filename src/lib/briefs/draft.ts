@@ -23,6 +23,8 @@ import { validateDraftLinks, type LinkCheck } from "@/lib/ai/validate-links";
 import { linkAtomicUpdatesToPiece } from "@/lib/change-events/release-claim";
 import { listCompetitors } from "@/lib/workspace/competitors";
 import type { DraftStepKey } from "@/lib/drafting/draft-progress";
+import { illustratePiece, type IllustrateResult } from "@/lib/images/illustrate";
+import type { ContentType } from "@/lib/ai/compose-prompt";
 
 type Database = typeof defaultDb;
 type BrandProfileRow = typeof companyProfiles.$inferSelect;
@@ -50,6 +52,16 @@ export type DraftReviewer = (
   draft: { title: string; body: string },
   brandProfile: BrandProfileRow
 ) => Promise<ReviewOutcome>;
+
+/** `illustratePiece`'s shape, as a seam. */
+export type Illustrator = (args: {
+  tenantId: string;
+  contentPieceId: string;
+  title: string;
+  body: string;
+  contentType: ContentType;
+  database?: Database;
+}) => Promise<IllustrateResult>;
 
 /**
  * Distinct non-null categories among the atomic updates being composed, used to
@@ -257,6 +269,9 @@ export function findNamedCompanies(text: string, names: string[]): string[] {
  *   7. success, release branch      — same `draftWrite` literal, inside the tx
  *   8. outer catch                  — cleared in its generationError write
  * The interrupted-generation marker is not an exit: it SETS "generating".
+ * "illustrating" is written after review on both branches and is not an
+ * exit either: the illustration pass can only warn (see the block above
+ * `setStep("saving")`), never fail the draft.
  * The release branch's zero-link throw (see the transaction) is not a ninth
  * exit — it rolls the transaction back and lands in 8 like any other throw.
  *
@@ -292,12 +307,14 @@ export async function generateDraftForPiece(
     generateRelease?: ReleaseDraftGenerator;
     review?: DraftReviewer;
     checkLink?: LinkCheck;
+    illustrate?: Illustrator;
   } = {}
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const database = deps.database ?? defaultDb;
   const generate = deps.generate ?? generateBriefDraft;
   const generateRelease = deps.generateRelease ?? generateReleaseDraft;
   const review = deps.review ?? reviewAndReconcile;
+  const illustrate = deps.illustrate ?? illustratePiece;
 
   try {
     const [piece] = await database
@@ -500,10 +517,47 @@ export async function generateDraftForPiece(
           (await listCompetitors(tenantId, database)).map((c) => c.name)
         )
       : [];
-    const generationError =
-      matches.length > 0
-        ? `This product update may name a company from your competitors list: ${matches.join(", ")}. This only checks names on that list, not every company — review before publishing.`
-        : null;
+    const warnings: string[] = [];
+    if (matches.length > 0) {
+      warnings.push(
+        `This product update may name a company from your competitors list: ${matches.join(", ")}. This only checks names on that list, not every company — review before publishing.`
+      );
+    }
+
+    // The illustration agent (spec 2026-08-18 §4). Runs on BOTH branches, on
+    // the final reviewed body, and blocks draft readiness on purpose: the body
+    // is one text column with hand-edit-freeze semantics, so splicing images
+    // in after the save would race the human's first edit.
+    //
+    // Outside the inner try above, deliberately: a thrown plan call or a DB
+    // hiccup inside the agent is a WARNING on a real draft, never a failed
+    // generation — the words are done and the human should get them.
+    //
+    // Failed renders are deliberately NOT added to generationError: their rows
+    // stay `failed` and the draft page's failed-images notice (Task 7) shows a
+    // live count with Retry. A banner copy of the count would go stale the
+    // moment a Retry succeeds (generationError only clears on the next
+    // body-changing save) and would mark the board card "Flagged copy" for a
+    // problem that has nothing to do with the copy.
+    // Everything after `result` was set — including the writes below — is
+    // still covered by the outer catch for genuine failures.
+    await setStep(database, contentPieceId, "illustrating");
+    try {
+      const illustrated = await illustrate({
+        tenantId,
+        contentPieceId,
+        title: result.title,
+        body: result.body,
+        contentType: piece.type,
+        database,
+      });
+      result = { title: result.title, body: illustrated.body };
+    } catch (e) {
+      console.error(`[briefs/draft] illustration failed for piece ${contentPieceId}:`, e);
+      warnings.push("Images could not be generated. The draft is complete without them.");
+    }
+
+    const generationError = warnings.length > 0 ? warnings.join(" ") : null;
 
     await setStep(database, contentPieceId, "saving");
 

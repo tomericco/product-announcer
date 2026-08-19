@@ -31,6 +31,7 @@ import {
   briefSignals,
   signals,
   atomicUpdates,
+  contentImages,
 } from "../../../src/db/schema";
 import {
   generateDraftForPiece,
@@ -38,12 +39,15 @@ import {
   findNamedCompanies,
   MIN_COMPETITOR_NAME_LENGTH,
   type DraftGenerator,
+  type Illustrator,
 } from "../../../src/lib/briefs/draft";
 import { composeBriefPrompt } from "../../../src/lib/ai/compose-prompt";
 import { renderBriefBody } from "../../../src/lib/briefs/body";
 import { computeReleaseDelta } from "../../../src/lib/change-events/release-deltas";
 import { getOpenAtomicUpdates } from "../../../src/lib/change-events/release-claim";
 import type { ReviewOutcome } from "../../../src/lib/ai/review-draft";
+import { illustratePiece, type IllustrateResult } from "../../../src/lib/images/illustrate";
+import { seedVisualIdentity } from "../../helpers/fixtures";
 
 const TENANT = "Brief Draft Test Tenant";
 
@@ -1200,5 +1204,218 @@ describe("generateDraftForPiece — release fork", () => {
     const [still] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, atomicUpdate.id));
     expect(still.contentPieceId).toBe(otherPiece.id);
     expect(still.status).toBe("open");
+  });
+});
+
+/**
+ * The illustration agent runs between review and save (spec 2026-08-18 §4),
+ * behind `deps.illustrate`. Images block draft readiness on purpose; a failed
+ * illustration pass never fails the draft.
+ */
+describe("generateDraftForPiece — illustrations", () => {
+  const WITH_IMAGES = "# T\n\n## A\n\n![Gears](https://blob.example/g.png)\n\nBody.";
+
+  it("writes the illustrating step, hands the reviewed body to the illustrator, and saves the spliced body", async () => {
+    const tenant = await seedTenant();
+    const { piece } = await seedPieceWithBrief(tenant.id);
+    let stepDuring: string | null | undefined;
+    let received: { title: string; body: string; contentType: string; contentPieceId: string; tenantId: string } | undefined;
+
+    const illustrate = vi.fn(async (args: Parameters<Illustrator>[0]): Promise<IllustrateResult> => {
+      received = args;
+      const [current] = await db.select({ step: contentPieces.generationStep }).from(contentPieces).where(eq(contentPieces.id, piece.id));
+      stepDuring = current.step;
+      return { body: WITH_IMAGES, failures: 0 };
+    });
+
+    const result = await generateDraftForPiece(piece.id, tenant.id, {
+      database: db,
+      generate: vi.fn(async () => ({ title: "Real title", body: "# T\n\n## A\n\nBody." })),
+      illustrate,
+    });
+    expect(result.ok).toBe(true);
+    expect(stepDuring).toBe("illustrating");
+    expect(received).toMatchObject({
+      tenantId: tenant.id,
+      contentPieceId: piece.id,
+      title: "Real title",
+      body: "# T\n\n## A\n\nBody.",
+      contentType: "blog_post",
+    });
+
+    const [after] = await db.select().from(contentPieces).where(eq(contentPieces.id, piece.id));
+    expect(after.status).toBe("draft");
+    expect(after.body).toBe(WITH_IMAGES);
+    expect(after.generationError).toBeNull();
+    expect(after.generationStep).toBeNull();
+  });
+
+  it("runs the illustrator on the RELEASE branch too, on the reviewed body", async () => {
+    const tenant = await seedTenant();
+    const { piece, brief } = await seedPieceWithBrief(tenant.id, { type: "product_update" }, { contentType: "product_update" });
+    await seedShippedWork({ tenantId: tenant.id, briefId: brief.id });
+
+    const illustrate = vi.fn<Illustrator>(async () => ({ body: WITH_IMAGES, failures: 0 }));
+    const result = await generateDraftForPiece(piece.id, tenant.id, {
+      database: db,
+      generate: vi.fn(async () => ({ title: "Brief title", body: "Brief body." })),
+      generateRelease: vi.fn(async () => ({ title: "Release title", body: "Release body." })),
+      review: async (draft) => ({ finalDraft: { title: draft.title, body: "REVIEWED body." }, status: "passed", issues: [] }),
+      illustrate,
+    });
+    expect(result.ok).toBe(true);
+    expect(illustrate.mock.calls[0][0]).toMatchObject({ body: "REVIEWED body.", contentType: "product_update" });
+
+    const [after] = await db.select().from(contentPieces).where(eq(contentPieces.id, piece.id));
+    expect(after.body).toBe(WITH_IMAGES);
+  });
+
+  it("saves the draft with a warning, not a failure, when the illustrator throws", async () => {
+    const tenant = await seedTenant();
+    const { piece } = await seedPieceWithBrief(tenant.id);
+    const illustrate = vi.fn(async (): Promise<IllustrateResult> => {
+      throw new Error("plan call exploded");
+    });
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const result = await generateDraftForPiece(piece.id, tenant.id, {
+      database: db,
+      generate: vi.fn(async () => ({ title: "T", body: "Plain body." })),
+      illustrate,
+    });
+    expect(result.ok).toBe(true);
+
+    const [after] = await db.select().from(contentPieces).where(eq(contentPieces.id, piece.id));
+    expect(after.status).toBe("draft");
+    expect(after.body).toBe("Plain body.");
+    expect(after.generationError).toContain("Images could not be generated");
+    expect(after.generationStep).toBeNull();
+    expect(errors.mock.calls.map((c) => String(c[0])).join("\n")).toContain(piece.id);
+  });
+
+  it("does NOT warn in generationError when some renders failed — the failed-images notice owns that state", async () => {
+    // A banner copy of the count would go stale the moment a Retry succeeds
+    // (generationError only clears on the next body-changing save) and would
+    // flag the board card as "Flagged copy" for a non-copy problem. The
+    // failed rows themselves drive the live notice (Task 7).
+    const tenant = await seedTenant();
+    const { piece } = await seedPieceWithBrief(tenant.id);
+    const illustrate = vi.fn(async (): Promise<IllustrateResult> => ({ body: WITH_IMAGES, failures: 2 }));
+
+    const result = await generateDraftForPiece(piece.id, tenant.id, {
+      database: db,
+      generate: vi.fn(async () => ({ title: "T", body: "B" })),
+      illustrate,
+    });
+    expect(result.ok).toBe(true);
+    const [after] = await db.select().from(contentPieces).where(eq(contentPieces.id, piece.id));
+    expect(after.body).toBe(WITH_IMAGES);
+    expect(after.generationError).toBeNull();
+  });
+
+  it("keeps the competitor warning AND adds the images warning when the illustrator throws", async () => {
+    const tenant = await seedTenant();
+    await db.insert(competitors).values({ tenantId: tenant.id, name: "Phrase" });
+    const { piece } = await seedPieceWithBrief(tenant.id, { type: "product_update" });
+    const illustrate = vi.fn(async (): Promise<IllustrateResult> => {
+      throw new Error("plan call exploded");
+    });
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await generateDraftForPiece(piece.id, tenant.id, {
+      database: db,
+      generate: vi.fn(async () => ({ title: "T", body: "As Phrase showed…" })),
+      illustrate,
+    });
+    const [after] = await db.select().from(contentPieces).where(eq(contentPieces.id, piece.id));
+    expect(after.generationError).toContain("Phrase");
+    expect(after.generationError).toContain("Images could not be generated");
+    expect(errors).toHaveBeenCalled();
+  });
+
+  it("does not run the illustrator when generation itself failed", async () => {
+    const tenant = await seedTenant();
+    const { piece } = await seedPieceWithBrief(tenant.id);
+    const illustrate = vi.fn(async (): Promise<IllustrateResult> => ({ body: "x", failures: 0 }));
+    await generateDraftForPiece(piece.id, tenant.id, {
+      database: db,
+      generate: vi.fn(async () => {
+        throw new Error("model timeout");
+      }),
+      illustrate,
+    });
+    expect(illustrate).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The one end-to-end-ish test in this plan: the REAL `illustratePiece` and
+   * the REAL `planIllustrations` post-validation and splice, with only the
+   * three network seams faked. Every other test in this block stubs
+   * `illustrate` wholesale, so nothing else would catch a wiring break between
+   * generateDraftForPiece → illustratePiece → planIllustrations →
+   * spliceImageAfterHeading → the body write. Uses the shared fixtures
+   * (tests/helpers/fixtures.ts) so the "identity is ready" state is defined in
+   * one place.
+   */
+  it("end to end: a ready tenant gets a cover row and image markdown in the SAVED body", async () => {
+    const tenant = await seedTenant();
+    await seedVisualIdentity(tenant.id);
+    const { piece } = await seedPieceWithBrief(tenant.id);
+
+    const rendered = "# T\n\nIntro.\n\n## Alpha\n\nA para.\n\n## Beta\n\nB para.";
+    let uploads = 0;
+
+    const result = await generateDraftForPiece(piece.id, tenant.id, {
+      database: db,
+      generate: vi.fn(async () => ({ title: "Real title", body: rendered })),
+      // The real illustratePiece, with only the network seams faked.
+      illustrate: (args) =>
+        illustratePiece(args, {
+          planIllustrations: async () => ({
+            cover: { concept: "lighthouse", prompt: "P cover", altText: "A lighthouse beam" },
+            body: [{ anchorHeading: "Alpha", concept: "gears", prompt: "P alpha", altText: "Gears turning" }],
+          }),
+          renderImage: (async () => Buffer.from("PNG")) as never,
+          compressPng: async (png: Buffer, maxWidth: number) => ({ png, width: maxWidth, height: 900 }),
+          uploadPng: async (pathname: string) => ({
+            url: `https://blob.example/${pathname}-${++uploads}`,
+            pathname: `${pathname}-${uploads}`,
+          }),
+          deleteBlobs: async () => {},
+        }),
+    });
+
+    expect(result.ok).toBe(true);
+
+    const [after] = await db.select().from(contentPieces).where(eq(contentPieces.id, piece.id));
+    expect(after.status).toBe("draft");
+    expect(after.generationError).toBeNull();
+    expect(after.generationStep).toBeNull();
+    // The body image landed under its anchor, by blob URL (spec §3).
+    expect(after.body).toMatch(/## Alpha\n\n!\[Gears turning\]\(https:\/\/blob\.example\/tenants\/[^)]+\)\n\nA para\./);
+    // The cover is NOT in the body (spec §3) — it is a row.
+    expect(after.body).not.toContain("lighthouse");
+    expect(after.body).toContain("## Beta\n\nB para.");
+
+    const rows = await db.select().from(contentImages).where(eq(contentImages.contentPieceId, piece.id));
+    expect(rows.map((r) => r.role).sort()).toEqual(["body", "cover"]);
+    expect(rows.every((r) => r.status === "ready" && r.currentRenderId !== null)).toBe(true);
+    expect(rows.find((r) => r.role === "body")!.anchorHeading).toBe("Alpha");
+  });
+
+  it("uses the real illustrator by default, which skips cleanly when the tenant has no visual identity", async () => {
+    // seedTenant() writes a companyProfiles row with visualIdentity null —
+    // the real `illustratePiece` returns before touching any network module.
+    // This is what keeps every OTHER test in this file honest without a stub.
+    const tenant = await seedTenant();
+    const { piece } = await seedPieceWithBrief(tenant.id);
+    const result = await generateDraftForPiece(piece.id, tenant.id, {
+      database: db,
+      generate: vi.fn(async () => ({ title: "T", body: "## A\n\nBody." })),
+    });
+    expect(result.ok).toBe(true);
+    const [after] = await db.select().from(contentPieces).where(eq(contentPieces.id, piece.id));
+    expect(after.body).toBe("## A\n\nBody.");
+    expect(after.generationError).toBeNull();
   });
 });

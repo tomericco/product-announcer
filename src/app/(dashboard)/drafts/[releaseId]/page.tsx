@@ -272,17 +272,19 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
               (the "brief" branch returns above) — generationError is only
               ever set while a piece is "draft" or has moved on from it
               without being cleared, and in every one of those cases it means
-              the post-generation competitor-name scan matched something, not
-              a failure. The draft is real and the editor below is fully
-              usable; this is a warning to look at, not a reason to distrust
-              the body. The message itself (generationError, written in
-              generateDraftForPiece) already spells out that this is a check
+              generation finished with a warning — the competitor-name scan
+              matched something, and/or images could not be generated at all
+              (see draft.ts) — not a failure. The draft is real and the editor
+              below is fully usable; this is a warning to look at, not a
+              reason to distrust the body. The message itself (generationError,
+              written in generateDraftForPiece) already spells out which kind
+              of warning this is — e.g. a competitor-name match is a check
               against the tenant's saved competitors list, not a guarantee
               that no other company is named — a clean pass (no banner at
               all) is not that guarantee either. */}
           {update.generationError && (
             <div className="space-y-1 rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm">
-              <p className="font-medium">Possible competitor mention</p>
+              <p className="font-medium">Generation notes</p>
               <p>{update.generationError}</p>
             </div>
           )}

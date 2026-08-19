@@ -655,8 +655,13 @@ export const contentPieces = pgTable("content_pieces", {
   // distinct meanings, and the status disambiguates them:
   //   status "brief" + set  -> generation failed; the scaffold body is intact
   //                            and the Generate button offers a retry.
-  //   status "draft" + set  -> the draft is real, but the post-generation name
-  //                            scan matched something the copy should not name.
+  //   status "draft" + set  -> the draft is real, but generation left a
+  //                            warning: the post-generation name scan matched
+  //                            something, and/or the whole illustration pass
+  //                            threw (src/lib/briefs/draft.ts joins them into
+  //                            one text). Individual failed renders are NOT
+  //                            here — their `failed` content_images rows drive
+  //                            the draft page's live notice instead.
   // Null on a clean generated draft. A third meaning would need its own column
   // rather than a third overload of this one.
   generationError: text("generation_error"),
