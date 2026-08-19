@@ -12,6 +12,11 @@ import { parseTopics } from "@/lib/workspace/parse-topics";
 import { addCompetitor, listCompetitors, removeCompetitor } from "@/lib/workspace/competitors";
 import { bootstrapCompanyContext } from "@/lib/workspace/company-bootstrap";
 import { discoverCompetitorSources } from "@/lib/signals/discover-sources";
+import { DEFAULT_VISUAL_IDENTITY, MAX_REFERENCE_IMAGES, parseVisualIdentity } from "@/lib/images/visual-identity";
+import { deriveVisualIdentityFromPage } from "@/lib/workspace/derive-visual-identity";
+import { compressPng } from "@/lib/images/compress";
+import { blobPathnameFromUrl, brandAssetPathname, deleteBlobs, slugForImage, uploadPng, validateUploadFile } from "@/lib/images/blob";
+import type { VisualIdentity } from "@/db/schema";
 
 /**
  * Persists the guidelines document. Scoped to that one column on purpose: every
@@ -233,4 +238,121 @@ export async function setNewsWatching(enabled: boolean) {
     });
 
   revalidatePath("/company");
+}
+
+/**
+ * Persists the Visual identity card. Takes `unknown`, like `savePersonas`: a
+ * Server Action argument is client input, so it is validated with the same
+ * schema regardless of what TypeScript would imply. Writes only its own
+ * column — every card on this page saves itself.
+ */
+export async function saveVisualIdentity(input: unknown): Promise<{ ok: true } | { ok: false; reason: "invalid" }> {
+  const session = await requireSession();
+  const identity = parseVisualIdentity(input);
+  if (!identity) return { ok: false, reason: "invalid" };
+
+  const profile = await getOrCreateCompanyProfile(session.user.tenantId);
+  await db
+    .update(companyProfiles)
+    .set({ visualIdentity: identity, updatedAt: new Date() })
+    .where(eq(companyProfiles.id, profile.id));
+
+  revalidatePath("/company");
+  return { ok: true };
+}
+
+/**
+ * Proposes a visual identity from the company's website. Unlike
+ * `importBrandStyleFromUrl` this writes NOTHING: the card prefills from the
+ * result and the user confirms with Save (image spec §2 — derive → prefill →
+ * confirm → save), so nothing hand-tuned is overwritten by a guess.
+ */
+export async function deriveVisualIdentityFromUrl(
+  url: string
+): Promise<{ ok: true; identity: VisualIdentity } | { ok: false; reason: string }> {
+  const session = await requireSession();
+  const trimmed = url.trim();
+  if (!trimmed) return { ok: false, reason: "empty" };
+  return deriveVisualIdentityFromPage(session.user.tenantId, trimmed);
+}
+
+const RENDER_MAX_WIDTH = 1200;
+
+/**
+ * Uploads one style reference image (spec §2's strongest consistency
+ * mechanism; product owner decision 3). Unlike everything else on this card
+ * it writes immediately rather than at Save — the blob exists the moment it is
+ * uploaded, so leaving the array unsaved would strand a paid file. The client
+ * takes the returned list as its new baseline.
+ *
+ * These are brand INPUTS: `tenants/{tenantId}/brand/…`, no `content_images`
+ * row, no render history. They still go through `compressPng`, so the 1 MB
+ * ceiling applies to them like everything else we store.
+ */
+export async function uploadStyleReference(
+  formData: FormData
+): Promise<{ ok: true; styleReferenceImages: string[] } | { ok: false; error: string }> {
+  const session = await requireSession();
+  const file = formData.get("file");
+  if (!(file instanceof File)) return { ok: false, error: "Choose an image file to upload." };
+  const valid = validateUploadFile({ type: file.type, size: file.size });
+  if (!valid.ok) return { ok: false, error: valid.error };
+
+  const profile = await getOrCreateCompanyProfile(session.user.tenantId);
+  // DEFAULT_VISUAL_IDENTITY has no palette (it must be extracted or typed),
+  // so a tenant with no saved identity yet gets an empty one here, not the
+  // bare default -- that default is not assignable to the VisualIdentity column.
+  const identity = profile.visualIdentity ?? { ...DEFAULT_VISUAL_IDENTITY, palette: [] };
+  // Checked BEFORE the upload: a refused add must not leave a paid orphan.
+  if (identity.styleReferenceImages.length >= MAX_REFERENCE_IMAGES) {
+    return {
+      ok: false,
+      error: `You can keep up to ${MAX_REFERENCE_IMAGES} style reference images. Remove one to add another.`,
+    };
+  }
+
+  try {
+    const { png } = await compressPng(Buffer.from(await file.arrayBuffer()), RENDER_MAX_WIDTH);
+    const slug = slugForImage(file.name.replace(/\.[a-z0-9]+$/i, ""));
+    const { url } = await uploadPng(brandAssetPathname({ tenantId: session.user.tenantId, slug }), png);
+    const styleReferenceImages = [...identity.styleReferenceImages, url];
+
+    await db
+      .update(companyProfiles)
+      .set({ visualIdentity: { ...identity, styleReferenceImages }, updatedAt: new Date() })
+      .where(eq(companyProfiles.id, profile.id));
+
+    revalidatePath("/company");
+    return { ok: true, styleReferenceImages };
+  } catch {
+    // compressPng throws for bytes that are not an image, whatever the
+    // browser claimed the mime type was.
+    return { ok: false, error: "That file couldn't be read as an image — try a PNG, JPEG or WebP." };
+  }
+}
+
+/** Removes one style reference: out of the array, and its blob deleted. */
+export async function removeStyleReference(
+  url: string
+): Promise<{ ok: true; styleReferenceImages: string[] } | { ok: false; error: string }> {
+  const session = await requireSession();
+  const profile = await getOrCreateCompanyProfile(session.user.tenantId);
+  // DEFAULT_VISUAL_IDENTITY has no palette (it must be extracted or typed),
+  // so a tenant with no saved identity yet gets an empty one here, not the
+  // bare default -- that default is not assignable to the VisualIdentity column.
+  const identity = profile.visualIdentity ?? { ...DEFAULT_VISUAL_IDENTITY, palette: [] };
+  const styleReferenceImages = identity.styleReferenceImages.filter((ref) => ref !== url);
+  if (styleReferenceImages.length === identity.styleReferenceImages.length) {
+    // Not ours — say nothing happened rather than deleting a blob by URL.
+    return { ok: true, styleReferenceImages };
+  }
+
+  await db
+    .update(companyProfiles)
+    .set({ visualIdentity: { ...identity, styleReferenceImages }, updatedAt: new Date() })
+    .where(eq(companyProfiles.id, profile.id));
+  await deleteBlobs([blobPathnameFromUrl(url)]);
+
+  revalidatePath("/company");
+  return { ok: true, styleReferenceImages };
 }
