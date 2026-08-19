@@ -12,6 +12,7 @@ import { IndustrySelect } from "./industry-select";
 import { NewsToggle } from "./news-toggle";
 import { PersonasEditor } from "./personas-editor";
 import { GuidelinesEditor } from "./guidelines-editor";
+import { VisualIdentityEditor } from "./visual-identity-editor";
 import { ChangeEventsSection } from "./change-events-section";
 import { AtomicUpdatesSection } from "./atomic-updates-section";
 import { ToastForm } from "../settings/toast-form";
@@ -191,6 +192,25 @@ export default async function CompanyPage({
               Save
             </Button>
           </ToastForm>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Visual identity</CardTitle>
+          <CardDescription>
+            Palette, style and rules every generated image follows. Drafts get images only once at least three
+            colors are saved here.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {/* Keyed on the server value for the same reason as GuidelinesEditor
+              above: the editor seeds its state once from `initial`. */}
+          <VisualIdentityEditor
+            key={JSON.stringify(brandProfile.visualIdentity)}
+            initial={brandProfile.visualIdentity}
+            defaultWebsiteUrl={brandProfile.websiteUrl ?? ""}
+          />
         </CardContent>
       </Card>
 
