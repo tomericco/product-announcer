@@ -7,6 +7,7 @@ import {
   CalendarDays,
   Columns3,
   History,
+  Images,
   Plug,
   Radar,
 } from "lucide-react";
@@ -18,6 +19,7 @@ const NAV = [
   { href: "/signals", label: "Signals", icon: Radar },
   { href: "/board", label: "Board", icon: Columns3 },
   { href: "/calendar", label: "Calendar", icon: CalendarDays },
+  { href: "/images", label: "Images", icon: Images },
   { href: "/history", label: "Release history", icon: History },
   { href: "/integrations", label: "Integrations", icon: Plug },
   { href: "/company", label: "Company", icon: Building2 },

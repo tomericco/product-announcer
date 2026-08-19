@@ -3,7 +3,7 @@
 import { useRef, useState } from "react";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
-import { ImageIcon, Loader2, PencilLine, Sparkles, Trash2, Upload } from "lucide-react";
+import { ImageIcon, Images, Loader2, PencilLine, Sparkles, Trash2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -23,7 +23,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { generateCover, removeCover, suggestImagePrompt, updateCoverAlt, uploadImageFile } from "./image-actions";
+import { LibraryPicker } from "../../images/library-picker";
+import { generateCover, removeCover, setCoverFromImage, suggestImagePrompt, updateCoverAlt, uploadImageFile } from "./image-actions";
 
 export type CoverState = { url: string; alt: string; concept: string; sourceKind: "generated" | "uploaded" } | null;
 
@@ -52,6 +53,7 @@ export function CoverPanel({
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [altOpen, setAltOpen] = useState(false);
   const [altDraft, setAltDraft] = useState("");
+  const [pickerOpen, setPickerOpen] = useState(false);
   const fileInput = useRef<HTMLInputElement | null>(null);
 
   async function run(label: string, action: () => Promise<{ ok: true; url: string } | { ok: false; error: string }>, next: (url: string) => CoverState) {
@@ -157,6 +159,9 @@ export function CoverPanel({
         </DropdownMenuItem>
         <DropdownMenuItem onClick={() => fileInput.current?.click()}>
           <Upload /> Upload
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={() => setPickerOpen(true)}>
+          <Images /> From library
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -294,6 +299,21 @@ export function CoverPanel({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <LibraryPicker
+        open={pickerOpen}
+        onOpenChange={setPickerOpen}
+        forCover
+        onPick={async (image) => {
+          const ok = await run("Setting cover…", () => setCoverFromImage({ contentPieceId, imageId: image.imageId }), (url) => ({
+            url,
+            alt: "",
+            concept: image.concept,
+            sourceKind: "generated",
+          }));
+          if (!ok) throw new Error("Couldn't set the cover.");
+        }}
+      />
     </section>
   );
 }

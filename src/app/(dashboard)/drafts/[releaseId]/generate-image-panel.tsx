@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Loader2, Sparkles, WandSparkles } from "lucide-react";
+import { Images, Loader2, Sparkles, WandSparkles } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { LibraryPicker } from "../../images/library-picker";
 import { useAgentEdit } from "./agent-edit-context";
 import { generateBodyImage, suggestImagePrompt } from "./image-actions";
 
@@ -30,6 +31,7 @@ export function GenerateImagePanel({
   const { ops } = useAgentEdit();
   const [prompt, setPrompt] = useState("");
   const [busy, setBusy] = useState<"idle" | "suggesting" | "generating">("idle");
+  const [pickerOpen, setPickerOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
@@ -122,6 +124,9 @@ export function GenerateImagePanel({
               {busy === "suggesting" ? <Loader2 className="size-3.5 animate-spin" /> : <WandSparkles className="size-3.5" />}
               Suggest prompt
             </Button>
+            <Button type="button" variant="outline" size="sm" onClick={() => setPickerOpen(true)} disabled={busy !== "idle"}>
+              <Images className="size-3.5" /> From library
+            </Button>
             <div className="ml-auto flex items-center gap-2">
               <Button type="button" variant="ghost" size="sm" onClick={onClose} disabled={busy !== "idle"}>
                 Cancel
@@ -133,6 +138,15 @@ export function GenerateImagePanel({
           </div>
         </>
       )}
+      <LibraryPicker
+        open={pickerOpen}
+        onOpenChange={setPickerOpen}
+        onPick={async (image) => {
+          await onInsert(`![${image.concept.replace(/[[\]]/g, "")}](${image.url})`);
+          toast.success("Image added");
+          onClose();
+        }}
+      />
     </div>
   );
 }
