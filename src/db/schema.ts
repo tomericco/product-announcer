@@ -722,6 +722,13 @@ export const contentImages = pgTable(
     // What the image is for — survives regeneration, powers alt text and retry.
     concept: text("concept").notNull(),
     altText: text("alt_text").notNull(),
+    // The H2 heading text a BODY illustration was planned under (spec §4). Set
+    // by the illustration agent, read by the draft page's Retry so a failed
+    // render can be re-placed where the plan wanted it. Null for covers,
+    // uploads, library images and editor-inserted images — for those, the
+    // markdown position is the only position. Text, not an offset: humans edit
+    // above and below; the heading text survives that, a line number does not.
+    anchorHeading: text("anchor_heading"),
     sourceKind: text("source_kind").notNull(), // ImageSourceKind
     status: text("status").notNull(), // ImageStatus
     // Points at the image_renders row currently in use. Deliberately NO foreign

@@ -1,0 +1,1 @@
+ALTER TABLE "content_images" ADD COLUMN "anchor_heading" text;
