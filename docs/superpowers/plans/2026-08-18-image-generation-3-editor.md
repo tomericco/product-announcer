@@ -4,6 +4,8 @@
 
 **Goal:** Let a content lead insert, edit, restore, upload and reuse brand-styled images from the draft editor, set a cover on the draft page, and manage every image from a new Images library.
 
+> **UX naming rule (applies to every user-facing string in this plan):** the user-facing word is **"image"** — never "illustration", "render", or "graphic" in UI copy, toasts, dialog titles, or placeholders. "Render" in UI copy becomes "version" (a history-strip entry: "Restore this version", "Earlier version restored") or "generate" (the act: "Generating image…", "Generation failed"). Copy conventions to match (from the existing app): sentence case; success toasts short past-tense, no period; error toasts "Couldn't X — try again"; pending buttons gerund + real `…`; destructive confirms are a question-form Dialog title ending in `?` with a description of what is lost, Cancel (ghost) + a `variant="destructive"` verb button.
+
 **Architecture:** Thin server actions (`drafts/[releaseId]/image-actions.ts`, `images/actions.ts`) call a shared `src/lib/images/generate.ts` (render → compress → upload → store rows) on top of Plan 1's foundation modules. The editor reuses the two seams Ask AI already uses — the floating insert surface in the shared `MdxEditor` and the `EditorOps` bridge in `AgentEditBridge` — extended with three ops (`captureInsertPoint`, `insertAtCursor`, `replaceImageSrc`), and MDXEditor's `imagePlugin({ imageUploadHandler, EditImageToolbar })` seams for uploads and per-image edit affordances. The cover is a `role: "cover"` row shown by a `CoverPanel` above the title; the library is a read view over the same rows.
 
 **Tech Stack:** Next.js 16.2.10 App Router (server actions, `next/image`), `@mdxeditor/editor` 4.1.0 (+ its `lexical` 0.48 / `@lexical/react` deps), Drizzle, `ai` v7 `generateObject`, Vercel Blob (via Plan 1), sharp (via Plan 1), Vitest.
@@ -620,8 +622,9 @@ git commit -m "fix: never delete a blob another render still references"
   export type ImageLookup = { imageId: string; role: ImageRole; sourceKind: ImageSourceKind; contentPieceId: string | null; currentRenderId: string | null; currentPrompt: string; renders: { id: string; url: string; prompt: string; createdAt: string }[] };
   export async function lookupImageBySrc(src: string): Promise<ImageLookup | null>;
   export async function setCoverFromImage(a: { contentPieceId: string; imageId: string }): Promise<{ ok: true; url: string } | { ok: false; error: string }>;
+  export async function updateCoverAlt(a: { contentPieceId: string; altText: string }): Promise<{ ok: true } | { ok: false; error: string }>;
   ```
-  Contract deviations, both additive: `suggestImagePrompt` takes an optional `heading` (the client can read the nearest heading above the caret from the DOM — Task 6 — while MDXEditor exposes no markdown offset for the caret) and optional `role`; `lookupImageBySrc` returns the render history too, so the editor's toolbar needs one round trip.
+  Contract deviations, all additive: `suggestImagePrompt` takes an optional `heading` (the client can read the nearest heading above the caret from the DOM — Task 6 — while MDXEditor exposes no markdown offset for the caret) and optional `role`; `lookupImageBySrc` returns the render history too, so the editor's toolbar needs one round trip; `updateCoverAlt` exists because the spec's alt policy says alt text is "always human-editable" (§2) and a user story fixes alt before publishing — body images get that via MDXEditor's image-settings dialog (the markdown alt is the live alt), but the cover is not in the markdown, so without this action its alt (published to Webflow, LinkedIn and the webhook) would be uneditable anywhere.
 
 Semantics to hold (spec §5):
 - The user-facing prompt is a concept; the server wraps it with `buildImagePrompt`. `regenerateImage` mode `"prompt"` sends the given full prompt verbatim; mode `"edit"` renders `editOf: current.blobUrl` with the instruction and stores `editPromptHistory(current.prompt, instruction)`.
@@ -916,6 +919,7 @@ import {
   uploadImageFile,
   lookupImageBySrc,
   setCoverFromImage,
+  updateCoverAlt,
 } from "../../../src/app/(dashboard)/drafts/[releaseId]/image-actions";
 
 const VI: VisualIdentity = {
@@ -1109,6 +1113,21 @@ describe("generateCover / removeCover / setCoverFromImage", () => {
     expect(cover?.id).not.toBe(image.id);
     // Both rows point at one blob; the render count is 1 + 1.
     expect(await db.select().from(imageRenders).where(eq(imageRenders.blobPathname, "p/gears-1.png"))).toHaveLength(2);
+  });
+});
+
+describe("updateCoverAlt", () => {
+  it("trims and persists the cover's alt text", async () => {
+    const { tenant, piece } = await seed();
+    await generateCover({ contentPieceId: piece.id, mode: "prompt", prompt: "first" });
+    expect(await updateCoverAlt({ contentPieceId: piece.id, altText: "  A lighthouse over a grid  " })).toEqual({ ok: true });
+    const cover = await getCoverImage(tenant.id, piece.id);
+    expect(cover?.altText).toBe("A lighthouse over a grid");
+  });
+
+  it("returns not-found when the piece has no cover", async () => {
+    const { piece } = await seed();
+    expect(await updateCoverAlt({ contentPieceId: piece.id, altText: "x" })).toEqual({ ok: false, error: "Image not found." });
   });
 });
 
@@ -1485,6 +1504,32 @@ export async function removeCover(a: { contentPieceId: string }): Promise<void> 
   if (cover) await deleteImage(tenantId, cover.id);
   revalidatePath(`/drafts/${piece.id}`);
   revalidatePath("/board");
+}
+
+/**
+ * Alt text is human-editable (spec §2 alt policy). Body images edit theirs in
+ * the editor's image-settings dialog (the markdown alt is the live alt); the
+ * cover is not in the markdown, so this is its only edit path — and its alt is
+ * what Webflow, LinkedIn and the webhook publish (Plan 4). Trimmed, capped at
+ * 125 chars; empty means decorative.
+ */
+export async function updateCoverAlt(a: {
+  contentPieceId: string;
+  altText: string;
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  const session = await requireSession();
+  const tenantId = session.user.tenantId;
+  const piece = await loadOwnedDraft(tenantId, a.contentPieceId);
+  assertDraftEditable(piece);
+  const cover = await getCoverImage(tenantId, piece.id);
+  if (!cover) return { ok: false, error: NOT_FOUND };
+
+  await db
+    .update(contentImages)
+    .set({ altText: a.altText.trim().slice(0, 125), updatedAt: new Date() })
+    .where(eq(contentImages.id, cover.id));
+  revalidatePath(`/drafts/${piece.id}`);
+  return { ok: true };
 }
 
 /** Fields: `contentPieceId` ("" for a library upload), `role`, `file`. */
@@ -1996,7 +2041,7 @@ export function GenerateImagePanel({
         return;
       }
       await onInsert(result.markdown);
-      toast.success("Illustration added");
+      toast.success("Image added");
       onClose();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Something went wrong");
@@ -2012,16 +2057,29 @@ export function GenerateImagePanel({
       // taking focus; stop it here so clicks inside the panel behave normally.
       onMouseDown={(e) => e.stopPropagation()}
       onKeyDown={(e) => {
+        // Esc always closes — while generating, closing does NOT cancel the
+        // render (the closure below finishes the insert + save on its own),
+        // the same "closing won't stop it" contract as GenerationModal.
         if (e.key === "Escape") {
           e.stopPropagation();
-          if (busy === "idle") onClose();
+          onClose();
         }
         if ((e.metaKey || e.ctrlKey) && e.key === "Enter") void generate();
       }}
     >
       {busy === "generating" ? (
-        <div className="flex items-center gap-3 py-6 text-muted-foreground">
-          <Loader2 className="size-4 animate-spin" /> Composing illustration…
+        <div className="space-y-2 py-2">
+          <div className="flex items-center gap-3 text-muted-foreground">
+            <Loader2 className="size-4 animate-spin" /> Generating image…
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Takes ~20 seconds. Closing won&apos;t stop it — the image appears at your cursor when it&apos;s ready.
+          </p>
+          <div className="flex justify-end">
+            <Button type="button" variant="ghost" size="sm" onClick={onClose}>
+              Close
+            </Button>
+          </div>
         </div>
       ) : (
         <>
@@ -2068,7 +2126,7 @@ Create `src/app/(dashboard)/drafts/[releaseId]/generate-image-button.tsx`:
 "use client";
 
 import { useState } from "react";
-import { ImagePlus } from "lucide-react";
+import { Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { useUnsavedChanges } from "../../unsaved-changes";
 import { useAgentEdit } from "./agent-edit-context";
@@ -2118,10 +2176,16 @@ export function GenerateImageButton({ contentPieceId }: { contentPieceId: string
 
   return (
     <>
+      {/* Sparkles, not a second image glyph: the surface already has the
+          built-in InsertImage frame icon one slot over, and two near-identical
+          image icons would be indistinguishable. Sparkles is this app's AI
+          affordance (Ask AI's selection button, brand-style import, cover
+          "Generate from post"), so "sparkle beside the image icon" reads as
+          "generate an image" — the title/aria carry the words. */}
       <button
         type="button"
-        title="Generate an image"
-        aria-label="Generate an image"
+        title="Generate image"
+        aria-label="Generate image"
         onClick={() => {
           const editorOps = ops.current;
           if (!editorOps) {
@@ -2133,7 +2197,7 @@ export function GenerateImageButton({ contentPieceId }: { contentPieceId: string
         }}
         className="flex items-center gap-1 rounded px-1.5 py-0.5 text-muted-foreground transition-colors hover:text-foreground"
       >
-        <ImagePlus className="size-4" />
+        <Sparkles className="size-4" />
       </button>
       {open && (
         <GenerateImagePanel
@@ -2148,7 +2212,7 @@ export function GenerateImageButton({ contentPieceId }: { contentPieceId: string
 }
 ```
 
-`ImagePlus` and `WandSparkles` exist in `lucide-react` ^1.24 (check `node_modules/lucide-react/dist/lucide-react.d.ts` with `grep -c "ImagePlus\|WandSparkles"`; if `WandSparkles` is missing use `Wand2`).
+`Sparkles` is already used app-wide (Ask AI, brand-style import); `WandSparkles` exists in `lucide-react` ^1.24 (check `node_modules/lucide-react/dist/lucide-react.d.ts` with `grep -c "WandSparkles"`; if missing use `Wand2`).
 
 - [ ] **Step 3: Panel CSS**
 
@@ -2446,7 +2510,7 @@ function ImageActionsPopover({ src }: { src: string }) {
           <p className="text-muted-foreground">This image was uploaded — replace or remove it with the buttons beside this one.</p>
         ) : busy ? (
           <div className="flex items-center gap-2 py-4 text-muted-foreground">
-            <Loader2 className="size-4 animate-spin" /> Composing illustration…
+            <Loader2 className="size-4 animate-spin" /> Generating image…
           </div>
         ) : view === "prompt" ? (
           <div className="space-y-2">
@@ -2460,7 +2524,7 @@ function ImageActionsPopover({ src }: { src: string }) {
                 type="button"
                 size="sm"
                 disabled={!prompt.trim()}
-                onClick={() => void run(() => regenerateImage({ imageId: lookup.imageId, mode: "prompt", prompt }), "Illustration regenerated")}
+                onClick={() => void run(() => regenerateImage({ imageId: lookup.imageId, mode: "prompt", prompt }), "Image regenerated")}
               >
                 Regenerate
               </Button>
@@ -2505,7 +2569,7 @@ function ImageActionsPopover({ src }: { src: string }) {
             <button
               type="button"
               className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-muted"
-              onClick={() => void run(() => regenerateImage({ imageId: lookup.imageId, mode: "same" }), "Illustration regenerated")}
+              onClick={() => void run(() => regenerateImage({ imageId: lookup.imageId, mode: "same" }), "Image regenerated")}
             >
               <RefreshCw className="size-4" /> Regenerate
             </button>
@@ -2521,10 +2585,12 @@ function ImageActionsPopover({ src }: { src: string }) {
                       <button
                         key={r.id}
                         type="button"
-                        title={current ? "Current render" : "Restore this render"}
+                        title={current ? "Current version" : "Restore this version"}
+                        aria-label={current ? "Current version" : "Restore this version"}
+                        aria-current={current || undefined}
                         disabled={current}
                         className={`relative shrink-0 overflow-hidden rounded border ${current ? "ring-2 ring-primary" : "hover:opacity-80"}`}
-                        onClick={() => void run(() => restoreRender({ imageId: lookup.imageId, renderId: r.id }), "Render restored")}
+                        onClick={() => void run(() => restoreRender({ imageId: lookup.imageId, renderId: r.id }), "Earlier version restored")}
                       >
                         {/* Thumbnails are the blob itself; a plain img keeps this component free of next/image's remotePatterns dependency inside the editor. */}
                         {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -2729,10 +2795,10 @@ git commit -m "feat: image uploads from the editor, blob host for next/image, im
 - Produces:
   ```tsx
   export type CoverState = { url: string; alt: string; concept: string; sourceKind: "generated" | "uploaded" } | null;
-  export function CoverPanel({ contentPieceId, initial }: { contentPieceId: string; initial: CoverState }): JSX.Element;
+  export function CoverPanel({ contentPieceId, initial, promptSeed }: { contentPieceId: string; initial: CoverState; promptSeed: string }): JSX.Element;
   ```
 
-Behaviour (spec §5 Cover): no cover → **Add cover** → menu **Generate from post** → **Write a prompt** (dialog pre-filled: the previous concept when changing, otherwise `suggestImagePrompt({ role: "cover" })` — never empty) → **Upload**. A cover shows via `next/image` (1200×630) with hover **Change** (reopens the menu with the previous concept) / **Remove**. Rendered only when the type's policy has `cover: true` (spec §6). Task 10 adds **From library** to this menu.
+Behaviour (spec §5 Cover): no cover → **Add cover** → menu **Generate from post** → **Write a prompt** (dialog pre-filled: the previous concept when changing, otherwise `promptSeed` — the concept of a failed agent cover (spec §4: "the Add-cover menu pre-filled with the failed prompt") — otherwise `suggestImagePrompt({ role: "cover" })`; never empty) → **Upload**. A cover shows via `next/image` (1200×630) with hover **Change** (reopens the menu with the previous concept) / **Alt text** (a small dialog editing the cover row's alt — the cover is not in the markdown, so unlike body images this is its only alt edit path, and this alt is what Plan 4 publishes) / **Remove** (a question-form confirm Dialog first: Remove deletes the row, its version history AND its blobs — real data loss, so it follows the app's destructive-confirm pattern, unlike Notion's instant remove where nothing is lost). Rendered only when the type's policy has `cover: true` (spec §6). Task 10 adds **From library** to this menu.
 
 - [ ] **Step 1: The panel**
 
@@ -2763,23 +2829,36 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { generateCover, removeCover, suggestImagePrompt, uploadImageFile } from "./image-actions";
+import { Input } from "@/components/ui/input";
+import { generateCover, removeCover, suggestImagePrompt, updateCoverAlt, uploadImageFile } from "./image-actions";
 
 export type CoverState = { url: string; alt: string; concept: string; sourceKind: "generated" | "uploaded" } | null;
 
 /**
  * The Notion-pattern cover above the title (spec §5 Cover). A per-piece
- * secondary artifact like linkedin-panel.tsx: generate / change / remove,
- * backed by the role:"cover" content_images row — never derived from the
- * first body image.
+ * secondary artifact like linkedin-panel.tsx: generate / change / edit alt /
+ * remove, backed by the role:"cover" content_images row — never derived from
+ * the first body image. `promptSeed` is a failed agent cover's concept, so
+ * "Write a prompt" reopens with what the agent meant to draw (spec §4).
  */
-export function CoverPanel({ contentPieceId, initial }: { contentPieceId: string; initial: CoverState }) {
+export function CoverPanel({
+  contentPieceId,
+  initial,
+  promptSeed,
+}: {
+  contentPieceId: string;
+  initial: CoverState;
+  promptSeed: string;
+}) {
   const router = useRouter();
   const [cover, setCover] = useState<CoverState>(initial);
   const [busy, setBusy] = useState<string | null>(null); // label of the in-flight step
   const [promptOpen, setPromptOpen] = useState(false);
   const [prompt, setPrompt] = useState("");
   const [suggesting, setSuggesting] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const [altOpen, setAltOpen] = useState(false);
+  const [altDraft, setAltDraft] = useState("");
   const fileInput = useRef<HTMLInputElement | null>(null);
 
   async function run(label: string, action: () => Promise<{ ok: true; url: string } | { ok: false; error: string }>, next: (url: string) => CoverState) {
@@ -2812,11 +2891,13 @@ export function CoverPanel({ contentPieceId, initial }: { contentPieceId: string
 
   async function openPrompt() {
     setPromptOpen(true);
-    if (cover?.concept) {
-      setPrompt(cover.concept);
+    // Never empty (spec §5): the previous concept, then a failed agent
+    // cover's concept (spec §4), then an auto-drafted suggestion.
+    const seed = cover?.concept || promptSeed;
+    if (seed) {
+      setPrompt(seed);
       return;
     }
-    // "Write a prompt" is never empty: pre-fill with the auto-drafted concept.
     setSuggesting(true);
     try {
       const out = await suggestImagePrompt({ contentPieceId, surroundingMarkdown: "", role: "cover" });
@@ -2860,6 +2941,17 @@ export function CoverPanel({ contentPieceId, initial }: { contentPieceId: string
     }
   }
 
+  async function saveAlt() {
+    if (!cover) return;
+    const result = await updateCoverAlt({ contentPieceId, altText: altDraft });
+    if (!result.ok) {
+      toast.error(result.error);
+      return;
+    }
+    setCover({ ...cover, alt: altDraft.trim() });
+    setAltOpen(false);
+  }
+
   const menu = (trigger: React.ReactElement) => (
     <DropdownMenu>
       <DropdownMenuTrigger render={trigger} />
@@ -2900,7 +2992,18 @@ export function CoverPanel({ contentPieceId, initial }: { contentPieceId: string
           <Image src={cover.url} alt={cover.alt} width={1200} height={630} className="h-auto w-full" priority />
           <div className="absolute right-2 top-2 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
             {menu(<Button type="button" size="sm" variant="secondary">Change</Button>)}
-            <Button type="button" size="sm" variant="secondary" onClick={() => void remove()}>
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              onClick={() => {
+                setAltDraft(cover.alt);
+                setAltOpen(true);
+              }}
+            >
+              Alt text
+            </Button>
+            <Button type="button" size="sm" variant="secondary" onClick={() => setConfirmRemove(true)}>
               <Trash2 className="size-3.5" /> Remove
             </Button>
           </div>
@@ -2942,6 +3045,62 @@ export function CoverPanel({ contentPieceId, initial }: { contentPieceId: string
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Remove deletes the row, its version history and its blobs — real
+          data loss, so it gets the app's question-form destructive confirm
+          (see board.tsx's "Delete this draft?"). */}
+      <Dialog open={confirmRemove} onOpenChange={(next) => !next && !busy && setConfirmRemove(false)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Remove this cover?</DialogTitle>
+            <DialogDescription>
+              The cover and its earlier versions will be deleted permanently. You can add a new one at any time.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <DialogClose render={<Button variant="ghost" disabled={busy !== null} />}>Cancel</DialogClose>
+            <Button
+              variant="destructive"
+              disabled={busy !== null}
+              onClick={() => {
+                setConfirmRemove(false);
+                void remove();
+              }}
+            >
+              Remove
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* The cover's alt is published to Webflow, LinkedIn and the webhook
+          (Plan 4) and the cover is not in the markdown, so this dialog is its
+          one edit path — spec §2 says alt is always human-editable. */}
+      <Dialog open={altOpen} onOpenChange={(next) => !next && setAltOpen(false)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Cover alt text</DialogTitle>
+            <DialogDescription>
+              Describes the cover for screen readers and for the destinations it publishes to. One sentence, what it
+              means — not how it looks. Leave empty for decorative.
+            </DialogDescription>
+          </DialogHeader>
+          <Input
+            autoFocus
+            maxLength={125}
+            value={altDraft}
+            onChange={(e) => setAltDraft(e.target.value)}
+            placeholder="e.g. A lighthouse beam sweeping over a grid of documents"
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void saveAlt();
+            }}
+          />
+          <DialogFooter>
+            <DialogClose render={<Button variant="ghost" />}>Cancel</DialogClose>
+            <Button onClick={() => void saveAlt()}>Save</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </section>
   );
 }
@@ -2956,6 +3115,7 @@ In `page.tsx` add imports after line 32:
 ```ts
 import { getOrCreateCompanyProfile } from "@/lib/workspace/company-profile";
 import { resolveImagePolicy } from "@/lib/images/policy";
+import { isVisualIdentityReady } from "@/lib/images/visual-identity";
 import { getCoverImage } from "@/lib/images/store";
 import { CoverPanel, type CoverState } from "./cover-panel";
 ```
@@ -2966,7 +3126,13 @@ After the LinkedIn loads (line 241) add:
   // The per-type image policy (spec §6) decides whether the piece has a cover
   // affordance at all; the profile is one fetch, same as generation reads it.
   const profile = await getOrCreateCompanyProfile(session.user.tenantId);
-  const showCover = resolveImagePolicy(profile.imagePolicy, update.type).cover;
+  const imagePolicy = resolveImagePolicy(profile.imagePolicy, update.type);
+  // Spec §4: with no confirmed visual identity, drafts come without images
+  // "and the page points me to the setup card". The pointer replaces the
+  // cover affordance (generating would only error-toast anyway).
+  const needsVisualIdentity =
+    (imagePolicy.cover || imagePolicy.bodyCap > 0) && !isVisualIdentityReady(profile.visualIdentity);
+  const showCover = imagePolicy.cover && !needsVisualIdentity;
   const coverRow = showCover ? await getCoverImage(session.user.tenantId, update.id) : null;
   const cover: CoverState = coverRow?.current
     ? {
@@ -2976,13 +3142,27 @@ After the LinkedIn loads (line 241) add:
         sourceKind: coverRow.sourceKind === "uploaded" ? "uploaded" : "generated",
       }
     : null;
+  // A failed agent cover has a row but no render: seed the prompt dialog with
+  // its concept (spec §4 — "Add-cover menu pre-filled with the failed prompt").
+  const coverPromptSeed = coverRow && !coverRow.current ? coverRow.concept : "";
 ```
 
 And right before `<ToastForm` (line 299), still inside the providers:
 
 ```tsx
-          {showCover && <CoverPanel contentPieceId={update.id} initial={cover} />}
+          {needsVisualIdentity && (
+            <p className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">
+              This draft has no images — add your palette and style in{" "}
+              <Link href="/company" className="underline">
+                Company &rarr; Visual identity
+              </Link>{" "}
+              and future drafts will include a cover and body images.
+            </p>
+          )}
+          {showCover && <CoverPanel contentPieceId={update.id} initial={cover} promptSeed={coverPromptSeed} />}
 ```
+
+(`Link` from `next/link` is already imported by the page; add it if not.)
 
 - [ ] **Step 3: Gates**
 
@@ -3384,6 +3564,7 @@ import { contentPieces, type ImageRole, type ImageSourceKind } from "@/db/schema
 import { requireSession } from "@/lib/workspace/session";
 import { listImages } from "@/lib/images/store";
 import { Badge } from "@/components/ui/badge";
+import { EmptyState, EmptyStateDescription, EmptyStateTitle } from "@/components/ui/empty-state";
 import { ImageFilters } from "./image-filters";
 import { ImageGrid, type LibraryImage } from "./image-card";
 import { GenerateDialog } from "./generate-dialog";
@@ -3448,7 +3629,15 @@ export default async function ImagesPage({
       <p className="text-sm text-muted-foreground">Every generated and uploaded image across your content, newest first.</p>
       <ImageFilters state={{ pieceId: pieceId ?? "all", role: role ?? "all", source: source ?? "all" }} pieces={pieces} />
       {images.length === 0 ? (
-        <p className="rounded-md border border-dashed p-8 text-center text-sm text-muted-foreground">No images yet. Generate one here, or from a draft&apos;s editor.</p>
+        // The page-level EmptyState primitive, as /signals and /history use it
+        // (read empty-state.tsx for the exact subcomponent names before use).
+        <EmptyState>
+          <EmptyStateTitle>No images yet</EmptyStateTitle>
+          <EmptyStateDescription>
+            Generate one here, or from a draft&apos;s editor — every generated and uploaded image lands in this
+            library.
+          </EmptyStateDescription>
+        </EmptyState>
       ) : (
         <ImageGrid images={images} />
       )}
@@ -3506,7 +3695,7 @@ export function ImageGrid({ images }: { images: LibraryImage[] }) {
                   <Image src={image.url} alt={image.altText} fill sizes="(min-width: 1024px) 25vw, 50vw" className="object-cover" />
                 ) : (
                   <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
-                    {image.status === "failed" ? "Render failed" : "Rendering…"}
+                    {image.status === "failed" ? "Generation failed" : "Generating…"}
                   </div>
                 )}
               </div>
@@ -3654,7 +3843,7 @@ export function ImageDetail({ image, onClose }: { image: LibraryImage | null; on
             ) : current ? (
               <Image src={current} alt={image.altText} fill sizes="(min-width: 640px) 60vw, 100vw" className="object-contain" />
             ) : (
-              <div className="flex h-full items-center justify-center text-sm text-muted-foreground">No render</div>
+              <div className="flex h-full items-center justify-center text-sm text-muted-foreground">No image yet</div>
             )}
           </div>
 
@@ -3672,7 +3861,7 @@ export function ImageDetail({ image, onClose }: { image: LibraryImage | null; on
                   variant="outline"
                   className="w-full justify-start"
                   disabled={busy || !current}
-                  onClick={() => void run(() => regenerateImage({ imageId, mode: "same" }), "Illustration regenerated")}
+                  onClick={() => void run(() => regenerateImage({ imageId, mode: "same" }), "Image regenerated")}
                 >
                   <RefreshCw className="size-4" /> Regenerate
                 </Button>
@@ -3683,7 +3872,7 @@ export function ImageDetail({ image, onClose }: { image: LibraryImage | null; on
                 <Textarea rows={8} value={prompt} onChange={(e) => setPrompt(e.target.value)} className="text-xs" />
                 <div className="flex justify-end gap-2">
                   <Button type="button" variant="ghost" size="sm" onClick={() => setView("menu")}>Back</Button>
-                  <Button type="button" size="sm" disabled={busy || !prompt.trim()} onClick={() => void run(() => regenerateImage({ imageId, mode: "prompt", prompt }), "Illustration regenerated")}>
+                  <Button type="button" size="sm" disabled={busy || !prompt.trim()} onClick={() => void run(() => regenerateImage({ imageId, mode: "prompt", prompt }), "Image regenerated")}>
                     Regenerate
                   </Button>
                 </div>
@@ -3712,9 +3901,11 @@ export function ImageDetail({ image, onClose }: { image: LibraryImage | null; on
                         key={r.id}
                         type="button"
                         disabled={isCurrent || busy}
-                        title={isCurrent ? "Current render" : "Restore this render"}
+                        title={isCurrent ? "Current version" : "Restore this version"}
+                        aria-label={isCurrent ? "Current version" : "Restore this version"}
+                        aria-current={isCurrent || undefined}
                         className={`relative size-14 overflow-hidden rounded border ${isCurrent ? "ring-2 ring-primary" : "hover:opacity-80"}`}
-                        onClick={() => void run(() => restoreRender({ imageId, renderId: r.id }), "Render restored")}
+                        onClick={() => void run(() => restoreRender({ imageId, renderId: r.id }), "Earlier version restored")}
                       >
                         <Image src={r.url} alt="" fill sizes="56px" className="object-cover" />
                       </button>
@@ -3730,12 +3921,18 @@ export function ImageDetail({ image, onClose }: { image: LibraryImage | null; on
               ) : view === "confirmDelete" ? (
                 <div className="space-y-2">
                   <p className="text-xs">
-                    Delete this image and its render history?
-                    {image.pieceTitle ? ` It is used in “${image.pieceTitle}” — its line will be removed from that draft too.` : ""}
+                    Delete this image and its earlier versions? This can&apos;t be undone.
+                    {image.role === "cover" && image.pieceTitle
+                      ? ` It is the cover of “${image.pieceTitle}” — that draft will lose its cover.`
+                      : image.pieceTitle
+                        ? ` It is used in “${image.pieceTitle}” — it will be removed from that draft too.`
+                        : ""}
                   </p>
                   <div className="flex justify-end gap-2">
-                    <Button type="button" variant="ghost" size="sm" onClick={() => setView("menu")}>Cancel</Button>
-                    <Button type="button" variant="destructive" size="sm" disabled={busy} onClick={() => void remove()}>Delete</Button>
+                    <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => setView("menu")}>Cancel</Button>
+                    <Button type="button" variant="destructive" size="sm" disabled={busy} onClick={() => void remove()}>
+                      {busy ? "Deleting…" : "Delete"}
+                    </Button>
                   </div>
                 </div>
               ) : (
@@ -3808,7 +4005,7 @@ export function GenerateDialog() {
         </DialogHeader>
         {busy ? (
           <div className="flex items-center gap-3 py-8 text-sm text-muted-foreground">
-            <Loader2 className="size-4 animate-spin" /> Composing illustration…
+            <Loader2 className="size-4 animate-spin" /> Generating image…
           </div>
         ) : (
           <Textarea
@@ -3895,7 +4092,7 @@ export function LibraryPicker({
       <DialogContent className="sm:max-w-3xl">
         <DialogHeader>
           <DialogTitle>From library</DialogTitle>
-          <DialogDescription>Reuse an existing image — no new render.</DialogDescription>
+          <DialogDescription>Reuse an image you already have — it&apos;s inserted as-is, nothing new is generated.</DialogDescription>
         </DialogHeader>
         {images === null || busy ? (
           <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
@@ -4018,8 +4215,8 @@ Editor — insert:
 - [ ] Put the caret on an empty paragraph under an H2 → the insert surface shows a third (image-plus) button.
 - [ ] Click it → the panel opens under the surface, textarea focused, surface stays visible while typing.
 - [ ] Suggest prompt → the textarea fills with a concept about THAT section (not the intro).
-- [ ] Generate → "Composing illustration…" → the image appears at the caret; the page's Save button is not dirty (saved by the action); reload shows the image.
-- [ ] Esc with the panel focused closes it without inserting; Cancel likewise.
+- [ ] Generate → "Generating image…" → the image appears at the caret; the page's Save button is not dirty (saved by the action); reload shows the image.
+- [ ] Esc (or Cancel) before Generate closes the panel without inserting; Close/Esc DURING generation dismisses the panel and the image still lands at the cursor when ready.
 - [ ] From library → picking an image inserts it at the caret without a new render (Images page count unchanged).
 - [ ] With the visual identity cleared in Company settings, Generate shows the "Set up your visual identity…" toast.
 
@@ -4032,10 +4229,13 @@ Editor — edit:
 - [ ] Drag-drop a JPEG onto the editor → uploaded, inserted; the sparkle popover says it was uploaded (no edit actions). Drop a GIF → toast "Only PNG, JPEG or WebP…" and nothing inserted. A 12 MB PNG → the 10 MB toast.
 
 Cover:
-- [ ] Above the title: "Add cover" → Generate from post → cover appears (1200×630); Change → Write a prompt is prefilled with the previous concept; Remove clears it.
+- [ ] Above the title: "Add cover" → Generate from post → cover appears (1200×630); Change → Write a prompt is prefilled with the previous concept; Remove asks "Remove this cover?" and clears it on confirm.
 - [ ] Add cover → Write a prompt on a coverless piece → the textarea is prefilled with a suggestion, never empty.
+- [ ] Hover the cover → Alt text opens a small dialog; the saved text survives a reload.
+- [ ] On a draft whose agent cover failed (failed cover row), Write a prompt opens prefilled with the failed cover's concept.
 - [ ] Add cover → Upload → the file becomes the cover; Add cover → From library → picks an existing image as cover, no new blob (Images page shows the same URL under both rows).
 - [ ] Set the type's cover to off in Settings → Content images → the panel disappears from the draft page.
+- [ ] Clear the visual identity in Company settings → the draft page shows the "This draft has no images" pointer (linking to Company → Visual identity) instead of Add cover.
 
 Library:
 - [ ] Nav shows "Images"; the page lists every image newest first; role / source / piece filters narrow it and Clear resets the URL.
@@ -4068,7 +4268,7 @@ Expected: eleven commits on top of Plans 1–2, one per task; a clean tree. Hand
 - Nav "Images"; every row for the tenant newest first; filters by piece / role / source; card = thumbnail, concept, piece link, date; detail = history strip + the three edit actions; delete removes rows + blobs and the piece's markdown line, confirm names the piece, published pieces' images can't be deleted and the UI says why; Generate new → `role:"library"`; From library in the insert panel and the cover menu, reusing the blob URL with no new render — Tasks 4, 10 (+ Task 3's shared-blob guard so a reused blob survives either row's deletion).
 
 **Contract deviations (all additive)**
-- `suggestImagePrompt` gains optional `heading` and `role`; `lookupImageBySrc` returns render history; `setCoverFromImage` and `listImagesForPicker` are new; `image-actions.ts` exports the `ImageLookup` type. Signatures in the contract are otherwise exact.
+- `suggestImagePrompt` gains optional `heading` and `role`; `lookupImageBySrc` returns render history; `setCoverFromImage`, `listImagesForPicker` and `updateCoverAlt` are new (the last because the cover's alt — published by Plan 4 — has no other edit path; spec §2 requires alt to be human-editable); `image-actions.ts` exports the `ImageLookup` type. Signatures in the contract are otherwise exact.
 - `regenerateImage` / `restoreRender` also rewrite the stored piece body's URL server-side (no `bodyEditedAt`) so the library's edit actions are correct for images sitting in a draft; the editor's `replaceImageSrc` + `saveDraftBody` on top is then a no-op write.
 
 **Judgement calls to flag**
@@ -4077,7 +4277,7 @@ Expected: eleven commits on top of Plans 1–2, one per task; a clean tree. Hand
 - `generateCover` on an existing *generated* cover adds a render to the same row (history survives Change) and rewrites concept/altText; an *uploaded* cover is replaced by a fresh row.
 - Cover "From library" copies the render as-is: a body-sized (1200×900) source becomes a 4:3 cover. Not resized — the spec says no new render.
 - `bodySizeLimit: "11mb"` for Server Actions is a global change (needed for uploads); it only raises the cap.
-- The library detail's Delete for a *cover* leaves the piece coverless (the row IS the cover pointer); the confirm copy says "its line will be removed from that draft" only when there is a piece title, which reads slightly off for covers — acceptable for v1.
+- The library detail's Delete for a *cover* leaves the piece coverless (the row IS the cover pointer); the confirm copy branches for covers ("that draft will lose its cover") vs body images ("it will be removed from that draft too").
 
 **Handed elsewhere / not done**
 - Board card cover thumbnail (spec §3): needs `BoardCard.coverUrl` in `src/lib/content/board.ts:49-68`, the board query and its tests — follow-up.

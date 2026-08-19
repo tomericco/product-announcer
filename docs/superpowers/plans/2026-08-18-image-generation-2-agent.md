@@ -2,7 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make `generateDraftForPiece` plan, render, and splice on-brand illustrations into a draft under a new "Creating illustrations" loader step, and give the draft page a Retry for any illustration that failed to render.
+**Goal:** Make `generateDraftForPiece` plan, render, and splice on-brand illustrations into a draft under a new "Creating images" loader step, and give the draft page a Retry for any illustration that failed to render.
+
+> **UX naming rule (applies to every user-facing string in this plan):** the user-facing word is **"image"** — never "illustration", "render", or "graphic" in UI copy, toasts, or banners. "Illustration" stays in code identifiers (`illustratePiece`, `illustration_plan`) and internal comments only. "Render" in UI copy becomes "version" (a row in the history strip) or "generate" (the act).
 
 **Architecture:** Two-stage agent inside the existing drafting pipeline: `planIllustrations` (one `generateObject` call to the text model → concepts + anchor headings + alt text; the final image prompts are built in code by Plan 1's `buildImagePrompt`), then `illustratePiece` (rows first, cover render, body renders in parallel with the cover as a style reference, compress → Blob → `addRender`, `spliceImageAfterHeading` into the body). It sits between review and save in `src/lib/briefs/draft.ts` behind a `deps.illustrate` seam; failures degrade to a `generationError` warning, never a failed draft. A retry server action re-renders a failed row from its stored concept and splices it at its stored anchor heading — a nullable `anchor_heading` column added to `content_images` here, on top of Plan 1's schema.
 
@@ -17,7 +19,7 @@
 - Migrations: `npm run db:generate` after schema edits; commit the generated SQL in src/db/migrations. Then `npm run db:migrate` and `npm run db:migrate:test`. Never hand-write the SQL.
 - Commit after every task; message style: lowercase imperative, `feat:`/`fix:`/`test:`/`docs:` prefix, no Co-Authored-By needed.
 - No test may reach a real model, Blob, or OpenAI. Every network seam is injected: `deps.generate` in `planIllustrations`, `deps.{planIllustrations,renderImage,uploadPng,compressPng}` in `illustratePiece`, `deps.illustrate` in `generateDraftForPiece`, and the retry action's `vi.mock` of `@/lib/ai/images` / `@/lib/images/blob`.
-- Exact values from the spec: cover size `1200x630`; body size `1200x900`, compressed to 1200 px wide; body cap default 3 (`resolveImagePolicy`: `"auto"` → 3, `"off"` → 0); one silent retry per render; plan model = `GENERATION_MODEL` (default `anthropic/claude-sonnet-4-5`, `resolveModel`/`modelId` from `src/lib/ai/model.ts`); usage rows: `illustration_plan` (token usage) — `image_generation` rows are written by Plan 1's `renderImage`, not here; alt text ≤125 chars, never starts with "image of"; new step `{ key: "illustrating", label: "Creating illustrations", slow: true }` between `"reviewing"` and `"saving"`; the illustration agent runs **only** inside `generateDraftForPiece` (never on agent edits, extract, catch-up).
+- Exact values from the spec: cover size `1200x630`; body size `1200x900`, compressed to 1200 px wide; body cap default 3 (`resolveImagePolicy`: `"auto"` → 3, `"off"` → 0); one silent retry per render; plan model = `GENERATION_MODEL` (default `anthropic/claude-sonnet-4-5`, `resolveModel`/`modelId` from `src/lib/ai/model.ts`); usage rows: `illustration_plan` (token usage) — `image_generation` rows are written by Plan 1's `renderImage`, not here; alt text ≤125 chars, never starts with "image of"; new step `{ key: "illustrating", label: "Creating images", slow: true }` between `"reviewing"` and `"saving"`; the illustration agent runs **only** inside `generateDraftForPiece` (never on agent edits, extract, catch-up).
 - `"use server"` files may export ONLY async functions. Never import a runtime value from a server module into a `"use client"` file — `import type` only.
 - Tenant scoping in the WHERE clause is the security boundary; every lib function takes `tenantId` and an injectable `database` defaulting to `db` from `@/db`.
 - `npm run typecheck && npm run lint` are gates on every task; `npm run build` on the task that touches page/route files (Task 7).
@@ -1267,7 +1269,7 @@ git commit -m "feat: illustratePiece — rows, cover-first render, parallel body
 - No change: `src/components/generation-checklist.tsx` and `src/components/draft-progress-checklist.tsx` (see below), `src/lib/content/generation-progress.ts` (asserts the raw column to `DraftStepKey`, line 47), `EDIT_STEPS` (lines 56–61 — the whole-update agent edit never illustrates; spec §4).
 
 **Interfaces:**
-- Produces: `DraftStepKey` gains `"illustrating"`; `DRAFT_STEPS` gains `{ key: "illustrating", label: "Creating illustrations", slow: true }` between `reviewing` and `saving`.
+- Produces: `DraftStepKey` gains `"illustrating"`; `DRAFT_STEPS` gains `{ key: "illustrating", label: "Creating images", slow: true }` between `reviewing` and `saving`. (The key stays `illustrating` — internal; the label follows the UX naming rule: "image", not "illustration".)
 
 Why no component change (verified by reading): `generation-checklist.tsx` derives everything from `DRAFT_STEPS` — `statusesForStep` (lines 106–119) walks `DRAFT_STEPS.entries()`, `stepsToAnnounce` (lines 153–162) slices `DRAFT_STEPS`, the checklist renders `steps={DRAFT_STEPS}` (line 476) through `usePacedStatuses<DraftStepKey>(DRAFT_STEPS)` (line 298). `draft-progress-checklist.tsx`'s `usePacedStatuses` (lines 104–160) reads `slow` off the outgoing step definition (line 151), so `slow: true` exempts the ~30–60 s illustrating wait from the 800 ms floor and lets a fast failure out of it advance immediately. `generationStep` is free text (schema.ts lines 621–633) — no migration.
 
@@ -1304,7 +1306,7 @@ Lines 38–50, insert after the `reviewing` entry (line 48) and before `saving`:
   // text column with hand-edit-freeze semantics; splicing images in after
   // save would race the human's first edit). `slow` for the same reason as
   // the two above: nothing here is bookkeeping.
-  { key: "illustrating", label: "Creating illustrations", slow: true },
+  { key: "illustrating", label: "Creating images", slow: true },
 ```
 
 - [ ] **Step 3: Run**
@@ -1427,12 +1429,16 @@ describe("generateDraftForPiece — illustrations", () => {
     const [after] = await db.select().from(contentPieces).where(eq(contentPieces.id, piece.id));
     expect(after.status).toBe("draft");
     expect(after.body).toBe("Plain body.");
-    expect(after.generationError).toContain("Illustrations could not be generated");
+    expect(after.generationError).toContain("Images could not be generated");
     expect(after.generationStep).toBeNull();
     expect(errors.mock.calls.map((c) => String(c[0])).join("\n")).toContain(piece.id);
   });
 
-  it("appends a count warning when some illustrations failed to render, keeping the spliced body", async () => {
+  it("does NOT warn in generationError when some renders failed — the failed-images notice owns that state", async () => {
+    // A banner copy of the count would go stale the moment a Retry succeeds
+    // (generationError only clears on the next body-changing save) and would
+    // flag the board card as "Flagged copy" for a non-copy problem. The
+    // failed rows themselves drive the live notice (Task 7).
     const tenant = await seedTenant();
     const { piece } = await seedPieceWithBrief(tenant.id);
     const illustrate = vi.fn(async (): Promise<IllustrateResult> => ({ body: WITH_IMAGES, failures: 2 }));
@@ -1445,14 +1451,17 @@ describe("generateDraftForPiece — illustrations", () => {
     expect(result.ok).toBe(true);
     const [after] = await db.select().from(contentPieces).where(eq(contentPieces.id, piece.id));
     expect(after.body).toBe(WITH_IMAGES);
-    expect(after.generationError).toBe("2 illustrations failed to render.");
+    expect(after.generationError).toBeNull();
   });
 
-  it("keeps the competitor warning AND adds the illustration warning", async () => {
+  it("keeps the competitor warning AND adds the images warning when the illustrator throws", async () => {
     const tenant = await seedTenant();
     await db.insert(competitors).values({ tenantId: tenant.id, name: "Phrase" });
     const { piece } = await seedPieceWithBrief(tenant.id, { type: "product_update" });
-    const illustrate = vi.fn(async (): Promise<IllustrateResult> => ({ body: "As Phrase showed…", failures: 1 }));
+    const illustrate = vi.fn(async (): Promise<IllustrateResult> => {
+      throw new Error("plan call exploded");
+    });
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
 
     await generateDraftForPiece(piece.id, tenant.id, {
       database: db,
@@ -1461,7 +1470,8 @@ describe("generateDraftForPiece — illustrations", () => {
     });
     const [after] = await db.select().from(contentPieces).where(eq(contentPieces.id, piece.id));
     expect(after.generationError).toContain("Phrase");
-    expect(after.generationError).toContain("1 illustration failed to render.");
+    expect(after.generationError).toContain("Images could not be generated");
+    expect(errors).toHaveBeenCalled();
   });
 
   it("does not run the illustrator when generation itself failed", async () => {
@@ -1546,9 +1556,14 @@ export type Illustrator = (args: {
     //
     // Outside the inner try above, deliberately: a thrown plan call or a DB
     // hiccup inside the agent is a WARNING on a real draft, never a failed
-    // generation — the words are done and the human should get them. Failed
-    // renders are counted, not thrown; their rows stay `failed` for the draft
-    // page's Retry, so the count here is a nudge, not the record.
+    // generation — the words are done and the human should get them.
+    //
+    // Failed renders are deliberately NOT added to generationError: their rows
+    // stay `failed` and the draft page's failed-images notice (Task 7) shows a
+    // live count with Retry. A banner copy of the count would go stale the
+    // moment a Retry succeeds (generationError only clears on the next
+    // body-changing save) and would mark the board card "Flagged copy" for a
+    // problem that has nothing to do with the copy.
     // Everything after `result` was set — including the writes below — is
     // still covered by the outer catch for genuine failures.
     await setStep(database, contentPieceId, "illustrating");
@@ -1562,14 +1577,9 @@ export type Illustrator = (args: {
         database,
       });
       result = { title: result.title, body: illustrated.body };
-      if (illustrated.failures > 0) {
-        warnings.push(
-          `${illustrated.failures} illustration${illustrated.failures === 1 ? "" : "s"} failed to render.`
-        );
-      }
     } catch (e) {
       console.error(`[briefs/draft] illustration failed for piece ${contentPieceId}:`, e);
-      warnings.push("Illustrations could not be generated. The draft is complete without them.");
+      warnings.push("Images could not be generated. The draft is complete without them.");
     }
 
     const generationError = warnings.length > 0 ? warnings.join(" ") : null;
@@ -1592,11 +1602,14 @@ Note `result` is `let` (line 437) so reassigning is fine. `piece.type` is the pi
 ```ts
   //   status "draft" + set  -> the draft is real, but generation left a
   //                            warning: the post-generation name scan matched
-  //                            something, and/or illustrations failed
-  //                            (src/lib/briefs/draft.ts joins them into one text).
+  //                            something, and/or the whole illustration pass
+  //                            threw (src/lib/briefs/draft.ts joins them into
+  //                            one text). Individual failed renders are NOT
+  //                            here — their `failed` content_images rows drive
+  //                            the draft page's live notice instead.
 ```
 
-(g) `src/app/(dashboard)/drafts/[releaseId]/page.tsx` line 285: `<p className="font-medium">Possible competitor mention</p>` → `<p className="font-medium">Generation notes</p>`, and update the comment above it (lines 271–282) so its first sentence reads: "…in every one of those cases it means generation finished with a warning — the competitor-name scan matched something, and/or illustrations failed to render (see draft.ts) — not a failure."
+(g) `src/app/(dashboard)/drafts/[releaseId]/page.tsx` line 285: `<p className="font-medium">Possible competitor mention</p>` → `<p className="font-medium">Generation notes</p>`, and update the comment above it (lines 271–282) so its first sentence reads: "…in every one of those cases it means generation finished with a warning — the competitor-name scan matched something, and/or images could not be generated at all (see draft.ts) — not a failure."
 
 - [ ] **Step 4: Run**
 
@@ -1627,6 +1640,12 @@ git commit -m "feat: illustrate the draft between review and save; failures warn
   // illustration-actions.ts
   export async function retryFailedIllustration(input: { contentPieceId: string; imageId: string }):
     Promise<{ ok: true; placed: boolean; url: string } | { ok: false; error: string }>;
+  // Dismiss (spec §4 calls the notice "dismissible"): deletes the piece's
+  // failed generated rows, so the notice disappears for good and the library
+  // never shows dead "failed" cards. An explicit dismissal is not a *silent*
+  // loss of the concept.
+  export async function dismissFailedIllustrations(input: { contentPieceId: string }):
+    Promise<{ ok: true } | { ok: false; error: string }>;
   ```
   `placed: false` means the render succeeded (row is now `ready`, blob uploaded) but the stored anchor heading no longer exists in the body — the body was left untouched and the toast tells the user to place it from the library (Plan 3 §5b) rather than dumping it at the end of the piece.
 
@@ -1670,7 +1689,7 @@ vi.mock("../../../src/lib/images/blob", async (importOriginal) => {
   };
 });
 
-import { retryFailedIllustration } from "../../../src/app/(dashboard)/drafts/[releaseId]/illustration-actions";
+import { retryFailedIllustration, dismissFailedIllustrations } from "../../../src/app/(dashboard)/drafts/[releaseId]/illustration-actions";
 
 const VI: VisualIdentity = {
   ...DEFAULT_VISUAL_IDENTITY,
@@ -1807,6 +1826,34 @@ describe("retryFailedIllustration", () => {
     expect(row.status).toBe("failed");
   });
 });
+
+describe("dismissFailedIllustrations", () => {
+  it("deletes the piece's failed generated rows so the notice disappears", async () => {
+    const { piece, image } = await seed();
+    expect(await dismissFailedIllustrations({ contentPieceId: piece.id })).toEqual({ ok: true });
+    expect(await db.select().from(contentImages).where(eq(contentImages.id, image.id))).toHaveLength(0);
+  });
+
+  it("leaves ready and uploaded images alone", async () => {
+    const { tenant, piece } = await seed();
+    const [ready] = await db
+      .insert(contentImages)
+      .values({ tenantId: tenant.id, contentPieceId: piece.id, role: "body", concept: "keep", altText: "Keep", sourceKind: "uploaded", status: "ready" })
+      .returning();
+    await dismissFailedIllustrations({ contentPieceId: piece.id });
+    expect(await db.select().from(contentImages).where(eq(contentImages.id, ready.id))).toHaveLength(1);
+  });
+
+  it("refuses another tenant's piece", async () => {
+    const { image } = await seed();
+    const [other] = await db.insert(tenants).values({ name: OTHER_NAME }).returning();
+    const [foreignPiece] = await db.insert(contentPieces).values({ tenantId: other.id, title: "X", body: "b" }).returning();
+    currentTenantId = other.id;
+    // The other tenant can dismiss only its own pieces; ours is untouched.
+    expect((await dismissFailedIllustrations({ contentPieceId: foreignPiece.id })).ok).toBe(true);
+    expect(await db.select().from(contentImages).where(eq(contentImages.id, image.id))).toHaveLength(1);
+  });
+});
 ```
 
 - [ ] **Step 2: Run, expect failure**
@@ -1829,7 +1876,7 @@ import { assertDraftEditable } from "@/lib/draft-editable";
 import { getOrCreateCompanyProfile } from "@/lib/workspace/company-profile";
 import { compileStyleBlock, isVisualIdentityReady } from "@/lib/images/visual-identity";
 import { buildImagePrompt } from "@/lib/images/prompt";
-import { getImage, addRender, markImageFailed } from "@/lib/images/store";
+import { getImage, addRender, markImageFailed, listImages, deleteImage } from "@/lib/images/store";
 import { renderImage } from "@/lib/ai/images";
 import { imageModelId, IMAGE_MODEL_DEFAULT } from "@/lib/ai/image-model";
 import { compressPng } from "@/lib/images/compress";
@@ -1874,9 +1921,9 @@ export async function retryFailedIllustration(input: {
   // Tenant-scoped by `getImage`; the piece check closes the "my image, but
   // named against a different piece id" hole.
   const image = await getImage(tenantId, input.imageId);
-  if (!image || image.contentPieceId !== piece.id) return { ok: false, error: "Illustration not found." };
-  if (image.status !== "failed") return { ok: false, error: "This illustration does not need a retry." };
-  if (image.role !== "body" && image.role !== "cover") return { ok: false, error: "Only cover and body illustrations can be retried here." };
+  if (!image || image.contentPieceId !== piece.id) return { ok: false, error: "Image not found." };
+  if (image.status !== "failed") return { ok: false, error: "This image doesn't need a retry." };
+  if (image.role !== "body" && image.role !== "cover") return { ok: false, error: "Only generated cover and body images can be retried here." };
 
   const profile = await getOrCreateCompanyProfile(tenantId);
   const vi = profile.visualIdentity;
@@ -1924,7 +1971,7 @@ export async function retryFailedIllustration(input: {
     url = uploaded.url;
   } catch (e) {
     await markImageFailed(image.id);
-    return { ok: false, error: `The illustration could not be rendered: ${e instanceof Error ? e.message : String(e)}` };
+    return { ok: false, error: `The image could not be generated: ${e instanceof Error ? e.message : String(e)}` };
   }
 
   let placed = true;
@@ -1944,13 +1991,40 @@ export async function retryFailedIllustration(input: {
   revalidatePath(`/drafts/${piece.id}`);
   return { ok: true, placed, url };
 }
+
+/**
+ * Dismisses the failed-images notice (spec §4 calls it dismissible): deletes
+ * the piece's still-failed GENERATED rows. Explicit dismissal is not a silent
+ * loss of the concept — the user chose to drop them — and deleting the rows
+ * keeps the library free of dead "failed" cards. Uploads and ready images are
+ * untouched.
+ */
+export async function dismissFailedIllustrations(input: {
+  contentPieceId: string;
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  const session = await requireSession();
+  const tenantId = session.user.tenantId;
+  const [piece] = await db
+    .select()
+    .from(contentPieces)
+    .where(and(eq(contentPieces.id, input.contentPieceId), eq(contentPieces.tenantId, tenantId)));
+  if (!piece) return { ok: false, error: "Draft not found." };
+
+  const images = await listImages(tenantId, { contentPieceId: piece.id });
+  for (const image of images) {
+    if (image.status !== "failed" || image.sourceKind !== "generated") continue;
+    await deleteImage(tenantId, image.id);
+  }
+  revalidatePath(`/drafts/${piece.id}`);
+  return { ok: true };
+}
 ```
 
 Two type notes: `getImage`'s return includes the `anchorHeading` column automatically once Task 2 lands (it selects the row). If Plan 1's `isVisualIdentityReady` is a type guard, drop `|| vi === null`.
 
 - [ ] **Step 4: Run the action test**
 
-`npx vitest run tests/app/drafts/illustration-actions.test.ts` — 8 pass. Watch for the `next/cache` mock and the `@/lib/images/blob` partial mock: `imagePathname` must stay real (the assertion on the blob URL prefix depends on it).
+`npx vitest run tests/app/drafts/illustration-actions.test.ts` — 11 pass. Watch for the `next/cache` mock and the `@/lib/images/blob` partial mock: `imagePathname` must stay real (the assertion on the blob URL prefix depends on it).
 
 - [ ] **Step 5: The client Retry button**
 
@@ -1961,12 +2035,13 @@ Create `src/app/(dashboard)/drafts/[releaseId]/retry-illustration-button.tsx`:
 
 import { useTransition } from "react";
 import { useRouter } from "next/navigation";
+import { X } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { retryFailedIllustration } from "./illustration-actions";
+import { dismissFailedIllustrations, retryFailedIllustration } from "./illustration-actions";
 
 /**
- * One failed illustration's Retry. Server-side render + splice (~10-30 s), so
+ * One failed image's Retry. Server-side render + splice (~10-30 s), so
  * a pending state on the button rather than an optimistic update — same
  * shape as `CatchUpBanner`. `router.refresh()` re-runs the page's Server
  * Component so the notice drops the row and the editor's `defaultValue`
@@ -1991,14 +2066,47 @@ export function RetryIllustrationButton({ contentPieceId, imageId }: { contentPi
           }
           toast.success(
             result.placed
-              ? "Illustration added to the draft"
-              : "Illustration rendered, but its section heading is gone — insert it from the image library"
+              ? "Image added to the draft"
+              : "Image generated, but its section heading is gone — insert it from the image library"
           );
           router.refresh();
         })
       }
     >
-      {isPending ? "Rendering…" : "Retry"}
+      {isPending ? "Generating…" : "Retry"}
+    </Button>
+  );
+}
+
+/**
+ * The notice's dismiss X — same affordance as WebflowCodeWarning's dismiss
+ * (ghost, icon-xs, aria-label). Discards the failed rows for good; no confirm,
+ * because nothing the user made is lost (only concepts the agent failed to
+ * draw, recoverable by generating fresh from the editor).
+ */
+export function DismissIllustrationsButton({ contentPieceId }: { contentPieceId: string }) {
+  const [isPending, startTransition] = useTransition();
+  const router = useRouter();
+
+  return (
+    <Button
+      type="button"
+      size="icon-xs"
+      variant="ghost"
+      aria-label="Dismiss"
+      disabled={isPending}
+      onClick={() =>
+        startTransition(async () => {
+          const result = await dismissFailedIllustrations({ contentPieceId });
+          if (!result.ok) {
+            toast.error(result.error);
+            return;
+          }
+          router.refresh();
+        })
+      }
+    >
+      <X className="size-3.5" />
     </Button>
   );
 }
@@ -2010,14 +2118,15 @@ Create `src/app/(dashboard)/drafts/[releaseId]/failed-illustrations-notice.tsx`:
 
 ```tsx
 import { listImages } from "@/lib/images/store";
-import { RetryIllustrationButton } from "./retry-illustration-button";
+import { DismissIllustrationsButton, RetryIllustrationButton } from "./retry-illustration-button";
 
 /**
- * "1 illustration failed — Retry" (spec §4). Lists the piece's generated
+ * "1 image failed to generate — Retry" (spec §4). Lists the piece's generated
  * cover/body rows still at `status: "failed"`; each row's concept is what the
  * agent meant to draw, so the human knows what they are retrying. Renders
  * nothing when there is nothing to retry — the row disappears from this list
- * the moment `addRender` flips it to `ready`.
+ * the moment `addRender` flips it to `ready`, and the X discards the failed
+ * rows for anyone who is happy with the draft as it is.
  *
  * `listImages` has no status filter in the store contract, so the filter is
  * here. It is one tenant-scoped query per page load; the page already runs
@@ -2032,12 +2141,15 @@ export async function FailedIllustrationsNotice({ tenantId, contentPieceId }: { 
 
   return (
     <div className="space-y-2 rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm">
-      <p className="font-medium">
-        {failed.length === 1 ? "1 illustration failed to render" : `${failed.length} illustrations failed to render`}
-      </p>
+      <div className="flex items-start justify-between gap-2">
+        <p className="font-medium">
+          {failed.length === 1 ? "1 image failed to generate" : `${failed.length} images failed to generate`}
+        </p>
+        <DismissIllustrationsButton contentPieceId={contentPieceId} />
+      </div>
       <p className="text-muted-foreground">
-        The draft is complete without them. Save any edits first, then retry — a retried body image is placed
-        under the section it was planned for.
+        The draft is complete without them. Save any edits first, then retry — a retried image is placed under
+        the section it was planned for.
       </p>
       <ul className="space-y-1.5">
         {failed.map((image) => (
@@ -2079,7 +2191,7 @@ and in the editor branch, directly after the `generationError` banner closes (li
 
 `npm run typecheck && npm run lint && npm run build`. Then re-run `npx vitest run tests/app/drafts/illustration-actions.test.ts tests/lib/briefs/draft.test.ts`.
 
-Manual verification (behind OAuth — do what you can): with `IMAGE_MODEL`/`OPENAI_API_KEY`/`BLOB_READ_WRITE_TOKEN` set and a tenant whose visual identity is ready, accept a blog_post brief; the generation modal should show "Creating illustrations" after "Reviewing…", and the draft should open with `![…](https://….public.blob.vercel-storage.com/tenants/…)` lines under two-ish H2s and a `content_images` cover row. Force a failure (unset `OPENAI_API_KEY`, generate) → draft lands with the amber "Generation notes" banner and the failed-illustrations notice; restore the key, click Retry → the image appears under its heading after refresh.
+Manual verification (behind OAuth — do what you can): with `IMAGE_MODEL`/`OPENAI_API_KEY`/`BLOB_READ_WRITE_TOKEN` set and a tenant whose visual identity is ready, accept a blog_post brief; the generation modal should show "Creating images" after "Reviewing…", and the draft should open with `![…](https://….public.blob.vercel-storage.com/tenants/…)` lines under two-ish H2s and a `content_images` cover row. Force a failure (unset `OPENAI_API_KEY`, generate) → draft lands with the failed-images notice (and no amber "Generation notes" banner — that only appears when the whole pass throws); restore the key, click Retry → the image appears under its heading after refresh; the notice's X dismisses it for good and the failed rows disappear from the Images library.
 
 - [ ] **Step 9: Commit**
 
@@ -2111,7 +2223,7 @@ git commit -m "feat: failed-illustration notice with retry from the stored conce
 
 1. `content_images.anchor_heading` is a new nullable column not in the shared contract (Task 2) — additive on top of Plan 1; Plans 3/4 need not read it.
 2. `planIllustrations` takes an extra optional `allowText` (default false) so the built prompt honours `allowTextInImages`; `illustratePiece`'s return gains optional `skipped`. Both additive.
-3. Render-failure counts are appended to `generationError` per the brief ("N illustration(s) failed to render."). The page banner heading was renamed from "Possible competitor mention" to "Generation notes" because that banner now carries both. Because `saveDraft` only clears `generationError` on a body-changing save, a successful Retry leaves the count sentence in the banner until the next edit — the failed-illustrations notice itself disappears immediately. Cheap to remove the count sentence if you would rather rely on the notice alone.
+3. Render-failure counts are deliberately NOT appended to `generationError` (UX review): the failed rows drive the live failed-images notice, which shows an accurate count, offers Retry, and disappears the moment a retry succeeds or the user dismisses it. A `generationError` copy of the count would go stale after a successful Retry (it only clears on the next body-changing save) and would flag the board card "Flagged copy" for a non-copy problem. `generationError` carries only the competitor scan and the whole-pass-threw warning; the banner heading was still renamed to "Generation notes" since it can now carry both of those.
 4. `illustratePiece` deletes leftover generated cover/body rows for the piece before creating new ones (Task 4) — needed because of the cover partial-unique index on regeneration after an aborted run. Uploaded rows are left alone.
 5. Retry when the anchor heading no longer exists renders (and bills) but does not place; the toast points to the library (Plan 3). Alternative would be appending at the end of the body, rejected because that lands the image in a CTA section.
 6. The spec's "rows are written in the same transaction as the body on the release branch" is not literally honoured: rows are written by `illustratePiece` before the release transaction. Consequence on a rolled-back release save: image rows exist for a `brief` piece and are cleaned up on the next run by item 4. Wrapping the renders inside the tx would hold a Postgres transaction open across two image round trips — deliberately avoided.

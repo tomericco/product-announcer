@@ -1041,9 +1041,13 @@ In `src/app/(dashboard)/integrations/webflow-mapping-form.tsx`:
 Replace `SOURCE_OPTIONS` (lines 19–26):
 
 ```ts
+// "Update title"/"Update body" renamed to plain "Title"/"Body" (UX review):
+// "Update" is the pre-pivot name for a content piece, and the new "Cover
+// image" option would sit inconsistently beside it ("Update cover image"?).
+// All sources describe the piece being published; the prefix added nothing.
 const SOURCE_OPTIONS = [
-  { value: "title", label: "Update title" },
-  { value: "body", label: "Update body" },
+  { value: "title", label: "Title" },
+  { value: "body", label: "Body" },
   { value: "slug", label: "Slug" },
   { value: "publishedAt", label: "Published date" },
   { value: "coverImage", label: "Cover image" },

@@ -4,6 +4,8 @@
 
 **Goal:** Lay every shared piece the image feature stands on — schema, storage, compression, the render call, the style compiler, the per-type policy, and the two settings cards — so Plans 2 (illustration agent), 3 (editor + library) and 4 (delivery) only wire.
 
+> **UX naming rule (applies to every user-facing string in Plans 1–4):** the user-facing word is **"image"** — never "illustration", "render", or "graphic" in UI copy, labels, toasts, or banners. "Illustration" stays in code identifiers and comments; "render" in UI copy becomes "version" (a history entry) or "generate" (the act). Copy conventions to match (from the existing app): sentence case everywhere; success toasts short and past-tense with no period ("Personas saved"); error toasts "Couldn't X — try again"; pending buttons swap to a gerund + real `…` ("Saving…").
+
 **Architecture:** Two new tables (`content_images`, `image_renders`) hold what an image *is* and every render it ever had; two jsonb columns on `company_profiles` hold the visual identity and the per-type policy. A `src/lib/images/*` module set (visual-identity, policy, prompt, compress, blob, store) plus `src/lib/ai/image-model.ts` + `src/lib/ai/images.ts` (`renderImage`) are the only code that touches the image model, sharp, or Vercel Blob. Settings UI follows the repo's each-card-owns-its-save convention with a colocated server action per card.
 
 **Tech Stack:** Next.js 16.2.10 App Router, Drizzle ORM 0.45.2, Postgres, Vitest 4, `ai` 7.0.22 (`generateImage`), `@ai-sdk/openai` (new), `@vercel/blob` (new), `sharp` (new), zod 4.4.3.
@@ -2614,7 +2616,8 @@ export function VisualIdentityEditor({
   const [moodText, setMoodText] = useState((initial ?? EMPTY).moodWords.join(", "));
   const [saving, setSaving] = useState(false);
   const [deriving, setDeriving] = useState(false);
-  const [derivedNote, setDerivedNote] = useState<string | null>(null);
+  // ok: true renders emerald (BrandStyleImport's success idiom); failures muted.
+  const [derivedNote, setDerivedNote] = useState<{ ok: boolean; text: string } | null>(null);
   const [url, setUrl] = useState(defaultWebsiteUrl);
   const [advanced, setAdvanced] = useState(false);
   const { setSectionDirty } = useUnsavedChanges();
@@ -2669,9 +2672,9 @@ export function VisualIdentityEditor({
       if (res.ok) {
         setIdentity(res.identity);
         setMoodText(res.identity.moodWords.join(", "));
-        setDerivedNote("Proposed from your site — review below and Save to keep it.");
+        setDerivedNote({ ok: true, text: "Proposed from your site — review below and Save to keep it." });
       } else {
-        setDerivedNote("We couldn't derive an identity from that page — check the URL or fill in the palette by hand.");
+        setDerivedNote({ ok: false, text: "We couldn't derive an identity from that page — check the URL or fill in the palette by hand." });
       }
     } finally {
       setDeriving(false);
@@ -2717,7 +2720,9 @@ export function VisualIdentityEditor({
             {deriving ? "Analyzing…" : "Derive"}
           </Button>
         </div>
-        {derivedNote && <p className="text-xs text-muted-foreground">{derivedNote}</p>}
+        {derivedNote && (
+          <p className={derivedNote.ok ? "text-xs text-emerald-600" : "text-xs text-muted-foreground"}>{derivedNote.text}</p>
+        )}
       </div>
 
       <div className="space-y-2">
@@ -2936,7 +2941,7 @@ Insert between the Guidelines card (closes `</Card>` at line 195) and the Change
         <CardHeader>
           <CardTitle>Visual identity</CardTitle>
           <CardDescription>
-            Palette, style and rules every generated image follows. Drafts get illustrations only once at least three
+            Palette, style and rules every generated image follows. Drafts get images only once at least three
             colors are saved here.
           </CardDescription>
         </CardHeader>
@@ -3146,7 +3151,7 @@ export function ImagePolicyForm({ initial }: { initial: ImagePolicy | null }) {
             <tr className="text-left text-xs text-muted-foreground">
               <th className="py-2 pr-4 font-medium">Type</th>
               <th className="py-2 pr-4 font-medium">Cover image</th>
-              <th className="py-2 font-medium">Body illustrations</th>
+              <th className="py-2 font-medium">Body images</th>
             </tr>
           </thead>
           <tbody>
@@ -3161,7 +3166,7 @@ export function ImagePolicyForm({ initial }: { initial: ImagePolicy | null }) {
                   </td>
                   <td className="py-2">
                     <Select value={toValue(entry.body)} onValueChange={(v) => set(row.type, { body: fromValue(v as string) })}>
-                      <SelectTrigger className="w-40" aria-label={`${row.label} body illustrations`}>
+                      <SelectTrigger className="w-40" aria-label={`${row.label} body images`}>
                         <SelectValue>{bodyLabel}</SelectValue>
                       </SelectTrigger>
                       <SelectContent>
