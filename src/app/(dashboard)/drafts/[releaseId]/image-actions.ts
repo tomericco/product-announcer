@@ -11,6 +11,7 @@ import { compileStyleBlock, isVisualIdentityReady } from "@/lib/images/visual-id
 import { buildImagePrompt } from "@/lib/images/prompt";
 import { suggestImageConcept } from "@/lib/images/suggest";
 import { markdownImage, renderAndStore, storeRenderBytes } from "@/lib/images/generate";
+import { ownedBrandReferenceImages } from "@/lib/images/blob";
 import {
   addRender,
   createImage,
@@ -57,7 +58,14 @@ async function loadStyle(
 
 /** Brand refs, plus the piece's cover when the identity pins body style to it (as Plan 2's agent does). */
 async function bodyReferences(tenantId: string, contentPieceId: string | null, vi: VisualIdentity): Promise<string[]> {
-  const refs = [...vi.styleReferenceImages];
+  // Finding 6 (mirrors illustrate.ts:158-160): array membership in
+  // `styleReferenceImages` is not proof of ownership — `parseVisualIdentity`'s
+  // `BLOB_URL_SCHEMA` only checks the URL's host, not that the pathname
+  // belongs to this tenant. Filter to this tenant's own brand assets before
+  // any of it reaches a render call. The cover URL pushed below is already
+  // tenant-scoped by `getCoverImage(tenantId, ...)`, so it's not run through
+  // this filter (it isn't a `brand/` pathname anyway).
+  const refs = ownedBrandReferenceImages(tenantId, vi.styleReferenceImages);
   if (vi.pinStyleToCover && contentPieceId) {
     const cover = await getCoverImage(tenantId, contentPieceId);
     if (cover?.current) refs.push(cover.current.blobUrl);
@@ -210,7 +218,9 @@ export async function regenerateImage(a: {
     if (!prompt) return { ok: false, error: "The prompt can't be empty." };
     storedPrompt = prompt;
     referenceImages =
-      role === "cover" ? style.vi.styleReferenceImages : await bodyReferences(tenantId, image.contentPieceId, style.vi);
+      role === "cover"
+        ? ownedBrandReferenceImages(tenantId, style.vi.styleReferenceImages)
+        : await bodyReferences(tenantId, image.contentPieceId, style.vi);
   }
 
   try {
@@ -310,7 +320,7 @@ export async function generateCover(a: {
       slug: imageSlug(piece.title),
       prompt: buildImagePrompt({ styleBlock: style.styleBlock, concept, role: "cover", allowText: style.vi.allowTextInImages }),
       size: sizeForRole("cover"),
-      referenceImages: style.vi.styleReferenceImages,
+      referenceImages: ownedBrandReferenceImages(tenantId, style.vi.styleReferenceImages),
     });
     revalidatePath(`/drafts/${piece.id}`);
     revalidatePath("/board");

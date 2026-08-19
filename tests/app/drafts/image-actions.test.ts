@@ -58,6 +58,14 @@ import {
   updateCoverAlt,
 } from "../../../src/app/(dashboard)/drafts/[releaseId]/image-actions";
 
+// `ownedBrandReferenceImages` (src/lib/images/blob.ts) only keeps URLs whose
+// pathname starts with `tenants/{tenantId}/brand/` — the shape a real style
+// reference gets from `brandAssetPathname`. Mirrors illustrate.test.ts's
+// `refUrl` so a fixture reference actually survives the ownership filter.
+function refUrl(tenantId: string): string {
+  return `https://blob.example/tenants/${tenantId}/brand/ref.png`;
+}
+
 const VI: VisualIdentity = {
   ...DEFAULT_VISUAL_IDENTITY,
   palette: [
@@ -65,7 +73,9 @@ const VI: VisualIdentity = {
     { hex: "#445566", role: "secondary" },
     { hex: "#ffffff", role: "background" },
   ],
-  styleReferenceImages: ["https://blob.example/ref.png"],
+  // Placeholder — `seed()` substitutes a tenant-prefixed URL once the tenant
+  // id is known, since `ownedBrandReferenceImages` is tenant-scoped.
+  styleReferenceImages: [],
   pinStyleToCover: true,
 };
 
@@ -74,10 +84,11 @@ async function seed(opts: { identity?: VisualIdentity | null; body?: string } = 
   const [user] = await db.insert(users).values({ email: USER_EMAIL }).returning();
   currentTenantId = tenant.id;
   currentUserId = user.id;
+  const identity = opts.identity === undefined ? { ...VI, styleReferenceImages: [refUrl(tenant.id)] } : opts.identity;
   await db.insert(companyProfiles).values({
     tenantId: tenant.id,
     topics: [],
-    visualIdentity: opts.identity === undefined ? VI : opts.identity,
+    visualIdentity: identity,
   });
   const [piece] = await db
     .insert(contentPieces)
@@ -111,9 +122,29 @@ describe("generateBodyImage", () => {
     const sent = renderImage.mock.calls[0][0];
     expect(sent.prompt).toContain("A rocket launching from a laptop.");
     expect(sent.prompt).toMatch(/No text, letters, words, logos or watermarks/);
-    expect(sent.referenceImages).toEqual(["https://blob.example/ref.png"]);
+    expect(sent.referenceImages).toEqual([refUrl(tenant.id)]);
     const row = await getImage(tenant.id, result.imageId);
     expect(row).toMatchObject({ role: "body", sourceKind: "generated", status: "ready", contentPieceId: piece.id });
+  });
+
+  it("drops a styleReferenceImages URL that isn't owned by this tenant before it reaches renderImage (Finding 6)", async () => {
+    // `parseVisualIdentity`'s `BLOB_URL_SCHEMA` only restricts the URL's host,
+    // not the tenant path, so a foreign tenant's public blob URL could in
+    // principle end up persisted into this tenant's own `styleReferenceImages`
+    // array. Array membership alone must not be enough to get it fetched as
+    // reference bytes — mirrors illustrate.test.ts's own Finding 6 coverage.
+    const { tenant, piece } = await seed();
+    const foreignUrl = "https://blob.example/tenants/someone-elses-tenant/brand/foreign.png";
+    await db
+      .update(companyProfiles)
+      .set({ visualIdentity: { ...VI, styleReferenceImages: [refUrl(tenant.id), foreignUrl] } })
+      .where(eq(companyProfiles.tenantId, tenant.id));
+
+    const result = await generateBodyImage({ contentPieceId: piece.id, prompt: "A rocket." });
+    expect(result.ok).toBe(true);
+    const sent = renderImage.mock.calls[0][0];
+    expect(sent.referenceImages).toEqual([refUrl(tenant.id)]);
+    expect(sent.referenceImages).not.toContain(foreignUrl);
   });
 
   it("refuses without a ready visual identity and creates no row", async () => {
@@ -217,7 +248,7 @@ describe("generateCover / removeCover / setCoverFromImage", () => {
     expect(result.ok).toBe(true);
     const args = suggestImageConcept.mock.calls[0][0] as unknown as { role: string };
     expect(args.role).toBe("cover");
-    expect(renderImage.mock.calls[0][0]).toMatchObject({ size: "1200x630", referenceImages: ["https://blob.example/ref.png"] });
+    expect(renderImage.mock.calls[0][0]).toMatchObject({ size: "1200x630", referenceImages: [refUrl(tenant.id)] });
     const cover = await getCoverImage(tenant.id, piece.id);
     expect(cover).toMatchObject({ role: "cover", concept: "A rocket over a laptop", sourceKind: "generated" });
   });
