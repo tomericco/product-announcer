@@ -3,12 +3,13 @@
 import { eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { db } from "@/db";
-import { contentPieces, type ImageRole } from "@/db/schema";
+import { contentPieces, type ImageRole, type ImageSourceKind } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { getOrCreateCompanyProfile } from "@/lib/workspace/company-profile";
 import { compileStyleBlock, isVisualIdentityReady } from "@/lib/images/visual-identity";
 import { buildImagePrompt } from "@/lib/images/prompt";
 import { renderAndStore } from "@/lib/images/generate";
+import { ownedBrandReferenceImages } from "@/lib/images/blob";
 import { createImage, deleteImage, getImage, listLibraryImages } from "@/lib/images/store";
 import { altFromConcept, imageSlug, isCoverShaped, sizeForRole, stripImageFromMarkdown } from "@/lib/images/actions-support";
 
@@ -79,7 +80,12 @@ export async function generateLibraryImage(a: {
       slug: imageSlug(concept),
       prompt: buildImagePrompt({ styleBlock: compileStyleBlock(vi), concept, role: "body", allowText: vi.allowTextInImages }),
       size: sizeForRole("library"),
-      referenceImages: vi.styleReferenceImages,
+      // Finding C1 (mirrors image-actions.ts's `bodyReferences`/Finding 6 and
+      // illustrate.ts:158-160): array membership in `styleReferenceImages` is
+      // not proof of ownership — `parseVisualIdentity`'s `BLOB_URL_SCHEMA`
+      // only restricts the URL's host, not the tenant path. Filter before any
+      // of it reaches a render call.
+      referenceImages: ownedBrandReferenceImages(tenantId, vi.styleReferenceImages),
     });
     revalidatePath("/images");
     return { ok: true, imageId: image.id, url: render.blobUrl };
@@ -89,7 +95,15 @@ export async function generateLibraryImage(a: {
   }
 }
 
-export type PickerImage = { imageId: string; url: string; concept: string; role: ImageRole; pieceTitle: string | null };
+export type PickerImage = {
+  imageId: string;
+  url: string;
+  concept: string;
+  altText: string;
+  role: ImageRole;
+  sourceKind: ImageSourceKind;
+  pieceTitle: string | null;
+};
 
 /**
  * What "From library" lists (spec §5b): every LIBRARY image with a current
@@ -109,5 +123,13 @@ export async function listImagesForPicker(opts: { role?: "cover" } = {}): Promis
   const rows = await listLibraryImages(session.user.tenantId);
   const withRender = rows.filter((r) => r.current !== null);
   const shaped = opts.role === "cover" ? withRender.filter((r) => isCoverShaped(r.current!.width, r.current!.height)) : withRender;
-  return shaped.map((r) => ({ imageId: r.id, url: r.current!.blobUrl, concept: r.concept, role: r.role as ImageRole, pieceTitle: r.pieceTitle }));
+  return shaped.map((r) => ({
+    imageId: r.id,
+    url: r.current!.blobUrl,
+    concept: r.concept,
+    altText: r.altText,
+    role: r.role as ImageRole,
+    sourceKind: r.sourceKind as ImageSourceKind,
+    pieceTitle: r.pieceTitle,
+  }));
 }

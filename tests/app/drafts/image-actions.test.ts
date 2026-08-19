@@ -15,7 +15,10 @@ let currentUserId: string | null = null;
 vi.mock("../../../src/lib/workspace/session", () => ({
   requireSession: vi.fn(async () => ({ user: { tenantId: currentTenantId, id: currentUserId } })),
 }));
-vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
+// Tracked at module scope so the I6 board-revalidation test can assert on
+// which paths were actually revalidated.
+const revalidatePath = vi.fn((_path: string) => {});
+vi.mock("next/cache", () => ({ revalidatePath: (p: string) => revalidatePath(p) }));
 
 const renderImage = vi.fn(async (_args: { prompt: string; editOf?: unknown; referenceImages?: unknown }) => Buffer.from("PNG"));
 vi.mock("../../../src/lib/ai/images", () => ({
@@ -25,6 +28,10 @@ vi.mock("../../../src/lib/images/compress", () => ({
   compressPng: vi.fn(async (png: Buffer, maxWidth: number) => ({ png, width: maxWidth, height: 900 })),
 }));
 let uploadCount = 0;
+// Tracked at module scope (not an inline `vi.fn()` in the factory below) so
+// the shared-blob lifecycle test (Finding I5) can assert on which pathnames
+// were actually asked to be deleted.
+const deleteBlobs = vi.fn(async (_p: string[]) => {});
 vi.mock("../../../src/lib/images/blob", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../src/lib/images/blob")>();
   return {
@@ -33,7 +40,7 @@ vi.mock("../../../src/lib/images/blob", async (importOriginal) => {
       uploadCount += 1;
       return { url: `https://blob.example/${pathname}-${uploadCount}`, pathname: `${pathname}-${uploadCount}` };
     }),
-    deleteBlobs: vi.fn(async () => {}),
+    deleteBlobs: (p: string[]) => deleteBlobs(p),
   };
 });
 // Local, minimal arg type (not imported from suggest.ts — that module is
@@ -47,6 +54,7 @@ vi.mock("../../../src/lib/images/suggest", () => ({
 
 import {
   generateBodyImage,
+  insertImageFromLibrary,
   suggestImagePrompt,
   regenerateImage,
   restoreRender,
@@ -54,9 +62,11 @@ import {
   removeCover,
   uploadImageFile,
   lookupImageBySrc,
+  lookupImageById,
   setCoverFromImage,
   updateCoverAlt,
 } from "../../../src/app/(dashboard)/drafts/[releaseId]/image-actions";
+import { deleteLibraryImage } from "../../../src/app/(dashboard)/images/actions";
 
 // `ownedBrandReferenceImages` (src/lib/images/blob.ts) only keeps URLs whose
 // pathname starts with `tenants/{tenantId}/brand/` — the shape a real style
@@ -106,6 +116,8 @@ async function seedGeneratedBodyImage(tenantId: string, pieceId: string) {
 afterEach(async () => {
   renderImage.mockClear();
   suggestImageConcept.mockClear();
+  deleteBlobs.mockClear();
+  revalidatePath.mockClear();
   uploadCount = 0;
   await db.delete(tenants).where(eq(tenants.name, TENANT_NAME));
   await db.delete(tenants).where(eq(tenants.name, OTHER_NAME));
@@ -225,6 +237,38 @@ describe("regenerateImage", () => {
     await addRender({ imageId: foreign.id, prompt: "p", blobUrl: "https://blob.example/f.png", blobPathname: "f", width: 1, height: 1, bytes: 1, model: "m" });
     expect(await regenerateImage({ imageId: foreign.id, mode: "same" })).toEqual({ ok: false, error: "Image not found." });
   });
+
+  it("skipBodyWrite: true leaves the stored body's URL alone (Finding I4 — the editor toolbar does its own nodeKey-scoped write)", async () => {
+    const { tenant, piece } = await seed({ body: "## A\n\n![Gears](https://blob.example/gears-1.png)\n\nText." });
+    const { image } = await seedGeneratedBodyImage(tenant.id, piece.id);
+    const result = await regenerateImage({ imageId: image.id, mode: "same", skipBodyWrite: true });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // The render itself still happened and is now current...
+    const after = await getImage(tenant.id, image.id);
+    expect(after?.currentRenderId).toBe(result.renderId);
+    // ...but the stored body was NOT rewritten server-side.
+    const [row] = await db.select({ body: contentPieces.body }).from(contentPieces).where(eq(contentPieces.id, piece.id));
+    expect(row.body).toContain("gears-1.png");
+    expect(row.body).not.toContain(result.url);
+  });
+
+  it("revalidates /board when the regenerated image is the cover (Finding I6)", async () => {
+    const { tenant, piece } = await seed();
+    await generateCover({ contentPieceId: piece.id, mode: "prompt", prompt: "first" });
+    revalidatePath.mockClear();
+    const cover = await getCoverImage(tenant.id, piece.id);
+    await regenerateImage({ imageId: cover!.id, mode: "same" });
+    expect(revalidatePath.mock.calls.map((c) => c[0])).toContain("/board");
+  });
+
+  it("does not revalidate /board for a body image", async () => {
+    const { tenant, piece } = await seed();
+    const { image } = await seedGeneratedBodyImage(tenant.id, piece.id);
+    revalidatePath.mockClear();
+    await regenerateImage({ imageId: image.id, mode: "same" });
+    expect(revalidatePath.mock.calls.map((c) => c[0])).not.toContain("/board");
+  });
 });
 
 describe("restoreRender", () => {
@@ -239,6 +283,30 @@ describe("restoreRender", () => {
     const [row] = await db.select({ body: contentPieces.body }).from(contentPieces).where(eq(contentPieces.id, piece.id));
     expect(row.body).toBe("![Gears](https://blob.example/gears-1.png)");
   });
+
+  it("skipBodyWrite: true leaves the stored body's URL alone (Finding I4)", async () => {
+    const { tenant, piece } = await seed({ body: "![Gears](https://blob.example/gears-2.png)" });
+    const { image, render: first } = await seedGeneratedBodyImage(tenant.id, piece.id);
+    await addRender({ imageId: image.id, prompt: "FULL PROMPT", blobUrl: "https://blob.example/gears-2.png", blobPathname: "p/gears-2.png", width: 1200, height: 900, bytes: 10, model: "m" });
+    const result = await restoreRender({ imageId: image.id, renderId: first.id, skipBodyWrite: true });
+    expect(result).toEqual({ ok: true, url: "https://blob.example/gears-1.png" });
+    const after = await getImage(tenant.id, image.id);
+    expect(after?.currentRenderId).toBe(first.id);
+    const [row] = await db.select({ body: contentPieces.body }).from(contentPieces).where(eq(contentPieces.id, piece.id));
+    expect(row.body).toBe("![Gears](https://blob.example/gears-2.png)");
+  });
+
+  it("revalidates /board when restoring an older render of the cover (Finding I6)", async () => {
+    const { tenant, piece } = await seed();
+    await generateCover({ contentPieceId: piece.id, mode: "prompt", prompt: "first" });
+    const cover = await getCoverImage(tenant.id, piece.id);
+    await generateCover({ contentPieceId: piece.id, mode: "prompt", prompt: "second" });
+    const withHistory = await getImage(tenant.id, cover!.id);
+    const oldest = withHistory!.renders[withHistory!.renders.length - 1];
+    revalidatePath.mockClear();
+    await restoreRender({ imageId: cover!.id, renderId: oldest.id });
+    expect(revalidatePath.mock.calls.map((c) => c[0])).toContain("/board");
+  });
 });
 
 describe("generateCover / removeCover / setCoverFromImage", () => {
@@ -246,6 +314,12 @@ describe("generateCover / removeCover / setCoverFromImage", () => {
     const { tenant, piece } = await seed();
     const result = await generateCover({ contentPieceId: piece.id, mode: "from_post" });
     expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // Finding M9: the caller (CoverPanel) seeds its local concept/alt state
+    // from these returned values, not from empty strings — they must be the
+    // real generated ones, not placeholders.
+    expect(result.concept).toBe("A rocket over a laptop");
+    expect(result.altText).toBe("Rocket over a laptop");
     const args = suggestImageConcept.mock.calls[0][0] as unknown as { role: string };
     expect(args.role).toBe("cover");
     expect(renderImage.mock.calls[0][0]).toMatchObject({ size: "1200x630", referenceImages: [refUrl(tenant.id)] });
@@ -281,6 +355,58 @@ describe("generateCover / removeCover / setCoverFromImage", () => {
     expect(cover?.id).not.toBe(image.id);
     // Both rows point at one blob; the render count is 1 + 1.
     expect(await db.select().from(imageRenders).where(eq(imageRenders.blobPathname, "p/gears-1.png"))).toHaveLength(2);
+  });
+});
+
+describe("insertImageFromLibrary", () => {
+  it("creates a new body row sharing the picked blob, with no upload (Finding I2)", async () => {
+    const { tenant, piece } = await seed();
+    const source = await createImage({ tenantId: tenant.id, contentPieceId: null, role: "library", concept: "A compass on a map", altText: "A compass resting on a map", sourceKind: "generated" });
+    await addRender({ imageId: source.id, prompt: "p", blobUrl: "https://blob.example/compass.png", blobPathname: "tenants/x/compass.png", width: 1200, height: 900, bytes: 10, model: "m" });
+
+    const result = await insertImageFromLibrary({ contentPieceId: piece.id, imageId: source.id });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.markdown).toBe("![A compass resting on a map](https://blob.example/compass.png)");
+    expect(uploadCount).toBe(0);
+
+    const newRow = await getImage(tenant.id, result.imageId);
+    expect(newRow).toMatchObject({ role: "body", contentPieceId: piece.id, sourceKind: "generated", status: "ready" });
+    expect(newRow?.id).not.toBe(source.id);
+    expect(newRow?.current?.blobPathname).toBe("tenants/x/compass.png");
+    // Both rows point at one blob — the render count is 1 + 1, same shape as
+    // setCoverFromImage's own sharing, which is exactly what Task 3's guard
+    // (`unreferencedPathnames`) exists to keep safe.
+    expect(await db.select().from(imageRenders).where(eq(imageRenders.blobPathname, "tenants/x/compass.png"))).toHaveLength(2);
+  });
+
+  it("refuses a source image with no current render", async () => {
+    const { tenant, piece } = await seed();
+    const source = await createImage({ tenantId: tenant.id, contentPieceId: null, role: "library", concept: "c", altText: "a", sourceKind: "generated" });
+    expect(await insertImageFromLibrary({ contentPieceId: piece.id, imageId: source.id })).toEqual({ ok: false, error: "Image not found." });
+  });
+});
+
+describe("shared blob lifecycle (Finding I5)", () => {
+  it("deleting the library source after setCoverFromImage spares the shared blob and the cover row", async () => {
+    const { tenant, piece } = await seed();
+    const source = await createImage({ tenantId: tenant.id, contentPieceId: null, role: "library", concept: "compass", altText: "A compass", sourceKind: "generated" });
+    await addRender({ imageId: source.id, prompt: "p", blobUrl: "https://blob.example/shared-compass.png", blobPathname: "tenants/x/shared-compass.png", width: 1200, height: 630, bytes: 10, model: "m" });
+
+    const setResult = await setCoverFromImage({ contentPieceId: piece.id, imageId: source.id });
+    expect(setResult).toEqual({ ok: true, url: "https://blob.example/shared-compass.png" });
+    const cover = await getCoverImage(tenant.id, piece.id);
+    expect(cover?.current?.blobPathname).toBe("tenants/x/shared-compass.png");
+
+    // Delete the SOURCE library row — the direction a user would take cleaning
+    // up their library after already having set a piece's cover from it.
+    expect(await deleteLibraryImage(source.id)).toEqual({ ok: true });
+
+    expect(deleteBlobs.mock.calls.flatMap((c) => c[0])).not.toContain("tenants/x/shared-compass.png");
+    const afterCover = await getCoverImage(tenant.id, piece.id);
+    expect(afterCover?.id).toBe(cover?.id);
+    expect(afterCover?.current?.blobUrl).toBe("https://blob.example/shared-compass.png");
+    expect(afterCover?.current?.blobPathname).toBe("tenants/x/shared-compass.png");
   });
 });
 
@@ -382,6 +508,22 @@ describe("lookupImageBySrc", () => {
     expect(found).toMatchObject({ imageId: image.id, sourceKind: "generated", currentRenderId: render.id, currentPrompt: "FULL PROMPT" });
     expect(found?.renders.map((r) => r.url)).toEqual(["https://blob.example/gears-1.png"]);
     expect(await lookupImageBySrc("https://blob.example/nope.png")).toBeNull();
+  });
+
+  it("lookupImageById resolves the exact row by id, unambiguous even when its blob is shared (Finding I3)", async () => {
+    const { tenant, piece } = await seed();
+    const { image } = await seedGeneratedBodyImage(tenant.id, piece.id);
+    await setCoverFromImage({ contentPieceId: piece.id, imageId: image.id });
+    const cover = await getCoverImage(tenant.id, piece.id);
+
+    // Both rows now share "https://blob.example/gears-1.png" — looking each
+    // up BY ID must return exactly that row, not whichever one a URL lookup
+    // happens to tie-break to.
+    const bySourceId = await lookupImageById(image.id);
+    expect(bySourceId?.imageId).toBe(image.id);
+    const byCoverId = await lookupImageById(cover!.id);
+    expect(byCoverId?.imageId).toBe(cover!.id);
+    expect(bySourceId?.imageId).not.toBe(byCoverId?.imageId);
   });
 
   it("never resolves another tenant's blob URL — the src is raw client input", async () => {

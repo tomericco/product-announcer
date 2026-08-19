@@ -191,6 +191,28 @@ describe("getCoverImage / listImages / findImageByRenderUrl", () => {
     expect((await findImageByRenderUrl(tenant.id, "https://blob/r1.png"))?.image.id).toBe(mine.id);
   });
 
+  it("resolves the most recently created render when a URL is shared across two rows (Finding I3 tie-break)", async () => {
+    // `setCoverFromImage` and `insertImageFromLibrary` both deliberately copy
+    // an existing render's blob fields onto a NEW row, so one blob URL can
+    // legitimately point at two rows at once. `findImageByRenderUrl` has no
+    // unique index to lean on — it must pick deterministically, not whichever
+    // row the query happens to return first.
+    const tenant = await seedTenant(TENANT);
+    const older = await createImage({ tenantId: tenant.id, contentPieceId: null, role: "library", concept: "older", altText: "a", sourceKind: "generated" });
+    const newer = await createImage({ tenantId: tenant.id, contentPieceId: null, role: "library", concept: "newer", altText: "a", sourceKind: "generated" });
+    const sharedUrl = "https://blob/shared.png";
+    const base = { blobUrl: sharedUrl, blobPathname: "tenants/t/shared.png", width: 10, height: 10, bytes: 1, model: "m" };
+
+    const [olderRender] = await db.insert(imageRenders).values({ imageId: older.id, prompt: "old", createdAt: new Date("2026-01-01T00:00:00Z"), ...base }).returning();
+    await db.update(contentImages).set({ currentRenderId: olderRender.id, status: "ready" }).where(eq(contentImages.id, older.id));
+    const [newerRender] = await db.insert(imageRenders).values({ imageId: newer.id, prompt: "new", createdAt: new Date("2026-01-02T00:00:00Z"), ...base }).returning();
+    await db.update(contentImages).set({ currentRenderId: newerRender.id, status: "ready" }).where(eq(contentImages.id, newer.id));
+
+    const found = await findImageByRenderUrl(tenant.id, sharedUrl);
+    expect(found?.image.id).toBe(newer.id);
+    expect(found?.render.id).toBe(newerRender.id);
+  });
+
   it("scopes getCoverImage and listImages to the tenant", async () => {
     const tenant = await seedTenant(TENANT);
     const other = await seedTenant(OTHER);

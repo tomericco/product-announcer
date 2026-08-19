@@ -325,7 +325,18 @@ export async function deleteImage(
   return { ok: true };
 }
 
-/** The editor maps an `<img src>` back to its row (spec §3: body images join by blob URL). */
+/**
+ * The editor maps an `<img src>` back to its row (spec §3: body images join
+ * by blob URL). `blobUrl` has no unique index, and two rows may share one on
+ * purpose — `setCoverFromImage` and `insertImageFromLibrary` (Finding I2)
+ * both copy an existing render's blob fields onto a NEW row rather than
+ * uploading again. This is therefore a best-effort tie-break (most recent
+ * render wins), not a guarantee of the "right" row — the true identity of
+ * "which row is this" is the row's own id, never its URL. Callers that
+ * already know the id (e.g. the library detail page) should load by id
+ * instead (`getImage`) rather than round-tripping through this. The editor's
+ * per-image toolbar has no choice: MDXEditor hands it only a `src` string.
+ */
 export async function findImageByRenderUrl(
   tenantId: string,
   url: string,
@@ -336,6 +347,7 @@ export async function findImageByRenderUrl(
     .from(imageRenders)
     .innerJoin(contentImages, eq(contentImages.id, imageRenders.imageId))
     .where(and(eq(contentImages.tenantId, tenantId), eq(imageRenders.blobUrl, url)))
+    .orderBy(desc(imageRenders.createdAt), desc(imageRenders.id))
     .limit(1);
   return row ?? null;
 }

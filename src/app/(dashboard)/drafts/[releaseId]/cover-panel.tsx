@@ -56,7 +56,11 @@ export function CoverPanel({
   const [pickerOpen, setPickerOpen] = useState(false);
   const fileInput = useRef<HTMLInputElement | null>(null);
 
-  async function run(label: string, action: () => Promise<{ ok: true; url: string } | { ok: false; error: string }>, next: (url: string) => CoverState) {
+  async function run<R extends { ok: true; url: string }>(
+    label: string,
+    action: () => Promise<R | { ok: false; error: string }>,
+    next: (result: R) => CoverState
+  ) {
     setBusy(label);
     try {
       const result = await action();
@@ -64,7 +68,7 @@ export function CoverPanel({
         toast.error(result.error);
         return false;
       }
-      setCover(next(result.url));
+      setCover(next(result));
       router.refresh();
       return true;
     } catch (error) {
@@ -76,10 +80,14 @@ export function CoverPanel({
   }
 
   function generateFromPost() {
-    void run("Generating cover from the post…", () => generateCover({ contentPieceId, mode: "from_post" }), (url) => ({
-      url,
-      alt: "",
-      concept: "",
+    // Finding M9: seed local state from the server's real concept/altText
+    // (the generated cover's actual values), not empty strings — `router.
+    // refresh()` only re-seeds `useState` on a fresh mount, so within this
+    // session "Change" and the alt dialog would otherwise show nothing.
+    void run("Generating cover from the post…", () => generateCover({ contentPieceId, mode: "from_post" }), (result) => ({
+      url: result.url,
+      alt: result.altText,
+      concept: result.concept,
       sourceKind: "generated",
     }));
   }
@@ -107,10 +115,10 @@ export function CoverPanel({
   function generateFromPrompt() {
     const concept = prompt.trim();
     if (!concept) return;
-    void run("Generating cover…", () => generateCover({ contentPieceId, mode: "prompt", prompt: concept }), (url) => ({
-      url,
-      alt: "",
-      concept,
+    void run("Generating cover…", () => generateCover({ contentPieceId, mode: "prompt", prompt: concept }), (result) => ({
+      url: result.url,
+      alt: result.altText,
+      concept: result.concept,
       sourceKind: "generated",
     })).then((ok) => ok && setPromptOpen(false));
   }
@@ -120,7 +128,9 @@ export function CoverPanel({
     fd.set("contentPieceId", contentPieceId);
     fd.set("role", "cover");
     fd.set("file", file);
-    void run("Uploading…", () => uploadImageFile(fd), (url) => ({ url, alt: "", concept: "", sourceKind: "uploaded" }));
+    // Uploads have no authored concept or alt (spec §2: decorative → empty
+    // alt) — "" is the correct value here, not a Finding M9 bug.
+    void run("Uploading…", () => uploadImageFile(fd), (result) => ({ url: result.url, alt: "", concept: "", sourceKind: "uploaded" }));
   }
 
   async function remove() {
@@ -305,11 +315,15 @@ export function CoverPanel({
         onOpenChange={setPickerOpen}
         forCover
         onPick={async (image) => {
-          const ok = await run("Setting cover…", () => setCoverFromImage({ contentPieceId, imageId: image.imageId }), (url) => ({
-            url,
-            alt: "",
+          // Finding M9: the picked image's own concept/altText/sourceKind
+          // (already known client-side from the listing), not empty strings
+          // or a hardcoded "generated" — `setCoverFromImage` doesn't invent
+          // new ones, it copies the source row's.
+          const ok = await run("Setting cover…", () => setCoverFromImage({ contentPieceId, imageId: image.imageId }), (result) => ({
+            url: result.url,
+            alt: image.altText,
             concept: image.concept,
-            sourceKind: "generated",
+            sourceKind: image.sourceKind,
           }));
           if (!ok) throw new Error("Couldn't set the cover.");
         }}

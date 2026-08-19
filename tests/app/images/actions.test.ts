@@ -14,12 +14,15 @@ vi.mock("../../../src/lib/workspace/session", () => ({
   requireSession: vi.fn(async () => ({ user: { tenantId: currentTenantId, id: currentUserId } })),
 }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
-const renderImage = vi.fn(async () => Buffer.from("PNG"));
+// Forwards its call args (not `() => renderImage()`, which would discard
+// them) — that discarding is what made the C1 cross-tenant reference-image
+// leak structurally impossible to catch here; see the Finding C1 test below.
+const renderImage = vi.fn(async (_args: { prompt: string; referenceImages?: unknown }) => Buffer.from("PNG"));
 vi.mock("../../../src/lib/ai/images", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../src/lib/ai/images")>();
   return {
     ...actual,
-    renderImage: () => renderImage(),
+    renderImage: (a: { prompt: string; referenceImages?: unknown }) => renderImage(a),
   };
 });
 vi.mock("../../../src/lib/images/compress", () => ({
@@ -45,6 +48,13 @@ const VI: VisualIdentity = {
     { hex: "#ffffff", role: "background" },
   ],
 };
+
+// Mirrors tests/app/drafts/image-actions.test.ts's `refUrl` — a URL whose
+// pathname genuinely starts with `tenants/{tenantId}/brand/`, the shape
+// `ownedBrandReferenceImages` requires.
+function refUrl(tenantId: string): string {
+  return `https://blob.example/tenants/${tenantId}/brand/ref.png`;
+}
 
 /**
  * Default status is "review", not "draft": the library only lists images of
@@ -76,6 +86,7 @@ async function seed(opts: { published?: boolean; status?: "brief" | "draft" | "r
 
 afterEach(async () => {
   deleteBlobs.mockClear();
+  renderImage.mockClear();
   await db.delete(tenants).where(eq(tenants.name, TENANT_NAME));
   await db.delete(users).where(eq(users.email, USER_EMAIL));
 });
@@ -135,6 +146,28 @@ describe("generateLibraryImage", () => {
       error: "Set up your visual identity in Company settings before generating images.",
     });
   });
+
+  it("drops a styleReferenceImages URL that isn't owned by this tenant before it reaches renderImage (Finding C1)", async () => {
+    // `parseVisualIdentity`'s `BLOB_URL_SCHEMA` only restricts the URL's host,
+    // not the tenant path, so a foreign tenant's public blob URL could in
+    // principle end up persisted into this tenant's own `styleReferenceImages`
+    // array. Array membership alone must not be enough to get it fetched as
+    // reference bytes for a library generation — mirrors
+    // tests/app/drafts/image-actions.test.ts's own Finding 6 coverage, which
+    // this action lacked entirely (the original vulnerability).
+    const { tenant } = await seed();
+    const foreignUrl = "https://blob.example/tenants/someone-elses-tenant/brand/foreign.png";
+    await db
+      .update(companyProfiles)
+      .set({ visualIdentity: { ...VI, styleReferenceImages: [refUrl(tenant.id), foreignUrl] } })
+      .where(eq(companyProfiles.tenantId, tenant.id));
+
+    const result = await generateLibraryImage({ prompt: "A compass on a map", concept: "A compass on a map" });
+    expect(result.ok).toBe(true);
+    const sent = renderImage.mock.calls[0][0];
+    expect(sent.referenceImages).toEqual([refUrl(tenant.id)]);
+    expect(sent.referenceImages).not.toContain(foreignUrl);
+  });
 });
 
 describe("listImagesForPicker", () => {
@@ -143,7 +176,17 @@ describe("listImagesForPicker", () => {
     await createImage({ tenantId: tenant.id, contentPieceId: null, role: "library", concept: "no render yet", altText: "", sourceKind: "generated" });
     const out = await listImagesForPicker();
     expect(out).toHaveLength(1);
-    expect(out[0]).toMatchObject({ url: "https://blob.example/gears.png", concept: "gears", role: "body", pieceTitle: "Piece" });
+    // altText and sourceKind (Finding M9): CoverPanel's "From library" pick
+    // seeds its local state from these directly, so the picker must carry the
+    // source row's real values, not omit them.
+    expect(out[0]).toMatchObject({
+      url: "https://blob.example/gears.png",
+      concept: "gears",
+      altText: "Gears",
+      role: "body",
+      sourceKind: "generated",
+      pieceTitle: "Piece",
+    });
     expect(piece.id).toBeTruthy();
   });
 

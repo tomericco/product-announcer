@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { lookupImageBySrc, regenerateImage, restoreRender, type ImageLookup } from "../drafts/[releaseId]/image-actions";
+import { lookupImageById, regenerateImage, restoreRender, type ImageLookup } from "../drafts/[releaseId]/image-actions";
 import { deleteLibraryImage } from "./actions";
 import type { LibraryImage } from "./image-card";
 
@@ -39,9 +39,13 @@ export function ImageDetail({ image, onClose }: { image: LibraryImage | null; on
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    if (!image?.url) return;
+    // By id (Finding I3), not `lookupImageBySrc(image.url)`: the url-keyed
+    // lookup is ambiguous once two rows can share a blob (setCoverFromImage,
+    // and "From library" body inserts, both do this on purpose), and this
+    // page already has the real row id from its own listing.
+    if (!image) return;
     let cancelled = false;
-    void lookupImageBySrc(image.url).then((found) => {
+    void lookupImageById(image.id).then((found) => {
       if (cancelled) return;
       setLookup(found);
       setPrompt(found?.currentPrompt ?? "");
@@ -65,7 +69,7 @@ export function ImageDetail({ image, onClose }: { image: LibraryImage | null; on
         return;
       }
       setCurrent(result.url);
-      const found = await lookupImageBySrc(result.url);
+      const found = await lookupImageById(image.id);
       setLookup(found);
       setPrompt(found?.currentPrompt ?? "");
       setView("menu");
@@ -95,7 +99,9 @@ export function ImageDetail({ image, onClose }: { image: LibraryImage | null; on
     }
   }
 
-  const imageId = lookup?.imageId ?? image.id;
+  // Always the real row id (Finding I3) — this page already knows it from
+  // its own listing, so it never needs to fall back through `lookup`.
+  const imageId = image.id;
 
   return (
     <Dialog open onOpenChange={(next) => !next && !busy && onClose()}>

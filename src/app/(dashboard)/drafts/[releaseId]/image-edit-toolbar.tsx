@@ -187,7 +187,7 @@ function ImageActionsPopover({ src, nodeKey }: { src: string; nodeKey: string })
                 type="button"
                 size="sm"
                 disabled={!prompt.trim()}
-                onClick={() => void run(() => regenerateImage({ imageId: lookup.imageId, mode: "prompt", prompt }), "Image regenerated")}
+                onClick={() => void run(() => regenerateImage({ imageId: lookup.imageId, mode: "prompt", prompt, skipBodyWrite: true }), "Image regenerated")}
               >
                 Regenerate
               </Button>
@@ -203,7 +203,7 @@ function ImageActionsPopover({ src, nodeKey }: { src: string; nodeKey: string })
               placeholder="e.g. make the background darker"
               onKeyDown={(e) => {
                 if (e.key === "Enter" && instruction.trim()) {
-                  void run(() => regenerateImage({ imageId: lookup.imageId, mode: "edit", instruction }), "Change applied");
+                  void run(() => regenerateImage({ imageId: lookup.imageId, mode: "edit", instruction, skipBodyWrite: true }), "Change applied");
                 }
               }}
             />
@@ -215,7 +215,7 @@ function ImageActionsPopover({ src, nodeKey }: { src: string; nodeKey: string })
                 type="button"
                 size="sm"
                 disabled={!instruction.trim()}
-                onClick={() => void run(() => regenerateImage({ imageId: lookup.imageId, mode: "edit", instruction }), "Change applied")}
+                onClick={() => void run(() => regenerateImage({ imageId: lookup.imageId, mode: "edit", instruction, skipBodyWrite: true }), "Change applied")}
               >
                 Apply
               </Button>
@@ -232,7 +232,7 @@ function ImageActionsPopover({ src, nodeKey }: { src: string; nodeKey: string })
             <button
               type="button"
               className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-muted"
-              onClick={() => void run(() => regenerateImage({ imageId: lookup.imageId, mode: "same" }), "Image regenerated")}
+              onClick={() => void run(() => regenerateImage({ imageId: lookup.imageId, mode: "same", skipBodyWrite: true }), "Image regenerated")}
             >
               <RefreshCw className="size-4" /> Regenerate
             </button>
@@ -253,7 +253,7 @@ function ImageActionsPopover({ src, nodeKey }: { src: string; nodeKey: string })
                         aria-current={current || undefined}
                         disabled={current}
                         className={`relative shrink-0 overflow-hidden rounded border ${current ? "ring-2 ring-primary" : "hover:opacity-80"}`}
-                        onClick={() => void run(() => restoreRender({ imageId: lookup.imageId, renderId: r.id }), "Earlier version restored")}
+                        onClick={() => void run(() => restoreRender({ imageId: lookup.imageId, renderId: r.id, skipBodyWrite: true }), "Earlier version restored")}
                       >
                         {/* Thumbnails are the blob itself; a plain img keeps this component free of next/image's remotePatterns dependency inside the editor. */}
                         {/* eslint-disable-next-line @next/next/no-img-element */}

@@ -115,6 +115,51 @@ async function loadOwnedImage(tenantId: string, imageId: string) {
   return image;
 }
 
+/**
+ * "From library" for the body (spec §5b, Finding I2): reuse inserts the
+ * existing blob — a new `role: "body"` row whose render copies the chosen
+ * render's blob fields, no upload, no new render. Mirrors `setCoverFromImage`
+ * for the cover slot. Giving the picked image a real row here (not just a
+ * markdown line) is what lets Task 3's shared-blob guard in `store.ts` see
+ * this reference: without a row, regenerating or deleting the SOURCE image
+ * could silently prune or delete a blob this piece's body still points at.
+ * Returns markdown for the caller to splice in and persist via
+ * `saveDraftBody` (same client-side contract as `generateBodyImage`).
+ */
+export async function insertImageFromLibrary(a: {
+  contentPieceId: string;
+  imageId: string;
+}): Promise<{ ok: true; markdown: string; imageId: string } | { ok: false; error: string }> {
+  const session = await requireSession();
+  const tenantId = session.user.tenantId;
+  const piece = await loadOwnedDraft(tenantId, a.contentPieceId);
+  assertDraftEditable(piece);
+  const source = await getImage(tenantId, a.imageId);
+  if (!source?.current) return { ok: false, error: NOT_FOUND };
+
+  const image = await createImage({
+    tenantId,
+    contentPieceId: piece.id,
+    role: "body",
+    concept: source.concept,
+    altText: source.altText,
+    sourceKind: source.sourceKind as ImageSourceKind,
+  });
+  await addRender({
+    imageId: image.id,
+    prompt: source.current.prompt,
+    blobUrl: source.current.blobUrl,
+    blobPathname: source.current.blobPathname,
+    width: source.current.width,
+    height: source.current.height,
+    bytes: source.current.bytes,
+    model: source.current.model,
+  });
+  revalidatePath(`/drafts/${piece.id}`);
+  revalidatePath("/images");
+  return { ok: true, markdown: markdownImage(source.altText, source.current.blobUrl), imageId: image.id };
+}
+
 export async function generateBodyImage(a: {
   contentPieceId: string;
   prompt: string;
@@ -192,6 +237,18 @@ export async function regenerateImage(a: {
   mode: "same" | "prompt" | "edit";
   prompt?: string;
   instruction?: string;
+  /**
+   * Findings I4/I6: `swapUrlInBody` below rewrites EVERY occurrence of the
+   * old URL in the piece's stored body. The editor's per-image toolbar does
+   * its own nodeKey-scoped `EditorOps.replaceImageSrc` + `saveDraftBody`
+   * right after calling this — without this flag, the server's all-
+   * occurrences write lands first and is then immediately overwritten by the
+   * client's one-node-scoped result, silently discarding it. Pass `true`
+   * from the editor toolbar (which always has this client-side bridge); leave
+   * it unset from the library detail page (which does not, and needs the
+   * server write as the only write).
+   */
+  skipBodyWrite?: boolean;
 }): Promise<{ ok: true; url: string; renderId: string } | { ok: false; error: string }> {
   const session = await requireSession();
   const tenantId = session.user.tenantId;
@@ -237,10 +294,11 @@ export async function regenerateImage(a: {
       editOf,
     });
     if (image.contentPieceId) {
-      await swapUrlInBody(image.contentPieceId, previous.blobUrl, render.blobUrl);
+      if (!a.skipBodyWrite) await swapUrlInBody(image.contentPieceId, previous.blobUrl, render.blobUrl);
       revalidatePath(`/drafts/${image.contentPieceId}`);
     }
     revalidatePath("/images");
+    if (role === "cover") revalidatePath("/board");
     return { ok: true, url: render.blobUrl, renderId: render.id };
   } catch (error) {
     return { ok: false, error: errorMessage(error) };
@@ -250,6 +308,8 @@ export async function regenerateImage(a: {
 export async function restoreRender(a: {
   imageId: string;
   renderId: string;
+  /** Same purpose and same caller split as `regenerateImage`'s flag above (Findings I4/I6). */
+  skipBodyWrite?: boolean;
 }): Promise<{ ok: true; url: string } | { ok: false; error: string }> {
   const session = await requireSession();
   const tenantId = session.user.tenantId;
@@ -260,10 +320,11 @@ export async function restoreRender(a: {
 
   await setCurrentRender(image.id, target.id);
   if (image.contentPieceId) {
-    if (image.current) await swapUrlInBody(image.contentPieceId, image.current.blobUrl, target.blobUrl);
+    if (!a.skipBodyWrite && image.current) await swapUrlInBody(image.contentPieceId, image.current.blobUrl, target.blobUrl);
     revalidatePath(`/drafts/${image.contentPieceId}`);
   }
   revalidatePath("/images");
+  if (image.role === "cover") revalidatePath("/board");
   return { ok: true, url: target.blobUrl };
 }
 
@@ -271,7 +332,7 @@ export async function generateCover(a: {
   contentPieceId: string;
   mode: "from_post" | "prompt";
   prompt?: string;
-}): Promise<{ ok: true; url: string } | { ok: false; error: string }> {
+}): Promise<{ ok: true; url: string; concept: string; altText: string } | { ok: false; error: string }> {
   const session = await requireSession();
   const tenantId = session.user.tenantId;
   const piece = await loadOwnedDraft(tenantId, a.contentPieceId);
@@ -324,7 +385,7 @@ export async function generateCover(a: {
     });
     revalidatePath(`/drafts/${piece.id}`);
     revalidatePath("/board");
-    return { ok: true, url: render.blobUrl };
+    return { ok: true, url: render.blobUrl, concept, altText };
   } catch (error) {
     if (created) await deleteImage(tenantId, imageId);
     return { ok: false, error: errorMessage(error) };
@@ -437,14 +498,7 @@ export type ImageLookup = {
   renders: { id: string; url: string; prompt: string; createdAt: string }[];
 };
 
-/** The editor's `<img src>` → row map (spec §3), with history for the toolbar. */
-export async function lookupImageBySrc(src: string): Promise<ImageLookup | null> {
-  const session = await requireSession();
-  const tenantId = session.user.tenantId;
-  const found = await findImageByRenderUrl(tenantId, src);
-  if (!found) return null;
-  const image = await getImage(tenantId, found.image.id);
-  if (!image) return null;
+function toImageLookup(image: NonNullable<Awaited<ReturnType<typeof getImage>>>): ImageLookup {
   return {
     imageId: image.id,
     role: image.role as ImageRole,
@@ -454,6 +508,38 @@ export async function lookupImageBySrc(src: string): Promise<ImageLookup | null>
     currentPrompt: image.current?.prompt ?? "",
     renders: image.renders.map((r) => ({ id: r.id, url: r.blobUrl, prompt: r.prompt, createdAt: r.createdAt.toISOString() })),
   };
+}
+
+/**
+ * The editor's `<img src>` → row map (spec §3), with history for the
+ * toolbar. URL-keyed, so it is an ambiguous lookup once two rows can share a
+ * blob (Finding I3 — see `findImageByRenderUrl`'s doc comment); MDXEditor
+ * gives the toolbar no better key than the `src` string, so this stays the
+ * toolbar's only option. A caller that already has the row's id should use
+ * `lookupImageById` instead.
+ */
+export async function lookupImageBySrc(src: string): Promise<ImageLookup | null> {
+  const session = await requireSession();
+  const tenantId = session.user.tenantId;
+  const found = await findImageByRenderUrl(tenantId, src);
+  if (!found) return null;
+  const image = await getImage(tenantId, found.image.id);
+  if (!image) return null;
+  return toImageLookup(image);
+}
+
+/**
+ * Same shape as `lookupImageBySrc`, keyed by the row's own id instead of a
+ * URL that may now be shared across rows by design (Finding I3). The library
+ * detail page already has `imageId` from its own listing — it should load by
+ * id, not round-trip through the ambiguous URL lookup.
+ */
+export async function lookupImageById(imageId: string): Promise<ImageLookup | null> {
+  const session = await requireSession();
+  const tenantId = session.user.tenantId;
+  const image = await getImage(tenantId, imageId);
+  if (!image) return null;
+  return toImageLookup(image);
 }
 
 /**

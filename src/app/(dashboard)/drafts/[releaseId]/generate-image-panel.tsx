@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { LibraryPicker } from "../../images/library-picker";
 import { useAgentEdit } from "./agent-edit-context";
-import { generateBodyImage, suggestImagePrompt } from "./image-actions";
+import { generateBodyImage, insertImageFromLibrary, suggestImagePrompt } from "./image-actions";
 
 /**
  * The in-canvas "Generate image" block (spec §5 Inserting): a prompt field,
@@ -142,7 +142,13 @@ export function GenerateImagePanel({
         open={pickerOpen}
         onOpenChange={setPickerOpen}
         onPick={async (image) => {
-          await onInsert(`![${image.concept.replace(/[[\]]/g, "")}](${image.url})`);
+          // Creates a real content_images row sharing the picked blob (Finding
+          // I2) rather than inserting the raw URL — throwing on failure (not a
+          // local toast) keeps the picker dialog open, same contract as
+          // cover-panel.tsx's own "From library" handler.
+          const result = await insertImageFromLibrary({ contentPieceId, imageId: image.imageId });
+          if (!result.ok) throw new Error(result.error);
+          await onInsert(result.markdown);
           toast.success("Image added");
           onClose();
         }}
