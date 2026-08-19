@@ -45,6 +45,29 @@ export async function createImage(
   return row;
 }
 
+/**
+ * Two rows may point at one blob (a cover set "from library" copies the
+ * chosen render's blob fields — spec §5b, no new render). Only del() a
+ * pathname when no OTHER render row still references it.
+ */
+async function unreferencedPathnames(
+  pathnames: string[],
+  excludingRenderIds: string[],
+  database: DbClient
+): Promise<string[]> {
+  if (pathnames.length === 0) return [];
+  const stillUsed = await database
+    .select({ blobPathname: imageRenders.blobPathname })
+    .from(imageRenders)
+    .where(
+      excludingRenderIds.length > 0
+        ? and(inArray(imageRenders.blobPathname, pathnames), notInArray(imageRenders.id, excludingRenderIds))
+        : inArray(imageRenders.blobPathname, pathnames)
+    );
+  const used = new Set(stillUsed.map((r) => r.blobPathname));
+  return pathnames.filter((p) => !used.has(p));
+}
+
 async function pieceIsPublished(contentPieceId: string | null, database: DbClient): Promise<boolean> {
   if (!contentPieceId) return false;
   const [piece] = await database
@@ -97,13 +120,18 @@ export async function addRender(
   const excess = history.length - (MAX_RENDER_HISTORY - 1);
   if (excess > 0) {
     const pruned = history.slice(0, excess);
+    const prunedPathnames = await unreferencedPathnames(
+      pruned.map((r) => r.blobPathname),
+      pruned.map((r) => r.id),
+      database
+    );
     await database.delete(imageRenders).where(
       inArray(
         imageRenders.id,
         pruned.map((r) => r.id)
       )
     );
-    await deleteBlobs(pruned.map((r) => r.blobPathname));
+    await deleteBlobs(prunedPathnames);
   }
   return render;
 }
@@ -239,9 +267,14 @@ export async function deleteImage(
   if (!image) return { ok: false, reason: "not_found" };
   if (await pieceIsPublished(image.contentPieceId, database)) return { ok: false, reason: "published" };
 
-  await database.delete(contentImages).where(and(eq(contentImages.tenantId, tenantId), eq(contentImages.id, imageId)));
   // Oldest first, matching insertion order — cosmetic, but stable for logs.
-  await deleteBlobs([...image.renders].reverse().map((r) => r.blobPathname));
+  const pathnames = await unreferencedPathnames(
+    [...image.renders].reverse().map((r) => r.blobPathname),
+    image.renders.map((r) => r.id),
+    database
+  );
+  await database.delete(contentImages).where(and(eq(contentImages.tenantId, tenantId), eq(contentImages.id, imageId)));
+  await deleteBlobs(pathnames);
   return { ok: true };
 }
 
