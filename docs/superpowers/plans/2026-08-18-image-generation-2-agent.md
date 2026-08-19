@@ -12,6 +12,9 @@
 
 **Spec:** docs/superpowers/specs/2026-08-18-image-generation-design.md — this plan covers **§4 (the illustration agent, pipeline placement and the loader, failure handling)** plus the §3 note that body images join the markdown by blob URL and the §2 alt-text policy as enforced at plan time. It **depends on Plan 1 (foundation) being merged**: schema (`contentImages`, `imageRenders`, `companyProfiles.visualIdentity` / `imagePolicy`, `llmUsage.imageCount`), `src/lib/images/{visual-identity,policy,compress,blob,prompt,store}.ts`, `src/lib/ai/{image-model,images}.ts`, and the widened `LlmOperation`. Everything below consumes those under the exact names in the shared contract and redefines none of them.
 
+**Background (not instructions):** `2026-08-18-image-generation-ux-review.md` and `2026-08-18-image-generation-qa-review.md` record *why* the constraints below exist. Their findings are already folded into these tasks — this plan is the single source of truth for execution. Read the reviews only to understand a rationale, never to take an instruction from them; where they disagree with a task here, the task wins.
+
+
 ## Global Constraints
 
 - Run `npm install` in the worktree before anything (no node_modules).
@@ -34,6 +37,20 @@
 ## Reading list before Task 1
 
 `src/lib/briefs/draft.ts` (all 624 lines — you will edit lines 286–296, 437–508), `src/lib/drafting/draft-progress.ts`, `tests/lib/briefs/draft.test.ts` (seed helpers, lines 48–179), Plan 1's `src/lib/images/store.ts` / `prompt.ts` / `visual-identity.ts` / `policy.ts` and `src/lib/ai/images.ts` as merged, `src/lib/briefs/propose.ts` lines 50–61 and 108–130 (the injected-`generate` + `recordLlmUsage` shape this plan copies), `src/app/(dashboard)/drafts/[releaseId]/actions.ts` lines 15–22 and 103–122 (`loadOwnedDraft`, `saveDraftBody`).
+
+- **User-facing naming (enforced across all four plans).** Every string a user reads must use these words. Code identifiers (`illustratePiece`, `illustration_plan`, `imageRenders`, step key `illustrating`) deliberately keep their internal names — this table governs UI copy only.
+
+  | Term | Use it for | Never say |
+  |---|---|---|
+  | **image** | any picture: nav "Images", "Generate image", "Image added", "N images failed to generate", loader "Creating images", settings "Body images" | illustration, graphic, asset, render (as a noun) |
+  | **cover** | the `role:"cover"` image: "Add cover", "Remove this cover?", "Cover alt text", Webflow "Cover image" | hero, featured image, thumbnail |
+  | **body image** | an image placed in the body | body illustration, inline image |
+  | **version** | one entry in an image's history strip: "History", "Restore this version", "Current version" | render, revision |
+  | **generate / regenerate** | the act: "Generating image…", "Generation failed" | compose, render, create (except the loader's "Creating images") |
+  | **prompt** | the user-editable description of *what* the image shows: "Suggest prompt", "Edit prompt", "Write a prompt" | description, instruction (reserved for "Describe a change") |
+  | **library** | the /images page and reuse source: "Images" (nav), "From library" | gallery, media, assets |
+
+  Missing-identity error, verbatim on every surface: "Set up your visual identity in Company settings before generating images."
 
 ---
 

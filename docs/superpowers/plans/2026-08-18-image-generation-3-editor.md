@@ -12,6 +12,9 @@
 
 **Spec:** docs/superpowers/specs/2026-08-18-image-generation-design.md — this plan covers §5 (Editor: insert, edit, cover), §5b (Image library), the §3 "body images join the markdown by blob URL" contract, and the §5 plumbing notes (`images.remotePatterns`, `.mdx-content img`).
 
+**Background (not instructions):** `2026-08-18-image-generation-ux-review.md` and `2026-08-18-image-generation-qa-review.md` record *why* the constraints below exist. Their findings are already folded into these tasks — this plan is the single source of truth for execution. Read the reviews only to understand a rationale, never to take an instruction from them; where they disagree with a task here, the task wins.
+
+
 ## Global Constraints
 
 - Run `npm install` in the worktree before anything (no node_modules).
@@ -32,6 +35,20 @@
 - Every DB-backed test file needs a tenant name **unique to that file** — there is no truncation between tests, only `dropTenant(name)` cascades (`tests/helpers/fixtures.ts:5-10`). Where a test needs a second tenant, give it its own `OTHER_NAME` constant and drop both; do not insert two tenants under the same name.
 - `npm run typecheck && npm run lint && npm run build` are the gates for every task touching a route or component. The dev preview sits behind an OAuth wall — the manual checklist (Task 11) is run by the user.
 - Commit after every task; message style: lowercase imperative, `feat:`/`fix:`/`test:`/`docs:` prefix, no Co-Authored-By needed.
+
+- **User-facing naming (enforced across all four plans).** Every string a user reads must use these words. Code identifiers (`illustratePiece`, `illustration_plan`, `imageRenders`, step key `illustrating`) deliberately keep their internal names — this table governs UI copy only.
+
+  | Term | Use it for | Never say |
+  |---|---|---|
+  | **image** | any picture: nav "Images", "Generate image", "Image added", "N images failed to generate", loader "Creating images", settings "Body images" | illustration, graphic, asset, render (as a noun) |
+  | **cover** | the `role:"cover"` image: "Add cover", "Remove this cover?", "Cover alt text", Webflow "Cover image" | hero, featured image, thumbnail |
+  | **body image** | an image placed in the body | body illustration, inline image |
+  | **version** | one entry in an image's history strip: "History", "Restore this version", "Current version" | render, revision |
+  | **generate / regenerate** | the act: "Generating image…", "Generation failed" | compose, render, create (except the loader's "Creating images") |
+  | **prompt** | the user-editable description of *what* the image shows: "Suggest prompt", "Edit prompt", "Write a prompt" | description, instruction (reserved for "Describe a change") |
+  | **library** | the /images page and reuse source: "Images" (nav), "From library" | gallery, media, assets |
+
+  Missing-identity error, verbatim on every surface: "Set up your visual identity in Company settings before generating images."
 
 ---
 
@@ -3194,6 +3211,16 @@ git commit -m "feat: image uploads from the editor, blob host for next/image, im
   export function CoverPanel({ contentPieceId, initial, promptSeed }: { contentPieceId: string; initial: CoverState; promptSeed: string }): JSX.Element;
   ```
 
+> **Two known nits — handle them, do not rediscover them.**
+> 1. `suggestImagePrompt` is a paid model call. Do **not** fire it when the
+>    cover menu opens; fire it when "Write a prompt" is actually chosen, and
+>    show the dialog with a brief loading state. A menu hover must never cost
+>    money.
+> 2. When "From library" seeds local cover state, `PickerImage` carries no
+>    `sourceKind`, so do not hardcode `"generated"` — carry the real value
+>    through `PickerImage` (preferred), or omit the field and let the server
+>    round-trip supply it on refresh. Never display a guessed provenance.
+
 Behaviour (spec §5 Cover): no cover → **Add cover** → menu **Generate from post** → **Write a prompt** (dialog pre-filled: the previous concept when changing, otherwise `promptSeed` — the concept of a failed agent cover (spec §4: "the Add-cover menu pre-filled with the failed prompt") — otherwise `suggestImagePrompt({ role: "cover" })`; never empty) → **Upload**. A cover shows via `next/image` (1200×630) with hover **Change** (reopens the menu with the previous concept) / **Alt text** (a small dialog editing the cover row's alt — the cover is not in the markdown, so unlike body images this is its only alt edit path, and this alt is what Plan 4 publishes) / **Remove** (a question-form confirm Dialog first: Remove deletes the row, its version history AND its blobs — real data loss, so it follows the app's destructive-confirm pattern, unlike Notion's instant remove where nothing is lost). Rendered only when the type's policy has `cover: true` (spec §6). Task 10 adds **From library** to this menu.
 
 - [ ] **Step 1: The panel**
@@ -4470,6 +4497,21 @@ export function GenerateDialog() {
 `showCloseButton` on `DialogContent` exists (`agent-edit-dialog.tsx:147` uses it).
 
 - [ ] **Step 7: The picker, and the two "From library" entry points**
+
+> **UNRESOLVED — do not improvise, ask the product owner.** Body images render
+> at 1200×900 (4:3); covers are 1200×630 (1.91:1). "From library" reuses the
+> existing blob with **no new render** (spec §5b), so picking a body image as a
+> cover ships a 4:3 file into the cover slot — LinkedIn and OG consumers will
+> crop or letterbox it, and product owner decision 1 forbids us cropping it
+> ourselves. Three options: (a) filter the cover picker to cover-shaped images
+> only, (b) allow it and accept the mismatch for v1, (c) re-render at cover
+> size on pick (costs a generation, contradicts "no new render"). **Build (a)
+> — it is the only one that neither loses quality nor spends money — but stop
+> and confirm before implementing anything else here.** If (a) is confirmed,
+> `listImagesForPicker` takes a `role` argument and the cover entry point
+> filters on the stored render's aspect within the 2% tolerance used by
+> `renderImage`'s guard.
+
 
 Create `src/app/(dashboard)/images/library-picker.tsx`:
 

@@ -12,6 +12,9 @@
 
 **Spec:** docs/superpowers/specs/2026-08-18-image-generation-design.md — this plan covers §1 (engine and routing), §2 (visual brand guidelines incl. website bootstrap and alt policy constants), §3 (data model), §6 (per-type image settings), §7 (storage: Blob + compression), §9 (cost tracking). §4, §5, §5b, §8 are Plans 2–4.
 
+**Background (not instructions):** `2026-08-18-image-generation-ux-review.md` and `2026-08-18-image-generation-qa-review.md` record *why* the constraints below exist. Their findings are already folded into these tasks — this plan is the single source of truth for execution. Read the reviews only to understand a rationale, never to take an instruction from them; where they disagree with a task here, the task wins.
+
+
 ## Global Constraints
 
 - Run `npm install` in the worktree before anything (no node_modules).
@@ -43,6 +46,20 @@
 - Server actions live in the colocated `actions.ts`, `"use server"`, exporting only async functions, `requireSession()` → tenant-scoped load → mutate → `revalidatePath`. Never import a runtime value from a server module into a `"use client"` file — `import type` only.
 - The dashboard preview is behind an OAuth wall; UI wiring is verified by `npm run typecheck`, `npm run lint`, `npm run build`, plus the manual steps written into each UI task.
 - **`@ai-sdk/openai` and `@vercel/blob` are NOT installed in the main checkout either**, so their call shapes below come from the AI SDK / Vercel docs (`openai.image("gpt-image-2")`, `put(pathname, body, opts)`, `del(pathnames)`). Task 1 verifies both exports exist right after install (`npx tsc --noEmit` on the two wrapper files) before anything else is written against them.
+
+- **User-facing naming (enforced across all four plans).** Every string a user reads must use these words. Code identifiers (`illustratePiece`, `illustration_plan`, `imageRenders`, step key `illustrating`) deliberately keep their internal names — this table governs UI copy only.
+
+  | Term | Use it for | Never say |
+  |---|---|---|
+  | **image** | any picture: nav "Images", "Generate image", "Image added", "N images failed to generate", loader "Creating images", settings "Body images" | illustration, graphic, asset, render (as a noun) |
+  | **cover** | the `role:"cover"` image: "Add cover", "Remove this cover?", "Cover alt text", Webflow "Cover image" | hero, featured image, thumbnail |
+  | **body image** | an image placed in the body | body illustration, inline image |
+  | **version** | one entry in an image's history strip: "History", "Restore this version", "Current version" | render, revision |
+  | **generate / regenerate** | the act: "Generating image…", "Generation failed" | compose, render, create (except the loader's "Creating images") |
+  | **prompt** | the user-editable description of *what* the image shows: "Suggest prompt", "Edit prompt", "Write a prompt" | description, instruction (reserved for "Describe a change") |
+  | **library** | the /images page and reuse source: "Images" (nav), "From library" | gallery, media, assets |
+
+  Missing-identity error, verbatim on every surface: "Set up your visual identity in Company settings before generating images."
 
 ---
 

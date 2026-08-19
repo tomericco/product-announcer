@@ -10,6 +10,9 @@
 
 **Spec:** docs/superpowers/specs/2026-08-18-image-generation-design.md — this plan owns **§8 (Image transfer to integrations)** in full: Webflow, LinkedIn, Webhook subsections. It assumes Plans 1–3 are merged (`content_images`, `image_renders`, `getCoverImage`).
 
+**Background (not instructions):** `2026-08-18-image-generation-ux-review.md` and `2026-08-18-image-generation-qa-review.md` record *why* the constraints below exist. Their findings are already folded into these tasks — this plan is the single source of truth for execution. Read the reviews only to understand a rationale, never to take an instruction from them; where they disagree with a task here, the task wins.
+
+
 ## Global Constraints
 
 - Run `npm install` in the worktree before anything (no node_modules).
@@ -50,6 +53,20 @@ version of (product owner, 2026-08-19):
 ## Publish-order sanity (spec §8, checked, no change)
 
 `src/lib/publishing/dispatch.ts:12` registers `[webhookDestination, webflowDestination, linkedinDestination]` — Webflow delivers **before** LinkedIn, so by the time the LinkedIn post goes out the blog page (and its og:image, if the tenant mapped it) already exists. Native image posts don't depend on this, but keep the order; `tests/lib/publishing/dispatch.test.ts:166-170` pins it.
+
+- **User-facing naming (enforced across all four plans).** Every string a user reads must use these words. Code identifiers (`illustratePiece`, `illustration_plan`, `imageRenders`, step key `illustrating`) deliberately keep their internal names — this table governs UI copy only.
+
+  | Term | Use it for | Never say |
+  |---|---|---|
+  | **image** | any picture: nav "Images", "Generate image", "Image added", "N images failed to generate", loader "Creating images", settings "Body images" | illustration, graphic, asset, render (as a noun) |
+  | **cover** | the `role:"cover"` image: "Add cover", "Remove this cover?", "Cover alt text", Webflow "Cover image" | hero, featured image, thumbnail |
+  | **body image** | an image placed in the body | body illustration, inline image |
+  | **version** | one entry in an image's history strip: "History", "Restore this version", "Current version" | render, revision |
+  | **generate / regenerate** | the act: "Generating image…", "Generation failed" | compose, render, create (except the loader's "Creating images") |
+  | **prompt** | the user-editable description of *what* the image shows: "Suggest prompt", "Edit prompt", "Write a prompt" | description, instruction (reserved for "Describe a change") |
+  | **library** | the /images page and reuse source: "Images" (nav), "From library" | gallery, media, assets |
+
+  Missing-identity error, verbatim on every surface: "Set up your visual identity in Company settings before generating images."
 
 ---
 
@@ -2076,6 +2093,15 @@ git commit -m "feat: linkedin posts carry the cover as a native image, retry-saf
 ### Task 8: Final verification
 
 **Files:** none new.
+
+> **This is the last task of the last plan — the whole-feature gate runs here.**
+> After the per-plan steps below pass, run the cross-plan **pre-merge
+> verification checklist** in `2026-08-18-image-generation-qa-review.md` §(c).
+> It is the only check that spans all four plans (every touched test file in
+> one ordered run, plus the manual passes that Plans 1–3 could not automate
+> behind the OAuth wall). Do not declare the feature done on this plan's tests
+> alone — they cover delivery only. Report the checklist's results, including
+> anything skipped and why.
 
 - [ ] **Step 1: Run every file this plan touched, twice**
 
