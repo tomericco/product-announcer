@@ -3,7 +3,7 @@
 import { and, eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { db } from "@/db";
-import { contentPieces } from "@/db/schema";
+import { contentImages, contentPieces } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { assertDraftEditable } from "@/lib/draft-editable";
 import { getOrCreateCompanyProfile } from "@/lib/workspace/company-profile";
@@ -13,7 +13,7 @@ import { getImage, getCoverImage, addRender, markImageFailed, listImages, delete
 import { renderImage } from "@/lib/ai/images";
 import { imageModelId, IMAGE_MODEL_DEFAULT } from "@/lib/ai/image-model";
 import { compressPng } from "@/lib/images/compress";
-import { imagePathname, slugForImage, uploadPng } from "@/lib/images/blob";
+import { imagePathname, ownedBrandReferenceImages, slugForImage, uploadPng } from "@/lib/images/blob";
 import { spliceImageAfterHeading } from "@/lib/images/splice";
 
 /**
@@ -56,6 +56,14 @@ export async function retryFailedIllustration(input: {
   if (!image || image.contentPieceId !== piece.id) return { ok: false, error: "Image not found." };
   if (image.status !== "failed") return { ok: false, error: "This image doesn't need a retry." };
   if (image.role !== "body" && image.role !== "cover") return { ok: false, error: "Only generated cover and body images can be retried here." };
+  // Same class of gap as `failed-illustrations-notice.tsx`'s own filter and
+  // `illustratePiece`'s leftover cleanup: `role` alone doesn't prove this row
+  // is an AI render. Once Plan 3 adds editor uploads, an uploaded image can
+  // also be `role: "body"|"cover"` — without this a client could hand this
+  // action an uploaded image's id and get an AI render (built from
+  // `image.concept`, which for an upload is just the filename) attached to
+  // it, flipping it to `ready` and splicing it into the body.
+  if (image.sourceKind !== "generated") return { ok: false, error: "Only generated cover and body images can be retried here." };
 
   const profile = await getOrCreateCompanyProfile(tenantId);
   const vi = profile.visualIdentity;
@@ -76,8 +84,10 @@ export async function retryFailedIllustration(input: {
   // plus the piece's ready cover for a BODY image when `pinStyleToCover` is on.
   // Without this a retried body image is styled off the brand references alone
   // and visibly differs from its siblings — the exact whole-post consistency
-  // the setting exists to buy.
-  const referenceImages: (string | Buffer)[] = [...vi.styleReferenceImages];
+  // the setting exists to buy. `ownedBrandReferenceImages` is Finding 6's
+  // tenant-prefix filter — array membership in `styleReferenceImages` alone
+  // is not proof of ownership, mirroring `removeStyleReference`'s check.
+  const referenceImages: (string | Buffer)[] = ownedBrandReferenceImages(tenantId, vi.styleReferenceImages);
   if (image.role === "body" && vi.pinStyleToCover) {
     const cover = await getCoverImage(tenantId, piece.id);
     if (cover?.current) referenceImages.push(cover.current.blobUrl);
@@ -87,6 +97,27 @@ export async function retryFailedIllustration(input: {
   // (product owner decision 1): size + aspect ratio stated, one measured
   // re-ask, never a crop.
   const enforceAspect = image.role === "cover";
+
+  // Finding 4: claim the row before rendering. A conditional UPDATE that only
+  // succeeds while the row is still `failed` — the same "transition is the
+  // race winner, the loser rolls back" shape `acceptBrief` and
+  // `queueGeneration` (briefs/actions.ts, briefs/draft.ts) use elsewhere in
+  // this codebase. Without this, two concurrent retries of the same image
+  // (two tabs) both pass the checks above, both render, both bill, and both
+  // splice — duplicating the image under the same heading; the client's
+  // `disabled={isPending}` only guards a single tab. The loser gets a clean
+  // refusal instead of rendering at all. Placed right before the render
+  // attempt (not earlier) so any failure between here and the render/upload
+  // catch below still lands on a row this action itself can put back to
+  // `failed` — never a permanently stuck `pending`.
+  const claimed = await db
+    .update(contentImages)
+    .set({ status: "pending", updatedAt: new Date() })
+    .where(and(eq(contentImages.id, image.id), eq(contentImages.tenantId, tenantId), eq(contentImages.status, "failed")))
+    .returning({ id: contentImages.id });
+  if (claimed.length === 0) {
+    return { ok: false, error: "This image is already being retried." };
+  }
 
   let url: string;
   try {
@@ -118,6 +149,9 @@ export async function retryFailedIllustration(input: {
     });
     url = uploaded.url;
   } catch (e) {
+    // Puts the claim back: a failed render must not leave the row stuck at
+    // `pending` forever — the notice filters on `status === "failed"`, and a
+    // `pending` row with no render in flight would vanish from it for good.
     await markImageFailed(image.id);
     return { ok: false, error: `The image could not be generated: ${e instanceof Error ? e.message : String(e)}` };
   }
@@ -129,10 +163,31 @@ export async function retryFailedIllustration(input: {
     const next = anchor ? spliceImageAfterHeading(piece.body, anchor, markdown) : piece.body;
     placed = next !== piece.body;
     if (placed) {
-      await db
+      // Finding 3: optimistic write guard. `piece.body` is the snapshot read
+      // at the top of this action, before the 10-30s render — a concurrent
+      // Save landing during that window must not be silently reverted by a
+      // write built from the stale snapshot. The predicate below only
+      // succeeds if the body is still exactly what was read; a lost race
+      // affects zero rows.
+      const written = await db
         .update(contentPieces)
         .set({ body: next })
-        .where(and(eq(contentPieces.id, piece.id), eq(contentPieces.tenantId, tenantId)));
+        .where(
+          and(eq(contentPieces.id, piece.id), eq(contentPieces.tenantId, tenantId), eq(contentPieces.body, piece.body))
+        )
+        .returning({ id: contentPieces.id });
+      if (written.length === 0) {
+        // The render itself succeeded and `addRender` above already marked
+        // the row `ready` — that is not rolled back, matching how the
+        // anchor-not-found case just above treats a successful render as
+        // never wasted. Only the splice into the body lost the race, so only
+        // that is reported as failed.
+        revalidatePath(`/drafts/${piece.id}`);
+        return {
+          ok: false,
+          error: "The image was generated, but the draft changed while retrying so it couldn't be added. Check the image library, or retry again.",
+        };
+      }
     }
   }
 

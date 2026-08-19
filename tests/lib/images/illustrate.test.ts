@@ -15,9 +15,23 @@ const VI: VisualIdentity = {
     { hex: "#445566", role: "secondary" },
     { hex: "#ffffff", role: "background" },
   ],
+  // Overwritten to a tenant-scoped URL by `seed()` below, once the tenant id
+  // is known — see `refUrl`.
   styleReferenceImages: ["https://blob.example/ref-1.png"],
   pinStyleToCover: true,
 };
+
+/**
+ * Finding 6: `illustratePiece` now filters `styleReferenceImages` down to
+ * URLs whose pathname starts with THIS tenant's own `tenants/{id}/brand/`
+ * prefix (`ownedBrandReferenceImages`, mirroring `removeStyleReference`'s
+ * ownership check). A bare `https://blob.example/ref-1.png` matches no
+ * tenant's prefix and would be silently filtered to `[]`, so every seeded
+ * identity's reference is scoped to the actual tenant id instead.
+ */
+function refUrl(tenantId: string): string {
+  return `https://blob.example/tenants/${tenantId}/brand/ref-1.png`;
+}
 
 const BODY = "Intro.\n\n## Alpha\n\nA para.\n\n## Beta\n\nB para.\n\n## Wrap Up\n\nBye.";
 
@@ -35,10 +49,16 @@ afterEach(async () => {
 
 async function seed(opts: { visualIdentity?: VisualIdentity | null; imagePolicy?: Record<string, unknown> | null } = {}) {
   const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+  const identity = opts.visualIdentity === undefined ? VI : opts.visualIdentity;
+  // Every seeded identity's reference is rescoped to the just-created tenant
+  // id (see `refUrl`'s doc comment) — including a caller-supplied override
+  // like `{ ...VI, pinStyleToCover: false }`, which only means to flip that
+  // one field, not to change what "a real brand reference" looks like.
+  const visualIdentity = identity ? { ...identity, styleReferenceImages: [refUrl(tenant.id)] } : identity;
   await db.insert(companyProfiles).values({
     tenantId: tenant.id,
     topics: [],
-    visualIdentity: opts.visualIdentity === undefined ? VI : opts.visualIdentity,
+    visualIdentity,
     imagePolicy: (opts.imagePolicy ?? null) as never,
   });
   const [piece] = await db
@@ -127,7 +147,7 @@ describe("illustratePiece", () => {
     // renderImage to hold it to that shape (product owner decision 1: the
     // cover is GENERATED wide, never cropped afterwards).
     expect(renderCalls[0]).toMatchObject({ prompt: "PROMPT cover", size: "1200x630", enforceAspect: true });
-    expect(renderCalls[0].referenceImages).toEqual(["https://blob.example/ref-1.png"]);
+    expect(renderCalls[0].referenceImages).toEqual([refUrl(tenant.id)]);
     // Body renders after, at 1200x900, brand refs + the fresh cover bytes (pinStyleToCover).
     const bodyCalls = renderCalls.slice(1);
     expect(bodyCalls.map((c) => c.prompt).sort()).toEqual(["PROMPT alpha", "PROMPT beta"]);
@@ -135,7 +155,7 @@ describe("illustratePiece", () => {
       expect(call.size).toBe("1200x900");
       // Body images have no fixed shape to hold; only covers are guarded.
       expect(call.enforceAspect).toBeFalsy();
-      expect(call.referenceImages[0]).toBe("https://blob.example/ref-1.png");
+      expect(call.referenceImages[0]).toBe(refUrl(tenant.id));
       expect(Buffer.isBuffer(call.referenceImages[1])).toBe(true);
     }
 
@@ -207,7 +227,7 @@ describe("illustratePiece", () => {
     expect(cover.concept).toBe("lighthouse");
     const bodyCalls = renderCalls.filter((c) => c.size === "1200x900");
     expect(bodyCalls).toHaveLength(2);
-    for (const call of bodyCalls) expect(call.referenceImages).toEqual(["https://blob.example/ref-1.png"]);
+    for (const call of bodyCalls) expect(call.referenceImages).toEqual([refUrl(tenant.id)]);
   });
 
   it("does not pass the cover as a reference when pinStyleToCover is off", async () => {
@@ -218,8 +238,30 @@ describe("illustratePiece", () => {
       deps
     );
     for (const call of renderCalls.filter((c) => c.size === "1200x900")) {
-      expect(call.referenceImages).toEqual(["https://blob.example/ref-1.png"]);
+      expect(call.referenceImages).toEqual([refUrl(tenant.id)]);
     }
+  });
+
+  it("drops a styleReferenceImages URL that isn't owned by this tenant before it reaches renderImage (Finding 6)", async () => {
+    // Plan 1's schema only restricts the host, not the tenant path, so a
+    // foreign tenant's public blob URL could in principle end up persisted
+    // into this tenant's own `styleReferenceImages` array. Array membership
+    // alone must not be enough to get it fetched as reference bytes.
+    const { tenant, piece } = await seed();
+    const foreignUrl = "https://blob.example/tenants/someone-elses-tenant/brand/foreign.png";
+    await db
+      .update(companyProfiles)
+      .set({ visualIdentity: { ...VI, styleReferenceImages: [refUrl(tenant.id), foreignUrl] } })
+      .where(eq(companyProfiles.tenantId, tenant.id));
+
+    const { deps, renderCalls } = fakes();
+    await illustratePiece(
+      { tenantId: tenant.id, contentPieceId: piece.id, title: "T", body: BODY, contentType: "blog_post", database: db },
+      deps
+    );
+
+    expect(renderCalls[0].referenceImages).toEqual([refUrl(tenant.id)]);
+    expect(renderCalls.every((c) => !c.referenceImages.includes(foreignUrl))).toBe(true);
   });
 
   it("plans no cover for a type whose policy has cover off, and honours the body cap", async () => {
@@ -258,6 +300,38 @@ describe("illustratePiece", () => {
     const covers = (await imagesFor(piece.id)).filter((r) => r.role === "cover");
     expect(covers).toHaveLength(1);
     expect(covers[0].concept).toBe("lighthouse");
+  });
+
+  it("cleans up leftovers even when the new plan legitimately comes back empty (Finding 2)", async () => {
+    // Before the fix, the cleanup block ran AFTER the empty-plan early
+    // return, so this exact case — a retry whose plan legitimately comes
+    // back {cover: null, body: []} (the system prompt explicitly encourages
+    // this: "NEVER PAD... Return an empty body list when nothing earns
+    // one") — left the earlier aborted run's rows behind for good,
+    // including an orphan `ready` cover a later plan would have published.
+    const { tenant, piece } = await seed();
+    const [staleCover] = await db
+      .insert(contentImages)
+      .values({
+        tenantId: tenant.id,
+        contentPieceId: piece.id,
+        role: "cover",
+        concept: "stale",
+        altText: "stale",
+        sourceKind: "generated",
+        status: "ready",
+      })
+      .returning();
+    const emptyPlan: IllustrationPlan = { cover: null, body: [] };
+    const { deps } = fakes({ planIllustrations: vi.fn(async () => emptyPlan) });
+
+    const result = await illustratePiece(
+      { tenantId: tenant.id, contentPieceId: piece.id, title: "T", body: BODY, contentType: "blog_post", database: db },
+      deps
+    );
+
+    expect(result).toEqual({ body: BODY, failures: 0 });
+    expect(await db.select().from(contentImages).where(eq(contentImages.id, staleCover.id))).toHaveLength(0);
   });
 
   it("deletes a leftover row's BLOBS too, through the injected seam — never the real del()", async () => {

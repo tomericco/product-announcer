@@ -129,6 +129,14 @@ export async function acceptBrief(briefId: string): Promise<AcceptResult> {
   // deliberately: acceptBrief already has both in scope, and closing over
   // them keeps this callback's inputs explicit rather than re-deriving them
   // from the request inside the callback.
+  //
+  // No `maxDuration` is exported anywhere in this codebase's server actions
+  // today (checked as part of final-review Finding 5, 2026-08-18), and this
+  // fix wave isn't the place to invent one from a guessed number. But
+  // `generateDraftForPiece`'s worst case grew with the illustration agent —
+  // see `MAX_POLL_ATTEMPTS`'s comment in generation-checklist.tsx for the
+  // arithmetic — so if this `after()` callback ever starts getting cut off
+  // mid-run, check the platform's default function timeout first.
   after(async () => {
     await generateDraftForPiece(contentPieceId, tenantId);
     // The revalidatePath calls above ran before this callback was even
@@ -309,6 +317,11 @@ export async function generateDraft(
   // Same shape as acceptBrief's: revalidate again from inside the callback,
   // because the pages the user is sitting on were rendered before generation
   // even started and nothing else tells them the run landed.
+  //
+  // Same maxDuration note as acceptBrief's `after()` above: nothing exports
+  // one today, generation duration now includes illustration, and the
+  // platform's default function timeout is the ceiling to check first if
+  // this callback starts getting cut off.
   after(async () => {
     const result = await generateDraftForPiece(contentPieceId, tenantId);
     if (!result.ok) {

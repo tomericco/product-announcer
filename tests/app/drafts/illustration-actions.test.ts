@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "../../../src/db";
 import { tenants, contentPieces, companyProfiles, contentImages, imageRenders, users, type VisualIdentity } from "../../../src/db/schema";
 import { DEFAULT_VISUAL_IDENTITY } from "../../../src/lib/images/visual-identity";
@@ -30,7 +30,32 @@ vi.mock("../../../src/lib/images/blob", async (importOriginal) => {
   };
 });
 
+// A controllable delay inserted into `getOrCreateCompanyProfile`, zero by
+// default. The Finding-4 concurrency test below uses it to force two
+// concurrent `retryFailedIllustration` calls to both pass their initial
+// `image.status !== "failed"` reads before either reaches the claim step —
+// reproducing genuine overlap deterministically. Without it, real
+// connection-pool timing tends to fully serialize the two calls (the first
+// finishes end-to-end before the second's own first query even runs), which
+// would make that test pass whether or not the claim fix exists.
+let profileReadDelayMs = 0;
+vi.mock("../../../src/lib/workspace/company-profile", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../src/lib/workspace/company-profile")>();
+  return {
+    ...actual,
+    getOrCreateCompanyProfile: async (...args: Parameters<typeof actual.getOrCreateCompanyProfile>) => {
+      if (profileReadDelayMs > 0) await new Promise((r) => setTimeout(r, profileReadDelayMs));
+      return actual.getOrCreateCompanyProfile(...args);
+    },
+  };
+});
+
 import { retryFailedIllustration, dismissFailedIllustrations } from "../../../src/app/(dashboard)/drafts/[releaseId]/illustration-actions";
+// The real illustratePiece, not a mock: the composition test below needs its
+// actual DB writes (row + anchorHeading), and it picks up the same mocked
+// renderImage/compressPng/uploadPng/deleteBlobs modules already set up above.
+import { illustratePiece } from "../../../src/lib/images/illustrate";
+import type { IllustrationPlan } from "../../../src/lib/images/plan";
 
 const VI: VisualIdentity = {
   ...DEFAULT_VISUAL_IDENTITY,
@@ -127,6 +152,31 @@ describe("retryFailedIllustration", () => {
     expect(renderImage).not.toHaveBeenCalled();
   });
 
+  it("refuses an uploaded image even though it is a failed body/cover row (Finding 1: sourceKind guard)", async () => {
+    // Nothing in this plan creates a `failed` row with `sourceKind:
+    // "uploaded"` yet (Plan 3 adds editor uploads), so it's constructed
+    // directly here, matching this file's own seed() pattern.
+    const { tenant, piece } = await seed();
+    const [uploaded] = await db
+      .insert(contentImages)
+      .values({
+        tenantId: tenant.id,
+        contentPieceId: piece.id,
+        role: "body",
+        concept: "screenshot.png",
+        altText: "",
+        sourceKind: "uploaded",
+        status: "failed",
+        anchorHeading: "Beta",
+      })
+      .returning();
+    const result = await retryFailedIllustration({ contentPieceId: piece.id, imageId: uploaded.id });
+    expect(result.ok).toBe(false);
+    expect(renderImage).not.toHaveBeenCalled();
+    const [row] = await db.select().from(contentImages).where(eq(contentImages.id, uploaded.id));
+    expect(row.status).toBe("failed");
+  });
+
   it("refuses another tenant's image and never renders", async () => {
     await seed();
     const [other] = await db.insert(tenants).values({ name: OTHER_NAME }).returning();
@@ -206,6 +256,112 @@ describe("retryFailedIllustration", () => {
     expect(renderImage).toHaveBeenCalledTimes(2);
     const [row] = await db.select().from(contentImages).where(eq(contentImages.id, image.id));
     expect(row.status).toBe("failed");
+  });
+
+  it("claims the row before rendering: two concurrent retries of the same image only bill once (Finding 4)", async () => {
+    const { piece, image } = await seed();
+    // The previous test permanently overrode the module-level mock's
+    // implementation to always throw (mockClear in afterEach only clears
+    // call history, not the implementation) — reset it to a normal success.
+    renderImage.mockImplementation(async () => Buffer.from("PNG"));
+    // Force genuine overlap at the claim step — see profileReadDelayMs's doc
+    // comment above.
+    profileReadDelayMs = 15;
+
+    try {
+      const [first, second] = await Promise.all([
+        retryFailedIllustration({ contentPieceId: piece.id, imageId: image.id }),
+        retryFailedIllustration({ contentPieceId: piece.id, imageId: image.id }),
+      ]);
+
+      const results = [first, second];
+      const succeeded = results.filter((r) => r.ok);
+      const refused = results.filter((r) => !r.ok);
+      expect(succeeded).toHaveLength(1);
+      expect(refused).toHaveLength(1);
+      if (!refused[0].ok) expect(refused[0].error).toMatch(/already being retried/i);
+      // Only the winner actually rendered — the claim refused the loser
+      // before it ever called renderImage, so this is not a race on the
+      // mock's call count either.
+      expect(renderImage).toHaveBeenCalledTimes(1);
+
+      const [row] = await db.select().from(contentImages).where(eq(contentImages.id, image.id));
+      expect(row.status).toBe("ready");
+    } finally {
+      profileReadDelayMs = 0;
+    }
+  });
+
+  it("rejects the body write when the draft changed mid-retry, but keeps the successful render as ready (Finding 3)", async () => {
+    const { piece, image } = await seed();
+    renderImage.mockImplementation(async () => {
+      // Simulate a concurrent Save landing while this render is in flight —
+      // the write predicate below must catch this, not the read at the top
+      // of the action (which ran before this happened).
+      await db.update(contentPieces).set({ body: "Someone else's concurrent edit." }).where(eq(contentPieces.id, piece.id));
+      return Buffer.from("PNG");
+    });
+
+    const result = await retryFailedIllustration({ contentPieceId: piece.id, imageId: image.id });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/draft changed/i);
+
+    // The concurrent edit survives untouched — not silently overwritten by
+    // the stale-plus-one-image body the retry computed from its snapshot.
+    const [afterPiece] = await db.select().from(contentPieces).where(eq(contentPieces.id, piece.id));
+    expect(afterPiece.body).toBe("Someone else's concurrent edit.");
+
+    // The render itself was not wasted: it succeeded and is usable, only its
+    // placement into the body lost the race.
+    const [row] = await db.select().from(contentImages).where(eq(contentImages.id, image.id));
+    expect(row.status).toBe("ready");
+    expect(row.currentRenderId).not.toBeNull();
+  });
+});
+
+describe("composition: illustratePiece failure -> retryFailedIllustration placement", () => {
+  it("places a retried image at the anchor illustratePiece originally stored (Recommendation #5)", async () => {
+    const [tenant] = await db.insert(tenants).values({ name: TENANT_NAME }).returning();
+    const [user] = await db.insert(users).values({ email: USER_EMAIL }).returning();
+    currentTenantId = tenant.id;
+    currentUserId = user.id;
+    await db.insert(companyProfiles).values({ tenantId: tenant.id, topics: [], visualIdentity: VI });
+    const [piece] = await db
+      .insert(contentPieces)
+      .values({ tenantId: tenant.id, type: "blog_post", title: "T", body: BODY, status: "draft" })
+      .returning();
+
+    const plan: IllustrationPlan = {
+      cover: null,
+      body: [{ anchorHeading: "Beta", concept: "gears meshing", prompt: "PROMPT beta", altText: "Gears meshing" }],
+    };
+    renderImage.mockImplementation(async (args: RenderArgs) => {
+      if (args.prompt === "PROMPT beta") throw new Error("model down");
+      return Buffer.from("PNG");
+    });
+
+    const illustrateResult = await illustratePiece(
+      { tenantId: currentTenantId, contentPieceId: piece.id, title: piece.title, body: piece.body, contentType: "blog_post", database: db },
+      { planIllustrations: async () => plan }
+    );
+    expect(illustrateResult.failures).toBe(1);
+    expect(illustrateResult.body).toBe(BODY);
+
+    const [failedImage] = await db
+      .select()
+      .from(contentImages)
+      .where(and(eq(contentImages.contentPieceId, piece.id), eq(contentImages.role, "body")));
+    expect(failedImage.status).toBe("failed");
+    expect(failedImage.anchorHeading).toBe("Beta");
+
+    renderImage.mockClear();
+    renderImage.mockImplementation(async () => Buffer.from("PNG-RETRY"));
+
+    const retryResult = await retryFailedIllustration({ contentPieceId: piece.id, imageId: failedImage.id });
+    expect(retryResult).toMatchObject({ ok: true, placed: true });
+
+    const [afterPiece] = await db.select().from(contentPieces).where(eq(contentPieces.id, piece.id));
+    expect(afterPiece.body).toMatch(/## Beta\n\n!\[Gears meshing\]\(https:\/\/blob\.example\/[^)]+\)\n\nB para\./);
   });
 });
 

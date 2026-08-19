@@ -32,9 +32,23 @@ const POLL_INTERVAL_MS = 3000;
 // effect would poll forever: a server-action POST plus a session check and a
 // DB query every POLL_INTERVAL_MS for as long as the tab stays open. This
 // bounds it instead of trusting every generation to eventually reach a
-// terminal state. ~5 minutes at the current interval; generation steps take
-// tens of seconds per the design doc, so this is generous, not tight.
-export const MAX_POLL_ATTEMPTS = 100;
+// terminal state.
+//
+// Re-derived for the illustration agent (2026-08-18 spec §4, final-review
+// Finding 5). The "illustrating" step (draft-progress.ts) can now issue up to
+// ~10 billed image-generation calls in a single draft: cover up to 2 attempts
+// (one silent retry) × the aspect guard's up to 2 attempts each = 4, plus
+// body up to 3 images × 2 attempts (one silent retry) each = 6. At "tens of
+// seconds" per model call — this file's own established estimate for a slow
+// step, see draft-progress.ts's `generating`/`reviewing`/`illustrating`
+// comments — call it 20s/call conservatively: 10 × 20s = 200s for
+// illustrating alone. Add `generating` (~30s) and `reviewing` (~20s), the
+// pipeline's other two slow steps: ~250s worst case for a full draft
+// generation. MAX_POLL_ATTEMPTS × POLL_INTERVAL_MS must comfortably clear
+// that with headroom for slower responses, not just barely cover the
+// arithmetic mean — 200 attempts × 3s = 600s (10 minutes) leaves roughly 2.4x
+// headroom over the ~250s estimate.
+export const MAX_POLL_ATTEMPTS = 200;
 
 export function hasExceededPollLimit(attempts: number): boolean {
   return attempts >= MAX_POLL_ATTEMPTS;

@@ -12,7 +12,7 @@ import { compressPng as defaultCompressPng } from "@/lib/images/compress";
 // builds public CMS slugs), while a Blob pathname wants the 40-char image slug
 // every other image caller uses. Sharing one slug function across the image
 // feature is what keeps pathnames consistent and readable.
-import { imagePathname, slugForImage, uploadPng as defaultUploadPng } from "@/lib/images/blob";
+import { imagePathname, ownedBrandReferenceImages, slugForImage, uploadPng as defaultUploadPng } from "@/lib/images/blob";
 import { createImage, addRender, markImageFailed, listImages, deleteImage } from "@/lib/images/store";
 import { planIllustrations as defaultPlanIllustrations, type IllustrationPlan } from "@/lib/images/plan";
 import { spliceImageAfterHeading } from "@/lib/images/splice";
@@ -97,6 +97,29 @@ export async function illustratePiece(
   const upload = deps.uploadPng ?? defaultUploadPng;
   const compress = deps.compressPng ?? defaultCompressPng;
 
+  // Leftovers from an earlier aborted/failed run of THIS generation (the piece
+  // is still "brief", so no human has placed images yet). Runs FIRST — before
+  // the visual-identity/policy checks below and before the plan call — so it
+  // still runs on every early-return path: a visual identity that stopped
+  // being ready, a policy that turned images off, or a plan that legitimately
+  // comes back empty (the system prompt explicitly encourages this) all used
+  // to skip this block entirely when it ran after those checks, leaving
+  // leftover rows behind — including an orphan `ready` cover a later run
+  // would publish, and `failed` rows whose concepts reference a document body
+  // that may no longer exist. The cover's partial unique index would also
+  // reject a new cover row on the next real run. `deleteImage` removes the
+  // blobs too. Uploads are left alone on principle. Depends only on
+  // `tenantId`/`contentPieceId`, both known up front — nothing below this
+  // block feeds it.
+  const existing = await listImages(args.tenantId, { contentPieceId: args.contentPieceId }, database);
+  for (const image of existing) {
+    if (image.sourceKind !== "generated") continue;
+    if (image.role !== "cover" && image.role !== "body") continue;
+    // The deps object is forwarded so tests never reach @vercel/blob. Passing
+    // `{}` when no dep is injected keeps `deleteImage`'s own default.
+    await deleteImage(args.tenantId, image.id, database, deps.deleteBlobs ? { deleteBlobs: deps.deleteBlobs } : {});
+  }
+
   // One fetch for both brand inputs (spec §6: policy is read with the rest of
   // the profile). No confirmed visual identity → no images: the draft page
   // nudges toward setup instead of generating something off-brand.
@@ -131,21 +154,10 @@ export async function illustratePiece(
     return { body: args.body, failures: 0 };
   }
 
-  // Leftovers from an earlier aborted/failed run of THIS generation (the piece
-  // is still "brief", so no human has placed images yet). The cover's partial
-  // unique index would otherwise reject the new cover row, and their blobs
-  // would be orphaned. `deleteImage` also removes the blobs. Uploads are left
-  // alone on principle.
-  const existing = await listImages(args.tenantId, { contentPieceId: args.contentPieceId }, database);
-  for (const image of existing) {
-    if (image.sourceKind !== "generated") continue;
-    if (image.role !== "cover" && image.role !== "body") continue;
-    // The deps object is forwarded so tests never reach @vercel/blob. Passing
-    // `{}` when no dep is injected keeps `deleteImage`'s own default.
-    await deleteImage(args.tenantId, image.id, database, deps.deleteBlobs ? { deleteBlobs: deps.deleteBlobs } : {});
-  }
-
-  const brandReferences: (string | Buffer)[] = vi.styleReferenceImages;
+  // Finding 6: array membership in `styleReferenceImages` is not proof of
+  // ownership (see `ownedBrandReferenceImages`'s doc comment) — filter to
+  // this tenant's own brand assets before any of it reaches a render call.
+  const brandReferences: (string | Buffer)[] = ownedBrandReferenceImages(args.tenantId, vi.styleReferenceImages);
   let failures = 0;
 
   // ---- Cover: first, alone. Its bytes feed the body renders below. ----

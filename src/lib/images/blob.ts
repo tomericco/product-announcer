@@ -65,6 +65,25 @@ export function blobPathnameFromUrl(url: string): string {
 }
 
 /**
+ * Filters `urls` down to the ones genuinely owned by `tenantId`: their blob
+ * pathname must start with `tenants/{tenantId}/brand/`, the shape
+ * `brandAssetPathname` produces. Mirrors `removeStyleReference`'s ownership
+ * check (company/actions.ts) — "array membership alone is not proof of
+ * ownership" applies just as much at the point a reference is READ (fetched
+ * as render bytes) as at the point one is removed. `saveVisualIdentity`
+ * validates `styleReferenceImages` only against the shared Blob store's host,
+ * not any particular tenant's path, so a tenant could otherwise persist a
+ * foreign tenant's public blob URL into their own array and have it fetched
+ * into a render call. Anything that doesn't match is silently dropped, not
+ * errored — this is a defensive filter at the point of use, not a place to
+ * surface a user-facing failure.
+ */
+export function ownedBrandReferenceImages(tenantId: string, urls: readonly string[]): string[] {
+  const prefix = `tenants/${tenantId}/brand/`;
+  return urls.filter((url) => blobPathnameFromUrl(url).startsWith(prefix));
+}
+
+/**
  * Uploads one already-compressed PNG. Public — these are marketing images
  * that go public at publish anyway; the random suffix is the access control
  * for unpublished drafts. Never overwrites: regeneration writes a new blob.
