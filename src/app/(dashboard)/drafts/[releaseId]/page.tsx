@@ -31,6 +31,12 @@ import { readVariant } from "@/lib/publishing/channel-variants";
 import { slugify } from "@/lib/publishing/slug";
 import { LinkedinPanel } from "./linkedin-panel";
 import { FailedIllustrationsNotice } from "./failed-illustrations-notice";
+import Link from "next/link";
+import { getOrCreateCompanyProfile } from "@/lib/workspace/company-profile";
+import { resolveImagePolicy } from "@/lib/images/policy";
+import { isVisualIdentityReady } from "@/lib/images/visual-identity";
+import { getCoverImage } from "@/lib/images/store";
+import { CoverPanel, type CoverState } from "./cover-panel";
 
 export default async function DraftDetailPage({ params }: { params: Promise<{ releaseId: string }> }) {
   const session = await requireSession();
@@ -241,6 +247,29 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
   const linkedinConfig = await linkedinDestination.loadConfig(session.user.tenantId, db);
   const linkedinVariant = linkedinConfig ? await readVariant(db, update.id, "linkedin") : null;
 
+  // The per-type image policy (spec §6) decides whether the piece has a cover
+  // affordance at all; the profile is one fetch, same as generation reads it.
+  const profile = await getOrCreateCompanyProfile(session.user.tenantId);
+  const imagePolicy = resolveImagePolicy(profile.imagePolicy, update.type);
+  // Spec §4: with no confirmed visual identity, drafts come without images
+  // "and the page points me to the setup card". The pointer replaces the
+  // cover affordance (generating would only error-toast anyway).
+  const needsVisualIdentity =
+    (imagePolicy.cover || imagePolicy.bodyCap > 0) && !isVisualIdentityReady(profile.visualIdentity);
+  const showCover = imagePolicy.cover && !needsVisualIdentity;
+  const coverRow = showCover ? await getCoverImage(session.user.tenantId, update.id) : null;
+  const cover: CoverState = coverRow?.current
+    ? {
+        url: coverRow.current.blobUrl,
+        alt: coverRow.altText,
+        concept: coverRow.concept,
+        sourceKind: coverRow.sourceKind === "uploaded" ? "uploaded" : "generated",
+      }
+    : null;
+  // A failed agent cover has a row but no render: seed the prompt dialog with
+  // its concept (spec §4 — "Add-cover menu pre-filled with the failed prompt").
+  const coverPromptSeed = coverRow && !coverRow.current ? coverRow.concept : "";
+
   return (
     <div className="mx-auto w-full max-w-3xl space-y-6">
       <EditorProvider>
@@ -299,6 +328,17 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
           {showCodeWarning && <WebflowCodeWarning contentPieceId={update.id} />}
 
           {delta.count > 0 && <CatchUpBanner count={delta.count} contentPieceId={update.id} />}
+
+          {needsVisualIdentity && (
+            <p className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">
+              This draft has no images — add your palette and style in{" "}
+              <Link href="/company" className="underline">
+                Company &rarr; Visual identity
+              </Link>{" "}
+              and future drafts will include a cover and body images.
+            </p>
+          )}
+          {showCover && <CoverPanel contentPieceId={update.id} initial={cover} promptSeed={coverPromptSeed} />}
 
           {/* ToastForm, not a plain <form>: saveDraft stays a Server Action but
               the confirmation toast fires client-side once it resolves. Only the
