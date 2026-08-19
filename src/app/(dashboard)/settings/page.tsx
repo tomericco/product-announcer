@@ -9,6 +9,8 @@ import { CalendarForm } from "./calendar-form";
 import { MembersSection } from "./members-section";
 import { ScheduleForm } from "./schedule-form";
 import { normalizeWeekStart } from "@/lib/workspace/calendar-settings";
+import { getOrCreateCompanyProfile } from "@/lib/workspace/company-profile";
+import { ImagePolicyForm } from "./image-policy-form";
 import { ToastForm } from "./toast-form";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -23,6 +25,7 @@ export default async function SettingsPage() {
     .select()
     .from(scheduleConfigs)
     .where(eq(scheduleConfigs.tenantId, session.user.tenantId));
+  const profile = await getOrCreateCompanyProfile(session.user.tenantId);
 
   return (
     <div className="space-y-8">
@@ -71,6 +74,17 @@ export default async function SettingsPage() {
               holidayCountries: tenant?.holidayCountries ?? [],
             }}
           />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Content images</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {/* Keyed on the server value like the other cards: the form seeds
+              its matrix once from `initial`. */}
+          <ImagePolicyForm key={JSON.stringify(profile.imagePolicy)} initial={profile.imagePolicy} />
         </CardContent>
       </Card>
     </div>

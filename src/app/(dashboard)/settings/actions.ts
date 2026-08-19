@@ -4,7 +4,7 @@ import { and, eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { headers } from "next/headers";
 import { db } from "@/db";
-import { repos, scheduleConfigs, tenants } from "@/db/schema";
+import { companyProfiles, repos, scheduleConfigs, tenants } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { requireRole } from "@/lib/workspace/active-tenant";
 import { addSelectedRepos } from "@/lib/workspace/repo-sync";
@@ -13,6 +13,8 @@ import { createInvite, revokeActiveInvite } from "@/lib/workspace/invites";
 import { removeWorkspaceMember } from "@/lib/workspace/members";
 import { parseHour } from "@/lib/workspace/parse-hour";
 import { normalizeWeekStart, parseHolidayCountries } from "@/lib/workspace/calendar-settings";
+import { getOrCreateCompanyProfile } from "@/lib/workspace/company-profile";
+import { parseImagePolicy } from "@/lib/images/policy";
 
 export async function saveWorkspaceName(formData: FormData) {
   const session = await requireSession();
@@ -147,4 +149,26 @@ export async function removeMember(targetUserId: string): Promise<void> {
   // the workspace always keeps at least one owner.
   await removeWorkspaceMember(session.user.tenantId, session.user.id, targetUserId);
   revalidatePath("/settings");
+}
+
+/**
+ * Persists the Content images card (image spec §6): per content type, whether
+ * a cover is generated and how many body illustrations at most. Takes
+ * `unknown` — a Server Action argument is client input — and validates
+ * against the allow-list in src/lib/images/policy.ts. Turning a type off
+ * never deletes existing images.
+ */
+export async function saveImagePolicy(input: unknown): Promise<{ ok: true } | { ok: false; reason: "invalid" }> {
+  const session = await requireSession();
+  const policy = parseImagePolicy(input);
+  if (!policy) return { ok: false, reason: "invalid" };
+
+  const profile = await getOrCreateCompanyProfile(session.user.tenantId);
+  await db
+    .update(companyProfiles)
+    .set({ imagePolicy: policy, updatedAt: new Date() })
+    .where(eq(companyProfiles.id, profile.id));
+
+  revalidatePath("/settings");
+  return { ok: true };
 }
