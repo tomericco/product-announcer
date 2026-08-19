@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { activeEditor$, useCellValue, ImageNode, type MDXEditorMethods } from "@mdxeditor/editor";
 import { Sparkles, Split } from "lucide-react";
 import { toast } from "sonner";
@@ -21,6 +21,7 @@ import { ViewModeBridge } from "@/components/markdown/view-mode-bridge";
 import { GenerateImageButton } from "./generate-image-button";
 import { DraftImageProvider } from "./draft-image-context";
 import { ImageEditToolbar } from "./image-edit-toolbar";
+import { uploadImageFile } from "./image-actions";
 
 /**
  * Registers imperative editor ops (used by the Ask AI modal) into the agent-edit
@@ -279,6 +280,25 @@ export default function MdxEditor({
   // shared editor, so ownership of the ref sits here too.
   const editorRef = useRef<MDXEditorMethods>(null);
 
+  // Drag-drop / paste / file-tab uploads (spec §5): post the file to the
+  // upload action and hand the plugin the blob URL to insert. Throwing makes
+  // the plugin abandon the insert (it catches and logs); the toast is ours.
+  const imageUploadHandler = useCallback(
+    async (file: File) => {
+      const fd = new FormData();
+      fd.set("contentPieceId", contentPieceId);
+      fd.set("role", "body");
+      fd.set("file", file);
+      const result = await uploadImageFile(fd);
+      if (!result.ok) {
+        toast.error(result.error);
+        throw new Error(result.error);
+      }
+      return result.url;
+    },
+    [contentPieceId]
+  );
+
   return (
     <DraftImageProvider contentPieceId={contentPieceId}>
       <SharedMdxEditor
@@ -300,6 +320,7 @@ export default function MdxEditor({
         }
         insertExtras={<GenerateImageButton contentPieceId={contentPieceId} />}
         imageToolbar={ImageEditToolbar}
+        imageUploadHandler={imageUploadHandler}
       />
     </DraftImageProvider>
   );

@@ -276,6 +276,17 @@
   border-top: 1px solid var(--border);
   margin: 1.5rem 0;
 }
+/* No img rule existed (spec §5 plumbing note): body illustrations are 1200px
+   masters, so cap them at the column and give them the same vertical rhythm
+   as paragraphs. Applies inside the editor only — published HTML goes through
+   render.ts and the destination's own styles. */
+.mdx-content img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 1rem 0;
+  border-radius: 0.5rem;
+}
 /* The brand palette is intentionally greyscale (every token is oklch(x 0 0)),
    so a link tinted with --primary reads as ordinary body text. Give links a
    real, recognizable link colour instead. Doubled class beats @mdxeditor's
