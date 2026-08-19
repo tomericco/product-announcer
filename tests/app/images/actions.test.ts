@@ -15,7 +15,13 @@ vi.mock("../../../src/lib/workspace/session", () => ({
 }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 const renderImage = vi.fn(async () => Buffer.from("PNG"));
-vi.mock("../../../src/lib/ai/images", () => ({ renderImage: () => renderImage() }));
+vi.mock("../../../src/lib/ai/images", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../src/lib/ai/images")>();
+  return {
+    ...actual,
+    renderImage: () => renderImage(),
+  };
+});
 vi.mock("../../../src/lib/images/compress", () => ({
   compressPng: vi.fn(async (png: Buffer, maxWidth: number) => ({ png, width: maxWidth, height: 900 })),
 }));

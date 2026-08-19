@@ -1,4 +1,5 @@
 import { slugForImage } from "@/lib/images/blob";
+import { ASPECT_TOLERANCE } from "@/lib/ai/images";
 
 /**
  * Pure helpers behind the image server actions. They live here rather than
@@ -125,15 +126,12 @@ export function sizeForRole(role: "cover" | "body" | "library"): "1200x630" | "1
  * mismatched shape would ship distorted/cropped into LinkedIn and OG, which
  * product owner decision 1 forbids doing ourselves).
  *
- * Mirrors `ASPECT_TOLERANCE` (`src/lib/ai/images.ts`), the render guard's own
- * tolerance, so a cover-shaped render is never rejected by this filter — kept
- * as a separate constant (rather than imported) because `ai/images` is the
- * network-adjacent render seam tests mock out wholesale; duplicating one
- * documented number here keeps this pure helper free of that module.
+ * Reuses `ASPECT_TOLERANCE` (`src/lib/ai/images.ts`) — the render guard's own
+ * tolerance — rather than a second, independently-maintained number, so this
+ * filter and the generation guard can never drift apart.
  */
-const COVER_ASPECT_TOLERANCE = 0.02;
 const COVER_ASPECT = 1200 / 630;
 
 export function isCoverShaped(width: number, height: number): boolean {
-  return Math.abs(width / height - COVER_ASPECT) / COVER_ASPECT <= COVER_ASPECT_TOLERANCE;
+  return Math.abs(width / height - COVER_ASPECT) / COVER_ASPECT <= ASPECT_TOLERANCE;
 }
