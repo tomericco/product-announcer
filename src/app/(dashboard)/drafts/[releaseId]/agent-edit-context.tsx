@@ -60,13 +60,21 @@ export type EditorOps = {
    */
   insertAtCursor: (markdown: string) => Promise<string>;
   /**
-   * Points every image node whose src is `oldUrl` at `newUrl` — the render
+   * Points image node(s) currently at `oldUrl` at `newUrl` — the render
    * history's restore/regenerate swap (spec §5) — and resolves with the body
    * after commit. Node-level, not setMarkdown: setMarkdown mutes onChange
    * (see the whole-update comment in AgentEditBridge), which would leave
    * DraftBodyEditor's hidden input stale.
+   *
+   * When `nodeKey` is given, only that specific Lexical node is updated
+   * (regardless of whether other nodes in the document share `oldUrl` — e.g.
+   * a copy/pasted duplicate) — the per-image toolbar (Task 7) always has its
+   * own node's key and must not mutate a sibling that happens to share the
+   * same src. When `nodeKey` is omitted, every image node whose src equals
+   * `oldUrl` is updated (the original, URL-match-all behavior) — kept as the
+   * default for backward compatibility, though no caller currently omits it.
    */
-  replaceImageSrc: (oldUrl: string, newUrl: string) => Promise<string>;
+  replaceImageSrc: (oldUrl: string, newUrl: string, nodeKey?: string) => Promise<string>;
 };
 
 type AgentEditState = { mode: DialogMode; excerpt: string };

@@ -11,6 +11,7 @@ import {
   $getRoot,
   $createParagraphNode,
   $nodesOfType,
+  $getNodeByKey,
   type LexicalEditor,
   type RangeSelection,
 } from "lexical";
@@ -18,6 +19,8 @@ import { useAgentEdit, type EditorOps } from "./agent-edit-context";
 import SharedMdxEditor from "@/components/markdown/mdx-editor";
 import { ViewModeBridge } from "@/components/markdown/view-mode-bridge";
 import { GenerateImageButton } from "./generate-image-button";
+import { DraftImageProvider } from "./draft-image-context";
+import { ImageEditToolbar } from "./image-edit-toolbar";
 
 /**
  * Registers imperative editor ops (used by the Ask AI modal) into the agent-edit
@@ -171,7 +174,7 @@ function AgentEditBridge({ editorRef }: { editorRef: React.RefObject<MDXEditorMe
           });
           editorRef.current?.insertMarkdown(markdown);
         }),
-      replaceImageSrc: (oldUrl, newUrl) =>
+      replaceImageSrc: (oldUrl, newUrl, nodeKey) =>
         new Promise<string>((resolve) => {
           const editor = activeEditorRef.current;
           if (!editor) {
@@ -184,10 +187,26 @@ function AgentEditBridge({ editorRef }: { editorRef: React.RefObject<MDXEditorMe
             resolve(editorRef.current?.getMarkdown() ?? "");
           });
           editor.update(() => {
-            for (const node of $nodesOfType(ImageNode)) {
-              if (node.getSrc() === oldUrl) {
+            if (nodeKey !== undefined) {
+              // Scoped update (Task 7's per-image toolbar always has its own
+              // node's key): touch only THIS node, even if other nodes in the
+              // document share `oldUrl` (e.g. the image was copy/pasted
+              // elsewhere in the body) — an unscoped URL match would silently
+              // mutate every occurrence instead of just the one the user acted
+              // on.
+              const node = $getNodeByKey(nodeKey);
+              if (node instanceof ImageNode) {
                 node.setSrc(newUrl);
                 changed = true;
+              }
+            } else {
+              // No node identified: fall back to the original URL-match-all
+              // behavior, unchanged, for backward compatibility.
+              for (const node of $nodesOfType(ImageNode)) {
+                if (node.getSrc() === oldUrl) {
+                  node.setSrc(newUrl);
+                  changed = true;
+                }
               }
             }
           });
@@ -261,24 +280,27 @@ export default function MdxEditor({
   const editorRef = useRef<MDXEditorMethods>(null);
 
   return (
-    <SharedMdxEditor
-      markdown={markdown}
-      onChange={onChange}
-      editorRef={editorRef}
-      parseErrorHint="Switch to Source mode (the Source button in the action row) to view and edit the raw Markdown safely."
-      realmChildren={
-        <>
-          <ViewModeBridge />
-          <AgentEditBridge editorRef={editorRef} />
-        </>
-      }
-      selectionExtras={
-        <>
-          <AskAiSelectionButton />
-          <ExtractSelectionButton />
-        </>
-      }
-      insertExtras={<GenerateImageButton contentPieceId={contentPieceId} />}
-    />
+    <DraftImageProvider contentPieceId={contentPieceId}>
+      <SharedMdxEditor
+        markdown={markdown}
+        onChange={onChange}
+        editorRef={editorRef}
+        parseErrorHint="Switch to Source mode (the Source button in the action row) to view and edit the raw Markdown safely."
+        realmChildren={
+          <>
+            <ViewModeBridge />
+            <AgentEditBridge editorRef={editorRef} />
+          </>
+        }
+        selectionExtras={
+          <>
+            <AskAiSelectionButton />
+            <ExtractSelectionButton />
+          </>
+        }
+        insertExtras={<GenerateImageButton contentPieceId={contentPieceId} />}
+        imageToolbar={ImageEditToolbar}
+      />
+    </DraftImageProvider>
   );
 }
