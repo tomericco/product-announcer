@@ -3,6 +3,7 @@ import { db as defaultDb } from "@/db";
 import { briefs, contentPieces, tenantMembers, type Brief } from "@/db/schema";
 import type { ContentPiece } from "@/lib/publishing/destinations/types";
 import type { DraftStepKey } from "@/lib/drafting/draft-progress";
+import { getCoverImagesForPieces } from "@/lib/images/store";
 
 type Database = typeof defaultDb;
 
@@ -65,6 +66,12 @@ export type BoardCard = {
   // does not recognize rather than asserting it away.
   generationStep: DraftStepKey | null;
   createdAt: Date;
+  // The piece's `role:"cover"` image, or null — spec §3's third reader of
+  // that row, after the draft page and publish dispatch. Filled by one
+  // batched query per board (see the bottom of readBoard), never by a
+  // per-card read. `alt` is the row's stored alt text; the board card renders
+  // it decorative (see card.tsx) but the query stays neutral about that.
+  cover: { url: string; alt: string } | null;
 };
 
 // A commission, not a draft: no assignee, no schedule, no generation state,
@@ -176,6 +183,8 @@ export async function readBoard(
       ...row,
       status: row.status,
       generationStep: row.generationStep as DraftStepKey | null,
+      // Filled in below, in one query for the whole board.
+      cover: null,
     });
   }
 
@@ -183,6 +192,20 @@ export async function readBoard(
   // filter above, so the newest survive and the cap applies to the same set
   // the caller sees, not to a superset it never gets to look at.
   board.published = board.published.slice(0, PUBLISHED_COLUMN_LIMIT);
+
+  // One query for every card on the board. Deliberately AFTER the published
+  // slice and the assignee filter: the covers fetched are then exactly the
+  // covers rendered, instead of a lookup for pieces the cap has already
+  // dropped. `store.ts` owns the "which row is this piece's cover" rule —
+  // this file must never grow its own copy of that join.
+  const covers = await getCoverImagesForPieces(
+    tenantId,
+    BOARD_COLUMNS.flatMap((column) => board[column].map((card) => card.id)),
+    database
+  );
+  for (const column of BOARD_COLUMNS) {
+    for (const card of board[column]) card.cover = covers.get(card.id) ?? null;
+  }
 
   return board;
 }

@@ -2,6 +2,7 @@
 
 import { useState, useSyncExternalStore, useTransition } from "react";
 import Link from "next/link";
+import Image from "next/image";
 import { format } from "date-fns";
 import { GripVertical, Trash2 } from "lucide-react";
 import { toast } from "sonner";
@@ -349,6 +350,42 @@ function PieceCardItem({
   return (
     <div ref={setNodeRef} style={style} className={cn(isDragging && "opacity-40")}>
       <Card size="sm">
+        {/* The piece's cover (spec §3). It must stay the FIRST child of
+            `Card`: the primitive drops its own top padding and rounds the
+            top corners for a direct first-child <img>
+            (`has-[>img:first-child]:pt-0`, `*:[img:first-child]:rounded-t-xl`
+            — src/components/ui/card.tsx:16), which is what makes this sit
+            flush instead of inside the card's padding. Moving it below
+            CardContent, or wrapping it in a div, turns both rules off with
+            no error.
+
+            Rendered only when there is one, and that is the common case
+            inverted: product updates and social posts have no cover at all
+            (spec §6), and neither does a piece whose cover generation
+            failed. Those cards keep exactly today's layout, because the two
+            rules above are conditional selectors that simply do not match.
+
+            `width`/`height` are the cover's real 1200x630 (never cropped —
+            product owner decision 1), so the browser reserves the 1.91:1 box
+            from the attributes and the card does not jump when the image
+            lands. `sizes` keeps a ~300px column from pulling the 1200px
+            master.
+
+            `alt=""` — the cover is decorative HERE (spec §2). The card's
+            accessible name is the title link immediately below it; the
+            row's real alt text rides along on `card.cover.alt` for anything
+            that needs it, and is what Task 9's dialog edits and Plan 4
+            publishes. */}
+        {card.cover && (
+          <Image
+            src={card.cover.url}
+            alt=""
+            width={1200}
+            height={630}
+            sizes="(max-width: 1024px) 50vw, 320px"
+            className="h-auto w-full"
+          />
+        )}
         <CardContent className="space-y-2">
           <div className="flex items-start">
             {draggable && (

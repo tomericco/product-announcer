@@ -13,7 +13,7 @@ import {
   moveContentPiece,
   assignContentPiece,
 } from "../../../src/lib/content/board";
-import { seedTenant, dropTenant } from "../../helpers/fixtures";
+import { seedTenant, dropTenant, seedContentImage } from "../../helpers/fixtures";
 
 const TENANT = "Board Read Test Tenant";
 
@@ -133,6 +133,61 @@ describe("readBoard", () => {
     expect(card.scheduledFor?.toISOString()).toBe(when.toISOString());
     expect(card.generationError).toBe("warned");
     expect(card.generationStep).toBe("generating");
+  });
+
+  it("carries a piece's cover, and null for a piece without one", async () => {
+    const tenant = await seedTenant(TENANT);
+    const covered = await seedPiece(tenant.id, { title: "Covered", status: "draft" });
+    await seedPiece(tenant.id, { title: "Bare", status: "draft" });
+    const { image, render } = await seedContentImage({
+      tenantId: tenant.id,
+      contentPieceId: covered.id,
+      role: "cover",
+      overrides: { altText: "Lighthouse beam over a grid of tiles" },
+    });
+
+    const board = await readBoard(tenant.id, db);
+    // Spec §3: the cover row is read by the draft page, publish dispatch and
+    // the board card. This is the board's half.
+    expect(board.draft.find((c) => c.title === "Covered")?.cover).toEqual({
+      url: render!.blobUrl,
+      alt: image.altText,
+    });
+    // Most pieces have no cover — product updates and social posts don't get
+    // one at all (spec §6). Their cards must render exactly as before.
+    expect(board.draft.find((c) => c.title === "Bare")?.cover).toBeNull();
+  });
+
+  it("leaves the cover null for a body image and for a cover that never rendered", async () => {
+    const tenant = await seedTenant(TENANT);
+    const bodyOnly = await seedPiece(tenant.id, { title: "Body only", status: "review" });
+    const failedCover = await seedPiece(tenant.id, { title: "Failed cover", status: "review" });
+    await seedContentImage({ tenantId: tenant.id, contentPieceId: bodyOnly.id, role: "body" });
+    await seedContentImage({
+      tenantId: tenant.id,
+      contentPieceId: failedCover.id,
+      role: "cover",
+      withRender: false,
+    });
+
+    const board = await readBoard(tenant.id, db);
+    // A body image is not a cover, and a failed cover has nothing to draw —
+    // neither may put a broken image on a card.
+    expect(board.review.map((c) => c.cover)).toEqual([null, null]);
+  });
+
+  it("covers the published column AFTER it is capped, not the pieces the cap drops", async () => {
+    const tenant = await seedTenant(TENANT);
+    for (let i = 0; i < PUBLISHED_COLUMN_LIMIT + 2; i++) {
+      const piece = await seedPiece(tenant.id, { title: `P${i}`, status: "published" });
+      await seedContentImage({ tenantId: tenant.id, contentPieceId: piece.id, role: "cover" });
+    }
+    const board = await readBoard(tenant.id, db);
+    // Every card the board actually returns has its cover; the two the cap
+    // dropped were never looked up. (`toHaveLength` is the cap's own test —
+    // this one is about the covers being attached to the survivors.)
+    expect(board.published).toHaveLength(PUBLISHED_COLUMN_LIMIT);
+    expect(board.published.every((c) => c.cover !== null)).toBe(true);
   });
 
   it("filters by assignee BEFORE capping the published column, not after", async () => {

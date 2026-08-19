@@ -200,6 +200,7 @@ function pieceCard(overrides: Partial<BoardCard> = {}): BoardCard {
     generatedAt: null,
     generationStep: null,
     createdAt: new Date("2026-08-01T00:00:00.000Z"),
+    cover: null,
     ...overrides,
   };
 }

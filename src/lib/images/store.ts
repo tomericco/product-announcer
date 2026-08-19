@@ -184,6 +184,53 @@ export async function getCoverImage(
   return { ...row.image, current: row.current };
 }
 
+/**
+ * Every one of these pieces' covers in a single query. Same rule as
+ * `getCoverImage` — the `role: "cover"` row, resolved through
+ * `currentRenderId` — batched because the board asks for a whole screen of
+ * pieces at once and calling `getCoverImage` per card would be an N+1 against
+ * these same two tables.
+ *
+ * An `innerJoin`, deliberately: a cover row whose generation never landed has
+ * `currentRenderId = null` and nothing to draw, so it must be absent from the
+ * map rather than present with a null url. Pieces with no cover at all are
+ * absent for the same reason — the caller decides what a miss renders as.
+ */
+export async function getCoverImagesForPieces(
+  tenantId: string,
+  contentPieceIds: string[],
+  database: DbClient = db
+): Promise<Map<string, { url: string; alt: string }>> {
+  // The board hits this with an empty list whenever every column is empty;
+  // there is no query worth sending for it.
+  if (contentPieceIds.length === 0) return new Map();
+
+  const rows = await database
+    .select({
+      contentPieceId: contentImages.contentPieceId,
+      altText: contentImages.altText,
+      blobUrl: imageRenders.blobUrl,
+    })
+    .from(contentImages)
+    .innerJoin(imageRenders, eq(imageRenders.id, contentImages.currentRenderId))
+    .where(
+      and(
+        eq(contentImages.tenantId, tenantId),
+        eq(contentImages.role, "cover"),
+        inArray(contentImages.contentPieceId, contentPieceIds)
+      )
+    );
+
+  const covers = new Map<string, { url: string; alt: string }>();
+  for (const row of rows) {
+    // `contentPieceId` is nullable on the table (library images have none);
+    // the `inArray` above already excludes nulls, so this only narrows the type.
+    if (!row.contentPieceId) continue;
+    covers.set(row.contentPieceId, { url: row.blobUrl, alt: row.altText });
+  }
+  return covers;
+}
+
 export type ImageFilter = { contentPieceId?: string; role?: ImageRole; sourceKind?: ImageSourceKind };
 
 async function selectImages(
