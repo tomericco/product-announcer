@@ -438,7 +438,7 @@ card — one row per content type, two controls:
 
 Stored as `image_policy jsonb` on `company_profiles` (read at generation time
 with the rest of the profile — one fetch), defaults in a TypeScript
-`Record<ContentType, …>` in a new `src/lib/content/image-policy.ts` so the
+`Record<ContentType, …>` in a new `src/lib/images/policy.ts` so the
 column stays null until a tenant changes something. Turning a type off never
 deletes existing images. No per-type style/model/aspect — style is
 brand-level (§2).
