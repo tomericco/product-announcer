@@ -16,9 +16,15 @@
 
 - Run `npm install` in the worktree before anything (no node_modules).
 - Tests: vitest; node project under tests/** (real Postgres via vitest.setup.ts, uses tests/helpers/fixtures.ts), jsdom project under tests/components/**. Run a single file with `npx vitest run tests/path/file.test.ts`. The suite is flaky when run whole — run the files you touched.
-- Migrations: `npm run db:generate` after schema edits; commit the generated SQL in src/db/migrations. Then `npm run db:migrate` and `npm run db:migrate:test`. Never hand-write the SQL.
+- Migrations: `npm run db:generate` after schema edits; commit the generated SQL in src/db/migrations. Then `npm run db:migrate` and `npm run db:migrate:test`. Never hand-write the SQL. **This plan's migration must land at index `0064`** (Plan 1 took `0063`; Plan 4 takes `0065`). A different index means the branch was cut before Plan 1 merged — rebase, delete the generated `.sql` + its `meta/*_snapshot.json` + its `_journal.json` entry, and re-generate. Never renumber by hand.
+- Test fixtures: use `seedTenant`, `dropTenant`, `seedVisualIdentity`, `READY_VISUAL_IDENTITY`, `seedContentPiece` and `seedContentImage` from `tests/helpers/fixtures.ts` (added by Plan 1 Task 10b). Do not re-create profile/piece/image seeds inline — six copies of the same insert is how one schema change breaks five test files.
 - Commit after every task; message style: lowercase imperative, `feat:`/`fix:`/`test:`/`docs:` prefix, no Co-Authored-By needed.
-- No test may reach a real model, Blob, or OpenAI. Every network seam is injected: `deps.generate` in `planIllustrations`, `deps.{planIllustrations,renderImage,uploadPng,compressPng}` in `illustratePiece`, `deps.illustrate` in `generateDraftForPiece`, and the retry action's `vi.mock` of `@/lib/ai/images` / `@/lib/images/blob`.
+- No test may reach a real model, Blob, or OpenAI. Every network seam is injected: `deps.generate` in `planIllustrations`, `deps.{planIllustrations,renderImage,uploadPng,compressPng,deleteBlobs}` in `illustratePiece`, `deps.illustrate` in `generateDraftForPiece`, and the retry action's `vi.mock` of `@/lib/ai/images` / `@/lib/images/blob`.
+  **`deleteBlobs` is the easy one to miss**: `illustratePiece` calls
+  `deleteImage` for leftover rows, and `deleteImage`'s default deps reach
+  `@vercel/blob`'s `del()`. It is a silent no-op only while the leftover row has
+  no renders; a leftover row *with* a render (the realistic regenerate case)
+  fires a real network call from the test process. Hence the explicit dep below.
 - Exact values from the spec: cover size `1200x630`; body size `1200x900`, compressed to 1200 px wide; body cap default 3 (`resolveImagePolicy`: `"auto"` → 3, `"off"` → 0); one silent retry per render; plan model = `GENERATION_MODEL` (default `anthropic/claude-sonnet-4-5`, `resolveModel`/`modelId` from `src/lib/ai/model.ts`); usage rows: `illustration_plan` (token usage) — `image_generation` rows are written by Plan 1's `renderImage`, not here; alt text ≤125 chars, never starts with "image of"; new step `{ key: "illustrating", label: "Creating images", slow: true }` between `"reviewing"` and `"saving"`; the illustration agent runs **only** inside `generateDraftForPiece` (never on agent edits, extract, catch-up).
 - `"use server"` files may export ONLY async functions. Never import a runtime value from a server module into a `"use client"` file — `import type` only.
 - Tenant scoping in the WHERE clause is the security boundary; every lib function takes `tenantId` and an injectable `database` defaulting to `db` from `@/db`.
@@ -712,7 +718,7 @@ git commit -m "feat: plan illustrations — text model picks concepts and anchor
 - Test: `tests/lib/images/illustrate.test.ts`
 
 **Interfaces:**
-- Consumes (Plan 1, exact names): `getOrCreateCompanyProfile` (`src/lib/workspace/company-profile.ts`, `(tenantId, database?)`), `isVisualIdentityReady`, `compileStyleBlock` (`src/lib/images/visual-identity.ts`), `resolveImagePolicy` (`src/lib/images/policy.ts`), `renderImage` (`src/lib/ai/images.ts`), `imageModelId`, `IMAGE_MODEL_DEFAULT` (`src/lib/ai/image-model.ts`), `compressPng` (`src/lib/images/compress.ts`), `imagePathname`, `uploadPng` (`src/lib/images/blob.ts`), `createImage`, `addRender`, `markImageFailed`, `listImages`, `deleteImage` (`src/lib/images/store.ts`), `slugify` (`src/lib/publishing/slug.ts`), `planIllustrations` (Task 3), `spliceImageAfterHeading` (Task 1), `contentImages` (schema, for the `anchorHeading` write).
+- Consumes (Plan 1, exact names): `getOrCreateCompanyProfile` (`src/lib/workspace/company-profile.ts`, `(tenantId, database?)`), `isVisualIdentityReady`, `compileStyleBlock` (`src/lib/images/visual-identity.ts`), `resolveImagePolicy` (`src/lib/images/policy.ts`), `renderImage` (`src/lib/ai/images.ts`), `imageModelId`, `IMAGE_MODEL_DEFAULT` (`src/lib/ai/image-model.ts`), `compressPng` (`src/lib/images/compress.ts`), `imagePathname`, `slugForImage`, `uploadPng` (`src/lib/images/blob.ts`), `createImage`, `addRender`, `markImageFailed`, `listImages`, `deleteImage` (`src/lib/images/store.ts`), `planIllustrations` (Task 3), `spliceImageAfterHeading` (Task 1), `contentImages` (schema, for the `anchorHeading` write).
 - Produces:
   ```ts
   export type IllustrateSkipReason = "no_visual_identity" | "policy_off";
@@ -722,6 +728,10 @@ git commit -m "feat: plan illustrations — text model picks concepts and anchor
     renderImage?: typeof renderImage;
     uploadPng?: typeof uploadPng;
     compressPng?: typeof compressPng;
+    // Forwarded to `deleteImage`'s StoreDeps when clearing leftovers. Without
+    // it a test with a leftover row that HAS a render calls @vercel/blob's
+    // del() for real.
+    deleteBlobs?: (pathnames: string[]) => Promise<void>;
   };
   export async function illustratePiece(
     a: { tenantId: string; contentPieceId: string; title: string; body: string; contentType: ContentType; database?: DbClient },
@@ -795,7 +805,13 @@ async function seed(opts: { visualIdentity?: VisualIdentity | null; imagePolicy?
 /** Fakes for every network seam. `renderImage` records what it was asked for. */
 function fakes(overrides: Partial<IllustrateDeps> & { failPrompts?: string[] } = {}) {
   const renderCalls: { prompt: string; size: string; referenceImages: (string | Buffer)[] }[] = [];
+  const uploadCalls: string[] = [];
   const failing = new Set(overrides.failPrompts ?? []);
+  // Every pathname is distinct: two body images rendered in parallel would
+  // otherwise share a blob URL and the splice assertions could not tell them
+  // apart. Real `uploadPng` gets uniqueness from `addRandomSuffix`.
+  let uploadCounter = 0;
+  const deleteBlobs = vi.fn(async (_pathnames: string[]) => {});
   const deps: Required<IllustrateDeps> = {
     planIllustrations: vi.fn(async () => PLAN),
     renderImage: vi.fn(async (args: { prompt: string; size: string; referenceImages?: (string | Buffer)[] }) => {
@@ -804,10 +820,15 @@ function fakes(overrides: Partial<IllustrateDeps> & { failPrompts?: string[] } =
       return Buffer.from(`PNG:${args.prompt}`);
     }) as never,
     compressPng: vi.fn(async (input: Buffer, maxWidth: number) => ({ png: input, width: maxWidth, height: 630 })),
-    uploadPng: vi.fn(async (pathname: string) => ({ url: `https://blob.example/${pathname}`, pathname })),
+    uploadPng: vi.fn(async (pathname: string) => {
+      uploadCalls.push(pathname);
+      const unique = `${pathname}-${++uploadCounter}`;
+      return { url: `https://blob.example/${unique}`, pathname: unique };
+    }),
+    deleteBlobs,
     ...overrides,
   };
-  return { deps, renderCalls };
+  return { deps, renderCalls, uploadCalls, deleteBlobs };
 }
 
 async function imagesFor(pieceId: string) {
@@ -984,6 +1005,89 @@ describe("illustratePiece", () => {
     expect(covers[0].concept).toBe("lighthouse");
   });
 
+  it("deletes a leftover row's BLOBS too, through the injected seam — never the real del()", async () => {
+    // The realistic regenerate case: an earlier run succeeded, its rows and
+    // blobs exist, and this run must not orphan them. Without an injected
+    // deleteBlobs this test would call @vercel/blob for real.
+    const { tenant, piece } = await seed();
+    const [stale] = await db
+      .insert(contentImages)
+      .values({
+        tenantId: tenant.id,
+        contentPieceId: piece.id,
+        role: "body",
+        concept: "stale gears",
+        altText: "Stale",
+        sourceKind: "generated",
+        status: "ready",
+      })
+      .returning();
+    const [staleRender] = await db
+      .insert(imageRenders)
+      .values({
+        imageId: stale.id,
+        prompt: "old",
+        blobUrl: "https://blob.example/old.png",
+        blobPathname: "tenants/x/old.png",
+        width: 1200,
+        height: 900,
+        bytes: 10,
+        model: "m",
+      })
+      .returning();
+    await db.update(contentImages).set({ currentRenderId: staleRender.id }).where(eq(contentImages.id, stale.id));
+
+    const { deps, deleteBlobs } = fakes();
+    await illustratePiece(
+      { tenantId: tenant.id, contentPieceId: piece.id, title: "T", body: BODY, contentType: "blog_post", database: db },
+      deps
+    );
+
+    expect(deleteBlobs).toHaveBeenCalledWith(["tenants/x/old.png"]);
+    expect(await db.select().from(contentImages).where(eq(contentImages.id, stale.id))).toHaveLength(0);
+    expect((await imagesFor(piece.id)).map((r) => r.concept).sort()).toEqual(["door", "gears", "lighthouse"]);
+  });
+
+  it("leaves an UPLOADED leftover row and its blob alone", async () => {
+    const { tenant, piece } = await seed();
+    const [uploaded] = await db
+      .insert(contentImages)
+      .values({
+        tenantId: tenant.id,
+        contentPieceId: piece.id,
+        role: "body",
+        concept: "screenshot.png",
+        altText: "",
+        sourceKind: "uploaded",
+        status: "ready",
+      })
+      .returning();
+
+    const { deps, deleteBlobs } = fakes();
+    await illustratePiece(
+      { tenantId: tenant.id, contentPieceId: piece.id, title: "T", body: BODY, contentType: "blog_post", database: db },
+      deps
+    );
+
+    expect(await db.select().from(contentImages).where(eq(contentImages.id, uploaded.id))).toHaveLength(1);
+    expect(deleteBlobs).not.toHaveBeenCalled();
+  });
+
+  it("keeps blob pathnames short — the slug is clamped, not the raw title", async () => {
+    // `slugify` (publishing/slug.ts) allows 200 chars; `slugForImage`
+    // (images/blob.ts) clamps to 40. Pathnames are stored on every render row
+    // and shown in the Blob UI, so the image slug is the right one here.
+    const { tenant, piece } = await seed();
+    const longTitle = "The Very Long Title That Keeps Going ".repeat(6);
+    const { deps, uploadCalls } = fakes();
+    await illustratePiece(
+      { tenantId: tenant.id, contentPieceId: piece.id, title: longTitle, body: BODY, contentType: "blog_post", database: db },
+      deps
+    );
+    const coverPath = uploadCalls.find((p) => p.includes("/cover-"))!;
+    expect(coverPath.split("/").pop()!.length).toBeLessThanOrEqual(50); // "cover-" + <=40 + ".png"
+  });
+
   it("scopes to the tenant: image rows carry the tenant id", async () => {
     const { tenant, piece } = await seed();
     const { deps } = fakes();
@@ -1020,11 +1124,14 @@ import { resolveImagePolicy } from "@/lib/images/policy";
 import { renderImage as defaultRenderImage } from "@/lib/ai/images";
 import { imageModelId, IMAGE_MODEL_DEFAULT } from "@/lib/ai/image-model";
 import { compressPng as defaultCompressPng } from "@/lib/images/compress";
-import { imagePathname, uploadPng as defaultUploadPng } from "@/lib/images/blob";
+// `slugForImage`, NOT `slugify`: publishing/slug.ts allows 200 characters (it
+// builds public CMS slugs), while a Blob pathname wants the 40-char image slug
+// every other image caller uses. Sharing one slug function across the image
+// feature is what keeps pathnames consistent and readable.
+import { imagePathname, slugForImage, uploadPng as defaultUploadPng } from "@/lib/images/blob";
 import { createImage, addRender, markImageFailed, listImages, deleteImage } from "@/lib/images/store";
 import { planIllustrations as defaultPlanIllustrations, type IllustrationPlan } from "@/lib/images/plan";
 import { spliceImageAfterHeading } from "@/lib/images/splice";
-import { slugify } from "@/lib/publishing/slug";
 
 /**
  * Stage 2 of the illustration agent (spec §4): given a finished draft, plan
@@ -1056,6 +1163,12 @@ export type IllustrateDeps = {
   renderImage?: typeof defaultRenderImage;
   uploadPng?: typeof defaultUploadPng;
   compressPng?: typeof defaultCompressPng;
+  /**
+   * Forwarded to `deleteImage` when clearing leftovers from an aborted run.
+   * Present so a test never reaches @vercel/blob's `del()` — `deleteImage`'s
+   * own default does, and a leftover row with a render would fire it.
+   */
+  deleteBlobs?: (pathnames: string[]) => Promise<void>;
 };
 
 export const COVER_SIZE = "1200x630" as const;
@@ -1134,7 +1247,9 @@ export async function illustratePiece(
   for (const image of existing) {
     if (image.sourceKind !== "generated") continue;
     if (image.role !== "cover" && image.role !== "body") continue;
-    await deleteImage(args.tenantId, image.id, database);
+    // The deps object is forwarded so tests never reach @vercel/blob. Passing
+    // `{}` when no dep is injected keeps `deleteImage`'s own default.
+    await deleteImage(args.tenantId, image.id, database, deps.deleteBlobs ? { deleteBlobs: deps.deleteBlobs } : {});
   }
 
   const brandReferences: (string | Buffer)[] = vi.styleReferenceImages;
@@ -1166,7 +1281,7 @@ export async function illustratePiece(
       });
       const { png, width, height } = await compress(raw, COVER_MAX_WIDTH);
       const { url, pathname } = await upload(
-        imagePathname({ tenantId: args.tenantId, contentPieceId: args.contentPieceId, role: "cover", slug: slugify(args.title) }),
+        imagePathname({ tenantId: args.tenantId, contentPieceId: args.contentPieceId, role: "cover", slug: slugForImage(args.title) }),
         png
       );
       await addRender(
@@ -1215,7 +1330,7 @@ export async function illustratePiece(
         });
         const { png, width, height } = await compress(raw, BODY_MAX_WIDTH);
         const { url, pathname } = await upload(
-          imagePathname({ tenantId: args.tenantId, contentPieceId: args.contentPieceId, role: "body", slug: slugify(entry.anchorHeading) }),
+          imagePathname({ tenantId: args.tenantId, contentPieceId: args.contentPieceId, role: "body", slug: slugForImage(entry.anchorHeading) }),
           png
         );
         await addRender(
@@ -1345,7 +1460,15 @@ git commit -m "feat: illustrating step between reviewing and saving in the draft
 
 - [ ] **Step 1: Write the failing tests**
 
-Append to `tests/lib/briefs/draft.test.ts` (after the release-fork `describe`, before EOF). Add to the imports at the top: `import type { IllustrateResult } from "../../../src/lib/images/illustrate";` and add `type Illustrator,` to the existing `from "../../../src/lib/briefs/draft"` import (lines 35–41):
+Append to `tests/lib/briefs/draft.test.ts` (after the release-fork `describe`, before EOF). Add to the imports at the top:
+
+```ts
+import { illustratePiece, type IllustrateResult } from "../../../src/lib/images/illustrate";
+import { contentImages } from "../../../src/db/schema";           // if not already imported
+import { seedVisualIdentity } from "../../helpers/fixtures";      // Plan 1 Task 10b
+```
+
+and add `type Illustrator,` to the existing `from "../../../src/lib/briefs/draft"` import (lines 35–41). Note this file's local `seedTenant()` takes no argument (it wraps the shared helper with a file-local tenant name) — `seedVisualIdentity(tenant.id)` composes with it.
 
 ```ts
 /**
@@ -1486,6 +1609,62 @@ describe("generateDraftForPiece — illustrations", () => {
       illustrate,
     });
     expect(illustrate).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The one end-to-end-ish test in this plan: the REAL `illustratePiece` and
+   * the REAL `planIllustrations` post-validation and splice, with only the
+   * three network seams faked. Every other test in this block stubs
+   * `illustrate` wholesale, so nothing else would catch a wiring break between
+   * generateDraftForPiece → illustratePiece → planIllustrations →
+   * spliceImageAfterHeading → the body write. Uses the shared fixtures
+   * (tests/helpers/fixtures.ts) so the "identity is ready" state is defined in
+   * one place.
+   */
+  it("end to end: a ready tenant gets a cover row and image markdown in the SAVED body", async () => {
+    const tenant = await seedTenant();
+    await seedVisualIdentity(tenant.id);
+    const { piece } = await seedPieceWithBrief(tenant.id);
+
+    const rendered = "# T\n\nIntro.\n\n## Alpha\n\nA para.\n\n## Beta\n\nB para.";
+    let uploads = 0;
+
+    const result = await generateDraftForPiece(piece.id, tenant.id, {
+      database: db,
+      generate: vi.fn(async () => ({ title: "Real title", body: rendered })),
+      // The real illustratePiece, with only the network seams faked.
+      illustrate: (args) =>
+        illustratePiece(args, {
+          planIllustrations: async () => ({
+            cover: { concept: "lighthouse", prompt: "P cover", altText: "A lighthouse beam" },
+            body: [{ anchorHeading: "Alpha", concept: "gears", prompt: "P alpha", altText: "Gears turning" }],
+          }),
+          renderImage: (async () => Buffer.from("PNG")) as never,
+          compressPng: async (png: Buffer, maxWidth: number) => ({ png, width: maxWidth, height: 900 }),
+          uploadPng: async (pathname: string) => ({
+            url: `https://blob.example/${pathname}-${++uploads}`,
+            pathname: `${pathname}-${uploads}`,
+          }),
+          deleteBlobs: async () => {},
+        }),
+    });
+
+    expect(result.ok).toBe(true);
+
+    const [after] = await db.select().from(contentPieces).where(eq(contentPieces.id, piece.id));
+    expect(after.status).toBe("draft");
+    expect(after.generationError).toBeNull();
+    expect(after.generationStep).toBeNull();
+    // The body image landed under its anchor, by blob URL (spec §3).
+    expect(after.body).toMatch(/## Alpha\n\n!\[Gears turning\]\(https:\/\/blob\.example\/tenants\/[^)]+\)\n\nA para\./);
+    // The cover is NOT in the body (spec §3) — it is a row.
+    expect(after.body).not.toContain("lighthouse");
+    expect(after.body).toContain("## Beta\n\nB para.");
+
+    const rows = await db.select().from(contentImages).where(eq(contentImages.contentPieceId, piece.id));
+    expect(rows.map((r) => r.role).sort()).toEqual(["body", "cover"]);
+    expect(rows.every((r) => r.status === "ready" && r.currentRenderId !== null)).toBe(true);
+    expect(rows.find((r) => r.role === "body")!.anchorHeading).toBe("Alpha");
   });
 
   it("uses the real illustrator by default, which skips cleanly when the tenant has no visual identity", async () => {
@@ -1634,7 +1813,7 @@ git commit -m "feat: illustrate the draft between review and save; failures warn
 - Test: `tests/app/drafts/illustration-actions.test.ts`
 
 **Interfaces:**
-- Consumes: `requireSession` (`src/lib/workspace/session.ts`), `getImage`, `addRender`, `listImages` (Plan 1 store), `buildImagePrompt`, `compileStyleBlock`, `isVisualIdentityReady`, `renderImage`, `compressPng`, `uploadPng`, `imagePathname`, `imageModelId`, `IMAGE_MODEL_DEFAULT`, `getOrCreateCompanyProfile`, `assertDraftEditable` (`src/lib/draft-editable.ts`), `spliceImageAfterHeading` (Task 1), `slugify`.
+- Consumes: `requireSession` (`src/lib/workspace/session.ts`), `getImage`, `addRender`, `listImages` (Plan 1 store), `buildImagePrompt`, `compileStyleBlock`, `isVisualIdentityReady`, `renderImage`, `compressPng`, `uploadPng`, `imagePathname`, `imageModelId`, `IMAGE_MODEL_DEFAULT`, `getOrCreateCompanyProfile`, `assertDraftEditable` (`src/lib/draft-editable.ts`), `spliceImageAfterHeading` (Task 1), `slugForImage`.
 - Produces:
   ```ts
   // illustration-actions.ts
@@ -1675,8 +1854,9 @@ vi.mock("../../../src/lib/workspace/session", () => ({
 }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 
-const renderImage = vi.fn(async (_args: { prompt: string }) => Buffer.from("PNG"));
-vi.mock("../../../src/lib/ai/images", () => ({ renderImage: (a: { prompt: string }) => renderImage(a) }));
+type RenderArgs = { prompt: string; size: string; referenceImages?: (string | Buffer)[] };
+const renderImage = vi.fn(async (_args: RenderArgs) => Buffer.from("PNG"));
+vi.mock("../../../src/lib/ai/images", () => ({ renderImage: (a: RenderArgs) => renderImage(a) }));
 vi.mock("../../../src/lib/images/compress", () => ({
   compressPng: vi.fn(async (png: Buffer, maxWidth: number) => ({ png, width: maxWidth, height: 900 })),
 }));
@@ -1814,6 +1994,31 @@ describe("retryFailedIllustration", () => {
     expect(renderImage).not.toHaveBeenCalled();
   });
 
+  it("passes the piece's ready cover as a style reference for a BODY retry when pinStyleToCover is on", async () => {
+    // The whole-post consistency the agent buys with pinStyleToCover must
+    // survive a retry, or the retried image is the one that looks wrong.
+    const { tenant, piece, image } = await seed();
+    const [cover] = await db
+      .insert(contentImages)
+      .values({ tenantId: tenant.id, contentPieceId: piece.id, role: "cover", concept: "c", altText: "a", sourceKind: "generated", status: "ready" })
+      .returning();
+    const [coverRender] = await db
+      .insert(imageRenders)
+      .values({ imageId: cover.id, prompt: "p", blobUrl: "https://blob.example/cover.png", blobPathname: "p/cover.png", width: 1200, height: 630, bytes: 10, model: "m" })
+      .returning();
+    await db.update(contentImages).set({ currentRenderId: coverRender.id }).where(eq(contentImages.id, cover.id));
+
+    await retryFailedIllustration({ contentPieceId: piece.id, imageId: image.id });
+
+    expect(renderImage.mock.calls[0][0].referenceImages).toContain("https://blob.example/cover.png");
+  });
+
+  it("does NOT pass the cover as a reference when retrying the cover itself", async () => {
+    const { piece, image } = await seed({ role: "cover", anchor: null });
+    await retryFailedIllustration({ contentPieceId: piece.id, imageId: image.id });
+    expect(renderImage.mock.calls[0][0].referenceImages).toEqual([]);
+  });
+
   it("marks the row failed again and reports the error when the render fails twice", async () => {
     const { piece, image } = await seed();
     renderImage.mockImplementation(async () => {
@@ -1876,13 +2081,12 @@ import { assertDraftEditable } from "@/lib/draft-editable";
 import { getOrCreateCompanyProfile } from "@/lib/workspace/company-profile";
 import { compileStyleBlock, isVisualIdentityReady } from "@/lib/images/visual-identity";
 import { buildImagePrompt } from "@/lib/images/prompt";
-import { getImage, addRender, markImageFailed, listImages, deleteImage } from "@/lib/images/store";
+import { getImage, getCoverImage, addRender, markImageFailed, listImages, deleteImage } from "@/lib/images/store";
 import { renderImage } from "@/lib/ai/images";
 import { imageModelId, IMAGE_MODEL_DEFAULT } from "@/lib/ai/image-model";
 import { compressPng } from "@/lib/images/compress";
-import { imagePathname, uploadPng } from "@/lib/images/blob";
+import { imagePathname, slugForImage, uploadPng } from "@/lib/images/blob";
 import { spliceImageAfterHeading } from "@/lib/images/splice";
-import { slugify } from "@/lib/publishing/slug";
 
 /**
  * Retry for an illustration the agent could not render (spec §4 failure
@@ -1940,13 +2144,24 @@ export async function retryFailedIllustration(input: {
   const size = image.role === "cover" ? "1200x630" : "1200x900";
   const model = imageModelId(process.env.IMAGE_MODEL ?? IMAGE_MODEL_DEFAULT);
 
+  // Same reference set the agent used (`illustratePiece`): brand references,
+  // plus the piece's ready cover for a BODY image when `pinStyleToCover` is on.
+  // Without this a retried body image is styled off the brand references alone
+  // and visibly differs from its siblings — the exact whole-post consistency
+  // the setting exists to buy.
+  const referenceImages: (string | Buffer)[] = [...vi.styleReferenceImages];
+  if (image.role === "body" && vi.pinStyleToCover) {
+    const cover = await getCoverImage(tenantId, piece.id);
+    if (cover?.current) referenceImages.push(cover.current.blobUrl);
+  }
+
   let url: string;
   try {
     let raw: Buffer;
     try {
-      raw = await renderImage({ tenantId, prompt, size, referenceImages: vi.styleReferenceImages });
+      raw = await renderImage({ tenantId, prompt, size, referenceImages });
     } catch {
-      raw = await renderImage({ tenantId, prompt, size, referenceImages: vi.styleReferenceImages });
+      raw = await renderImage({ tenantId, prompt, size, referenceImages });
     }
     const { png, width, height } = await compressPng(raw, 1200);
     const uploaded = await uploadPng(
@@ -1954,7 +2169,7 @@ export async function retryFailedIllustration(input: {
         tenantId,
         contentPieceId: piece.id,
         role: image.role,
-        slug: slugify(image.role === "cover" ? piece.title : (image.anchorHeading ?? image.concept)),
+        slug: slugForImage(image.role === "cover" ? piece.title : (image.anchorHeading ?? image.concept)),
       }),
       png
     );
@@ -2024,7 +2239,7 @@ Two type notes: `getImage`'s return includes the `anchorHeading` column automati
 
 - [ ] **Step 4: Run the action test**
 
-`npx vitest run tests/app/drafts/illustration-actions.test.ts` — 11 pass. Watch for the `next/cache` mock and the `@/lib/images/blob` partial mock: `imagePathname` must stay real (the assertion on the blob URL prefix depends on it).
+`npx vitest run tests/app/drafts/illustration-actions.test.ts` — 13 pass. Watch for the `next/cache` mock and the `@/lib/images/blob` partial mock: `imagePathname` must stay real (the assertion on the blob URL prefix depends on it), and `deleteBlobs` must stay mocked (`dismissFailedIllustrations` → `deleteImage` → `del()`).
 
 - [ ] **Step 5: The client Retry button**
 
@@ -2199,6 +2414,62 @@ Manual verification (behind OAuth — do what you can): with `IMAGE_MODEL`/`OPEN
 git add "src/app/(dashboard)/drafts/[releaseId]/illustration-actions.ts" "src/app/(dashboard)/drafts/[releaseId]/failed-illustrations-notice.tsx" "src/app/(dashboard)/drafts/[releaseId]/retry-illustration-button.tsx" "src/app/(dashboard)/drafts/[releaseId]/page.tsx" tests/app/drafts/illustration-actions.test.ts
 git commit -m "feat: failed-illustration notice with retry from the stored concept and anchor"
 ```
+
+---
+
+### Task 8: Final verification
+
+**Files:** none new.
+
+- [ ] **Step 1: Every file this plan touched, twice**
+
+```bash
+npx vitest run \
+  tests/lib/images/splice.test.ts \
+  tests/db/content-images-anchor.test.ts \
+  tests/lib/images/plan.test.ts \
+  tests/lib/images/illustrate.test.ts \
+  tests/components/paced-steps.test.tsx \
+  tests/components/generation-checklist.test.tsx \
+  tests/lib/briefs/draft.test.ts \
+  tests/app/drafts/illustration-actions.test.ts
+```
+
+Expected: PASS. **Run it twice** — one shared Postgres, no per-test truncation.
+A failure that repeats is real; one that does not is the known flakiness. Note
+`tests/lib/briefs/draft.test.ts` is the big one and the one this plan changes
+behaviourally — read its failures rather than re-running past them.
+
+- [ ] **Step 2: Regression check on everything that reaches `generateDraftForPiece`**
+
+This plan adds a default dependency (`illustratePiece`) to a function several
+server-action tests drain through `after()`. Those tests must still not touch
+the network — the real `illustratePiece` returns `skipped: "no_visual_identity"`
+before importing anything network-shaped, because their tenants have no
+`visualIdentity`. Prove it:
+
+```bash
+npx vitest run tests/app/briefs-actions.test.ts tests/app/board-actions.test.ts tests/lib/content
+```
+
+Expected: PASS, and no test takes materially longer than before (a jump of tens
+of seconds means something is calling a real model).
+
+- [ ] **Step 3: Gates**
+
+```bash
+npm run typecheck && npm run lint && npm run build
+```
+
+Expected: clean. Do **not** use `npm test` (whole suite) as a gate — it is
+documented as flaky against the shared Postgres, so neither result is evidence.
+
+- [ ] **Step 4: Confirm the migration index**
+
+`ls src/db/migrations | tail -3` must show this plan's file at `0064_*.sql` with
+Plan 1's `0063_*.sql` immediately before it, and `meta/_journal.json`'s last
+entry must be `idx: 64`. Anything else means a stale base — see Global
+Constraints.
 
 ---
 

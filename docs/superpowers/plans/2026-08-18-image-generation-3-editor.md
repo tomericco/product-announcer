@@ -23,7 +23,9 @@
 - `"use server"` files export ONLY async functions — pure helpers live in `src/lib/images/actions-support.ts`.
 - Never import a runtime value from a server module into a `"use client"` file — `import type` only; Server Function references (from `"use server"` files) are fine.
 - Tests: vitest; node project under tests/** (real Postgres via vitest.setup.ts, uses tests/helpers/fixtures.ts), jsdom project under tests/components/**. Run a single file with `npx vitest run tests/path/file.test.ts`. The suite is flaky when run whole — run the files you touched.
-- Migrations: `npm run db:generate` after schema edits; commit the generated SQL in src/db/migrations. (This plan adds no schema.)
+- Migrations: this plan adds **no** schema and must generate **no** migration. If `npm run db:generate` ever produces a file while working on this plan, something drifted — investigate rather than commit it.
+- Test fixtures: use `seedTenant`, `dropTenant`, `seedVisualIdentity`, `READY_VISUAL_IDENTITY`, `seedContentPiece`, `seedContentImage` from `tests/helpers/fixtures.ts` (Plan 1 Task 10b). The test bodies below still spell out their local `seed()` wrappers for readability, but those wrappers must delegate to the shared helpers rather than re-implementing the inserts.
+- Every DB-backed test file needs a tenant name **unique to that file** — there is no truncation between tests, only `dropTenant(name)` cascades (`tests/helpers/fixtures.ts:5-10`). Where a test needs a second tenant, give it its own `OTHER_NAME` constant and drop both; do not insert two tenants under the same name.
 - `npm run typecheck && npm run lint && npm run build` are the gates for every task touching a route or component. The dev preview sits behind an OAuth wall — the manual checklist (Task 11) is run by the user.
 - Commit after every task; message style: lowercase imperative, `feat:`/`fix:`/`test:`/`docs:` prefix, no Co-Authored-By needed.
 
@@ -66,6 +68,7 @@ import {
   sizeForRole,
   UPLOAD_MAX_BYTES,
 } from "../../../src/lib/images/actions-support";
+import { slugForImage } from "../../../src/lib/images/blob";
 
 describe("editPromptHistory", () => {
   it("appends the instruction as an Edit line after a blank line", () => {
@@ -168,6 +171,17 @@ describe("imageSlug and sizeForRole", () => {
     );
     expect(imageSlug("!!!")).toBe("image");
   });
+  it("agrees with slugForImage — one slug rule reaches imagePathname, not two", () => {
+    for (const text of ["A Rocket", "!!!", "x".repeat(100), "Ünïcödé Ttitle", "  "]) {
+      expect(imageSlug(text)).toBe(slugForImage(text));
+    }
+  });
+  it("cannot escape the pathname directory (uploaded file names reach it verbatim)", () => {
+    // `uploadImageFile` builds its slug from the browser-supplied file name.
+    for (const hostile of ["../../etc/passwd", "a/b/c.png", "x?y=z"]) {
+      expect(imageSlug(hostile)).toMatch(/^[a-z0-9-]+$/);
+    }
+  });
   it("maps roles to render sizes", () => {
     expect(sizeForRole("cover")).toBe("1200x630");
     expect(sizeForRole("body")).toBe("1200x900");
@@ -186,7 +200,7 @@ Expected: FAIL — cannot resolve `../../../src/lib/images/actions-support`.
 Create `src/lib/images/actions-support.ts`:
 
 ```ts
-import { slugify } from "@/lib/publishing/slug";
+import { slugForImage } from "@/lib/images/blob";
 
 /**
  * Pure helpers behind the image server actions. They live here rather than
@@ -295,10 +309,16 @@ export function stripImageFromMarkdown(markdown: string, urls: string[]): string
   return out.join("\n");
 }
 
-/** Blob pathname slug: short, so the pathname stays readable in the Blob UI. */
+/**
+ * Blob pathname slug. Delegates to Plan 1's `slugForImage` rather than
+ * re-deriving one from `slugify`: `slugify` is the PUBLIC CMS slug (200 chars,
+ * `"update"` fallback) and a second, subtly different image slug would put two
+ * naming rules on one `imagePathname` argument. One function, one 40-char cap,
+ * one `"image"` fallback — and one place where the path-traversal guarantee is
+ * tested (tests/lib/images/blob.test.ts).
+ */
 export function imageSlug(text: string): string {
-  const s = slugify(text).slice(0, 40).replace(/-$/, "");
-  return s && s !== "update" ? s : "image";
+  return slugForImage(text);
 }
 
 export function sizeForRole(role: "cover" | "body" | "library"): "1200x630" | "1200x900" {
@@ -309,7 +329,9 @@ export function sizeForRole(role: "cover" | "body" | "library"): "1200x630" | "1
 - [ ] **Step 4: Run to verify it passes**
 
 Run: `npx vitest run tests/lib/images/actions-support.test.ts`
-Expected: PASS. If `imageSlug("!!!")` fails, note `slugify` returns `"update"` for empty input (`src/lib/publishing/slug.ts:14`) — the helper maps that to `"image"` deliberately.
+Expected: PASS. Importing `slugForImage` from `@/lib/images/blob` pulls in `@vercel/blob` at module load — that is an import, not a call, so no network happens and no token is needed. If that ever becomes a problem, move `slugForImage` into its own tiny module rather than forking a second slug rule.
+
+**Interfaces:** `- Consumes: slugify from src/lib/publishing/slug.ts:3` above is superseded — this module consumes `slugForImage` from `src/lib/images/blob.ts` (Plan 1 Task 8) instead.
 
 - [ ] **Step 5: Commit**
 
@@ -342,7 +364,7 @@ git commit -m "feat: pure helpers for the image editor actions"
 Create `tests/lib/images/suggest.test.ts`:
 
 ```ts
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 
 vi.mock("ai", () => ({ generateObject: vi.fn() }));
 const recordLlmUsage = vi.fn(async () => {});
@@ -350,6 +372,15 @@ vi.mock("../../../src/lib/ai/llm-usage", () => ({ recordLlmUsage: (...a: unknown
 
 import { generateObject } from "ai";
 import { suggestImageConcept } from "../../../src/lib/images/suggest";
+
+// Reset between cases: without this the second test's "the default generator
+// was not used" assertion depends on how many times the FIRST test called it,
+// which makes it fail the moment a case is added, reordered, or run with
+// `-t`. Assert "not called since this test began", not a cumulative count.
+beforeEach(() => {
+  vi.mocked(generateObject).mockReset();
+  recordLlmUsage.mockClear();
+});
 
 describe("suggestImageConcept", () => {
   it("asks the text model for a concept and alt text grounded in the surrounding markdown", async () => {
@@ -390,7 +421,35 @@ describe("suggestImageConcept", () => {
     );
     const args = (generate as ReturnType<typeof vi.fn>).mock.calls[0][0] as { system: string };
     expect(args.system).toMatch(/cover/i);
-    expect(vi.mocked(generateObject)).toHaveBeenCalledTimes(1); // from the first test only
+    // The injected generator was used INSTEAD of the module default — an
+    // absolute assertion, not a cumulative call count.
+    expect(vi.mocked(generateObject)).not.toHaveBeenCalled();
+  });
+
+  it("records usage against the caller's database handle, not the default one", async () => {
+    const database = {} as never;
+    const generate = vi.fn(async () => ({ object: { concept: "c", altText: "a" }, usage: { totalTokens: 7 } })) as never;
+    await suggestImageConcept({ tenantId: "t1", title: "T", surroundingMarkdown: "b", role: "body", database }, { generate });
+    expect(recordLlmUsage).toHaveBeenCalledWith(
+      expect.objectContaining({ tenantId: "t1", operation: "illustration_plan", usage: { totalTokens: 7 } }),
+      database
+    );
+  });
+
+  it("trims the model's concept and alt text", async () => {
+    const generate = vi.fn(async () => ({ object: { concept: "  A compass  ", altText: "  Compass  " }, usage: {} })) as never;
+    const out = await suggestImageConcept({ tenantId: "t1", title: "T", surroundingMarkdown: "b", role: "body" }, { generate });
+    expect(out).toEqual({ concept: "A compass", altText: "Compass" });
+  });
+
+  it("lets a model failure propagate — the caller's panel shows the error, it does not silently return an empty concept", async () => {
+    const generate = vi.fn(async () => {
+      throw new Error("model down");
+    }) as never;
+    await expect(
+      suggestImageConcept({ tenantId: "t1", title: "T", surroundingMarkdown: "b", role: "body" }, { generate })
+    ).rejects.toThrow("model down");
+    expect(recordLlmUsage).not.toHaveBeenCalled();
   });
 });
 ```
@@ -497,44 +556,97 @@ vi.mock("../../../src/lib/images/blob", async (importOriginal) => {
   return { ...actual, deleteBlobs: (p: string[]) => deleteBlobs(p) };
 });
 
-import { createImage, addRender, deleteImage } from "../../../src/lib/images/store";
+import { MAX_RENDER_HISTORY, createImage, addRender, deleteImage, getImage } from "../../../src/lib/images/store";
+import { seedTenant, dropTenant } from "../../helpers/fixtures";
 
 const TENANT = "Store Shared Blob Test Tenant";
+const SHARED_PATH = "tenants/x/library-shared.png";
+
+/** Every pathname distinct except the one under test. */
+function renderArgs(imageId: string, n: number) {
+  return { imageId, prompt: `p${n}`, blobUrl: `https://blob/r${n}.png`, blobPathname: `tenants/x/r${n}.png`, width: 10, height: 10, bytes: 1, model: "m" };
+}
 
 async function seedShared() {
-  const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
+  const tenant = await seedTenant(TENANT);
   const a = await createImage({ tenantId: tenant.id, contentPieceId: null, role: "library", concept: "c", altText: "a", sourceKind: "generated" });
   const b = await createImage({ tenantId: tenant.id, contentPieceId: null, role: "library", concept: "c", altText: "a", sourceKind: "generated" });
-  const shared = { prompt: "p", blobUrl: "https://blob/shared.png", blobPathname: "tenants/x/library-shared.png", width: 10, height: 10, bytes: 1, model: "m" };
+  const shared = { prompt: "p", blobUrl: "https://blob/shared.png", blobPathname: SHARED_PATH, width: 10, height: 10, bytes: 1, model: "m" };
   await addRender({ imageId: a.id, ...shared });
   await addRender({ imageId: b.id, ...shared });
   return { tenant, a, b };
 }
 
-describe("deleteImage with a blob shared by another render", () => {
-  afterEach(async () => {
-    deleteBlobs.mockClear();
-    await db.delete(tenants).where(eq(tenants.name, TENANT));
-  });
+/** Every pathname `deleteBlobs` was asked to remove across all calls so far. */
+function deletedPaths(): string[] {
+  return deleteBlobs.mock.calls.flatMap((c) => c[0]);
+}
 
+afterEach(async () => {
+  deleteBlobs.mockClear();
+  await dropTenant(TENANT);
+});
+
+describe("deleteImage with a blob shared by another render", () => {
   it("does not del() a pathname another image still references, then does once it is the last", async () => {
     const { tenant, a, b } = await seedShared();
 
     expect(await deleteImage(tenant.id, a.id)).toEqual({ ok: true });
-    expect(deleteBlobs).toHaveBeenLastCalledWith([]);
+    // Absolute, not positional: works whether the guard passes [] or skips the
+    // call entirely when the list is empty (read Plan 1's deleteImage first).
+    expect(deletedPaths()).not.toContain(SHARED_PATH);
 
     expect(await deleteImage(tenant.id, b.id)).toEqual({ ok: true });
-    expect(deleteBlobs).toHaveBeenLastCalledWith(["tenants/x/library-shared.png"]);
+    expect(deletedPaths()).toContain(SHARED_PATH);
+  });
+
+  it("still deletes the deleted image's OWN unshared blobs while sparing the shared one", async () => {
+    const { tenant, a } = await seedShared();
+    await addRender(renderArgs(a.id, 1));
+
+    expect(await deleteImage(tenant.id, a.id)).toEqual({ ok: true });
+
+    expect(deletedPaths()).toContain("tenants/x/r1.png");
+    expect(deletedPaths()).not.toContain(SHARED_PATH);
+  });
+});
+
+/**
+ * The prune path is the OTHER `deleteBlobs` call site this task changes, and
+ * it is the one that fires without anybody asking — every regeneration past
+ * the history cap. A guard applied only to `deleteImage` would leave a
+ * "From library" cover pointing at a blob a body image's sixth regeneration
+ * quietly deleted, and nothing would surface it until the published page
+ * 404s the image.
+ */
+describe("addRender pruning with a blob shared by another render", () => {
+  it("prunes the row but keeps the blob when another image's render still points at it", async () => {
+    const { tenant, a, b } = await seedShared();
+
+    // `a` now has the shared render as its oldest. Push it past the cap.
+    for (let n = 1; n <= MAX_RENDER_HISTORY; n++) await addRender(renderArgs(a.id, n));
+
+    const loaded = await getImage(tenant.id, a.id);
+    expect(loaded?.renders).toHaveLength(MAX_RENDER_HISTORY);
+    expect(loaded?.renders.some((r) => r.blobPathname === SHARED_PATH)).toBe(false);
+    // Row pruned, blob spared — `b` still uses it.
+    expect(deletedPaths()).not.toContain(SHARED_PATH);
+    expect((await getImage(tenant.id, b.id))?.current?.blobPathname).toBe(SHARED_PATH);
+  });
+
+  it("deletes a pruned blob normally when nothing else references it", async () => {
+    const tenant = await seedTenant(TENANT);
+    const image = await createImage({ tenantId: tenant.id, contentPieceId: null, role: "library", concept: "c", altText: "a", sourceKind: "generated" });
+    for (let n = 1; n <= MAX_RENDER_HISTORY + 1; n++) await addRender(renderArgs(image.id, n));
+    expect(deletedPaths()).toEqual(["tenants/x/r1.png"]);
   });
 });
 ```
 
-If Plan 1's `deleteImage` skips calling `deleteBlobs` when the list is empty, change the first assertion to `expect(deleteBlobs.mock.calls.flat(2)).not.toContain("tenants/x/library-shared.png")`. Read the function first.
-
 - [ ] **Step 2: Run to verify it fails**
 
 Run: `npx vitest run tests/lib/images/store-shared-blob.test.ts`
-Expected: FAIL — the first `deleteImage` deletes the shared pathname.
+Expected: FAIL — **two** cases fail: `deleteImage` deletes the shared pathname, and so does `addRender`'s prune. Both must be red before Step 3; if only one is, the guard is about to be applied to only one call site.
 
 - [ ] **Step 3: Add the guard**
 
@@ -876,6 +988,8 @@ import { DEFAULT_VISUAL_IDENTITY } from "../../../src/lib/images/visual-identity
 import { createImage, addRender, getImage, getCoverImage } from "../../../src/lib/images/store";
 
 const TENANT_NAME = "Image Actions Test Tenant";
+// A distinct name for the cross-tenant cases — see the note under this test.
+const OTHER_NAME = "Image Actions Other Tenant";
 const USER_EMAIL = "image-actions-test@example.com";
 let currentTenantId = "";
 let currentUserId: string | null = null;
@@ -961,6 +1075,7 @@ afterEach(async () => {
   suggestImageConcept.mockClear();
   uploadCount = 0;
   await db.delete(tenants).where(eq(tenants.name, TENANT_NAME));
+  await db.delete(tenants).where(eq(tenants.name, OTHER_NAME));
   await db.delete(users).where(eq(users.email, USER_EMAIL));
 });
 
@@ -1052,7 +1167,7 @@ describe("regenerateImage", () => {
 
   it("returns not-found for another tenant's image", async () => {
     await seed();
-    const [other] = await db.insert(tenants).values({ name: TENANT_NAME }).returning();
+    const [other] = await db.insert(tenants).values({ name: OTHER_NAME }).returning();
     const foreign = await createImage({ tenantId: other.id, contentPieceId: null, role: "library", concept: "c", altText: "a", sourceKind: "generated" });
     await addRender({ imageId: foreign.id, prompt: "p", blobUrl: "https://blob.example/f.png", blobPathname: "f", width: 1, height: 1, bytes: 1, model: "m" });
     expect(await regenerateImage({ imageId: foreign.id, mode: "same" })).toEqual({ ok: false, error: "Image not found." });
@@ -1157,6 +1272,44 @@ describe("uploadImageFile", () => {
     expect(renderImage).not.toHaveBeenCalled();
   });
 
+  it("rejects bytes that are not an image, and leaves no orphan row or blob behind", async () => {
+    // `file.type` is browser-supplied: a renamed .zip arrives as "image/png"
+    // and passes `validateUploadFile`. sharp is what actually rejects it, and
+    // the row created just before must be cleaned up when it does.
+    const { tenant, piece } = await seed();
+    const { compressPng } = await import("../../../src/lib/images/compress");
+    vi.mocked(compressPng).mockRejectedValueOnce(new Error("Input buffer contains unsupported image format"));
+
+    const result = await uploadImageFile(
+      form({ contentPieceId: piece.id, role: "body" }, new File([Buffer.from("PK not a png")], "a.png", { type: "image/png" }))
+    );
+
+    expect(result.ok).toBe(false);
+    expect(await db.select().from(contentImages).where(eq(contentImages.tenantId, tenant.id))).toHaveLength(0);
+  });
+
+  it("rejects a file over the 10 MB cap without touching the database", async () => {
+    const { tenant, piece } = await seed();
+    const big = new File([new Uint8Array(1)], "huge.png", { type: "image/png" });
+    Object.defineProperty(big, "size", { value: 10 * 1024 * 1024 + 1 });
+
+    const result = await uploadImageFile(form({ contentPieceId: piece.id, role: "body" }, big));
+
+    expect(result).toEqual({ ok: false, error: "Images must be 10 MB or smaller." });
+    expect(await db.select().from(contentImages).where(eq(contentImages.tenantId, tenant.id))).toHaveLength(0);
+  });
+
+  it("refuses an upload aimed at another tenant's piece", async () => {
+    await seed();
+    const [other] = await db.insert(tenants).values({ name: OTHER_NAME }).returning();
+    const [foreignPiece] = await db.insert(contentPieces).values({ tenantId: other.id, title: "X", body: "b" }).returning();
+
+    await expect(
+      uploadImageFile(form({ contentPieceId: foreignPiece.id, role: "body" }, new File([Buffer.from("PNG")], "a.png", { type: "image/png" })))
+    ).rejects.toThrow(/not found/i);
+    expect(await db.select().from(contentImages).where(eq(contentImages.tenantId, other.id))).toHaveLength(0);
+  });
+
   it("an uploaded cover replaces the existing cover row", async () => {
     const { tenant, piece } = await seed();
     await generateCover({ contentPieceId: piece.id, mode: "prompt", prompt: "first" });
@@ -1177,8 +1330,97 @@ describe("lookupImageBySrc", () => {
     expect(found?.renders.map((r) => r.url)).toEqual(["https://blob.example/gears-1.png"]);
     expect(await lookupImageBySrc("https://blob.example/nope.png")).toBeNull();
   });
+
+  it("never resolves another tenant's blob URL — the src is raw client input", async () => {
+    // The editor calls this with whatever `<img src>` it finds. Pasting a blob
+    // URL from another workspace must NOT return that workspace's prompt (which
+    // contains their compiled brand style) or their render history.
+    await seed();
+    const [other] = await db.insert(tenants).values({ name: OTHER_NAME }).returning();
+    const foreign = await createImage({ tenantId: other.id, contentPieceId: null, role: "library", concept: "their secret concept", altText: "a", sourceKind: "generated" });
+    await addRender({ imageId: foreign.id, prompt: "THEIR STYLE BLOCK", blobUrl: "https://blob.example/theirs.png", blobPathname: "p/theirs.png", width: 1, height: 1, bytes: 1, model: "m" });
+
+    expect(await lookupImageBySrc("https://blob.example/theirs.png")).toBeNull();
+  });
+});
+
+/**
+ * `content_images_cover_unique` is a PARTIAL unique index on
+ * (content_piece_id) where role='cover'. Every cover writer here follows
+ * read-then-insert — `getCoverImage` returns null, then `createImage` inserts —
+ * with no transaction around the pair. Two overlapping calls (a double-click on
+ * "Generate from post", or Generate racing an Upload) both read null and the
+ * second insert raises Postgres 23505. `createImage` sits OUTSIDE each action's
+ * try/catch, so that surfaces as an unhandled Server Action rejection — a red
+ * error overlay in dev, a generic client error in prod — rather than the
+ * `{ ok: false, error }` toast every other failure in this file produces.
+ *
+ * The fix is small and local: wrap each cover-creating `createImage` in a
+ * try/catch that recognises a unique violation (walk `error.cause` for
+ * `code === "23505"` — the same helper shape as `isUniqueViolation` in
+ * `src/lib/publishing/dispatch.ts:33-41`) and returns
+ * `{ ok: false, error: "This draft already has a cover — reload and try again." }`.
+ * Apply it in `generateCover`, `setCoverFromImage` and `uploadImageFile`.
+ */
+describe("cover uniqueness under overlapping requests", () => {
+  it("two concurrent generateCover calls leave one cover and neither rejects", async () => {
+    const { tenant, piece } = await seed();
+
+    const results = await Promise.all([
+      generateCover({ contentPieceId: piece.id, mode: "prompt", prompt: "first" }),
+      generateCover({ contentPieceId: piece.id, mode: "prompt", prompt: "second" }),
+    ]);
+
+    // At least one succeeds; neither throws; exactly one cover row exists.
+    expect(results.some((r) => r.ok)).toBe(true);
+    for (const r of results) if (!r.ok) expect(r.error).toEqual(expect.any(String));
+    const covers = (await db.select().from(contentImages).where(eq(contentImages.contentPieceId, piece.id))).filter(
+      (c) => c.role === "cover"
+    );
+    expect(covers).toHaveLength(1);
+  });
+
+  it("generateCover racing uploadImageFile(role=cover) does not reject either caller", async () => {
+    const { tenant, piece } = await seed();
+    const fd = new FormData();
+    fd.set("contentPieceId", piece.id);
+    fd.set("role", "cover");
+    fd.set("file", new File([Buffer.from("PNG")], "c.png", { type: "image/png" }));
+
+    const results = await Promise.allSettled([
+      generateCover({ contentPieceId: piece.id, mode: "prompt", prompt: "first" }),
+      uploadImageFile(fd),
+    ]);
+
+    expect(results.map((r) => r.status)).toEqual(["fulfilled", "fulfilled"]);
+    const covers = (await db.select().from(contentImages).where(eq(contentImages.contentPieceId, piece.id))).filter(
+      (c) => c.role === "cover"
+    );
+    expect(covers).toHaveLength(1);
+  });
+
+  it("a second generateCover on an existing GENERATED cover reuses the row (no second insert to race)", async () => {
+    const { tenant, piece } = await seed();
+    await generateCover({ contentPieceId: piece.id, mode: "prompt", prompt: "first" });
+    await generateCover({ contentPieceId: piece.id, mode: "prompt", prompt: "second" });
+    const covers = (await db.select().from(contentImages).where(eq(contentImages.contentPieceId, piece.id))).filter(
+      (c) => c.role === "cover"
+    );
+    expect(covers).toHaveLength(1);
+    expect(covers[0].concept).toBe("second");
+  });
 });
 ```
+
+> **These three cases are expected to be RED against the code as written in
+> Step 7** — that is the point; they are the failing test for the guard
+> described in the block comment above them. Add the unique-violation catch in
+> `generateCover`, `setCoverFromImage` and `uploadImageFile` before moving on.
+> (`Promise.all` in one Node process against one Postgres does genuinely
+> interleave here: each action awaits several round trips between its
+> `getCoverImage` and its `createImage`.)
+
+`OTHER_NAME` is a second file-local constant (`const OTHER_NAME = "Image Actions Other Tenant";`) dropped alongside `TENANT_NAME` in `afterEach`. Do **not** insert the second tenant under `TENANT_NAME`: two rows with one name works today only because `tenants.name` has no unique constraint (`src/db/schema.ts:16-18`), and it makes "which tenant did this test mean" unanswerable when the assertion fails.
 
 `companyProfiles` requires `topics` (`src/db/schema.ts:254`, `.notNull().default([])`) — the insert passes `[]` explicitly, matching Plan 2's test seed. Confirm `contentPieces` has `bodyEditedAt` (it does — `saveDraftBody` writes it, `actions.ts:117`).
 
@@ -1950,8 +2192,10 @@ git commit -m "feat: editor seams for image insert, upload and per-image toolbar
 ### Task 6: Generate image — insert-surface button and in-canvas panel
 
 **Files:**
+- Create: `src/lib/images/nearest-heading.ts` (pure DOM helper, no imports at all)
 - Create: `src/app/(dashboard)/drafts/[releaseId]/generate-image-button.tsx` (`"use client"`)
 - Create: `src/app/(dashboard)/drafts/[releaseId]/generate-image-panel.tsx` (`"use client"`)
+- Test: `tests/components/nearest-heading.test.tsx` (jsdom project)
 - Modify: `src/app/(dashboard)/drafts/[releaseId]/mdx-editor.tsx` — the wrapper's props (lines 183-189) and the `SharedMdxEditor` element (lines 195-212): add `contentPieceId` and `insertExtras`.
 - Modify: `src/app/(dashboard)/drafts/[releaseId]/draft-body-editor.tsx` — props (line 9) and the `<MdxEditor>` element (lines 29-48): thread `contentPieceId`.
 - Modify: `src/app/(dashboard)/drafts/[releaseId]/page.tsx:316` — `<DraftBodyEditor defaultValue={update.body} contentPieceId={update.id} />`.
@@ -1966,7 +2210,10 @@ git commit -m "feat: editor seams for image insert, upload and per-image toolbar
     contentPieceId: string; heading: string | null;
     onInsert: (markdown: string) => Promise<void>; onClose: () => void;
   }): JSX.Element;
-  export function nearestHeadingAbove(): string | null;   // DOM walk from the live caret; exported for reuse by Task 7's toolbar
+  // src/lib/images/nearest-heading.ts — DOM walk from the live caret. Its own
+  // importless module so the jsdom project can test it without dragging a
+  // "use server" file (and therefore @/db) into the graph.
+  export function nearestHeadingAbove(root?: Document | null): string | null;
   ```
 
 How it stays in-canvas without a modal: the panel is a child of the insert surface (`.mdx-surface-insert`, `mdx-editor.tsx:214-223`), absolutely positioned under it. `useSelectionSurface.update()` (`mdx-editor.tsx:91-103`) leaves the surface open while `document.activeElement` is inside `insertSurfaceRef`, so focusing the panel's textarea keeps the surface (and thus the panel) visible. The surface's `onMouseDown={preserveSelection}` (`mdx-editor.tsx:188,219`) would prevent the textarea from ever taking focus, so the panel stops mousedown propagation on its root. The caret is captured (`captureInsertPoint`) on the button click, before focus moves, and restored by `insertAtCursor` — the same capture/restore reason `AgentEditBridge` gives at `mdx-editor.tsx:23-24`. "Suggest prompt" sends the whole live body plus the nearest heading above the caret read from the DOM (`nearestHeadingAbove`); MDXEditor exposes no markdown offset for the caret, so slicing happens server-side (`sliceAroundHeading`, Task 4).
@@ -2118,28 +2365,34 @@ export function GenerateImagePanel({
 
 Check `Button` accepts `size="sm"` (`src/components/ui/button.tsx:7-48`, the cva variants) and `Textarea` forwards `ref` (React 19 function components receive `ref` as a prop; `src/components/ui/textarea.tsx` spreads props onto the element — read it; if it doesn't accept `ref`, drop the ref and use `autoFocus` instead, as `agent-edit-dialog.tsx:173` does).
 
-- [ ] **Step 2: The button (and the heading walk)**
+- [ ] **Step 2a: The heading walk, in its own testable module**
 
-Create `src/app/(dashboard)/drafts/[releaseId]/generate-image-button.tsx`:
+`nearestHeadingAbove` is the one piece of this task that is pure logic over a
+DOM, and it decides which section "Suggest prompt" describes — get it wrong and
+every suggested concept is about the intro. It cannot live in
+`generate-image-button.tsx`: that file imports `./actions`, a `"use server"`
+module that reaches `@/db` and opens a `pg` Pool at import time, which the jsdom
+project has no `DATABASE_URL` for (the same constraint documented at
+`tests/components/board-briefs.test.tsx:25-29`). So it gets its own module with
+zero imports.
 
-```tsx
-"use client";
+Create `src/lib/images/nearest-heading.ts`:
 
-import { useState } from "react";
-import { Sparkles } from "lucide-react";
-import { toast } from "sonner";
-import { useUnsavedChanges } from "../../unsaved-changes";
-import { useAgentEdit } from "./agent-edit-context";
-import { saveDraftBody } from "./actions";
-import { GenerateImagePanel } from "./generate-image-panel";
-
+```ts
 /**
- * The nearest heading above the live caret, read from the editor DOM. Used
- * to scope "Suggest prompt" to the section being written; null when the
- * caret is above the first heading (or not in the editor).
+ * The nearest heading above the live caret, read from the editor DOM. Scopes
+ * "Suggest prompt" to the section being written; null when the caret is above
+ * the first heading, or not inside `.mdx-content` at all.
+ *
+ * DOM-reading, not markdown-reading, on purpose: MDXEditor exposes no markdown
+ * offset for the caret, so the heading TEXT is the only handle the client can
+ * hand the server (which then slices with `sliceAroundHeading`).
+ *
+ * Deliberately importless — it is imported by a jsdom test that must not pull
+ * a server module (and therefore `@/db`) into the graph.
  */
-export function nearestHeadingAbove(): string | null {
-  const sel = window.getSelection();
+export function nearestHeadingAbove(root: Document | null = typeof document === "undefined" ? null : document): string | null {
+  const sel = root?.getSelection?.() ?? null;
   const anchor = sel?.anchorNode ?? null;
   if (!anchor) return null;
   const el = anchor instanceof Element ? anchor : anchor.parentElement;
@@ -2152,6 +2405,110 @@ export function nearestHeadingAbove(): string | null {
   }
   return null;
 }
+```
+
+- [ ] **Step 2b: Test it (jsdom project)**
+
+Create `tests/components/nearest-heading.test.tsx`:
+
+```tsx
+import { describe, it, expect, afterEach } from "vitest";
+import { nearestHeadingAbove } from "../../src/lib/images/nearest-heading";
+
+/**
+ * jsdom, not node: this needs a real Selection. No Base UI component is
+ * rendered, so none of the observers jsdom lacks (ResizeObserver,
+ * matchMedia — neither is stubbed in vitest.setup.jsdom.ts) are involved.
+ */
+function editor(html: string) {
+  const root = document.createElement("div");
+  root.className = "mdx-content";
+  root.innerHTML = html;
+  document.body.append(root);
+  return root;
+}
+
+function caretIn(node: Node) {
+  const range = document.createRange();
+  range.selectNodeContents(node);
+  range.collapse(true);
+  const sel = window.getSelection()!;
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
+afterEach(() => {
+  window.getSelection()?.removeAllRanges();
+  document.body.innerHTML = "";
+});
+
+describe("nearestHeadingAbove", () => {
+  it("returns the nearest preceding heading of any level", () => {
+    const root = editor("<h1>Title</h1><p>Intro</p><h2>Search</h2><p id='t'>Body</p>");
+    caretIn(root.querySelector("#t")!);
+    expect(nearestHeadingAbove()).toBe("Search");
+  });
+
+  it("walks up to the block child of .mdx-content before looking back", () => {
+    // The caret is usually in a text node inside a nested inline element.
+    const root = editor("<h2>Billing</h2><p id='t'>text <em id='e'>emphasis</em></p>");
+    caretIn(root.querySelector("#e")!.firstChild!);
+    expect(nearestHeadingAbove()).toBe("Billing");
+  });
+
+  it("skips a heading that comes AFTER the caret", () => {
+    const root = editor("<h2>Search</h2><p id='t'>Body</p><h2>Billing</h2><p>Later</p>");
+    caretIn(root.querySelector("#t")!);
+    expect(nearestHeadingAbove()).toBe("Search");
+  });
+
+  it("returns null above the first heading", () => {
+    const root = editor("<p id='t'>Intro</p><h2>Search</h2>");
+    caretIn(root.querySelector("#t")!);
+    expect(nearestHeadingAbove()).toBeNull();
+  });
+
+  it("returns null when the caret is outside the editor, and when there is no selection", () => {
+    const outside = document.createElement("p");
+    outside.textContent = "elsewhere";
+    document.body.append(outside);
+    caretIn(outside);
+    expect(nearestHeadingAbove()).toBeNull();
+
+    window.getSelection()!.removeAllRanges();
+    expect(nearestHeadingAbove()).toBeNull();
+  });
+
+  it("trims the heading text and treats a whitespace-only heading as none", () => {
+    const root = editor("<h2>  Faster  search  </h2><p id='t'>Body</p>");
+    caretIn(root.querySelector("#t")!);
+    expect(nearestHeadingAbove()).toBe("Faster  search");
+
+    const blank = editor("<h2>   </h2><p id='b'>Body</p>");
+    caretIn(blank.querySelector("#b")!);
+    expect(nearestHeadingAbove()).toBeNull();
+  });
+});
+```
+
+Run: `npx vitest run tests/components/nearest-heading.test.tsx`
+Expected: FAIL (module not found), then PASS after Step 2a.
+
+- [ ] **Step 2c: The button**
+
+Create `src/app/(dashboard)/drafts/[releaseId]/generate-image-button.tsx`:
+
+```tsx
+"use client";
+
+import { useState } from "react";
+import { Sparkles } from "lucide-react";
+import { toast } from "sonner";
+import { nearestHeadingAbove } from "@/lib/images/nearest-heading";
+import { useUnsavedChanges } from "../../unsaved-changes";
+import { useAgentEdit } from "./agent-edit-context";
+import { saveDraftBody } from "./actions";
+import { GenerateImagePanel } from "./generate-image-panel";
 
 /**
  * "Generate image" in the insert surface, beside InsertImage (spec §5). The
@@ -2275,13 +2632,13 @@ In `draft-body-editor.tsx` line 9 → `export function DraftBodyEditor({ default
 
 - [ ] **Step 5: Gates**
 
-Run: `npm run typecheck && npm run lint && npm run build`
+Run: `npx vitest run tests/components/nearest-heading.test.tsx && npm run typecheck && npm run lint && npm run build`
 Expected: clean. If lint flags `react-hooks/set-state-in-effect` on the panel's focus effect, it doesn't set state — it only focuses; leave it.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add "src/app/(dashboard)/drafts/[releaseId]/generate-image-button.tsx" "src/app/(dashboard)/drafts/[releaseId]/generate-image-panel.tsx" "src/app/(dashboard)/drafts/[releaseId]/mdx-editor.tsx" "src/app/(dashboard)/drafts/[releaseId]/draft-body-editor.tsx" "src/app/(dashboard)/drafts/[releaseId]/page.tsx" src/app/globals.css
+git add src/lib/images/nearest-heading.ts tests/components/nearest-heading.test.tsx "src/app/(dashboard)/drafts/[releaseId]/generate-image-button.tsx" "src/app/(dashboard)/drafts/[releaseId]/generate-image-panel.tsx" "src/app/(dashboard)/drafts/[releaseId]/mdx-editor.tsx" "src/app/(dashboard)/drafts/[releaseId]/draft-body-editor.tsx" "src/app/(dashboard)/drafts/[releaseId]/page.tsx" src/app/globals.css
 git commit -m "feat: generate an illustration from the editor's insert surface"
 ```
 
@@ -4202,10 +4559,28 @@ git commit -m "feat: image library with filters, detail edits, delete, generate 
 npm run typecheck
 npm run lint
 npm run build
-npx vitest run tests/lib/images/actions-support.test.ts tests/lib/images/suggest.test.ts tests/lib/images/store-shared-blob.test.ts tests/lib/images/generate.test.ts tests/app/drafts/image-actions.test.ts tests/app/images/actions.test.ts tests/components/nav-links.test.tsx
+npx vitest run \
+  tests/lib/images/actions-support.test.ts \
+  tests/lib/images/suggest.test.ts \
+  tests/lib/images/store-shared-blob.test.ts \
+  tests/lib/images/generate.test.ts \
+  tests/app/drafts/image-actions.test.ts \
+  tests/app/images/actions.test.ts \
+  tests/components/nav-links.test.tsx \
+  tests/components/nearest-heading.test.tsx
 ```
 
-Expected: all clean / PASS. Run the vitest line twice if anything fails — the shared-Postgres suite is flaky, and a failure that doesn't repeat is not yours. Also run Plan 1's store test (`ls tests/lib/images/`) once more, since Task 3 touched `store.ts`.
+Expected: all clean / PASS. **Run the vitest line twice** — the shared-Postgres suite is flaky, and a failure that doesn't repeat is not yours.
+
+Task 3 changed `store.ts` and Task 1 re-pointed `imageSlug` at `slugForImage`, so also re-run everything Plans 1 and 2 built on top of those:
+
+```bash
+npx vitest run tests/lib/images tests/app/drafts/illustration-actions.test.ts
+```
+
+Expected: PASS (twice).
+
+> **Not a gate: `npm test`.** The whole suite against one shared Postgres is documented as flaky, so neither a red nor a green whole-suite run is evidence about this plan.
 
 - [ ] **Step 2: Manual verification (dev server, signed in, a tenant with a ready visual identity and a `blog_post` draft)**
 
@@ -4282,4 +4657,4 @@ Expected: eleven commits on top of Plans 1–2, one per task; a clean tree. Hand
 **Handed elsewhere / not done**
 - Board card cover thumbnail (spec §3): needs `BoardCard.coverUrl` in `src/lib/content/board.ts:49-68`, the board query and its tests — follow-up.
 - Failed-illustration notice/retry on the draft page and the agent's own placement are Plan 2 (its Task 7); publish-time transfer of the cover (Webflow field, LinkedIn media, webhook) is Plan 4.
-- No jsdom tests for the new components: `tests/components` mocks the MDXEditor module wholesale (`new-brief-editor.test.tsx:55`) and nothing there renders the realm bridge, so the editor pieces are gated by typecheck + build + the manual checklist, as the existing Ask AI bridge is.
+- Component coverage: the one piece of client logic that is testable without the editor realm — `nearestHeadingAbove` — is extracted to `src/lib/images/nearest-heading.ts` and covered in the jsdom project (Task 6 Steps 2a–2b). Everything else in `tests/components` mocks the MDXEditor module wholesale (`new-brief-editor.test.tsx:55`) and nothing there renders the realm bridge, so `AgentEditBridge`'s three new ops, `ImageEditToolbar`, `CoverPanel`, `LibraryPicker` and the library grid stay gated by typecheck + build + the manual checklist — exactly as the existing Ask AI bridge is. **Rendering any of them in jsdom would need `ResizeObserver`/`matchMedia` stubs that `vitest.setup.jsdom.ts` does not have** (verified: no such stub exists anywhere in the repo), so adding them is its own task, not a step here.

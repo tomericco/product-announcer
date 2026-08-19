@@ -17,6 +17,20 @@
 - Run `npm install` in the worktree before anything (no node_modules).
 - Tests: vitest; node project under tests/** (real Postgres via vitest.setup.ts, uses tests/helpers/fixtures.ts), jsdom project under tests/components/**. Run a single file with `npx vitest run tests/path/file.test.ts`. The suite is flaky when run whole — run the files you touched.
 - Migrations: `npm run db:generate` after schema edits; commit the generated SQL in src/db/migrations. Then `npm run db:migrate && npm run db:migrate:test`. Never hand-write the SQL file. Next migration index is 0063 (last is `0062_next_dazzler.sql`).
+- **Migration index allocation across the four plans.** Three of them add
+  columns and drizzle-kit numbers by "highest existing + 1", so two plans
+  generated from the same base both produce `0064_*` and their
+  `meta/_journal.json` entries conflict at merge. The allocation is:
+  **Plan 1 → `0063`, Plan 2 → `0064` (`content_images.anchor_heading`),
+  Plan 3 → none, Plan 4 → `0065` (`delivery_attempts.metadata`)** — which is
+  what you get if and only if each plan is merged before the next runs
+  `db:generate`. If your generated file lands on a different index, the branch
+  was cut from a stale base: rebase on the merged predecessor, delete the
+  generated `.sql` + its `meta/*_snapshot.json` + its `_journal.json` entry,
+  and re-run `npm run db:generate`. Never renumber a generated file by hand.
+- Nothing in CI applies migrations to the test database. After every
+  `npm run db:generate`, run `npm run db:migrate:test` or the next test run
+  fails with a raw "column does not exist" in an unrelated file.
 - Commit after every task; message style: lowercase imperative, `feat:`/`fix:`/`test:`/`docs:` prefix, no Co-Authored-By needed.
 - Env: `process.env.X ?? default` at the call site; every new var gets a commented line in `.env.example`. New vars: `IMAGE_MODEL` (default `openai/gpt-image-2`), `OPENAI_API_KEY`, `BLOB_READ_WRITE_TOKEN`.
 - Model default `IMAGE_MODEL_DEFAULT = "openai/gpt-image-2"`; `imageModelId` strips a leading `openai/`.
@@ -416,7 +430,17 @@ git commit -m "feat: content_images and image_renders tables, visual identity an
 - Test: `tests/lib/ai/llm-usage.test.ts` (exists — append)
 
 **Interfaces:**
-- Produces: `LlmOperation` gains `"illustration_plan" | "image_generation"`; entry gains optional `imageCount?: number` → `llm_usage.image_count`.
+- Produces: `LlmOperation` gains `"illustration_plan" | "image_generation"`; entry gains optional `imageCount?: number` → `llm_usage.image_count`; the `database` parameter widens from `typeof defaultDb` to `DbClient`.
+
+> **Why the `database` widening is mandatory, not conditional.** Today
+> `recordLlmUsage(entry, database: typeof defaultDb = defaultDb)`
+> (`src/lib/ai/llm-usage.ts:37`). `typeof defaultDb` is
+> `NodePgDatabase<typeof schema> & { $client: NodePgClient }`; `DbClient`
+> (`src/lib/publishing/destinations/types.ts:11`) is the same type **without**
+> `$client`, so a `DbClient` is NOT assignable to it. Task 9's `renderImage`,
+> Plan 2's `planIllustrations` and Plan 3's `suggestImageConcept` all forward a
+> `DbClient`. Widen here, once, in this task — `db` is still assignable to the
+> wider type, so no existing caller changes.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -453,7 +477,13 @@ Expected: FAIL — type error on `operation: "image_generation"` / `imageCount` 
 
 - [ ] **Step 3: Implement**
 
-In `src/lib/ai/llm-usage.ts`, extend the union (after `"brief_proposal"` line 18):
+In `src/lib/ai/llm-usage.ts`, add the import at the top:
+
+```ts
+import type { DbClient } from "@/lib/publishing/destinations/types";
+```
+
+Extend the union (after `"brief_proposal"` line 18):
 
 ```ts
   | "brief_proposal"
@@ -476,7 +506,10 @@ export async function recordLlmUsage(
     /** Number of images rendered by this call. Only image operations set it. */
     imageCount?: number;
   },
-  database: typeof defaultDb = defaultDb
+  // Widened from `typeof defaultDb`: image and illustration-plan callers hold a
+  // `DbClient` (no `$client`), which is not assignable to `typeof defaultDb`.
+  // `db` is assignable to `DbClient`, so every existing caller is unaffected.
+  database: DbClient = defaultDb
 ): Promise<void> {
   try {
     await database.insert(llmUsage).values({
@@ -496,8 +529,8 @@ export async function recordLlmUsage(
 
 - [ ] **Step 4: Run to verify it passes**
 
-Run: `npx vitest run tests/lib/ai/llm-usage.test.ts`
-Expected: PASS.
+Run: `npx vitest run tests/lib/ai/llm-usage.test.ts && npx tsc --noEmit`
+Expected: PASS, tsc clean (the widened `database` parameter must not break any existing caller).
 
 - [ ] **Step 5: Commit**
 
@@ -610,6 +643,56 @@ describe("compileStyleBlock", () => {
     expect(block).not.toContain("Always:");
     expect(block).not.toContain("Never:");
     expect(block).not.toContain("rounded corners");
+  });
+
+  it("omits the palette clause entirely for an empty palette, and stays one line", () => {
+    // Generation is gated on `isVisualIdentityReady`, but the editor compiles a
+    // preview from a half-filled card, so an empty palette must not emit
+    // "Palette, used strictly: ." — an empty instruction the model may honour.
+    const block = compileStyleBlock({ ...IDENTITY, palette: [] });
+    expect(block).not.toContain("Palette");
+    expect(block).not.toContain("\n");
+    expect(block).toContain("Style:");
+  });
+
+  it("names all six colours, ordered by role, when the palette is full", () => {
+    const full = {
+      ...IDENTITY,
+      palette: [
+        { hex: "#111111", role: "neutral" as const },
+        { hex: "#222222", role: "accent" as const },
+        { hex: "#333333", role: "secondary" as const },
+        { hex: "#444444", role: "primary" as const },
+        { hex: "#555555", role: "background" as const },
+        { hex: "#666666", role: "accent" as const },
+      ],
+    };
+    const block = compileStyleBlock(full);
+    for (const hex of ["#111111", "#222222", "#333333", "#444444", "#555555", "#666666"]) {
+      expect(block).toContain(hex);
+    }
+    // ROLE_ORDER puts background first and neutral last.
+    expect(block.indexOf("#555555")).toBeLessThan(block.indexOf("#444444"));
+    expect(block.indexOf("#444444")).toBeLessThan(block.indexOf("#111111"));
+  });
+
+  it("stays one line even when a descriptor or a rule was typed with newlines", () => {
+    // `customStyleDescriptors` is a <Textarea> and rule text is free input, so
+    // both can carry newlines. The compiled block is embedded verbatim in the
+    // stored render prompt; a multi-line style block is not what buildImagePrompt
+    // documents it produces.
+    const block = compileStyleBlock({
+      ...IDENTITY,
+      customStyleDescriptors: "rounded corners\neverywhere",
+      imageGenerationRules: [{ kind: "dont", text: "no\nhands" }],
+    });
+    expect(block).not.toContain("\n");
+  });
+
+  it("lowercases hex in the compiled block regardless of how it was stored", () => {
+    const block = compileStyleBlock({ ...IDENTITY, palette: [{ hex: "#1A73E8", role: "primary" }] });
+    expect(block).toContain("#1a73e8");
+    expect(block).not.toContain("#1A73E8");
   });
 });
 
@@ -803,7 +886,10 @@ export function compileStyleBlock(vi: VisualIdentity): string {
   if (dos.length > 0) sentences.push(`Always: ${dos.join("; ")}.`);
   if (donts.length > 0) sentences.push(`Never: ${donts.join("; ")}.`);
 
-  return sentences.join(" ");
+  // ONE line, always: `customStyleDescriptors` comes from a <Textarea> and rule
+  // text is free input, so either can carry newlines, and this block is
+  // embedded verbatim in the prompt stored on every render row.
+  return sentences.join(" ").replace(/\s+/g, " ").trim();
 }
 
 export function isVisualIdentityReady(vi: VisualIdentity | null): boolean {
@@ -890,9 +976,23 @@ Create `tests/lib/images/policy.test.ts`:
 
 ```ts
 import { describe, it, expect } from "vitest";
+import { contentTypeEnum } from "../../../src/db/schema";
 import { DEFAULT_IMAGE_POLICY, resolveImagePolicy, parseImagePolicy } from "../../../src/lib/images/policy";
 
 describe("DEFAULT_IMAGE_POLICY", () => {
+  it("covers every content type in the enum — a new type must not fall through undefined", () => {
+    // `resolveImagePolicy` does `policy?.[type] ?? DEFAULT_IMAGE_POLICY[type]`
+    // and then reads `.body` off it. A ContentType missing from the defaults
+    // throws at generation time, not here — so assert the table is total.
+    for (const type of contentTypeEnum.enumValues) {
+      expect(DEFAULT_IMAGE_POLICY[type]).toBeDefined();
+      expect(resolveImagePolicy(null, type)).toEqual(
+        expect.objectContaining({ cover: expect.any(Boolean), bodyCap: expect.any(Number) })
+      );
+      expect(resolveImagePolicy({}, type).bodyCap).toBeGreaterThanOrEqual(0);
+    }
+  });
+
   it("matches the spec table", () => {
     expect(DEFAULT_IMAGE_POLICY).toEqual({
       blog_post: { cover: true, body: "auto" },
@@ -1137,7 +1237,25 @@ git commit -m "feat: image prompt template"
 - Test: `tests/lib/images/compress.test.ts`
 
 **Interfaces:**
-- Produces: `compressPng(input: Buffer, maxWidth: number): Promise<{ png: Buffer; width: number; height: number }>`.
+- Produces: `compressPng(input: Buffer, maxWidth: number): Promise<{ png: Buffer; width: number; height: number }>`; `MAX_DELIVERABLE_BYTES = 4 * 1024 * 1024`.
+
+> **Two things this function deliberately does NOT do, and both are load-bearing
+> downstream — read before implementing.**
+>
+> 1. **It does not change the aspect ratio.** `renderImage` asks the provider for
+>    `1200x630`, but gpt-image models round to their own supported sizes, so the
+>    bytes that come back may be 1024×1024. `compressPng(raw, 1200)` with
+>    `withoutEnlargement` then stores `width: 1024, height: 1024` — and those are
+>    the numbers Plan 4 publishes as `coverImage.width/height` and LinkedIn
+>    renders. Spec §7 promises a 1.91:1 cover. The tests below pin the current
+>    behaviour honestly; **whether to add a cover-only cover-crop to 1200×630 is
+>    an open decision for the product owner** (see the QA review, defect 4).
+> 2. **It does not guarantee a byte cap.** Spec §8 says Webflow's 4 MB limit is
+>    "guaranteed by the compression pass" and LinkedIn's is 5 MB. Palette
+>    quantisation at ≤1200 px makes a flat graphic tiny, but an uploaded
+>    photograph (`uploadImageFile` accepts up to 10 MB of JPEG, Plan 3) can stay
+>    above 4 MB after conversion to PNG. The test below pins the flat-graphic
+>    case and the exported constant gives callers something to check against.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1146,7 +1264,7 @@ Create `tests/lib/images/compress.test.ts`:
 ```ts
 import { describe, it, expect } from "vitest";
 import sharp from "sharp";
-import { compressPng } from "../../../src/lib/images/compress";
+import { MAX_DELIVERABLE_BYTES, compressPng } from "../../../src/lib/images/compress";
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
 
@@ -1154,6 +1272,13 @@ async function solidPng(width: number, height: number): Promise<Buffer> {
   return sharp({ create: { width, height, channels: 4, background: { r: 200, g: 30, b: 30, alpha: 1 } } })
     .png()
     .toBuffer();
+}
+
+/** Deterministic pseudo-noise: the worst case for PNG, and what a photo upload looks like. */
+async function noisyJpeg(width: number, height: number): Promise<Buffer> {
+  const pixels = Buffer.alloc(width * height * 3);
+  for (let i = 0; i < pixels.length; i++) pixels[i] = (i * 2654435761) % 256;
+  return sharp(pixels, { raw: { width, height, channels: 3 } }).jpeg({ quality: 90 }).toBuffer();
 }
 
 describe("compressPng", () => {
@@ -1180,6 +1305,38 @@ describe("compressPng", () => {
     const out = await compressPng(input, 1200);
     expect(out.png.byteLength).toBeLessThanOrEqual(input.byteLength);
   });
+
+  it("keeps a realistic flat cover far under the 4 MB Webflow/5 MB LinkedIn ceiling", async () => {
+    // The cover master the agent produces: 1200 px wide, flat fills. This is
+    // the claim spec §8 makes ("4 MB cap — guaranteed by the compression
+    // pass"); pin it so a future change to the sharp options can't quietly
+    // break Webflow rehosting.
+    const out = await compressPng(await solidPng(2400, 1260), 1200);
+    expect(out.png.byteLength).toBeLessThan(MAX_DELIVERABLE_BYTES);
+    expect(MAX_DELIVERABLE_BYTES).toBe(4 * 1024 * 1024);
+  });
+
+  it("accepts a JPEG input and emits a PNG (the upload path, spec §5 uploads)", async () => {
+    const out = await compressPng(await noisyJpeg(1600, 900), 1200);
+    expect(out.png.subarray(0, 4).equals(PNG_SIGNATURE)).toBe(true);
+    expect(out.width).toBe(1200);
+    expect(await sharp(out.png).metadata().then((m) => m.format)).toBe("png");
+  });
+
+  it("does NOT change the aspect ratio — a square render stays square", async () => {
+    // Documents the gap between what renderImage asks for ("1200x630") and what
+    // is actually stored when the provider rounds to a square supported size.
+    // Plan 4 publishes these numbers as coverImage.width/height. See the note
+    // above this task and QA review defect 4.
+    const out = await compressPng(await solidPng(1024, 1024), 1200);
+    expect({ width: out.width, height: out.height }).toEqual({ width: 1024, height: 1024 });
+  });
+
+  it("rejects bytes that are not an image, so an upload of a renamed file fails before Blob", async () => {
+    // `uploadImageFile` (Plan 3) trusts the browser-supplied mime type; this
+    // throw is what actually stops non-image bytes reaching Vercel Blob.
+    await expect(compressPng(Buffer.from("not an image at all"), 1200)).rejects.toThrow();
+  });
 });
 ```
 
@@ -1194,6 +1351,14 @@ Create `src/lib/images/compress.ts`:
 
 ```ts
 import sharp from "sharp";
+
+/**
+ * The ceiling every delivered image must sit under: Webflow rehosts at most
+ * 4 MB (spec §8) and LinkedIn's Images API at most 5 MB, so 4 MB is the binding
+ * one. Exported for callers that want to check rather than assume — this
+ * function resizes and quantises, it does not enforce a byte budget.
+ */
+export const MAX_DELIVERABLE_BYTES = 4 * 1024 * 1024;
 
 /**
  * The mandatory pass before every Blob `put()` (spec §7). Models emit multi-MB
@@ -1269,6 +1434,23 @@ describe("slugForImage", () => {
     expect(slugForImage("A Lighthouse, Guiding Ships!")).toBe("a-lighthouse-guiding-ships");
     expect(slugForImage("   ")).toBe("image");
     expect(slugForImage("x".repeat(100))).toHaveLength(40);
+  });
+
+  it("cannot escape its directory: the slug is the ONLY caller-controlled part of a pathname", () => {
+    // The concept, the piece title and an uploaded file's name all reach
+    // `imagePathname` through this function. Slashes, dots and query characters
+    // must not survive, or a crafted concept writes outside its tenant prefix.
+    for (const hostile of ["../../etc/passwd", "..%2f..%2fsecret", "a/b/c", "x?y=z#frag", "\\windows\\system32"]) {
+      const slug = slugForImage(hostile);
+      expect(slug).toMatch(/^[a-z0-9-]+$/);
+      expect(slug).not.toContain("..");
+    }
+  });
+
+  it("keeps a hostile concept inside the tenant prefix once composed", () => {
+    const path = imagePathname({ tenantId: "t1", contentPieceId: "p1", role: "body", slug: slugForImage("../../../x") });
+    expect(path.startsWith("tenants/t1/content/p1/")).toBe(true);
+    expect(path).not.toContain("..");
   });
 });
 
@@ -1630,7 +1812,7 @@ export async function renderImage(args: RenderImageArgs, deps: RenderImageDeps =
 }
 ```
 
-`recordLlmUsage`'s second parameter is typed `typeof defaultDb`; `DbClient` (`NodePgDatabase<typeof schema>`) lacks `$client`, so if `tsc` rejects passing `args.database`, widen `recordLlmUsage`'s `database` parameter type in `src/lib/ai/llm-usage.ts` to `DbClient` (import the type from `@/lib/publishing/destinations/types`) — `db` is assignable to it, so no caller changes.
+`recordLlmUsage`'s second parameter was widened to `DbClient` in Task 3, so passing `args.database` (possibly `undefined`) typechecks — the default `= defaultDb` covers the undefined case.
 
 - [ ] **Step 5: Run to verify they pass**
 
@@ -1742,6 +1924,43 @@ describe("addRender pruning", () => {
     expect(deleted.sort()).toEqual(["tenants/t/r1.png", "tenants/t/r2.png"]);
   });
 
+  it("keeps exactly MAX_RENDER_HISTORY at the boundary and prunes nothing before it", async () => {
+    const tenant = await seedTenant(TENANT);
+    const image = await createImage({ tenantId: tenant.id, contentPieceId: null, role: "library", concept: "c", altText: "a", sourceKind: "generated" });
+    const deleteBlobs = vi.fn(async () => {});
+
+    for (let n = 1; n <= MAX_RENDER_HISTORY; n++) await addRender(renderArgs(image.id, n), db, { deleteBlobs });
+    expect((await getImage(tenant.id, image.id))?.renders).toHaveLength(MAX_RENDER_HISTORY);
+    expect(deleteBlobs).not.toHaveBeenCalled();
+
+    // The 6th is the first that prunes, and it prunes exactly one.
+    await addRender(renderArgs(image.id, MAX_RENDER_HISTORY + 1), db, { deleteBlobs });
+    expect((await getImage(tenant.id, image.id))?.renders).toHaveLength(MAX_RENDER_HISTORY);
+    expect(deleteBlobs).toHaveBeenCalledTimes(1);
+    expect(deleteBlobs).toHaveBeenCalledWith(["tenants/t/r1.png"]);
+  });
+
+  it("never leaves currentRenderId dangling when the RESTORED render is the one pruned", async () => {
+    // Restore the oldest version, then regenerate. The oldest is both "current"
+    // and the prune candidate; addRender must repoint `current` at the new
+    // render BEFORE pruning, or the image is left pointing at a deleted row.
+    const tenant = await seedTenant(TENANT);
+    const image = await createImage({ tenantId: tenant.id, contentPieceId: null, role: "library", concept: "c", altText: "a", sourceKind: "generated" });
+    const deleteBlobs = vi.fn(async () => {});
+    const first = await addRender(renderArgs(image.id, 1), db, { deleteBlobs });
+    for (let n = 2; n <= MAX_RENDER_HISTORY; n++) await addRender(renderArgs(image.id, n), db, { deleteBlobs });
+    await setCurrentRender(image.id, first.id);
+    expect((await getImage(tenant.id, image.id))?.current?.id).toBe(first.id);
+
+    const fresh = await addRender(renderArgs(image.id, MAX_RENDER_HISTORY + 1), db, { deleteBlobs });
+
+    const loaded = await getImage(tenant.id, image.id);
+    expect(loaded?.currentRenderId).toBe(fresh.id);
+    expect(loaded?.current).not.toBeNull();
+    expect(loaded?.renders.some((r) => r.id === first.id)).toBe(false);
+    expect(deleteBlobs).toHaveBeenCalledWith(["tenants/t/r1.png"]);
+  });
+
   it("skips pruning entirely for a published piece", async () => {
     const tenant = await seedTenant(TENANT);
     const piece = await seedPiece(tenant.id);
@@ -1804,6 +2023,30 @@ describe("getCoverImage / listImages / findImageByRenderUrl", () => {
     expect(byUrl?.image.id).toBe(cover.id);
     expect(byUrl?.render.id).toBe(coverRender.id);
     expect(await findImageByRenderUrl(tenant.id, "https://blob/nope.png")).toBeNull();
+  });
+
+  it("never resolves another tenant's render URL (the editor's src -> row lookup is the leak risk)", async () => {
+    // `lookupImageBySrc` (Plan 3) passes an arbitrary client-supplied URL here.
+    // Without the tenant predicate, pasting a competitor's blob URL into the
+    // editor would return their prompt and full render history.
+    const tenant = await seedTenant(TENANT);
+    const other = await seedTenant(OTHER);
+    const mine = await createImage({ tenantId: tenant.id, contentPieceId: null, role: "library", concept: "c", altText: "a", sourceKind: "generated" });
+    await addRender(renderArgs(mine.id, 1));
+
+    expect(await findImageByRenderUrl(other.id, "https://blob/r1.png")).toBeNull();
+    expect((await findImageByRenderUrl(tenant.id, "https://blob/r1.png"))?.image.id).toBe(mine.id);
+  });
+
+  it("scopes getCoverImage and listImages to the tenant", async () => {
+    const tenant = await seedTenant(TENANT);
+    const other = await seedTenant(OTHER);
+    const piece = await seedPiece(tenant.id);
+    await createImage({ tenantId: tenant.id, contentPieceId: piece.id, role: "cover", concept: "c", altText: "a", sourceKind: "generated", status: "ready" });
+
+    expect(await getCoverImage(other.id, piece.id)).toBeNull();
+    expect(await listImages(other.id)).toHaveLength(0);
+    expect(await listImages(other.id, { contentPieceId: piece.id })).toHaveLength(0);
   });
 });
 
@@ -2072,6 +2315,252 @@ Expected: PASS. If the pruning test's expected order `["p7","p6","p5","p4","p3"]
 ```bash
 git add src/lib/images/store.ts tests/lib/images/store.test.ts
 git commit -m "feat: content image store with render history and pruning"
+```
+
+---
+
+### Task 10b: Shared image fixtures in `tests/helpers/fixtures.ts`
+
+**Files:**
+- Modify: `tests/helpers/fixtures.ts` (19 lines today: `seedTenant`, `dropTenant` only)
+- Test: `tests/lib/images/fixtures-smoke.test.ts`
+
+**Why:** Plans 2, 3 and 4 each hand-roll the same three seeds — a
+`companyProfiles` row with a ready `visualIdentity`, a `contentPieces` row, and
+a `content_images` + `image_renders` pair whose `currentRenderId` points at the
+render. Six copies of the same eight-line insert is how a schema change breaks
+five test files at once. Write them **once, here**; Plans 2–4 import them.
+
+**Interfaces:**
+- Produces (all take an explicit `tenantId` and return the inserted row):
+  ```ts
+  export const READY_VISUAL_IDENTITY: VisualIdentity;   // 3-colour palette, defaults otherwise
+  export async function seedCompanyProfile(tenantId: string, overrides?: Partial<typeof companyProfiles.$inferInsert>);
+  export async function seedVisualIdentity(tenantId: string, identity?: VisualIdentity | null);
+  export async function seedContentPiece(tenantId: string, overrides?: Partial<typeof contentPieces.$inferInsert>);
+  export async function seedContentImage(a: { tenantId: string; contentPieceId?: string | null; role?: ImageRole; withRender?: boolean; overrides?: Partial<typeof contentImages.$inferInsert>; renderOverrides?: Partial<typeof imageRenders.$inferInsert> }):
+    Promise<{ image: ContentImage; render: ImageRender | null }>;
+  ```
+- Consumers: Plan 2 Tasks 4/7, Plan 3 Tasks 3/4/10, Plan 4 Tasks 2/7.
+
+- [ ] **Step 1: Write the failing smoke test**
+
+Create `tests/lib/images/fixtures-smoke.test.ts`:
+
+```ts
+import { describe, it, expect, afterEach } from "vitest";
+import { eq } from "drizzle-orm";
+import { db } from "../../../src/db";
+import { companyProfiles, contentImages } from "../../../src/db/schema";
+import {
+  READY_VISUAL_IDENTITY,
+  dropTenant,
+  seedContentImage,
+  seedContentPiece,
+  seedTenant,
+  seedVisualIdentity,
+} from "../../helpers/fixtures";
+import { isVisualIdentityReady } from "../../../src/lib/images/visual-identity";
+
+const TENANT = "Image Fixtures Smoke Test Tenant";
+
+afterEach(async () => {
+  await dropTenant(TENANT);
+});
+
+describe("image fixtures", () => {
+  it("seeds a profile whose visual identity is ready", async () => {
+    const tenant = await seedTenant(TENANT);
+    await seedVisualIdentity(tenant.id);
+    const [profile] = await db.select().from(companyProfiles).where(eq(companyProfiles.tenantId, tenant.id));
+    expect(isVisualIdentityReady(profile.visualIdentity)).toBe(true);
+    expect(READY_VISUAL_IDENTITY.palette.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("seeds a null visual identity on request, and is idempotent per tenant", async () => {
+    const tenant = await seedTenant(TENANT);
+    await seedVisualIdentity(tenant.id, null);
+    await seedVisualIdentity(tenant.id, READY_VISUAL_IDENTITY);
+    const rows = await db.select().from(companyProfiles).where(eq(companyProfiles.tenantId, tenant.id));
+    expect(rows).toHaveLength(1);
+    expect(rows[0].visualIdentity?.palette).toHaveLength(3);
+  });
+
+  it("seeds an image with a render wired as current, and without one", async () => {
+    const tenant = await seedTenant(TENANT);
+    const piece = await seedContentPiece(tenant.id, { type: "blog_post" });
+    const ready = await seedContentImage({ tenantId: tenant.id, contentPieceId: piece.id, role: "cover" });
+    expect(ready.render).not.toBeNull();
+    const [row] = await db.select().from(contentImages).where(eq(contentImages.id, ready.image.id));
+    expect(row.currentRenderId).toBe(ready.render!.id);
+    expect(row.status).toBe("ready");
+
+    const failed = await seedContentImage({
+      tenantId: tenant.id,
+      contentPieceId: piece.id,
+      role: "body",
+      withRender: false,
+      overrides: { status: "failed" },
+    });
+    expect(failed.render).toBeNull();
+    expect(failed.image.currentRenderId).toBeNull();
+  });
+
+  it("gives every render a distinct blob url so a body swap is observable", async () => {
+    const tenant = await seedTenant(TENANT);
+    const a = await seedContentImage({ tenantId: tenant.id, contentPieceId: null, role: "library" });
+    const b = await seedContentImage({ tenantId: tenant.id, contentPieceId: null, role: "library" });
+    expect(a.render!.blobUrl).not.toBe(b.render!.blobUrl);
+    expect(a.render!.blobPathname).not.toBe(b.render!.blobPathname);
+  });
+});
+```
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run: `npx vitest run tests/lib/images/fixtures-smoke.test.ts`
+Expected: FAIL — the new exports do not exist.
+
+- [ ] **Step 3: Implement**
+
+Append to `tests/helpers/fixtures.ts` (keep `seedTenant`/`dropTenant` exactly as they are):
+
+```ts
+import {
+  companyProfiles,
+  contentImages,
+  contentPieces,
+  imageRenders,
+  type ContentImage,
+  type ImageRender,
+  type ImageRole,
+  type VisualIdentity,
+} from "../../src/db/schema";
+import { DEFAULT_VISUAL_IDENTITY } from "../../src/lib/images/visual-identity";
+
+/**
+ * A visual identity that passes `isVisualIdentityReady` (>= 3 palette
+ * colours). Every test that needs generation to be *allowed* uses this one, so
+ * a change to the readiness rule breaks one constant, not twenty files.
+ */
+export const READY_VISUAL_IDENTITY: VisualIdentity = {
+  ...DEFAULT_VISUAL_IDENTITY,
+  palette: [
+    { hex: "#112233", role: "primary" },
+    { hex: "#445566", role: "secondary" },
+    { hex: "#ffffff", role: "background" },
+  ],
+};
+
+export async function seedCompanyProfile(
+  tenantId: string,
+  overrides: Partial<typeof companyProfiles.$inferInsert> = {}
+) {
+  const [profile] = await db
+    .insert(companyProfiles)
+    .values({ tenantId, topics: [], ...overrides })
+    .returning();
+  return profile;
+}
+
+/**
+ * Upserts the tenant's profile with a visual identity. Pass `null` for the
+ * "tenant has not set up visual identity yet" case — the row still exists, so
+ * `getOrCreateCompanyProfile` does not create a second one.
+ */
+export async function seedVisualIdentity(tenantId: string, identity: VisualIdentity | null = READY_VISUAL_IDENTITY) {
+  const existing = await db.select().from(companyProfiles).where(eq(companyProfiles.tenantId, tenantId)).limit(1);
+  if (existing.length > 0) {
+    const [updated] = await db
+      .update(companyProfiles)
+      .set({ visualIdentity: identity })
+      .where(eq(companyProfiles.tenantId, tenantId))
+      .returning();
+    return updated;
+  }
+  return seedCompanyProfile(tenantId, { visualIdentity: identity });
+}
+
+export async function seedContentPiece(
+  tenantId: string,
+  overrides: Partial<typeof contentPieces.$inferInsert> = {}
+) {
+  const [piece] = await db
+    .insert(contentPieces)
+    .values({ tenantId, type: "blog_post", title: "Test piece", body: "# Test piece\n\n## A\n\nText.", ...overrides })
+    .returning();
+  return piece;
+}
+
+// Unique per process so two images in one test never share a blob URL by
+// accident — several assertions turn on "the body's URL changed".
+let renderCounter = 0;
+
+/**
+ * Seeds a `content_images` row and (by default) one `image_renders` row wired
+ * as its `currentRenderId` with `status: "ready"` — i.e. exactly the state
+ * Plan 1's `addRender` leaves behind, without going near the model or Blob.
+ */
+export async function seedContentImage(a: {
+  tenantId: string;
+  contentPieceId?: string | null;
+  role?: ImageRole;
+  withRender?: boolean;
+  overrides?: Partial<typeof contentImages.$inferInsert>;
+  renderOverrides?: Partial<typeof imageRenders.$inferInsert>;
+}): Promise<{ image: ContentImage; render: ImageRender | null }> {
+  const role = a.role ?? "body";
+  const [image] = await db
+    .insert(contentImages)
+    .values({
+      tenantId: a.tenantId,
+      contentPieceId: a.contentPieceId ?? null,
+      role,
+      concept: "a lighthouse beam over a data grid",
+      altText: "Lighthouse beam over a grid of tiles",
+      sourceKind: "generated",
+      status: a.withRender === false ? "pending" : "ready",
+      ...a.overrides,
+    })
+    .returning();
+
+  if (a.withRender === false) return { image, render: null };
+
+  const n = ++renderCounter;
+  const [render] = await db
+    .insert(imageRenders)
+    .values({
+      imageId: image.id,
+      prompt: "FULL PROMPT",
+      blobUrl: `https://blob.example/seed-${n}.png`,
+      blobPathname: `tenants/seed/seed-${n}.png`,
+      width: role === "cover" ? 1200 : 1200,
+      height: role === "cover" ? 630 : 900,
+      bytes: 1024,
+      model: "gpt-image-2",
+      ...a.renderOverrides,
+    })
+    .returning();
+
+  const [wired] = await db
+    .update(contentImages)
+    .set({ currentRenderId: render.id })
+    .where(eq(contentImages.id, image.id))
+    .returning();
+  return { image: wired, render };
+}
+```
+
+- [ ] **Step 4: Run to verify it passes**
+
+Run: `npx vitest run tests/lib/images/fixtures-smoke.test.ts && npx tsc --noEmit`
+Expected: PASS, tsc clean.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add tests/helpers/fixtures.ts tests/lib/images/fixtures-smoke.test.ts
+git commit -m "test: shared fixtures for visual identity, pieces and content images"
 ```
 
 ---
@@ -3257,28 +3746,44 @@ npx vitest run \
   tests/lib/ai/image-model.test.ts \
   tests/lib/ai/images.test.ts \
   tests/lib/images/store.test.ts \
+  tests/lib/images/fixtures-smoke.test.ts \
   tests/lib/workspace/derive-visual-identity.test.ts \
   tests/app/company-visual-identity-actions.test.ts \
   tests/app/settings-image-policy-actions.test.ts
 ```
 
-Expected: PASS. Re-run any failing file once before believing it (shared Postgres).
+Expected: PASS. **Run this line twice** — the suite shares one Postgres and has
+no per-test truncation (`vitest.setup.ts` only points `DATABASE_URL` at the
+`_test` database; isolation is per-file tenant naming via
+`tests/helpers/fixtures.ts`). A failure that does not repeat is not yours; a
+failure that repeats is.
 
-- [ ] **Step 2: Gates**
+- [ ] **Step 2: Regression check on the files this plan changed the contract of**
+
+`recordLlmUsage`'s `database` parameter widened (Task 3) and
+`tests/helpers/fixtures.ts` gained exports (Task 10b) — both are imported
+across the suite, so run every file that touches them:
+
+```bash
+npx vitest run tests/lib/ai tests/lib/workspace tests/lib/briefs
+```
+
+Expected: PASS (twice, per above).
+
+- [ ] **Step 3: Gates**
 
 ```bash
 npx tsc --noEmit && npm run lint && npm run build
 ```
 
-Expected: clean.
+Expected: clean. `npm run typecheck` also type-checks `tests/**`
+(`tsconfig.json` includes them), so a broken test type fails here too.
 
-- [ ] **Step 3: Whole suite, twice if needed**
-
-```bash
-npm test
-```
-
-Expected: PASS; a failure in a file this plan did not touch, passing on re-run, is the known flakiness.
+> **Not a gate: `npm test`.** The whole suite against one shared Postgres is
+> documented as flaky (`docs/superpowers/plans/2026-08-13-shared-fixtures-and-selection-hook.md:29`),
+> so a red whole-suite run proves nothing and a green one proves little. Run it
+> if you like for information, but do not treat it as pass/fail for this plan —
+> Steps 1–3 are the gate.
 
 - [ ] **Step 4: Report**
 
@@ -3292,6 +3797,13 @@ Report which of `openai.image` / `openai.imageModel` exists (Task 1 Step 2), and
 
 - §1 Engine and routing — `image-model.ts` (Task 9) mirrors `model.ts`, `IMAGE_MODEL` env + default, direct `@ai-sdk/openai`; `renderImage` in `images.ts` is the single call surface using `generateImage` for both generation and image+instruction edits, and records usage. Deviation from §1's wording "compressed PNG out": per the shared contract, `renderImage` returns the model's raw PNG and callers run `compressPng` before `uploadPng` — kept so the compression pass sits next to the upload it protects.
 - §2 Visual brand guidelines — schema type + `visual_identity` column (Task 2); defaults, `compileStyleBlock`, readiness and validation (Task 4); the card with palette/preset/mood/allowText/advanced fields (Task 12); website bootstrap via `fetchPageText`'s `html` + LLM (Task 11) with the derive → prefill → confirm → save flow. Alt-text *policy* (≤125 chars, from concept) is prompt guidance for Plan 2's planner; nothing here to build. Reference images are URL inputs; file upload of references is handed to Plan 3 (`uploadImageFile`).
+  **Open gap (QA review defect 12):** Plan 3 as written never comes back for it —
+  it adds `uploadImageFile` but no task touches `visual-identity-editor.tsx`, so
+  the §2 user story *"I upload two or three of our existing blog illustrations
+  as references"* ships as "paste a public URL". Either add a follow-up task to
+  Plan 3 (a file input on the reference list calling
+  `uploadImageFile` with `role: "library"` and appending `result.url`), or amend
+  the story out of v1. Product owner's call.
 - §3 Data model — both tables, partial unique cover index, `currentRenderId` without FK, `llm_usage.image_count` (Task 2); render history cap 5, prune-with-blob-delete unless published (Task 10, `addRender`); "body images join by blob URL" is `findImageByRenderUrl`.
 - §6 Per-type settings — `policy.ts` defaults/resolver/parser (Task 5), `image_policy` column (Task 2), Content images card + `saveImagePolicy` (Task 13). Deviation: the spec names `src/lib/content/image-policy.ts`; the shared contract fixes `src/lib/images/policy.ts`, which is what every plan imports.
 - §7 Storage — `blob.ts` pathname/put/del wrappers (Task 8), `compress.ts` sharp pass (Task 7), sizes in `prompt.ts` (Task 6), env var (Task 1). No `list()` anywhere.

@@ -14,7 +14,9 @@
 
 - Run `npm install` in the worktree before anything (no node_modules).
 - Tests: vitest; node project under tests/** (real Postgres via vitest.setup.ts, uses tests/helpers/fixtures.ts), jsdom project under tests/components/**. Run a single file with `npx vitest run tests/path/file.test.ts`. The suite is flaky when run whole — run the files you touched.
-- Migrations: `npm run db:generate` after schema edits; commit the generated SQL in src/db/migrations. Then `npm run db:migrate` and `npm run db:migrate:test`. Never hand-write the SQL file.
+- Migrations: `npm run db:generate` after schema edits; commit the generated SQL in src/db/migrations. Then `npm run db:migrate` and `npm run db:migrate:test`. Never hand-write the SQL file. **This plan's migration must land at index `0065`** (Plan 1 took `0063`, Plan 2 took `0064`, Plan 3 adds none). A different index means the branch was cut before Plans 1–2 merged — rebase, delete the generated `.sql` + its `meta/*_snapshot.json` + its `_journal.json` entry, and re-generate. Never renumber by hand.
+- Test fixtures: use `seedTenant`, `dropTenant`, `seedContentPiece` and `seedContentImage` from `tests/helpers/fixtures.ts` (Plan 1 Task 10b) instead of re-writing the cover seed. Task 2 and Task 7 Step 5 both need "a `content_images` cover row whose `currentRenderId` points at an `image_renders` row"; that is exactly `seedContentImage({ tenantId, contentPieceId, role: "cover" })`.
+- Every DB-backed test file needs a tenant name **unique to that file**, and a second tenant inside a file needs its own `OTHER_NAME` — `tenants.name` has no unique constraint (`src/db/schema.ts:16-18`), so re-using one name for two tenants compiles, runs, and makes the failure message meaningless.
 - Commit after every task; message style: lowercase imperative, `feat:`/`fix:`/`test:`/`docs:` prefix, no Co-Authored-By needed.
 - **No test may reach LinkedIn, Webflow, or Vercel Blob.** Every network call is behind `vi.stubGlobal("fetch", vi.fn())` or a `vi.mock` of the client module — exactly as the existing tests under tests/lib/publishing/** and tests/lib/integrations/** already do.
 - `DbClient` (src/lib/publishing/destinations/types.ts:11) is the DB handle type every destination and lib module takes; dispatch passes a transaction handle, so never type it as `typeof db`.
@@ -260,6 +262,7 @@ import { tenants, contentPieces, contentImages, imageRenders } from "../../../sr
 import { loadCoverImagePayload } from "../../../src/lib/publishing/cover-image";
 
 const TENANT = "Cover Image Payload Test Tenant";
+const OTHER = "Cover Image Payload Other Tenant";
 
 async function seedPiece() {
   const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning();
@@ -306,6 +309,7 @@ async function seedCover(tenantId: string, contentPieceId: string, status: "read
 describe("loadCoverImagePayload", () => {
   afterEach(async () => {
     await db.delete(tenants).where(eq(tenants.name, TENANT));
+    await db.delete(tenants).where(eq(tenants.name, OTHER));
   });
 
   it("returns url/alt/width/height for a ready cover with a current render", async () => {
@@ -333,10 +337,75 @@ describe("loadCoverImagePayload", () => {
     expect(await loadCoverImagePayload(tenant.id, piece.id, db)).toBeNull();
   });
 
+  it("returns null for a cover that is `ready` but has no current render (a half-written row)", async () => {
+    // `status` and `currentRenderId` are two columns kept in step by store.ts,
+    // not one fact. A crash between `addRender`'s insert and its update, or a
+    // hand-edited row, leaves a ready cover with a null pointer — and
+    // `cover.current!.blobUrl` would throw inside the publish path, turning a
+    // cosmetic problem into a failed delivery.
+    const { tenant, piece } = await seedPiece();
+    await db
+      .insert(contentImages)
+      .values({
+        tenantId: tenant.id,
+        contentPieceId: piece.id,
+        role: "cover",
+        concept: "c",
+        altText: "a",
+        sourceKind: "generated",
+        status: "ready",
+      })
+      .returning();
+    expect(await loadCoverImagePayload(tenant.id, piece.id, db)).toBeNull();
+  });
+
+  it("passes an EMPTY alt through rather than inventing one", async () => {
+    // Uploaded covers get `altText: ""` (spec §2: decorative → empty alt,
+    // Plan 3's uploadImageFile). All three destinations must receive "" and
+    // decide for themselves — see the LinkedIn note in Task 7.
+    const { tenant, piece } = await seedPiece();
+    const [image] = await db
+      .insert(contentImages)
+      .values({ tenantId: tenant.id, contentPieceId: piece.id, role: "cover", concept: "c", altText: "", sourceKind: "uploaded", status: "ready" })
+      .returning();
+    const [render] = await db
+      .insert(imageRenders)
+      .values({ imageId: image.id, prompt: "", blobUrl: "https://blob.example/u.png", blobPathname: "p/u.png", width: 1200, height: 630, bytes: 1, model: "upload" })
+      .returning();
+    await db.update(contentImages).set({ currentRenderId: render.id }).where(eq(contentImages.id, image.id));
+
+    expect(await loadCoverImagePayload(tenant.id, piece.id, db)).toEqual({
+      url: "https://blob.example/u.png",
+      alt: "",
+      width: 1200,
+      height: 630,
+    });
+  });
+
+  it("reports the render's ACTUAL dimensions, not the requested 1200x630", async () => {
+    // gpt-image models round to their own supported sizes and `compressPng`
+    // does not re-crop (Plan 1 Task 7), so a cover can legitimately be stored
+    // square. Whatever is on the row is what receivers get — pin that so a
+    // reader of the webhook payload is never told 1200x630 about a 1024x1024
+    // file. See QA review defect 4 for the open decision.
+    const { tenant, piece } = await seedPiece();
+    const [image] = await db
+      .insert(contentImages)
+      .values({ tenantId: tenant.id, contentPieceId: piece.id, role: "cover", concept: "c", altText: "a", sourceKind: "generated", status: "ready" })
+      .returning();
+    const [render] = await db
+      .insert(imageRenders)
+      .values({ imageId: image.id, prompt: "p", blobUrl: "https://blob.example/sq.png", blobPathname: "p/sq.png", width: 1024, height: 1024, bytes: 1, model: "m" })
+      .returning();
+    await db.update(contentImages).set({ currentRenderId: render.id }).where(eq(contentImages.id, image.id));
+
+    expect(await loadCoverImagePayload(tenant.id, piece.id, db)).toMatchObject({ width: 1024, height: 1024 });
+  });
+
   it("refuses another tenant's cover", async () => {
     const { tenant, piece } = await seedPiece();
     await seedCover(tenant.id, piece.id);
-    const [other] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const [other] = await db.insert(tenants).values({ name: OTHER }).returning();
     expect(await loadCoverImagePayload(other.id, piece.id, db)).toBeNull();
   });
 });
@@ -384,7 +453,7 @@ If Plan 1's `getCoverImage` signature differs from the brief (`(tenantId, conten
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `npx vitest run tests/lib/publishing/cover-image.test.ts`
-Expected: PASS (4 tests).
+Expected: PASS (7 tests).
 
 - [ ] **Step 5: Commit**
 
@@ -656,6 +725,32 @@ Append inside `describe("buildFieldData", ...)`:
     const mapping: WebflowFieldMapping = { "main-image": { source: "coverImage" } };
     expect(buildFieldData(update, mapping, fields)).not.toHaveProperty("main-image");
   });
+
+  it("sends an empty alt as an empty string, not by dropping the key", () => {
+    // An uploaded cover has `altText: ""` (spec §2, decorative). The Image
+    // field itself is present and valid — only the alt is blank — so the key
+    // must still be written, or `findEmptyRequiredField` would report a
+    // required image field as empty when a perfectly good image exists.
+    const mapping: WebflowFieldMapping = { "main-image": { source: "coverImage" } };
+    const data = buildFieldData(update, mapping, fields, {
+      cover: { url: "https://blob.example/u.png", alt: "", width: 1200, height: 630 },
+    });
+    expect(data["main-image"]).toEqual({ url: "https://blob.example/u.png", alt: "" });
+  });
+
+  it("still maps every other source when a coverImage field is present but coverless", () => {
+    // Regression guard for an early-`continue` in the coverImage branch: an
+    // absent cover must skip ONE key, not abandon the rest of the loop.
+    const mapping: WebflowFieldMapping = {
+      name: { source: "title" },
+      "main-image": { source: "coverImage" },
+      "published-on": { source: "publishedAt" },
+    };
+    const data = buildFieldData(update, mapping, fields, { cover: null });
+    expect(data).not.toHaveProperty("main-image");
+    expect(data.name).toBe("Faster Search");
+    expect(typeof data["published-on"]).toBe("string");
+  });
 ```
 
 Append inside `describe("validateMapping", ...)`:
@@ -867,7 +962,7 @@ export function suggestMapping(fields: WebflowField[]): WebflowFieldMapping {
 - [ ] **Step 5: Run the mapping test**
 
 Run: `npx vitest run tests/lib/integrations/webflow/mapping.test.ts`
-Expected: PASS (all original + 8 new cases).
+Expected: PASS (all original + 11 new cases).
 
 - [ ] **Step 6: Typecheck**
 
@@ -1529,6 +1624,66 @@ describe("linkedin destination — native image post", () => {
     expect(createPost).not.toHaveBeenCalled();
   });
 
+  it("posts an empty altText rather than omitting media when the cover has no alt", async () => {
+    // Uploaded covers carry `altText: ""` (spec §2). Dropping the image because
+    // the alt is blank would silently downgrade the post to a link card.
+    const { database } = dbStub();
+    vi.mocked(loadCoverImagePayload).mockResolvedValue({ ...COVER, alt: "" });
+    vi.mocked(getImageStatus).mockResolvedValue("AVAILABLE");
+
+    const result = await linkedinDestination.deliver(release(), connection(), null, database, null);
+
+    expect(result.status).toBe("ok");
+    expect(vi.mocked(createPost).mock.calls[0][0].media).toEqual({ imageUrn: "urn:li:image:new", altText: "" });
+  });
+
+  it("does not attach media when the cover row is not ready — the reader returned null", async () => {
+    // The seam that enforces this is `loadCoverImagePayload` (Task 2); this
+    // pins that the destination has no second opinion about it.
+    const { database } = dbStub();
+    vi.mocked(loadCoverImagePayload).mockResolvedValue(null);
+
+    const result = await linkedinDestination.deliver(release(), connection(), null, database, null);
+
+    expect(result).toEqual({ status: "ok", externalId: "urn:li:share:1" });
+    expect(vi.mocked(createPost).mock.calls[0][0].media).toBeUndefined();
+    expect(initializeImageUpload).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("does NOT re-upload when a stored urn is still PROCESSING — it polls the stored one and gives up again", async () => {
+    // The whole point of the metadata column: a sweep that runs while LinkedIn
+    // is slow must not mint a second image on every tick.
+    const { database } = dbStub();
+    vi.mocked(getImageStatus).mockResolvedValue("PROCESSING");
+
+    const result = await linkedinDestination.deliver(release(), connection(), null, database, {
+      linkedinImageUrn: "urn:li:image:stored",
+    });
+
+    expect(result).toEqual({
+      status: "retryable",
+      error: expect.stringMatching(/still processing/i),
+      metadata: { linkedinImageUrn: "urn:li:image:stored" },
+    });
+    expect(initializeImageUpload).not.toHaveBeenCalled();
+    expect(uploadImageBytes).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("carries the urn when the POLL call itself throws a 5xx, so the retry reuses the upload", async () => {
+    // `prepareCoverImage`'s catch runs `withImageUrn(result, imageUrn)`; this
+    // is the case where `imageUrn` was assigned but the flow never reached a
+    // terminal status. Without it the retry uploads a second image and the
+    // first is orphaned on LinkedIn's side.
+    const { database } = dbStub();
+    vi.mocked(getImageStatus).mockRejectedValue(new LinkedinApiError(503, "down"));
+
+    const result = await linkedinDestination.deliver(release(), connection(), null, database, null);
+
+    expect(result).toEqual({ status: "retryable", error: "down", metadata: { linkedinImageUrn: "urn:li:image:new" } });
+  });
+
   it("still short-circuits on an existing externalId before touching the cover (post-once guard)", async () => {
     const { database } = dbStub();
     const result = await linkedinDestination.deliver(release(), connection(), "urn:li:share:existing", database, null);
@@ -1576,6 +1731,17 @@ function imagePollIntervalMs(): number {
   return Number(process.env.LINKEDIN_IMAGE_POLL_INTERVAL_MS ?? 1000);
 }
 const BLOB_FETCH_TIMEOUT_MS = 10_000;
+
+// NOTE ON WHERE THIS RUNS. `deliver` is called from inside
+// `claimAndDeliver`'s transaction, holding `SELECT ... FOR UPDATE` on the
+// delivery_attempts row for the whole call (dispatch.ts:88-153, and its
+// comment explains why the lock must span the network call). This flow adds a
+// blob download, an upload and up to 5 one-second polls to that span — call it
+// ~5-10 s of lock, up from ~1 s. That is one row of one table, and the only
+// contender is the hourly sweep, so it is acceptable; it is NOT acceptable to
+// grow the poll budget without revisiting this. If the wait ever needs to be
+// longer, return `retryable` with the URN sooner and let the sweep own the
+// wait — which is exactly what the poll budget already does.
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -1758,7 +1924,7 @@ Replace `deliver` (lines 63–119 of the original) with:
 - [ ] **Step 4: Run the destination test**
 
 Run: `npx vitest run tests/lib/publishing/linkedin-destination.test.ts`
-Expected: PASS (8 original + 8 new).
+Expected: PASS (8 original + 12 new).
 
 - [ ] **Step 5: End-to-end through dispatch: metadata persists and the sweep reuses the upload**
 
@@ -1913,18 +2079,30 @@ npx vitest run \
 
 Expected: all green on at least one of two runs with no consistent failure.
 
-- [ ] **Step 2: Whole-suite smoke + gates**
+- [ ] **Step 2: Gates**
 
 ```bash
 npm run typecheck && npm run lint && npm run build
-npm test
 ```
 
-`npm test` is flaky against the shared Postgres — a failure in a file this plan did not touch is not this plan's problem; a failure in a touched file is.
+Expected: clean. `npm run typecheck` also type-checks `tests/**`, so the
+five-argument `deliver` and the widened `DeliveryResult` are proved against
+every existing destination test here.
 
-- [ ] **Step 3: Confirm the destination order** (no change expected)
+> **Not a gate: `npm test`.** The whole suite against one shared Postgres is
+> documented as flaky (`docs/superpowers/plans/2026-08-13-shared-fixtures-and-selection-hook.md:29`),
+> so neither a red nor a green whole-suite run is evidence about this plan.
+> Step 1 (twice) plus these gates is the gate. If you run it anyway: a failure
+> in a file this plan did not touch is not this plan's problem; a failure in a
+> touched file is.
+
+- [ ] **Step 3: Confirm the destination order and the migration index** (no change expected to the first)
 
 `src/lib/publishing/dispatch.ts:12` must still read `[webhookDestination, webflowDestination, linkedinDestination]`.
+
+`ls src/db/migrations | tail -3` must show this plan's file at `0065_*.sql`, with
+Plan 2's `0064_*.sql` before it, and `meta/_journal.json`'s last entry must be
+`idx: 65`.
 
 - [ ] **Step 4: Report** — one line per destination on what a publish now sends, and whether the LinkedIn/Webflow flows were exercised only through mocks (they were; no live-API verification happened in this plan).
 
