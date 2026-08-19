@@ -44,6 +44,27 @@ export type EditorOps = {
   removeSelection: () => Promise<string>;
   /** The current full editor body as Markdown. */
   getMarkdown: () => string;
+  /**
+   * Snapshots the caret for a later `insertAtCursor`. Called from the insert
+   * surface's Generate-image button (whose surface `preventDefault`s mousedown,
+   * so the caret is still live) before the panel takes focus.
+   */
+  captureInsertPoint: () => void;
+  /**
+   * Restores the captured caret and inserts markdown there; resolves with the
+   * editor's authoritative body AFTER Lexical commits (same deferred-commit
+   * caveat as `applyEdit`). Resolves with the unchanged body when nothing was
+   * captured.
+   */
+  insertAtCursor: (markdown: string) => Promise<string>;
+  /**
+   * Points every image node whose src is `oldUrl` at `newUrl` — the render
+   * history's restore/regenerate swap (spec §5) — and resolves with the body
+   * after commit. Node-level, not setMarkdown: setMarkdown mutes onChange
+   * (see the whole-update comment in AgentEditBridge), which would leave
+   * DraftBodyEditor's hidden input stale.
+   */
+  replaceImageSrc: (oldUrl: string, newUrl: string) => Promise<string>;
 };
 
 type AgentEditState = { mode: DialogMode; excerpt: string };

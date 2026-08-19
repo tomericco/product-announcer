@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { activeEditor$, useCellValue, type MDXEditorMethods } from "@mdxeditor/editor";
+import { activeEditor$, useCellValue, ImageNode, type MDXEditorMethods } from "@mdxeditor/editor";
 import { Sparkles, Split } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -10,6 +10,7 @@ import {
   $setSelection,
   $getRoot,
   $createParagraphNode,
+  $nodesOfType,
   type LexicalEditor,
   type RangeSelection,
 } from "lexical";
@@ -28,6 +29,9 @@ function AgentEditBridge({ editorRef }: { editorRef: React.RefObject<MDXEditorMe
   const { registerOps } = useAgentEdit();
   const activeEditorRef = useRef<LexicalEditor | null>(null);
   const savedSelection = useRef<RangeSelection | null>(null);
+  // Separate from savedSelection: Ask AI's removeSelection consumes and clears
+  // that one, and an image insert must not be able to steal or lose it.
+  const savedInsertPoint = useRef<RangeSelection | null>(null);
 
   useEffect(() => {
     activeEditorRef.current = activeEditor;
@@ -133,6 +137,68 @@ function AgentEditBridge({ editorRef }: { editorRef: React.RefObject<MDXEditorMe
           });
         }),
       getMarkdown: () => editorRef.current?.getMarkdown() ?? "",
+      captureInsertPoint: () => {
+        const editor = activeEditorRef.current;
+        if (!editor) return;
+        editor.getEditorState().read(() => {
+          const sel = $getSelection();
+          savedInsertPoint.current = $isRangeSelection(sel) ? sel.clone() : null;
+        });
+      },
+      insertAtCursor: (markdown) =>
+        new Promise<string>((resolve) => {
+          const editor = activeEditorRef.current;
+          const saved = savedInsertPoint.current;
+          if (!editor || !saved) {
+            resolve(editorRef.current?.getMarkdown() ?? "");
+            return;
+          }
+          // Consume the capture: after insertMarkdown the keys it points at
+          // may not survive, so a second insert must re-capture.
+          savedInsertPoint.current = null;
+          // Same one-shot listener as applyEdit: read the markdown cell only
+          // after Lexical's deferred commit has refreshed it.
+          const unregister = editor.registerUpdateListener(() => {
+            unregister();
+            resolve(editorRef.current?.getMarkdown() ?? "");
+          });
+          // Restore the caret, then insertMarkdown$ imports the image at
+          // $getSelection() (dist/plugins/core/index.js:158-181) — it does not
+          // need DOM focus, which the panel's textarea has taken.
+          editor.update(() => {
+            $setSelection(saved.clone());
+          });
+          editorRef.current?.insertMarkdown(markdown);
+        }),
+      replaceImageSrc: (oldUrl, newUrl) =>
+        new Promise<string>((resolve) => {
+          const editor = activeEditorRef.current;
+          if (!editor) {
+            resolve(editorRef.current?.getMarkdown() ?? "");
+            return;
+          }
+          let changed = false;
+          const unregister = editor.registerUpdateListener(() => {
+            unregister();
+            resolve(editorRef.current?.getMarkdown() ?? "");
+          });
+          editor.update(() => {
+            for (const node of $nodesOfType(ImageNode)) {
+              if (node.getSrc() === oldUrl) {
+                node.setSrc(newUrl);
+                changed = true;
+              }
+            }
+          });
+          // No node matched → Lexical skips the commit and the listener would
+          // never fire; resolve now with the (unchanged) body instead of
+          // hanging the caller. `editor.update` runs its callback synchronously
+          // when called outside another update, so `changed` is settled here.
+          if (!changed) {
+            unregister();
+            resolve(editorRef.current?.getMarkdown() ?? "");
+          }
+        }),
     };
     registerOps(ops);
     return () => registerOps(null);

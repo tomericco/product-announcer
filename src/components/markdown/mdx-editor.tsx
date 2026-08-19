@@ -50,6 +50,21 @@ const CODE_BLOCK_LANGUAGES = {
 
 type SurfaceMode = "hidden" | "selection" | "insert";
 
+/**
+ * The props MDXEditor hands its `EditImageToolbar` (dist/index.d.ts:1131-1139
+ * — the interface itself is not exported, so it is restated here). A consumer
+ * replaces the default delete/settings toolbar by passing `imageToolbar`.
+ */
+export type ImageEditToolbarProps = {
+  nodeKey: string;
+  imageSource: string;
+  initialImagePath: string | null;
+  title: string;
+  alt: string;
+  width?: number | "inherit";
+  height?: number | "inherit";
+};
+
 // The toolbar host (our positioning anchor's offsetParent) and the
 // content-editable wrapper (.mdx-content) are SIBLINGS in MDXEditor's DOM
 // tree, not ancestor/descendant -- see RichTextEditor in
@@ -174,9 +189,11 @@ function useSelectionSurface(hostRef: React.RefObject<HTMLDivElement | null>) {
 function EditorSurfaces({
   realmChildren,
   selectionExtras,
+  insertExtras,
 }: {
   realmChildren?: React.ReactNode;
   selectionExtras?: React.ReactNode;
+  insertExtras?: React.ReactNode;
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const { mode, pos, selectionSurfaceRef, insertSurfaceRef } = useSelectionSurface(hostRef);
@@ -220,6 +237,7 @@ function EditorSurfaces({
       >
         <InsertImage />
         <InsertCodeBlock />
+        {insertExtras}
       </div>
     </>
   );
@@ -231,6 +249,9 @@ export default function MdxEditor({
   editorRef,
   realmChildren,
   selectionExtras,
+  insertExtras,
+  imageUploadHandler,
+  imageToolbar,
   contentEditableClassName = "min-h-[65vh]",
   placeholder = <span className="text-muted-foreground/40">Update body</span>,
   parseErrorHint = "Copy your text elsewhere before reloading the page, so a fix doesn't cost you the content.",
@@ -245,6 +266,16 @@ export default function MdxEditor({
   editorRef?: React.RefObject<MDXEditorMethods | null>;
   realmChildren?: React.ReactNode;
   selectionExtras?: React.ReactNode;
+  // Rendered in the floating insert surface (empty paragraph) after the
+  // built-in InsertImage / InsertCodeBlock buttons.
+  insertExtras?: React.ReactNode;
+  // Handed to imagePlugin: makes drag-drop, paste and the image dialog's file
+  // tab upload the file and insert the returned URL. Without it the plugin
+  // stays URL-only, as before.
+  imageUploadHandler?: (file: File) => Promise<string>;
+  // Replaces the plugin's per-image delete/settings toolbar (rendered top-right
+  // of every image while editing).
+  imageToolbar?: React.FC<ImageEditToolbarProps>;
   // Caller-supplied ADDITIONS to the content-editable element's class list.
   // The ".mdx-content" token itself is always applied internally (see below)
   // -- findContentEl() and the app's CSS both hardcode that selector, so a
@@ -290,7 +321,13 @@ export default function MdxEditor({
           linkPlugin(),
           linkDialogPlugin(),
           tablePlugin(),
-          imagePlugin(),
+          imagePlugin({
+            imageUploadHandler,
+            // imagePlugin types EditImageToolbar as `React.FC` (props {}), so a
+            // typed component needs the cast; MDXEditor calls it with the
+            // ImageEditToolbarProps shape regardless.
+            ...(imageToolbar ? { EditImageToolbar: imageToolbar as unknown as React.FC } : {}),
+          }),
           codeBlockPlugin({ defaultCodeBlockLanguage: "" }),
           codeMirrorPlugin({ codeBlockLanguages: CODE_BLOCK_LANGUAGES }),
           diffSourcePlugin({ viewMode: "rich-text" }),
@@ -298,7 +335,7 @@ export default function MdxEditor({
           toolbarPlugin({
             toolbarClassName: "mdx-toolbar-host",
             toolbarContents: () => (
-              <EditorSurfaces realmChildren={realmChildren} selectionExtras={selectionExtras} />
+              <EditorSurfaces realmChildren={realmChildren} selectionExtras={selectionExtras} insertExtras={insertExtras} />
             ),
           }),
         ]}
