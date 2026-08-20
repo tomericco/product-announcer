@@ -25,8 +25,6 @@ import {
   altFromConcept,
   editPromptHistory,
   imageSlug,
-  selectionImageConcept,
-  selectionImageLabel,
   sizeForRole,
   sliceAroundHeading,
   validateUploadFile,
@@ -187,18 +185,27 @@ export async function generateBodyImage(a: {
   const style = await loadStyle(tenantId);
   if (!style.ok) return style;
 
-  // Two different things, deliberately. `modelConcept` is the full brief the
-  // model renders from — passage, title, and any typed direction. `concept`
-  // is what the ROW records, which becomes the alt text, the blob slug and
-  // the image's label in the library: a whole quoted paragraph would make
-  // all three unreadable, so a selection with nothing typed is labelled by
-  // its opening words instead.
-  const modelConcept = selection
-    ? selectionImageConcept({ title: piece.title, selection, instruction })
-    : instruction;
-  const concept = instruction || selectionImageLabel(selection);
-
-  const altText = altFromConcept(concept);
+  // Content NEVER reaches the image model as prose. A highlighted passage
+  // goes through the concept agent first, which is what turns it into a
+  // visual subject (and which carries the non-literal directive). Quoting
+  // the passage into the image prompt instead — as this did briefly — makes
+  // the model render the quoted words INTO the picture: a paragraph of prose
+  // in a prompt is read as text to draw. The agent's output is one or two
+  // sentences of pure depiction, which is the shape an image prompt wants.
+  let concept = instruction;
+  let altText = altFromConcept(instruction);
+  if (selection) {
+    const suggestion = await suggestImageConcept({
+      tenantId,
+      title: piece.title,
+      surroundingMarkdown: selection,
+      role: "body",
+    });
+    // Anything typed still refines the agent's reading rather than replacing
+    // it — the box is additive, as it is everywhere else in this panel.
+    concept = instruction ? `${suggestion.concept} Direction: ${instruction}` : suggestion.concept;
+    altText = suggestion.altText || altFromConcept(concept);
+  }
   const image = await createImage({ tenantId, contentPieceId: piece.id, role: "body", concept, altText, sourceKind: "generated" });
   try {
     const render = await renderAndStore({
@@ -209,7 +216,7 @@ export async function generateBodyImage(a: {
       slug: imageSlug(concept),
       prompt: buildImagePrompt({
         styleBlock: style.styleBlock,
-        concept: modelConcept,
+        concept,
         role: "body",
         allowText: style.vi.allowTextInImages,
       }),

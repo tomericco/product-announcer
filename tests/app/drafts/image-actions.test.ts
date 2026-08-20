@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
 import { tenants, users, contentPieces, companyProfiles, contentImages, imageRenders, type VisualIdentity } from "../../../src/db/schema";
 import { DEFAULT_VISUAL_IDENTITY } from "../../../src/lib/images/visual-identity";
+import { NO_TEXT_CLAUSE } from "../../../src/lib/images/prompt";
 import { createImage, addRender, getImage, getCoverImage } from "../../../src/lib/images/store";
 
 const TENANT_NAME = "Image Actions Test Tenant";
@@ -133,7 +134,10 @@ describe("generateBodyImage", () => {
     expect(result.markdown).toMatch(/^!\[A rocket launching from a laptop\]\(https:\/\/blob\.example\/tenants\/.+\/body-a-rocket-launching-from-a-laptop\.png-1\)$/);
     const sent = renderImage.mock.calls[0][0];
     expect(sent.prompt).toContain("A rocket launching from a laptop.");
-    expect(sent.prompt).toMatch(/No text, letters, words, logos or watermarks/);
+    // The constant, not a copy of its wording: what matters here is that the
+    // no-text instruction reached the model, not how it happens to be phrased
+    // this week (tests/lib/images/prompt.test.ts owns the phrasing).
+    expect(sent.prompt).toContain(NO_TEXT_CLAUSE);
     expect(sent.referenceImages).toEqual([refUrl(tenant.id)]);
     const row = await getImage(tenant.id, result.imageId);
     expect(row).toMatchObject({ role: "body", sourceKind: "generated", status: "ready", contentPieceId: piece.id });

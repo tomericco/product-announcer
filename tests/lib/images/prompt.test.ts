@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildImagePrompt, IMAGE_ASPECT_RATIOS, IMAGE_SIZES, NO_TEXT_CLAUSE, NON_LITERAL_CLAUSE, NON_LITERAL_DIRECTIVE } from "../../../src/lib/images/prompt";
+import { buildImagePrompt, IMAGE_ASPECT_RATIOS, IMAGE_SIZES, NO_TEXT_CLAUSE, SPARSE_TEXT_CLAUSE, NON_LITERAL_CLAUSE, NON_LITERAL_DIRECTIVE } from "../../../src/lib/images/prompt";
 
 describe("buildImagePrompt", () => {
   it("orders concept, style block, composition, aspect, then the no-text clause for a cover", () => {
@@ -76,5 +76,27 @@ describe("the non-literal house rule", () => {
     for (const word of ["upstream", "pipeline", "velocity", "unlock", "bridge"]) {
       expect(NON_LITERAL_DIRECTIVE).toContain(word);
     }
+  });
+});
+
+describe("text guidance is never absent", () => {
+  // The regression this pins: allowing text used to mean the prompt said
+  // NOTHING about text, and a model told nothing about text fills the frame
+  // with lettering. Allowing text is tolerance, not encouragement.
+  it("always carries a text instruction, whichever way the setting is set", () => {
+    for (const role of ["cover", "body"] as const) {
+      const forbidden = buildImagePrompt({ styleBlock: "S.", concept: "c", role, allowText: false });
+      const allowed = buildImagePrompt({ styleBlock: "S.", concept: "c", role, allowText: true });
+
+      expect(forbidden).toContain(NO_TEXT_CLAUSE);
+      expect(forbidden).not.toContain(SPARSE_TEXT_CLAUSE);
+      expect(allowed).toContain(SPARSE_TEXT_CLAUSE);
+      expect(allowed).not.toContain(NO_TEXT_CLAUSE);
+    }
+  });
+
+  it("still asks for imagery over writing even when text is allowed", () => {
+    expect(SPARSE_TEXT_CLAUSE).toMatch(/no paragraphs, captions, headings or UI copy/i);
+    expect(SPARSE_TEXT_CLAUSE).toMatch(/incidental/i);
   });
 });

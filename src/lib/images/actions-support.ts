@@ -1,6 +1,5 @@
 import { slugForImage } from "@/lib/images/blob";
 import { ASPECT_TOLERANCE } from "@/lib/ai/images";
-import { NON_LITERAL_DIRECTIVE } from "@/lib/images/prompt";
 
 /**
  * Pure helpers behind the image server actions. They live here rather than
@@ -31,68 +30,6 @@ export function altFromConcept(concept: string): string {
   const capitalised = withoutPrefix.charAt(0).toUpperCase() + withoutPrefix.slice(1);
   const noTrailingStop = capitalised.replace(/[.!?]+$/, "");
   return noTrailingStop.length > 125 ? noTrailingStop.slice(0, 125).trimEnd() : noTrailingStop;
-}
-
-/** How much of a highlighted passage is worth sending as the subject. Long
- * enough for a full paragraph or two, short enough that the concept doesn't
- * drown the style block that follows it in the compiled prompt. */
-export const SELECTION_CONTEXT_LIMIT = 1200;
-
-/** Markdown that carries no meaning once the text is a prose brief for an
- * image model — image embeds especially, whose blob URLs would otherwise be
- * read as part of the subject. */
-function flattenForPrompt(markdown: string): string {
-  return markdown
-    .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
-    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
-    .replace(/^#{1,6}\s+/gm, "")
-    .replace(/[*_`>]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-/**
- * The subject an image generated FROM A SELECTION is rendered against.
- *
- * The highlighted passage is the brief and the post's title is the context
- * around it, so "generate an image from this" works with nothing typed at
- * all. Anything the user DID type is layered on top rather than replacing
- * that — it arrives last, as the direction that refines the passage.
- *
- * Returns "" only when there is genuinely nothing to depict; the caller
- * treats that as "describe what the image should show".
- */
-export function selectionImageConcept(a: { title: string; selection: string; instruction?: string }): string {
-  const passage = flattenForPrompt(a.selection).slice(0, SELECTION_CONTEXT_LIMIT).trim();
-  const instruction = a.instruction?.trim() ?? "";
-  if (!passage) return instruction;
-
-  const title = a.title.trim();
-  const context = title ? ` from the post "${title}"` : "";
-  // This brief quotes the content verbatim and goes straight to the image
-  // model — no concept agent in between to have done the translation — so it
-  // carries the house rule itself. Without it, a passage about "moving
-  // upstream" renders as an up arrow. `buildImagePrompt` appends its milder
-  // backstop too; here the raw wording is right there to be misread, so it
-  // gets the full directive.
-  const brief = `An illustration of the idea in this passage${context}: "${passage}". ${NON_LITERAL_DIRECTIVE}`;
-  return instruction ? `${brief} Direction: ${instruction}` : brief;
-}
-
-/**
- * The short human label for an image generated from a selection with nothing
- * typed. It is what the row records as its concept — the alt text, the blob
- * slug and the library caption all come off it — so it has to be the
- * passage's opening words, never the whole quoted brief.
- */
-export function selectionImageLabel(selection: string, maxChars = 80): string {
-  const flat = flattenForPrompt(selection);
-  if (flat.length <= maxChars) return flat;
-  const clipped = flat.slice(0, maxChars);
-  // Prefer a word boundary, but only when one is close enough to the end
-  // that the label doesn't lose most of its content to the trim.
-  const lastSpace = clipped.lastIndexOf(" ");
-  return `${(lastSpace > maxChars * 0.6 ? clipped.slice(0, lastSpace) : clipped).trimEnd()}…`;
 }
 
 const HEADING_LINE = /^(#{1,6})\s+(.*?)\s*#*\s*$/;

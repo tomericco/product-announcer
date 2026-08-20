@@ -28,7 +28,20 @@ export const IMAGE_ASPECT_RATIOS = {
   "1200x896": "75:56",
 } as const satisfies Record<ImageSize, `${number}:${number}`>;
 
-export const NO_TEXT_CLAUSE = "No text, letters, words, logos or watermarks.";
+export const NO_TEXT_CLAUSE =
+  "Communicate through imagery alone. No text of any kind anywhere in the image: no words, letters, numbers, labels, captions, titles, UI copy, logos or watermarks.";
+
+/**
+ * What "allow text in images" actually buys: tolerance, not encouragement.
+ * Before this existed, allowing text simply removed {@link NO_TEXT_CLAUSE}
+ * and left the prompt saying nothing about text at all — and a model given
+ * no instruction fills the frame with lettering, which is how a tenant with
+ * the setting on ended up with images that were mostly words. These are
+ * illustrations either way; the setting only decides whether a stray label
+ * is a defect or an acceptable detail.
+ */
+export const SPARSE_TEXT_CLAUSE =
+  "Communicate through imagery, not writing. No paragraphs, captions, headings or UI copy; at most an incidental word or short label, and only where the composition genuinely calls for one.";
 
 /**
  * The house rule on WHAT an image may depict, and the reason both halves of
@@ -96,7 +109,8 @@ export function buildImagePrompt(a: {
   allowText: boolean;
 }): string {
   const parts = [a.concept.trim(), NON_LITERAL_CLAUSE, a.styleBlock.trim(), COMPOSITION[a.role], ASPECT[a.role]];
-  if (!a.allowText) parts.push(NO_TEXT_CLAUSE);
+  // Always one or the other — never silence. See SPARSE_TEXT_CLAUSE.
+  parts.push(a.allowText ? SPARSE_TEXT_CLAUSE : NO_TEXT_CLAUSE);
   return parts
     .filter(Boolean)
     .join(" ")
