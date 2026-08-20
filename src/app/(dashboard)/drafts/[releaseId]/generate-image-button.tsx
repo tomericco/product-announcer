@@ -39,7 +39,9 @@ export function GenerateImageButton({
   async function insert(markdown: string) {
     const editorOps = ops.current;
     if (!editorOps) throw new Error("The editor isn't ready yet — try again in a moment.");
-    const body = await editorOps.insertAtCursor(markdown);
+    // From a selection the image gets its own paragraph after that block; from
+    // the insert surface the caret already IS an empty block of its own.
+    const body = await editorOps.insertAtCursor(markdown, { asNewBlockAfter: mode === "selection" });
     await saveDraftBody({ contentPieceId, body });
     notifySaved();
   }
@@ -75,7 +77,7 @@ export function GenerateImageButton({
                 toast.error("Highlight some text to base the image on first.");
                 return;
               }
-              editorOps.captureInsertPoint({ collapseToEnd: true });
+              editorOps.captureInsertPoint();
               setOpen({ heading: nearestHeadingAbove(), selectionMarkdown });
               return;
             }

@@ -45,17 +45,14 @@ export type EditorOps = {
   /** The current full editor body as Markdown. */
   getMarkdown: () => string;
   /**
-   * Snapshots the caret for a later `insertAtCursor`. Called from the insert
-   * surface's Generate-image button (whose surface `preventDefault`s mousedown,
-   * so the caret is still live) before the panel takes focus.
-   *
-   * `collapseToEnd` is for the SELECTION surface's Generate-image button,
-   * where the captured range is the user's highlighted text: collapsing to
-   * its end makes `insertAtCursor` place the image AFTER the selection
-   * instead of replacing it (which is what a non-collapsed range would
-   * otherwise do — see `insertAtCursor` below).
+   * Snapshots the caret (or range) for a later `insertAtCursor`. Called from
+   * the Generate-image buttons — whose surfaces `preventDefault` mousedown,
+   * so the selection is still live — before the panel takes focus. Where the
+   * insert actually lands is decided by `insertAtCursor`, not here, so the
+   * ~20s between capture and insert never leaves a half-applied edit in the
+   * document.
    */
-  captureInsertPoint: (options?: { collapseToEnd?: boolean }) => void;
+  captureInsertPoint: () => void;
   /**
    * Restores the captured caret and inserts markdown there; resolves with the
    * editor's authoritative body AFTER Lexical commits (same deferred-commit
@@ -63,8 +60,13 @@ export type EditorOps = {
    * captured. If the captured point was a non-collapsed selection rather than
    * a caret, the insert replaces that selection's content — the same
    * behavior `applyEdit` has for `"selection"` mode, not a point insert.
+   *
+   * `asNewBlockAfter` overrides that entirely: the markdown goes into a fresh
+   * paragraph appended after the top-level block the capture ended in, so a
+   * generated image lands under the paragraph it depicts rather than inline
+   * mid-sentence — and the highlighted text itself is never touched.
    */
-  insertAtCursor: (markdown: string) => Promise<string>;
+  insertAtCursor: (markdown: string, options?: { asNewBlockAfter?: boolean }) => Promise<string>;
   /**
    * Points image node(s) currently at `oldUrl` at `newUrl` — the render
    * history's restore/regenerate swap (spec §5) — and resolves with the body

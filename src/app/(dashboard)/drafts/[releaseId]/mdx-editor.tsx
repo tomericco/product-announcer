@@ -142,32 +142,15 @@ function AgentEditBridge({ editorRef }: { editorRef: React.RefObject<MDXEditorMe
           });
         }),
       getMarkdown: () => editorRef.current?.getMarkdown() ?? "",
-      captureInsertPoint: (options) => {
+      captureInsertPoint: () => {
         const editor = activeEditorRef.current;
         if (!editor) return;
         editor.getEditorState().read(() => {
           const sel = $getSelection();
-          if (!$isRangeSelection(sel)) {
-            savedInsertPoint.current = null;
-            return;
-          }
-          const captured = sel.clone();
-          if (options?.collapseToEnd && !captured.isCollapsed()) {
-            // Document-order end: for a backward selection (dragged
-            // right-to-left) that is the anchor, not the focus. Mutating the
-            // CLONE, never the live selection — `PointType.set` is a no-op
-            // for editor state in read mode (it guards on
-            // `isCurrentlyReadOnlyMode`), so this is safe inside `.read()`
-            // and leaves what the user has highlighted untouched.
-            const end = captured.isBackward() ? captured.anchor : captured.focus;
-            const [key, offset, type] = [end.key, end.offset, end.type];
-            captured.anchor.set(key, offset, type);
-            captured.focus.set(key, offset, type);
-          }
-          savedInsertPoint.current = captured;
+          savedInsertPoint.current = $isRangeSelection(sel) ? sel.clone() : null;
         });
       },
-      insertAtCursor: (markdown) =>
+      insertAtCursor: (markdown, options) =>
         new Promise<string>((resolve) => {
           const editor = activeEditorRef.current;
           const saved = savedInsertPoint.current;
@@ -188,7 +171,22 @@ function AgentEditBridge({ editorRef }: { editorRef: React.RefObject<MDXEditorMe
           // $getSelection() (dist/plugins/core/index.js:158-181) — it does not
           // need DOM focus, which the panel's textarea has taken.
           editor.update(() => {
-            $setSelection(saved.clone());
+            const restored = saved.clone();
+            $setSelection(restored);
+            if (!options?.asNewBlockAfter) return;
+            // Land the markdown in a paragraph of its OWN, after the block
+            // the capture ended in — not inline at the caret. The
+            // document-order end of a range is its focus, except when the
+            // selection was dragged backwards, where it is the anchor.
+            const end = restored.isBackward() ? restored.anchor : restored.focus;
+            const block = end.getNode().getTopLevelElement();
+            // No top-level element means the point is the root itself (an
+            // empty document); the plain caret insert below already handles
+            // that correctly.
+            if (!block) return;
+            const paragraph = $createParagraphNode();
+            block.insertAfter(paragraph);
+            paragraph.select();
           });
           editorRef.current?.insertMarkdown(markdown);
         }),

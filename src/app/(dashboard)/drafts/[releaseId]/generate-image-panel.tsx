@@ -28,9 +28,9 @@ export function GenerateImagePanel({
   /**
    * Set when opened from the SELECTION surface: the highlighted markdown the
    * image should depict. It becomes the source `suggestImagePrompt` reads
-   * instead of the whole body, and the panel suggests from it on open — the
-   * user asked for "an image of this", so arriving at a blank box and having
-   * to press Suggest would be asking them for what they already said.
+   * instead of the whole body. Nothing runs on open — suggesting costs a
+   * model call and several seconds, and a prompt that rewrites itself under
+   * the cursor is worse than an empty box.
    */
   selectionMarkdown?: string;
   /** Splices the returned markdown at the captured caret and persists. */
@@ -39,20 +39,12 @@ export function GenerateImagePanel({
 }) {
   const { ops } = useAgentEdit();
   const [prompt, setPrompt] = useState("");
-  const [busy, setBusy] = useState<"idle" | "suggesting" | "generating">(selectionMarkdown ? "suggesting" : "idle");
+  const [busy, setBusy] = useState<"idle" | "suggesting">("idle");
   const [pickerOpen, setPickerOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
     textareaRef.current?.focus();
-  }, []);
-
-  // `suggest` is intentionally not a dependency: this must run exactly once
-  // per panel (each open mounts a fresh one), and re-running on every render
-  // would spend a model call per keystroke in the textarea.
-  useEffect(() => {
-    if (selectionMarkdown) void suggest();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function suggest() {
@@ -82,20 +74,26 @@ export function GenerateImagePanel({
   async function generate() {
     const trimmed = prompt.trim();
     if (!trimmed) return;
-    setBusy("generating");
+    // Close first and let a page-level toast carry the ~20s wait: the panel
+    // is anchored to a floating surface that any click or caret move
+    // dismisses anyway, so keeping it on screen would both block the draft
+    // and be fragile. Everything below survives the unmount — the closure
+    // holds its own state, and the insert point lives in the editor bridge's
+    // ref, not in this component.
+    onClose();
+    const toastId = toast.loading("Generating image…", {
+      description: "It'll appear in your draft when it's ready.",
+    });
     try {
       const result = await generateBodyImage({ contentPieceId, prompt: trimmed });
       if (!result.ok) {
-        toast.error(result.error);
+        toast.error(result.error, { id: toastId });
         return;
       }
       await onInsert(result.markdown);
-      toast.success("Image added");
-      onClose();
+      toast.success("Image added", { id: toastId });
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Something went wrong");
-    } finally {
-      setBusy("idle");
+      toast.error(error instanceof Error ? error.message : "Something went wrong", { id: toastId });
     }
   }
 
@@ -106,9 +104,9 @@ export function GenerateImagePanel({
       // taking focus; stop it here so clicks inside the panel behave normally.
       onMouseDown={(e) => e.stopPropagation()}
       onKeyDown={(e) => {
-        // Esc always closes — while generating, closing does NOT cancel the
-        // render (the closure below finishes the insert + save on its own),
-        // the same "closing won't stop it" contract as GenerationModal.
+        // Esc closes. Generating closes the panel itself and reports through
+        // a page-level toast, so there is no in-panel progress state left for
+        // Esc to interrupt.
         if (e.key === "Escape") {
           e.stopPropagation();
           onClose();
@@ -116,53 +114,41 @@ export function GenerateImagePanel({
         if ((e.metaKey || e.ctrlKey) && e.key === "Enter") void generate();
       }}
     >
-      {busy === "generating" ? (
-        <div className="space-y-2 py-2">
-          <div className="flex items-center gap-3 text-muted-foreground">
-            <Loader2 className="size-4 animate-spin" /> Generating image…
-          </div>
-          <p className="text-xs text-muted-foreground">
-            Takes ~20 seconds. Closing won&apos;t stop it — the image appears at your cursor when it&apos;s ready.
-          </p>
-          <div className="flex justify-end">
-            <Button type="button" variant="ghost" size="sm" onClick={onClose}>
-              Close
-            </Button>
-          </div>
-        </div>
-      ) : (
-        <>
-          <div className="flex items-center gap-2 font-medium">
-            <Sparkles className="size-4" /> Generate image
-          </div>
-          <Textarea
-            ref={textareaRef}
-            rows={3}
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            placeholder="What should the image show? e.g. A magnifying glass over a grid of documents"
-            disabled={busy !== "idle"}
-          />
-          <p className="text-xs text-muted-foreground">Matches your brand style — you describe what, not how it looks.</p>
-          <div className="flex items-center gap-2">
-            <Button type="button" variant="outline" size="sm" onClick={() => void suggest()} disabled={busy !== "idle"}>
-              {busy === "suggesting" ? <Loader2 className="size-3.5 animate-spin" /> : <WandSparkles className="size-3.5" />}
-              Suggest prompt
-            </Button>
-            <Button type="button" variant="outline" size="sm" onClick={() => setPickerOpen(true)} disabled={busy !== "idle"}>
-              <Images className="size-3.5" /> From library
-            </Button>
-            <div className="ml-auto flex items-center gap-2">
-              <Button type="button" variant="ghost" size="sm" onClick={onClose} disabled={busy !== "idle"}>
-                Cancel
-              </Button>
-              <Button type="button" size="sm" onClick={() => void generate()} disabled={busy !== "idle" || !prompt.trim()}>
-                Generate
-              </Button>
-            </div>
-          </div>
-        </>
-      )}
+      <div className="flex items-center gap-2 font-medium">
+        <Sparkles className="size-4" /> Generate image
+      </div>
+      <Textarea
+        ref={textareaRef}
+        rows={3}
+        value={prompt}
+        onChange={(e) => setPrompt(e.target.value)}
+        placeholder={
+          busy === "suggesting" ? "Reading the selection…" : "What should the image show? e.g. A magnifying glass over a grid of documents"
+        }
+        disabled={busy !== "idle"}
+      />
+      <p className="text-xs text-muted-foreground">Matches your brand style — you describe what, not how it looks.</p>
+      {/* Two rows, not one: all four buttons side by side overflow the
+          panel's own width and push Generate outside it. The two ways of
+          FILLING the prompt sit together on top; the two that close the
+          panel sit together below. */}
+      <div className="flex items-center gap-2">
+        <Button type="button" variant="outline" size="sm" className="flex-1" onClick={() => void suggest()} disabled={busy !== "idle"}>
+          {busy === "suggesting" ? <Loader2 className="size-3.5 animate-spin" /> : <WandSparkles className="size-3.5" />}
+          Suggest prompt
+        </Button>
+        <Button type="button" variant="outline" size="sm" className="flex-1" onClick={() => setPickerOpen(true)} disabled={busy !== "idle"}>
+          <Images className="size-3.5" /> From library
+        </Button>
+      </div>
+      <div className="flex items-center justify-end gap-2">
+        <Button type="button" variant="ghost" size="sm" onClick={onClose} disabled={busy !== "idle"}>
+          Cancel
+        </Button>
+        <Button type="button" size="sm" onClick={() => void generate()} disabled={busy !== "idle" || !prompt.trim()}>
+          Generate
+        </Button>
+      </div>
       <LibraryPicker
         open={pickerOpen}
         onOpenChange={setPickerOpen}
