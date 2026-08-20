@@ -306,7 +306,7 @@ export async function saveWebflowMapping(formData: FormData): Promise<ActionResu
       if (source === "static") {
         mapping[field.slug] = { source: "static", value: (formData.get(`static:${field.slug}`) as string) ?? "" };
       } else {
-        mapping[field.slug] = { source: source as "title" | "body" | "slug" | "publishedAt" | "empty" };
+        mapping[field.slug] = { source: source as "title" | "body" | "slug" | "publishedAt" | "coverImage" | "empty" };
       }
     }
 

@@ -15,6 +15,11 @@ vi.mock("../../../../src/lib/credentials/encryption", () => ({
 
 import { decryptSecret } from "../../../../src/lib/credentials/encryption";
 
+// The cover reader hits Postgres for a real cover row; every case here uses
+// a plain-object piece with a non-uuid id, so mock it and drive it per test.
+vi.mock("../../../../src/lib/publishing/cover-image", () => ({ loadCoverImagePayload: vi.fn() }));
+import { loadCoverImagePayload } from "../../../../src/lib/publishing/cover-image";
+
 const SCHEMA = {
   id: "c1",
   displayName: "Blog",
@@ -23,7 +28,13 @@ const SCHEMA = {
     { id: "f1", slug: "name", displayName: "Name", type: "PlainText", isRequired: true },
     { id: "f2", slug: "slug", displayName: "Slug", type: "PlainText", isRequired: true },
     { id: "f3", slug: "post-body", displayName: "Body", type: "RichText", isRequired: false },
+    { id: "f4", slug: "main-image", displayName: "Main Image", type: "Image", isRequired: false },
   ],
+};
+
+const SCHEMA_REQUIRED_IMAGE = {
+  ...SCHEMA,
+  fields: SCHEMA.fields.map((f) => (f.slug === "main-image" ? { ...f, isRequired: true } : f)),
 };
 
 const mapping: WebflowFieldMapping = {
@@ -31,6 +42,10 @@ const mapping: WebflowFieldMapping = {
   slug: { source: "slug" },
   "post-body": { source: "body" },
 };
+
+const mappingWithCover: WebflowFieldMapping = { ...mapping, "main-image": { source: "coverImage" } };
+
+const COVER = { url: "https://blob.example/cover.png", alt: "Lighthouse over a grid", width: 1200, height: 630 };
 
 function connection(overrides: Record<string, unknown> = {}) {
   return {
@@ -75,6 +90,8 @@ describe("webflowDestination.deliver", () => {
     // "restore" has no original to fall back to) — reinstate the default
     // here so every test starts from a working decrypt.
     vi.mocked(decryptSecret).mockReturnValue("tok");
+    vi.mocked(loadCoverImagePayload).mockReset();
+    vi.mocked(loadCoverImagePayload).mockResolvedValue(null);
   });
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -350,6 +367,55 @@ describe("webflowDestination.deliver", () => {
 
     expect(result).toEqual({ status: "ok", externalId: "item9" });
     expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2);
+  });
+
+  it("sends { url, alt } for the coverImage-mapped field when the piece has a ready cover", async () => {
+    vi.mocked(loadCoverImagePayload).mockResolvedValue(COVER);
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(jsonResponse(SCHEMA))
+      .mockResolvedValueOnce(jsonResponse({ id: "item1" }, 202));
+
+    const result = await webflowDestination.deliver(update, connection({ fieldMapping: mappingWithCover }), null, db);
+
+    expect(result).toEqual({ status: "ok", externalId: "item1" });
+    const body = JSON.parse(vi.mocked(fetch).mock.calls[1][1]?.body as string);
+    expect(body.fieldData["main-image"]).toEqual({ url: "https://blob.example/cover.png", alt: "Lighthouse over a grid" });
+    expect(loadCoverImagePayload).toHaveBeenCalledWith("t1", "u1", db);
+  });
+
+  it("omits the image key (no null) when the piece has no cover and the field is optional", async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(jsonResponse(SCHEMA))
+      .mockResolvedValueOnce(jsonResponse({ id: "item1" }, 202));
+
+    const result = await webflowDestination.deliver(update, connection({ fieldMapping: mappingWithCover }), null, db);
+
+    expect(result.status).toBe("ok");
+    const body = JSON.parse(vi.mocked(fetch).mock.calls[1][1]?.body as string);
+    expect(body.fieldData).not.toHaveProperty("main-image");
+  });
+
+  it("returns a clear permanent error when a REQUIRED image field is mapped to coverImage and the piece has no cover", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(SCHEMA_REQUIRED_IMAGE));
+
+    const result = await webflowDestination.deliver(update, connection({ fieldMapping: mappingWithCover }), null, db);
+
+    expect(result).toEqual({
+      status: "permanent",
+      error: 'Webflow requires "Main Image", but the mapped value is empty.',
+    });
+    // Schema fetch only; the item write must never fire.
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not read the cover row at all when the mapping has no coverImage entry", async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(jsonResponse(SCHEMA))
+      .mockResolvedValueOnce(jsonResponse({ id: "item1" }, 202));
+
+    await webflowDestination.deliver(update, connection(), null, db);
+
+    expect(loadCoverImagePayload).not.toHaveBeenCalled();
   });
 });
 

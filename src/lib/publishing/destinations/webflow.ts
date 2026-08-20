@@ -10,6 +10,7 @@ import {
   type WebflowItemBody,
 } from "@/lib/integrations/webflow/client";
 import { buildFieldData } from "@/lib/integrations/webflow/mapping";
+import { loadCoverImagePayload } from "@/lib/publishing/cover-image";
 import { slugify, withSuffix } from "@/lib/publishing/slug";
 import type { Destination, DeliveryResult, DbClient, ContentPiece } from "./types";
 
@@ -163,6 +164,11 @@ export const webflowDestination: Destination<WebflowConnection> = {
       // deleted in Webflow since setup would otherwise 400 with no explanation.
       const collection = await getCollection(token, connection.collectionId);
 
+      // Read the cover row only when the mapping actually sends it — most
+      // collections predate cover images and shouldn't pay a query for it.
+      const wantsCover = Object.values(connection.fieldMapping).some((entry) => entry.source === "coverImage");
+      const cover = wantsCover ? await loadCoverImagePayload(piece.tenantId, piece.id, database) : null;
+
       const baseSlug = slugify(piece.title);
       let lastError: DeliveryResult | null = null;
       // Tracks genuine slug-collision retries only. Kept separate from the
@@ -171,12 +177,10 @@ export const webflowDestination: Destination<WebflowConnection> = {
       let slugAttempt = 0;
 
       while (slugAttempt < MAX_SLUG_ATTEMPTS) {
-        const fieldData = buildFieldData(
-          piece,
-          connection.fieldMapping,
-          collection.fields,
-          withSuffix(baseSlug, slugAttempt)
-        );
+        const fieldData = buildFieldData(piece, connection.fieldMapping, collection.fields, {
+          slugOverride: withSuffix(baseSlug, slugAttempt),
+          cover,
+        });
 
         const emptyRequired = findEmptyRequiredField(fieldData, collection.fields);
         if (emptyRequired) {

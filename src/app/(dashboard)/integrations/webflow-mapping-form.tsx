@@ -16,14 +16,25 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
+// "Update title"/"Update body" renamed to plain "Title"/"Body" (UX review):
+// "Update" is the pre-pivot name for a content piece, and the new "Cover
+// image" option would sit inconsistently beside it ("Update cover image"?).
+// All sources describe the piece being published; the prefix added nothing.
 const SOURCE_OPTIONS = [
-  { value: "title", label: "Update title" },
-  { value: "body", label: "Update body" },
+  { value: "title", label: "Title" },
+  { value: "body", label: "Body" },
   { value: "slug", label: "Slug" },
   { value: "publishedAt", label: "Published date" },
+  { value: "coverImage", label: "Cover image" },
   { value: "static", label: "Static value" },
   { value: "empty", label: "Leave empty" },
 ];
+
+// "Cover image" is only meaningful on a Webflow Image field (validateMapping
+// rejects it anywhere else), so don't offer it where it can't be saved.
+function optionsFor(fieldType: string) {
+  return SOURCE_OPTIONS.filter((option) => option.value !== "coverImage" || fieldType === "Image");
+}
 
 const PUBLISH_MODE_OPTIONS = [
   { value: "draft", label: "Create as draft" },
@@ -114,7 +125,7 @@ export function WebflowMappingForm({
                 <SelectValue>{labelFor(SOURCE_OPTIONS, sources[field.slug])}</SelectValue>
               </SelectTrigger>
               <SelectContent>
-                {SOURCE_OPTIONS.map((option) => (
+                {optionsFor(field.type).map((option) => (
                   <SelectItem key={option.value} value={option.value}>
                     {option.label}
                   </SelectItem>
