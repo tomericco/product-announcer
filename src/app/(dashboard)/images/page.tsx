@@ -2,7 +2,7 @@ import { and, desc, eq, isNotNull } from "drizzle-orm";
 import { db } from "@/db";
 import { contentPieces, type ImageRole, type ImageSourceKind } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
-import { listLibraryImages } from "@/lib/images/store";
+import { listImageUsages, listLibraryImages } from "@/lib/images/store";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState, EmptyStateDescription, EmptyStateTitle } from "@/components/ui/empty-state";
 import { ImageFilters } from "./image-filters";
@@ -11,6 +11,14 @@ import { GenerateDialog } from "./generate-dialog";
 
 const ROLES: readonly ImageRole[] = ["cover", "body", "library"];
 const SOURCES: readonly ImageSourceKind[] = ["generated", "uploaded"];
+
+/** `listImageUsages` returns one row per matching content_images row, so the
+ * same piece can appear twice if it references the same blob more than once
+ * (e.g. inserted at two spots in one body) — collapse to one entry per piece. */
+function dedupeByPieceId(usages: { pieceId: string; pieceTitle: string }[]): { pieceId: string; pieceTitle: string }[] {
+  const seen = new Set<string>();
+  return usages.filter((u) => (seen.has(u.pieceId) ? false : (seen.add(u.pieceId), true)));
+}
 
 export default async function ImagesPage({
   searchParams,
@@ -25,9 +33,9 @@ export default async function ImagesPage({
   const pieceId = sp.pieceId && sp.pieceId !== "all" ? sp.pieceId : undefined;
 
   const [rows, pieces, publishedRows] = await Promise.all([
-    // The library shows images of pieces past drafting, plus standalone
-    // library images (product owner decision 4, spec §5b). A draft you are
-    // still writing keeps its images in its own editor.
+    // The library shows images of every piece past "brief" (product owner
+    // decision, 2026-08-20 — see LIBRARY_HIDDEN_PIECE_STATUSES's doc
+    // comment), plus standalone library images.
     listLibraryImages(tenantId, { contentPieceId: pieceId, role, sourceKind: source }),
     db
       .select({ id: contentPieces.id, title: contentPieces.title })
@@ -45,6 +53,12 @@ export default async function ImagesPage({
   ]);
   const published = new Set(publishedRows.map((p) => p.id));
 
+  // Batched, not per-image: every piece currently showing each image
+  // (including reuses via "From library" — see listImageUsages's doc
+  // comment). Keyed by blob url, which is what the grid actually renders.
+  const urls = [...new Set(rows.map((r) => r.current?.blobUrl).filter((u): u is string => u !== undefined))];
+  const usagesByUrl = await listImageUsages(tenantId, urls);
+
   const images: LibraryImage[] = rows.map((r) => ({
     id: r.id,
     role: r.role as ImageRole,
@@ -58,6 +72,10 @@ export default async function ImagesPage({
     createdAt: r.createdAt.toISOString(),
     url: r.current?.blobUrl ?? null,
     prompt: r.current?.prompt ?? "",
+    // De-duplicated by piece: two rows in the same piece could in principle
+    // reference the same blob (e.g. inserted twice in one body), and that
+    // must still show as one usage, not two.
+    usages: dedupeByPieceId(r.current?.blobUrl ? (usagesByUrl.get(r.current.blobUrl) ?? []) : []),
   }));
 
   return (

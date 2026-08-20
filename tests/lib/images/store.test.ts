@@ -13,6 +13,7 @@ import {
   getCoverImage,
   listImages,
   listLibraryImages,
+  listImageUsages,
   deleteImage,
   findImageByRenderUrl,
 } from "../../../src/lib/images/store";
@@ -226,9 +227,12 @@ describe("getCoverImage / listImages / findImageByRenderUrl", () => {
 });
 
 describe("listLibraryImages", () => {
-  // Product owner decision 4 (2026-08-19): an image enters the library only
-  // once its piece is past drafting. That is what makes deleting from the
-  // library safe — it can never rewrite a body someone is still writing.
+  // Product owner decision, 2026-08-20 (supersedes decision 4, 2026-08-19):
+  // an image enters the library as soon as its piece is past "brief" —
+  // "brief" is the only status generation can still be actively running
+  // under (generateDraftForPiece never flips status to "draft" until the
+  // whole run, illustration pass included, is done), so a "draft"-status
+  // piece is always a finished draft, safe to show and safe to delete from.
   async function seedImageOnPieceWithStatus(tenantId: string, status: (typeof STATUSES)[number]) {
     const [piece] = await db
       .insert(contentPieces)
@@ -241,7 +245,7 @@ describe("listLibraryImages", () => {
 
   const STATUSES = ["brief", "draft", "review", "scheduled", "published", "archived"] as const;
 
-  it("excludes images of pieces still in brief or draft, and includes every later status", async () => {
+  it("excludes images of pieces still in brief, and includes every later status", async () => {
     const tenant = await seedTenant(TENANT);
     const byStatus = new Map<string, string>();
     for (const status of STATUSES) {
@@ -249,10 +253,10 @@ describe("listLibraryImages", () => {
     }
 
     const concepts = (await listLibraryImages(tenant.id)).map((i) => i.concept).sort();
-    expect(concepts).toEqual(["archived", "published", "review", "scheduled"]);
+    expect(concepts).toEqual(["archived", "draft", "published", "review", "scheduled"]);
 
-    // The editor's own listing is untouched — a draft's images stay reachable
-    // where they are being written.
+    // The editor's own listing is untouched — every status is reachable
+    // there regardless of library visibility.
     expect(await listImages(tenant.id)).toHaveLength(STATUSES.length);
     expect(byStatus.size).toBe(STATUSES.length);
   });
@@ -261,7 +265,7 @@ describe("listLibraryImages", () => {
     const tenant = await seedTenant(TENANT);
     const standalone = await createImage({ tenantId: tenant.id, contentPieceId: null, role: "library", concept: "compass", altText: "a", sourceKind: "generated" });
     await addRender(renderArgs(standalone.id, 1));
-    await seedImageOnPieceWithStatus(tenant.id, "draft");
+    await seedImageOnPieceWithStatus(tenant.id, "brief");
 
     expect((await listLibraryImages(tenant.id)).map((i) => i.id)).toEqual([standalone.id]);
   });
@@ -274,6 +278,63 @@ describe("listLibraryImages", () => {
     expect((await listLibraryImages(tenant.id, { role: "body" })).map((i) => i.id)).toEqual([published.id]);
     expect(await listLibraryImages(tenant.id, { role: "cover" })).toHaveLength(0);
     expect(await listLibraryImages(other.id)).toHaveLength(0);
+  });
+});
+
+describe("listImageUsages", () => {
+  it("returns empty for an empty url list without querying", async () => {
+    const tenant = await seedTenant(TENANT);
+    expect(await listImageUsages(tenant.id, [])).toEqual(new Map());
+  });
+
+  it("returns nothing for a url no current render points at", async () => {
+    const tenant = await seedTenant(TENANT);
+    expect(await listImageUsages(tenant.id, ["https://blob/nobody.png"])).toEqual(new Map());
+  });
+
+  it("finds every piece whose current render points at the given url — the shared-blob reuse case", async () => {
+    // setCoverFromImage / insertImageFromLibrary copy an existing render's
+    // blob fields onto a brand-new row rather than re-uploading (Finding I2)
+    // — simulated here by giving two images on two different pieces the
+    // SAME blobUrl via addRender, exactly what that copy produces.
+    const tenant = await seedTenant(TENANT);
+    const pieceA = await seedPiece(tenant.id, "Piece A");
+    const pieceB = await seedPiece(tenant.id, "Piece B");
+    const shared = "https://blob/shared.png";
+    const imageA = await createImage({ tenantId: tenant.id, contentPieceId: pieceA.id, role: "cover", concept: "c", altText: "a", sourceKind: "generated" });
+    await addRender({ ...renderArgs(imageA.id, 1), blobUrl: shared, blobPathname: "tenants/t/shared.png" });
+    const imageB = await createImage({ tenantId: tenant.id, contentPieceId: pieceB.id, role: "body", concept: "c", altText: "a", sourceKind: "generated" });
+    await addRender({ ...renderArgs(imageB.id, 2), blobUrl: shared, blobPathname: "tenants/t/shared.png" });
+
+    const usages = await listImageUsages(tenant.id, [shared]);
+    expect(usages.get(shared)?.map((u) => u.pieceId).sort()).toEqual([pieceA.id, pieceB.id].sort());
+    expect(usages.get(shared)?.map((u) => u.pieceTitle).sort()).toEqual(["Piece A", "Piece B"]);
+  });
+
+  it("reflects only the CURRENT render — a superseded url shows no usage", async () => {
+    const tenant = await seedTenant(TENANT);
+    const piece = await seedPiece(tenant.id);
+    const image = await createImage({ tenantId: tenant.id, contentPieceId: piece.id, role: "cover", concept: "c", altText: "a", sourceKind: "generated" });
+    await addRender({ ...renderArgs(image.id, 1), blobUrl: "https://blob/old.png", blobPathname: "tenants/t/old.png" });
+    await addRender({ ...renderArgs(image.id, 2), blobUrl: "https://blob/new.png", blobPathname: "tenants/t/new.png" });
+
+    expect(await listImageUsages(tenant.id, ["https://blob/old.png"])).toEqual(new Map());
+    const usages = await listImageUsages(tenant.id, ["https://blob/new.png"]);
+    expect(usages.get("https://blob/new.png")?.map((u) => u.pieceId)).toEqual([piece.id]);
+  });
+
+  it("excludes a standalone library image (no piece) and another tenant's piece", async () => {
+    const tenant = await seedTenant(TENANT);
+    const other = await seedTenant(OTHER);
+    const standalone = await createImage({ tenantId: tenant.id, contentPieceId: null, role: "library", concept: "c", altText: "a", sourceKind: "generated" });
+    await addRender({ ...renderArgs(standalone.id, 1), blobUrl: "https://blob/standalone.png", blobPathname: "tenants/t/standalone.png" });
+    const otherPiece = await seedPiece(other.id);
+    const otherImage = await createImage({ tenantId: other.id, contentPieceId: otherPiece.id, role: "cover", concept: "c", altText: "a", sourceKind: "generated" });
+    await addRender({ ...renderArgs(otherImage.id, 2), blobUrl: "https://blob/other-tenant.png", blobPathname: "tenants/o/other-tenant.png" });
+
+    expect(await listImageUsages(tenant.id, ["https://blob/standalone.png"])).toEqual(new Map());
+    // Asking tenant's own scope about the OTHER tenant's url must not leak it.
+    expect(await listImageUsages(tenant.id, ["https://blob/other-tenant.png"])).toEqual(new Map());
   });
 });
 

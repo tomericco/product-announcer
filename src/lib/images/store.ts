@@ -270,20 +270,28 @@ export async function listImages(
 
 /**
  * The piece statuses whose images are NOT in the library yet: a piece still
- * being briefed or drafted is in flight, and its images belong to the person
- * writing it (spec §5b, product owner decision 4, 2026-08-19). `contentPieces`
- * has exactly six statuses (`src/db/schema.ts:89-97`) — the other four
- * (review, scheduled, published, archived) are "completed" for this purpose.
+ * being briefed is either an empty shell or has generation actively running
+ * (`generateDraftForPiece` never flips `status` to `"draft"` until the whole
+ * run — including the illustration pass — has finished; see
+ * `src/lib/briefs/draft.ts`), so its images belong to whoever is generating
+ * it, not the library yet (spec §5b, product owner decision 4, 2026-08-19,
+ * revised 2026-08-20 to show `"draft"` too — see below). `contentPieces` has
+ * exactly six statuses (`src/db/schema.ts:89-97`).
  */
-export const LIBRARY_HIDDEN_PIECE_STATUSES = ["brief", "draft"] as const;
+export const LIBRARY_HIDDEN_PIECE_STATUSES = ["brief"] as const;
 
 /**
  * What the /images library and the "From library" picker list: standalone
  * `role: "library"` images (which have no piece and are always shown) plus the
- * images of pieces that are past drafting. Keeping in-flight drafts out is what
- * makes the library safe — deleting a library image can never mutate a body
- * someone is writing, so no library action ever has to stamp `bodyEditedAt`
- * and freeze that draft's regeneration.
+ * images of every piece past `"brief"` — which, by construction, is never
+ * mid-generation (product owner decision, 2026-08-20: a finished draft's
+ * images should be reachable from the library immediately, not only once the
+ * piece reaches review). Deleting one of these is allowed to mutate that
+ * piece's body/cover (`deleteLibraryImage`, images/actions.ts) without
+ * stamping `bodyEditedAt` — it's a cleanup write, not a hand edit, and a
+ * `"draft"`-status piece is only ever reachable for regeneration from
+ * `"brief"` (`queueGeneration`'s `status = 'brief'` guard), so there is
+ * nothing here for that stamp to protect.
  */
 export async function listLibraryImages(
   tenantId: string,
@@ -323,6 +331,46 @@ export async function deleteImage(
   await database.delete(contentImages).where(and(eq(contentImages.tenantId, tenantId), eq(contentImages.id, imageId)));
   await deleteBlobs(pathnames);
   return { ok: true };
+}
+
+/**
+ * For each of the given blob URLs, every piece whose CURRENT render — cover
+ * or body — points at that exact blob. The "shared blob" reuse mechanism
+ * (`setCoverFromImage`/`insertImageFromLibrary` copy an existing render's
+ * blob fields onto a brand-new row rather than re-uploading, per Finding I2)
+ * means one blob can be the current render of several different pieces'
+ * rows at once — this surfaces that as "used in" on the library page, so
+ * deleting a reused image doesn't quietly surprise someone whose piece
+ * still shows it (deleting one row never touches another row's body — each
+ * reuse is an independent row/lifecycle, see `unreferencedPathnames` — this
+ * is purely informational).
+ *
+ * Batched in one query keyed by url, not one lookup per image: the library
+ * page renders a whole grid at once, and doing this per-card would be an
+ * N+1 against these same two tables (same reasoning as
+ * `getCoverImagesForPieces` above).
+ */
+export async function listImageUsages(
+  tenantId: string,
+  blobUrls: string[],
+  database: DbClient = db
+): Promise<Map<string, { pieceId: string; pieceTitle: string }[]>> {
+  const usages = new Map<string, { pieceId: string; pieceTitle: string }[]>();
+  if (blobUrls.length === 0) return usages;
+
+  const rows = await database
+    .select({ pieceId: contentPieces.id, pieceTitle: contentPieces.title, blobUrl: imageRenders.blobUrl })
+    .from(contentImages)
+    .innerJoin(imageRenders, eq(imageRenders.id, contentImages.currentRenderId))
+    .innerJoin(contentPieces, eq(contentPieces.id, contentImages.contentPieceId))
+    .where(and(eq(contentImages.tenantId, tenantId), inArray(imageRenders.blobUrl, blobUrls)));
+
+  for (const row of rows) {
+    const list = usages.get(row.blobUrl) ?? [];
+    list.push({ pieceId: row.pieceId, pieceTitle: row.pieceTitle });
+    usages.set(row.blobUrl, list);
+  }
+  return usages;
 }
 
 /**

@@ -39,12 +39,22 @@ export async function deleteLibraryImage(imageId: string): Promise<{ ok: true } 
     if (piece) {
       const next = stripImageFromMarkdown(piece.body, image.renders.map((r) => r.blobUrl));
       // The dead reference still has to go, or the piece renders a 404 image.
-      // But NOTHING here stamps `bodyEditedAt` (product owner decision 4,
-      // 2026-08-19): the library only ever lists images of pieces past
-      // drafting, so this can never be a body someone is mid-way through
-      // writing — and stamping would retire that piece's Generate button for
-      // good over one deleted image. `editedBy` is left alone for the same
-      // reason: this is a cleanup write, not an authored edit.
+      // But NOTHING here stamps `bodyEditedAt`: this is a cleanup write, not
+      // an authored edit, and stamping it would retire that piece's Generate
+      // button for good over one deleted image — `bodyEditedAt` only guards
+      // eligibility for (re)generation (`queueGeneration`'s `status =
+      // 'brief'` check), which a "draft"-status piece was never eligible for
+      // anyway. `editedBy` is left alone for the same reason.
+      //
+      // A "draft"-status piece IS now library-reachable (product owner
+      // decision, 2026-08-20) and CAN be open in someone's editor right now
+      // — unlike generation, hand-editing has no lock. If they save before
+      // this write lands, their save (a full-body overwrite) wins and
+      // silently re-introduces the dead reference; if this write lands
+      // first, `revalidatePath` below refreshes a server-rendered view of
+      // that route but not an already-mounted client editor session. This
+      // is the accepted trade-off ("deleting it from the library removes it
+      // from the draft — that's ok"), not an oversight.
       if (next !== piece.body) {
         await db.update(contentPieces).set({ body: next }).where(eq(contentPieces.id, image.contentPieceId));
       }

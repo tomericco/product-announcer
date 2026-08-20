@@ -109,12 +109,17 @@ export function ImageDetail({ image, onClose }: { image: LibraryImage | null; on
         <DialogHeader>
           <DialogTitle>{image.concept || "Untitled image"}</DialogTitle>
           <DialogDescription>
-            {image.pieceTitle && image.contentPieceId ? (
+            {image.usages.length > 0 ? (
               <>
                 Used in{" "}
-                <Link href={`/drafts/${image.contentPieceId}`} className="underline">
-                  {image.pieceTitle}
-                </Link>
+                {image.usages.map((usage, i) => (
+                  <span key={usage.pieceId}>
+                    {i > 0 && (i === image.usages.length - 1 ? " and " : ", ")}
+                    <Link href={`/drafts/${usage.pieceId}`} className="underline">
+                      {usage.pieceTitle}
+                    </Link>
+                  </span>
+                ))}
                 {" · "}
               </>
             ) : null}

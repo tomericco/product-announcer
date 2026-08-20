@@ -20,6 +20,10 @@ export type LibraryImage = {
   createdAt: string;
   url: string | null;
   prompt: string;
+  /** Every piece currently showing this image (its own piece, plus any
+   * reuse via "From library") — see `listImageUsages`'s doc comment. Empty
+   * for a standalone library image nothing has reused yet. */
+  usages: { pieceId: string; pieceTitle: string }[];
 };
 
 const ROLE_LABEL: Record<ImageRole, string> = { cover: "Cover", body: "Body", library: "Library" };
@@ -52,7 +56,12 @@ export function ImageGrid({ images }: { images: LibraryImage[] }) {
                 {image.sourceKind === "uploaded" && <Badge variant="outline">Uploaded</Badge>}
                 <span className="ml-auto">{format(new Date(image.createdAt), "d MMM yyyy")}</span>
               </div>
-              {image.pieceTitle && <p className="truncate text-xs text-muted-foreground">{image.pieceTitle}</p>}
+              {image.usages.length > 0 && (
+                <p className="truncate text-xs text-muted-foreground">
+                  Used in {image.usages[0].pieceTitle}
+                  {image.usages.length > 1 ? ` +${image.usages.length - 1} more` : ""}
+                </p>
+              )}
             </button>
           </li>
         ))}
