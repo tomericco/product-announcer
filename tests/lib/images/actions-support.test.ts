@@ -12,6 +12,7 @@ import {
   SELECTION_CONTEXT_LIMIT,
   UPLOAD_MAX_BYTES,
 } from "../../../src/lib/images/actions-support";
+import { NON_LITERAL_DIRECTIVE } from "../../../src/lib/images/prompt";
 import { slugForImage, validateUploadFile as validateFromBlob } from "../../../src/lib/images/blob";
 
 describe("editPromptHistory", () => {
@@ -142,7 +143,17 @@ describe("selectionImageConcept", () => {
   it("makes the passage the brief and the post title its context", () => {
     const concept = selectionImageConcept({ title: "Shipping faster", selection: "Handoffs are where releases stall." });
 
-    expect(concept).toBe('An illustration of this passage from the post "Shipping faster": "Handoffs are where releases stall."');
+    expect(concept).toContain('from the post "Shipping faster"');
+    expect(concept).toContain('"Handoffs are where releases stall."');
+  });
+
+  it("carries the house non-literal rule itself, since nothing else translates this brief", () => {
+    // This one goes straight to the image model with the content quoted
+    // verbatim — no concept agent in between — so the rule has to travel
+    // with it, not just live in the agents.
+    const concept = selectionImageConcept({ title: "T", selection: "We moved validation upstream." });
+
+    expect(concept).toContain(NON_LITERAL_DIRECTIVE);
   });
 
   it("layers what the user typed on top of the passage rather than replacing it", () => {
@@ -164,7 +175,10 @@ describe("selectionImageConcept", () => {
   });
 
   it("omits the title clause entirely when the piece is untitled", () => {
-    expect(selectionImageConcept({ title: "  ", selection: "Some text." })).toBe('An illustration of this passage: "Some text."');
+    const concept = selectionImageConcept({ title: "  ", selection: "Some text." });
+
+    expect(concept).toContain('this passage: "Some text."');
+    expect(concept).not.toContain("from the post");
   });
 
   it("flattens markdown so a blob URL is never read as part of the subject", () => {
@@ -184,7 +198,9 @@ describe("selectionImageConcept", () => {
   it("caps a long passage so the concept can't drown the style block after it", () => {
     const concept = selectionImageConcept({ title: "T", selection: "word ".repeat(2000) });
 
-    expect(concept.length).toBeLessThan(SELECTION_CONTEXT_LIMIT + 200);
+    // The quoted passage is what's capped; the fixed directive that follows
+    // it is a known constant, so measure the variable part.
+    expect(concept.length - NON_LITERAL_DIRECTIVE.length).toBeLessThan(SELECTION_CONTEXT_LIMIT + 200);
   });
 });
 

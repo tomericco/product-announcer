@@ -3,7 +3,7 @@ import { z } from "zod";
 import { db as defaultDb } from "@/db";
 import { resolveModel, modelId } from "@/lib/ai/model";
 import { recordLlmUsage, type TokenUsage } from "@/lib/ai/llm-usage";
-import { buildImagePrompt } from "@/lib/images/prompt";
+import { buildImagePrompt, NON_LITERAL_DIRECTIVE } from "@/lib/images/prompt";
 import { listH2Headings } from "@/lib/images/splice";
 import type { DbClient } from "@/lib/publishing/destinations/types";
 
@@ -68,6 +68,7 @@ function buildSystem(args: { wantCover: boolean; bodyCap: number }): string {
     "4. CONCEPT FIRST: each concept is one or two sentences naming a concrete subject and what it is",
     '   doing — for example "three interlocking gears, one glowing, lifting a stack of documents".',
     "   No text, labels, numbers, logos or brand marks in the depiction.",
+    `   ${NON_LITERAL_DIRECTIVE}`,
     "5. ALT TEXT: one sentence, at most 125 characters, saying what the image MEANS for a reader who",
     '   cannot see it. Never start with "image of" or "illustration of". Derived from the concept,',
     "   never from style.",

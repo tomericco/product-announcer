@@ -30,6 +30,44 @@ export const IMAGE_ASPECT_RATIOS = {
 
 export const NO_TEXT_CLAUSE = "No text, letters, words, logos or watermarks.";
 
+/**
+ * The house rule on WHAT an image may depict, and the reason both halves of
+ * it live here rather than in any one caller: it has to hold for every image
+ * this product renders, for every tenant, whichever path produced the
+ * concept. Nothing about it is configurable — a tenant's visual identity
+ * decides how images LOOK (palette, medium, mood); this decides how the
+ * content is READ, which is not a matter of taste.
+ *
+ * Marketing copy is full of figures of speech — "upstream", "pipeline",
+ * "velocity", "unlock", "bridge the gap", "north star". Rendered literally
+ * they become an up arrow, a pipe, a speedometer, a padlock, a bridge: the
+ * stock-clipart look that reads as machine-made, and worse, says nothing
+ * about the product. The fix is to translate the passage into the business,
+ * product or engineering situation it is actually about, and draw THAT.
+ *
+ * Two phrasings because there are two audiences. The agents choosing a
+ * concept get {@link NON_LITERAL_DIRECTIVE}, which explains the translation
+ * and is where the real work happens. The image model gets
+ * {@link NON_LITERAL_CLAUSE} on every compiled prompt — a backstop for
+ * concepts that never passed through an agent at all (a prompt someone
+ * typed, or a highlighted passage quoted straight into the brief).
+ */
+export const NON_LITERAL_DIRECTIVE = [
+  "NEVER illustrate the wording of the content literally. Read past the vocabulary to the",
+  "business, product or engineering situation underneath, and depict that. Words like",
+  '"upstream", "pipeline", "velocity", "unlock", "bridge" or "north star" are figures of speech,',
+  "not subjects: an upward arrow, a pipe, a speedometer, a padlock, a bridge or a star is a",
+  "restatement of the word, not an idea, and reads as generic clipart. Ask what concretely",
+  "changes for a company, a team or a system, then choose an object or arrangement from the",
+  "world of software, operations and enterprise work that stands for it.",
+].join(" ");
+
+/** The compiled-prompt backstop. Deliberately milder than
+ * {@link NON_LITERAL_DIRECTIVE}: it also lands on prompts a person typed by
+ * hand, where an explicitly named subject IS the idea and must survive. */
+export const NON_LITERAL_CLAUSE =
+  "Visualise the idea behind this brief in business, product and engineering terms — not a literal picture of the words describing it.";
+
 const COMPOSITION = {
   // Platforms crop edges; keep the subject inside a center safe zone (spec §7).
   cover: "Wide hero composition, subject centered within a safe zone away from the edges, generous negative space.",
@@ -42,9 +80,14 @@ const ASPECT = {
 } as const;
 
 /**
- * The fixed template every render uses (spec §4): concept metaphor → compiled
- * style block → composition → aspect → no-text clause. The result is what gets
- * stored on the render row, so it must be a plain single-line string.
+ * The fixed template every render uses (spec §4): concept metaphor →
+ * non-literal clause → compiled style block → composition → aspect → no-text
+ * clause. The result is what gets stored on the render row, so it must be a
+ * plain single-line string.
+ *
+ * The non-literal clause sits directly after the concept, while the concept
+ * is still what the model is reading, and before the style block turns the
+ * prompt into a description of appearance.
  */
 export function buildImagePrompt(a: {
   styleBlock: string;
@@ -52,7 +95,7 @@ export function buildImagePrompt(a: {
   role: "cover" | "body";
   allowText: boolean;
 }): string {
-  const parts = [a.concept.trim(), a.styleBlock.trim(), COMPOSITION[a.role], ASPECT[a.role]];
+  const parts = [a.concept.trim(), NON_LITERAL_CLAUSE, a.styleBlock.trim(), COMPOSITION[a.role], ASPECT[a.role]];
   if (!a.allowText) parts.push(NO_TEXT_CLAUSE);
   return parts
     .filter(Boolean)

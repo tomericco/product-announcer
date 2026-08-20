@@ -1,5 +1,6 @@
 import { slugForImage } from "@/lib/images/blob";
 import { ASPECT_TOLERANCE } from "@/lib/ai/images";
+import { NON_LITERAL_DIRECTIVE } from "@/lib/images/prompt";
 
 /**
  * Pure helpers behind the image server actions. They live here rather than
@@ -68,8 +69,14 @@ export function selectionImageConcept(a: { title: string; selection: string; ins
 
   const title = a.title.trim();
   const context = title ? ` from the post "${title}"` : "";
-  const brief = `An illustration of this passage${context}: "${passage}"`;
-  return instruction ? `${brief}. Direction: ${instruction}` : brief;
+  // This brief quotes the content verbatim and goes straight to the image
+  // model — no concept agent in between to have done the translation — so it
+  // carries the house rule itself. Without it, a passage about "moving
+  // upstream" renders as an up arrow. `buildImagePrompt` appends its milder
+  // backstop too; here the raw wording is right there to be misread, so it
+  // gets the full directive.
+  const brief = `An illustration of the idea in this passage${context}: "${passage}". ${NON_LITERAL_DIRECTIVE}`;
+  return instruction ? `${brief} Direction: ${instruction}` : brief;
 }
 
 /**

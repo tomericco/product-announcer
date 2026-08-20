@@ -4,6 +4,7 @@ import { db as defaultDb } from "@/db";
 import { resolveModel, modelId } from "@/lib/ai/model";
 import { recordLlmUsage } from "@/lib/ai/llm-usage";
 import type { DbClient } from "@/lib/publishing/destinations/types";
+import { NON_LITERAL_DIRECTIVE } from "@/lib/images/prompt";
 
 export type ImageSuggestion = { concept: string; altText: string };
 
@@ -19,6 +20,7 @@ export function buildSuggestPrompt(a: { title: string; surroundingMarkdown: stri
       ? "This is the cover image for the whole piece: one visual metaphor for its main idea, composed for a wide 1.91:1 hero with the subject centered."
       : "This is a body illustration for one section: a single-concept visual metaphor for what that section is about.",
     "Describe WHAT the image shows — subject, metaphor, arrangement — in one to three sentences. Never describe style, colours, or medium; those are fixed by the brand.",
+    NON_LITERAL_DIRECTIVE,
     "The image must contain no text, letters, words, logos or UI screenshots. Do not depict real people or brands.",
     "altText: one sentence, at most 125 characters, describing the meaning (not the style), without the words 'image of'.",
   ].join(" ");
