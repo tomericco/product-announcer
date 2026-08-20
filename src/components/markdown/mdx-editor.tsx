@@ -3,7 +3,6 @@
 import "@mdxeditor/editor/style.css";
 import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
-import { HoverTooltip } from "@/components/ui/tooltip";
 import {
   MDXEditor,
   headingsPlugin,
@@ -105,6 +104,21 @@ function useSelectionSurface(hostRef: React.RefObject<HTMLDivElement | null>) {
 
   useEffect(() => {
     function update() {
+      // A panel is open inside a surface (the Generate-image panel). Its own
+      // controls take focus and can clear the editor's DOM selection
+      // outright -- pressing "Suggest prompt", which then spends a couple of
+      // seconds on a model call, did exactly that and dismissed the panel
+      // mid-request. Anchored to the surface as it is, the panel can only
+      // stay put if the surface does; nothing here may move or hide it while
+      // it is on screen. Checked BEFORE the focus test below because focus
+      // is not reliably inside the panel at every point of a click.
+      if (
+        selectionSurfaceRef.current?.querySelector(".mdx-surface-panel") ||
+        insertSurfaceRef.current?.querySelector(".mdx-surface-panel")
+      ) {
+        return;
+      }
+
       const active = document.activeElement;
       if (
         active &&
@@ -229,10 +243,11 @@ function EditorSurfaces({
         {selectionExtras}
       </div>
 
-      {/* HoverTooltip (components/ui/tooltip.tsx), not a plain
-          Tooltip/TooltipTrigger: the uncontrolled version was confirmed live
-          (2026-08-20) to open on hover but never close — see its doc comment
-          for the full story. */}
+      {/* No tooltip wrapper on these two: MDXEditor's own toolbar buttons
+          already carry its `TooltipWrap` internally. Anything WE add here
+          (`insertExtras`, `selectionExtras`) has to bring its own — see
+          GenerateImageButton, which uses that same `TooltipWrap` so a
+          custom button is indistinguishable from a built-in one. */}
       <div
         ref={insertSurfaceRef}
         className="mdx-surface mdx-surface-insert"
@@ -240,12 +255,8 @@ function EditorSurfaces({
         style={{ top: pos.top, left: pos.left }}
         onMouseDown={preserveSelection}
       >
-        <HoverTooltip content="Insert image">
-          <InsertImage />
-        </HoverTooltip>
-        <HoverTooltip content="Insert code block">
-          <InsertCodeBlock />
-        </HoverTooltip>
+        <InsertImage />
+        <InsertCodeBlock />
         {insertExtras}
       </div>
     </>
@@ -332,6 +343,14 @@ export default function MdxEditor({
           tablePlugin(),
           imagePlugin({
             imageUploadHandler,
+            // No drag handles in the editor. Width/height are a property of
+            // the render itself (every master is 1200px wide, and covers are
+            // generated at their exact shape and never cropped), and the
+            // markdown body has nowhere to record a per-instance size anyway
+            // — so a resize here would either be silently lost on save or
+            // start a second, conflicting source of truth for how big an
+            // image is.
+            disableImageResize: true,
             // imagePlugin types EditImageToolbar as `React.FC` (props {}), so a
             // typed component needs the cast; MDXEditor calls it with the
             // ImageEditToolbarProps shape regardless.

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef } from "react";
-import { activeEditor$, useCellValue, ImageNode, type MDXEditorMethods } from "@mdxeditor/editor";
+import { activeEditor$, useCellValue, ImageNode, TooltipWrap, type MDXEditorMethods } from "@mdxeditor/editor";
 import { Sparkles, Split } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -249,15 +249,19 @@ function AgentEditBridge({ editorRef }: { editorRef: React.RefObject<MDXEditorMe
 function AskAiSelectionButton() {
   const { openSelectionEdit } = useAgentEdit();
   return (
-    <button
-      type="button"
-      title="Ask for changes to the selection"
-      aria-label="Ask for changes to the selection"
-      onClick={() => openSelectionEdit()}
-      className="ml-1 flex items-center gap-1 rounded border-l border-border/60 py-0.5 pl-2 pr-1.5 text-muted-foreground transition-colors hover:text-foreground"
-    >
-      <Sparkles className="size-4" />
-    </button>
+    // MDXEditor's own TooltipWrap, matching the built-in buttons beside it —
+    // see the note in generate-image-button.tsx. `title` is gone with it: the
+    // native tooltip would otherwise show alongside this styled one.
+    <TooltipWrap title="Ask for changes to the selection">
+      <button
+        type="button"
+        aria-label="Ask for changes to the selection"
+        onClick={() => openSelectionEdit()}
+        className="ml-1 flex items-center gap-1 rounded border-l border-border/60 py-0.5 pl-2 pr-1.5 text-muted-foreground transition-colors hover:text-foreground"
+      >
+        <Sparkles className="size-4" />
+      </button>
+    </TooltipWrap>
   );
 }
 
@@ -268,17 +272,18 @@ function AskAiSelectionButton() {
 function ExtractSelectionButton() {
   const { openExtract } = useAgentEdit();
   return (
-    <button
-      type="button"
-      title="Extract as a separate update"
-      aria-label="Extract as a separate update"
-      onClick={() => {
-        if (!openExtract()) toast.error("Highlight some text to extract first.");
-      }}
-      className="flex items-center gap-1 rounded px-1.5 py-0.5 text-muted-foreground transition-colors hover:text-foreground"
-    >
-      <Split className="size-4" />
-    </button>
+    <TooltipWrap title="Extract as a separate update">
+      <button
+        type="button"
+        aria-label="Extract as a separate update"
+        onClick={() => {
+          if (!openExtract()) toast.error("Highlight some text to extract first.");
+        }}
+        className="flex items-center gap-1 rounded px-1.5 py-0.5 text-muted-foreground transition-colors hover:text-foreground"
+      >
+        <Split className="size-4" />
+      </button>
+    </TooltipWrap>
   );
 }
 

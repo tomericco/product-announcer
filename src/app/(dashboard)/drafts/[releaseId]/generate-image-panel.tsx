@@ -81,9 +81,7 @@ export function GenerateImagePanel({
     // holds its own state, and the insert point lives in the editor bridge's
     // ref, not in this component.
     onClose();
-    const toastId = toast.loading("Generating image…", {
-      description: "It'll appear in your draft when it's ready.",
-    });
+    const toastId = toast.loading("Generating image…");
     try {
       const result = await generateBodyImage({ contentPieceId, prompt: trimmed });
       if (!result.ok) {

@@ -4,7 +4,7 @@ import { useState } from "react";
 import { ImagePlus, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { nearestHeadingAbove } from "@/lib/images/nearest-heading";
-import { HoverTooltip } from "@/components/ui/tooltip";
+import { TooltipWrap } from "@mdxeditor/editor";
 import { useUnsavedChanges } from "../../unsaved-changes";
 import { useAgentEdit } from "./agent-edit-context";
 import { saveDraftBody } from "./actions";
@@ -56,10 +56,13 @@ export function GenerateImageButton({
           selection surface it's the reverse — Ask AI is the Sparkles there,
           so an image glyph is what reads as distinct. Either way the tooltip
           and aria-label carry the words.
-          HoverTooltip (components/ui/tooltip.tsx), not a plain
-          Tooltip/TooltipTrigger — see its doc comment: the uncontrolled
-          version opens on hover but never closes. */}
-      <HoverTooltip content={mode === "selection" ? "Generate an image from the selection" : "Generate image"}>
+          MDXEditor's own `TooltipWrap`, not one of this app's tooltips: it is
+          what every built-in button in these surfaces already uses, so a
+          custom button styled any other way would read as a foreign object
+          sitting in the same row. It has to render inside the editor realm
+          (it reads `editorRootElementRef$` for its portal target), which is
+          exactly where the surfaces put `insertExtras`/`selectionExtras`. */}
+      <TooltipWrap title={mode === "selection" ? "Generate an image from the selection" : "Generate image"}>
         <button
           type="button"
           aria-label={mode === "selection" ? "Generate an image from the selection" : "Generate image"}
@@ -88,7 +91,7 @@ export function GenerateImageButton({
         >
           {mode === "selection" ? <ImagePlus className="size-4" /> : <Sparkles className="size-4" />}
         </button>
-      </HoverTooltip>
+      </TooltipWrap>
       {open && (
         <GenerateImagePanel
           contentPieceId={contentPieceId}
