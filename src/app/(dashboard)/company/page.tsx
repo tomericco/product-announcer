@@ -84,7 +84,7 @@ export default async function CompanyPage({
           click, a custom persona has a Save inside it, competitors add/remove
           write immediately, and the context and guidelines cards have their
           own forms below. There is deliberately no page-level Save. */}
-      <Card>
+      <Card id="company-context">
         <CardHeader>
           <CardTitle>Company context</CardTitle>
           <CardDescription>
@@ -104,7 +104,7 @@ export default async function CompanyPage({
         </CardContent>
       </Card>
 
-      <Card>
+      <Card id="competitors">
         <CardHeader>
           <CardTitle>Competitors</CardTitle>
           <CardDescription>
@@ -118,7 +118,7 @@ export default async function CompanyPage({
         </CardContent>
       </Card>
 
-      <Card>
+      <Card id="industry-news">
         <CardHeader>
           <CardTitle>Industry news</CardTitle>
           <CardDescription>
@@ -131,7 +131,7 @@ export default async function CompanyPage({
         </CardContent>
       </Card>
 
-      <Card>
+      <Card id="industry">
         <CardHeader>
           <CardTitle>Industry</CardTitle>
           <CardDescription>Grounds updates in the language of your market — selects the writing exemplars generation draws on.</CardDescription>
@@ -148,7 +148,7 @@ export default async function CompanyPage({
         </CardContent>
       </Card>
 
-      <Card>
+      <Card id="user-personas">
         <CardHeader>
           <CardTitle>User personas</CardTitle>
           <CardDescription>Who each update is written for, and what they care about.</CardDescription>
@@ -158,7 +158,7 @@ export default async function CompanyPage({
         </CardContent>
       </Card>
 
-      <Card>
+      <Card id="derive-from-updates">
         <CardHeader>
           <CardTitle>Derive from your updates page</CardTitle>
         </CardHeader>
@@ -167,7 +167,7 @@ export default async function CompanyPage({
         </CardContent>
       </Card>
 
-      <Card>
+      <Card id="guidelines">
         <CardHeader>
           <CardTitle>Guidelines</CardTitle>
           <CardDescription>
@@ -195,7 +195,7 @@ export default async function CompanyPage({
         </CardContent>
       </Card>
 
-      <Card>
+      <Card id="visual-identity">
         <CardHeader>
           <CardTitle>Visual identity</CardTitle>
           <CardDescription>
@@ -219,7 +219,7 @@ export default async function CompanyPage({
           the Signals evidence drawer). Both routes are now redirect stubs
           pointing here — these sections reuse the same components, re-pointed,
           rather than duplicating them. */}
-      <Card>
+      <Card id="change-events">
         <CardHeader>
           <CardTitle>Change events</CardTitle>
           <CardDescription>
@@ -232,7 +232,7 @@ export default async function CompanyPage({
         </CardContent>
       </Card>
 
-      <Card>
+      <Card id="atomic-updates">
         <CardHeader>
           <CardTitle>Atomic updates</CardTitle>
           <CardDescription>

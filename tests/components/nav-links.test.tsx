@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render } from "@testing-library/react";
 
 /**
@@ -13,13 +13,16 @@ import { render } from "@testing-library/react";
  * detector for exactly that: it asserts the count lands on Board, on nothing
  * else, and not at all when there is nothing to count.
  *
- * `usePathname` is mocked because `NavLinks` reads it for the active-item
- * highlight; the value is arbitrary here — none of these assertions are about
- * which item is active.
+ * `usePathname` is mocked as a controllable fn (not a fixed value) because
+ * the Company-sections tests below need to render at different routes;
+ * everything else in the file just needs a value that isn't `/company`.
  */
-vi.mock("next/navigation", () => ({ usePathname: () => "/signals" }));
+const usePathname = vi.fn(() => "/signals");
+vi.mock("next/navigation", () => ({ usePathname: () => usePathname() }));
 
 import { NavLinks } from "../../src/app/(dashboard)/nav-links";
+
+beforeEach(() => usePathname.mockReturnValue("/signals"));
 
 // Every route in the sidebar, so "no other entry shows the count" is checked
 // against all of them rather than a hand-picked neighbour.
@@ -53,5 +56,51 @@ describe("NavLinks board count badge", () => {
 
     // The whole nav, not just Board: a zero must not surface anywhere.
     expect(container.textContent).not.toContain("0");
+  });
+});
+
+describe("NavLinks Company sections — auto expand/collapse, no independent toggle", () => {
+  function sectionsRowFor(container: HTMLElement) {
+    const companyLink = linkFor(container, "/company");
+    // Sibling of the anchor, not a descendant — :scope > excludes the icon
+    // svgs inside the anchor, which also carry aria-hidden.
+    return companyLink.parentElement!.querySelector(":scope > [aria-hidden]") as HTMLElement;
+  }
+
+  it("is collapsed when Company is not the current route", () => {
+    usePathname.mockReturnValue("/signals");
+    const { container } = render(<NavLinks boardCount={0} />);
+    expect(sectionsRowFor(container).className).toContain("grid-rows-[0fr]");
+    expect(sectionsRowFor(container).getAttribute("aria-hidden")).toBe("true");
+  });
+
+  it("is expanded when the route is exactly /company", () => {
+    usePathname.mockReturnValue("/company");
+    const { container } = render(<NavLinks boardCount={0} />);
+    expect(sectionsRowFor(container).className).toContain("grid-rows-[1fr]");
+    expect(sectionsRowFor(container).getAttribute("aria-hidden")).toBe("false");
+  });
+
+  it("has no interactive toggle control at all — nothing to click or focus independently of navigation", () => {
+    usePathname.mockReturnValue("/company");
+    const { container } = render(<NavLinks boardCount={0} />);
+    const companyLink = linkFor(container, "/company");
+    // No role="button", no tabIndex, no click handler standing in for one —
+    // the state is a pure function of the route, so there is nothing for a
+    // user to toggle independently of navigating.
+    expect(companyLink.querySelector('[role="button"]')).toBeNull();
+    const chevron = companyLink.querySelector("svg.lucide-chevron-down") as SVGElement;
+    expect(chevron, "chevron indicator should still render").toBeTruthy();
+    expect(chevron.getAttribute("aria-hidden")).toBe("true");
+  });
+
+  it("every section links into the single /company page by hash, not a separate route", () => {
+    usePathname.mockReturnValue("/company");
+    const { container } = render(<NavLinks boardCount={0} />);
+    const sectionLinks = Array.from(linkFor(container, "/company").parentElement!.querySelectorAll('a[href^="/company#"]'));
+    expect(sectionLinks.length).toBe(10);
+    for (const link of sectionLinks) {
+      expect((link as HTMLAnchorElement).getAttribute("href")).toMatch(/^\/company#/);
+    }
   });
 });
