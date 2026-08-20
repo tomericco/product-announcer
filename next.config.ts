@@ -16,6 +16,27 @@ const nextConfig: NextConfig = {
   images: {
     remotePatterns: [{ protocol: "https", hostname: "*.public.blob.vercel-storage.com", search: "" }],
   },
+  // `sharp` is external by default (it is on Next's own
+  // server-external-packages list), so the deployed function `require`s it at
+  // runtime rather than bundling it — which means file tracing has to ship
+  // its native library too. Tracing followed the JS and stopped: production
+  // 500'd on every route that transitively imports image code with
+  // "ERR_DLOPEN_FAILED: libvips-cpp.so.8.18.3: cannot open shared object
+  // file". The .so lives in a sibling package (@img/sharp-libvips-linux-x64)
+  // reached only through a platform-gated optional dependency, which is
+  // exactly the edge tracing misses.
+  //
+  // Keyed "/**" because the import is not confined to the image routes: the
+  // dashboard layout pulls in `blob.ts` for a nav count, and `blob.ts`
+  // imports a constant from `compress.ts`, which imports sharp at module
+  // scope. Every server route in the app is downstream of that.
+  //
+  // The whole @img tree, not just linux-x64: the glob is evaluated where the
+  // build runs, and naming one platform would silently trace nothing at all
+  // if that ever changes.
+  outputFileTracingIncludes: {
+    "/**": ["./node_modules/@img/**"],
+  },
   experimental: {
     // Server Actions run a CSRF check comparing the request Origin to the host.
     // Over a tunnel the browser Origin is the ngrok host, so allow it or form
