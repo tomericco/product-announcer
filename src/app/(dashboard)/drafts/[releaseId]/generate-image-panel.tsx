@@ -73,7 +73,9 @@ export function GenerateImagePanel({
 
   async function generate() {
     const trimmed = prompt.trim();
-    if (!trimmed) return;
+    // With a selection the passage itself is the brief, so an empty box is a
+    // valid ask; without one there is nothing to render from.
+    if (!trimmed && !selectionMarkdown) return;
     // Close first and let a page-level toast carry the ~20s wait: the panel
     // is anchored to a floating surface that any click or caret move
     // dismisses anyway, so keeping it on screen would both block the draft
@@ -83,7 +85,7 @@ export function GenerateImagePanel({
     onClose();
     const toastId = toast.loading("Generating image…");
     try {
-      const result = await generateBodyImage({ contentPieceId, prompt: trimmed });
+      const result = await generateBodyImage({ contentPieceId, prompt: trimmed, selection: selectionMarkdown });
       if (!result.ok) {
         toast.error(result.error, { id: toastId });
         return;
@@ -121,11 +123,19 @@ export function GenerateImagePanel({
         value={prompt}
         onChange={(e) => setPrompt(e.target.value)}
         placeholder={
-          busy === "suggesting" ? "Reading the selection…" : "What should the image show? e.g. A magnifying glass over a grid of documents"
+          busy === "suggesting"
+            ? "Reading the selection…"
+            : selectionMarkdown
+              ? "Optional — anything to steer it away from the default reading of the passage"
+              : "What should the image show? e.g. A magnifying glass over a grid of documents"
         }
         disabled={busy !== "idle"}
       />
-      <p className="text-xs text-muted-foreground">Matches your brand style — you describe what, not how it looks.</p>
+      <p className="text-xs text-muted-foreground">
+        {selectionMarkdown
+          ? "Draws on the highlighted text and the post title. Matches your brand style."
+          : "Matches your brand style — you describe what, not how it looks."}
+      </p>
       {/* Two rows, not one: all four buttons side by side overflow the
           panel's own width and push Generate outside it. The two ways of
           FILLING the prompt sit together on top; the two that close the
@@ -143,7 +153,12 @@ export function GenerateImagePanel({
         <Button type="button" variant="ghost" size="sm" onClick={onClose} disabled={busy !== "idle"}>
           Cancel
         </Button>
-        <Button type="button" size="sm" onClick={() => void generate()} disabled={busy !== "idle" || !prompt.trim()}>
+        <Button
+          type="button"
+          size="sm"
+          onClick={() => void generate()}
+          disabled={busy !== "idle" || (!prompt.trim() && !selectionMarkdown)}
+        >
           Generate
         </Button>
       </div>

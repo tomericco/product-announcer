@@ -7,6 +7,9 @@ import {
   stripImageFromMarkdown,
   imageSlug,
   sizeForRole,
+  selectionImageConcept,
+  selectionImageLabel,
+  SELECTION_CONTEXT_LIMIT,
   UPLOAD_MAX_BYTES,
 } from "../../../src/lib/images/actions-support";
 import { slugForImage, validateUploadFile as validateFromBlob } from "../../../src/lib/images/blob";
@@ -132,5 +135,81 @@ describe("imageSlug and sizeForRole", () => {
     expect(sizeForRole("cover")).toBe("1200x624");
     expect(sizeForRole("body")).toBe("1200x896");
     expect(sizeForRole("library")).toBe("1200x896");
+  });
+});
+
+describe("selectionImageConcept", () => {
+  it("makes the passage the brief and the post title its context", () => {
+    const concept = selectionImageConcept({ title: "Shipping faster", selection: "Handoffs are where releases stall." });
+
+    expect(concept).toBe('An illustration of this passage from the post "Shipping faster": "Handoffs are where releases stall."');
+  });
+
+  it("layers what the user typed on top of the passage rather than replacing it", () => {
+    // The whole point of the default: typing a direction refines the passage,
+    // it does not become the entire brief.
+    const concept = selectionImageConcept({
+      title: "Shipping faster",
+      selection: "Handoffs are where releases stall.",
+      instruction: "show it as a relay race",
+    });
+
+    expect(concept).toContain("Handoffs are where releases stall.");
+    expect(concept).toContain("Direction: show it as a relay race");
+  });
+
+  it("falls back to the typed instruction alone when there is no passage", () => {
+    expect(selectionImageConcept({ title: "T", selection: "   ", instruction: "a lighthouse" })).toBe("a lighthouse");
+    expect(selectionImageConcept({ title: "T", selection: "" })).toBe("");
+  });
+
+  it("omits the title clause entirely when the piece is untitled", () => {
+    expect(selectionImageConcept({ title: "  ", selection: "Some text." })).toBe('An illustration of this passage: "Some text."');
+  });
+
+  it("flattens markdown so a blob URL is never read as part of the subject", () => {
+    const concept = selectionImageConcept({
+      title: "T",
+      selection: "## A heading\n\n![alt](https://blob.example/x.png)\n\nSee **the [docs](https://example.com/docs)**.",
+    });
+
+    expect(concept).not.toContain("blob.example");
+    expect(concept).not.toContain("https://example.com/docs");
+    expect(concept).not.toContain("#");
+    expect(concept).not.toContain("**");
+    // The link's own words survive; only its target is dropped.
+    expect(concept).toContain("See the docs.");
+  });
+
+  it("caps a long passage so the concept can't drown the style block after it", () => {
+    const concept = selectionImageConcept({ title: "T", selection: "word ".repeat(2000) });
+
+    expect(concept.length).toBeLessThan(SELECTION_CONTEXT_LIMIT + 200);
+  });
+});
+
+describe("selectionImageLabel", () => {
+  it("keeps a short passage whole", () => {
+    expect(selectionImageLabel("Handoffs are where releases stall.")).toBe("Handoffs are where releases stall.");
+  });
+
+  it("clips a long passage at a word boundary and marks the trim", () => {
+    const label = selectionImageLabel("word ".repeat(50));
+
+    expect(label.endsWith("…")).toBe(true);
+    expect(label.length).toBeLessThanOrEqual(81);
+    expect(label).not.toMatch(/wor…$/); // clipped between words, not mid-word
+  });
+
+  it("clips mid-word rather than losing most of the label to a single long token", () => {
+    // No space anywhere near the end: a word-boundary trim would throw away
+    // almost everything, so the raw clip wins.
+    const label = selectionImageLabel(`short ${"x".repeat(200)}`);
+
+    expect(label.length).toBe(81);
+  });
+
+  it("flattens markdown the same way the concept does", () => {
+    expect(selectionImageLabel("## Heading\n\n**Bold** text")).toBe("Heading Bold text");
   });
 });

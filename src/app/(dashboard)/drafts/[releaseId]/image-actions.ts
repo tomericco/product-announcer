@@ -25,6 +25,8 @@ import {
   altFromConcept,
   editPromptHistory,
   imageSlug,
+  selectionImageConcept,
+  selectionImageLabel,
   sizeForRole,
   sliceAroundHeading,
   validateUploadFile,
@@ -164,6 +166,13 @@ export async function generateBodyImage(a: {
   contentPieceId: string;
   prompt: string;
   concept?: string;
+  /**
+   * The highlighted passage, when this came from the selection surface. It
+   * becomes the subject the image is rendered against — with the post title
+   * as context — and `prompt` is then a refinement layered on top rather
+   * than the whole brief, so generating with nothing typed still works.
+   */
+  selection?: string;
 }): Promise<{ ok: true; markdown: string; imageId: string } | { ok: false; error: string }> {
   const session = await requireSession();
   const tenantId = session.user.tenantId;
@@ -172,10 +181,22 @@ export async function generateBodyImage(a: {
   // `saveDraftBody` will then refuse to persist (mirrors actions.ts:74-76).
   assertDraftEditable(piece);
 
-  const concept = (a.concept ?? a.prompt).trim();
-  if (!concept) return { ok: false, error: "Describe what the image should show." };
+  const instruction = (a.concept ?? a.prompt).trim();
+  const selection = a.selection?.trim() ?? "";
+  if (!instruction && !selection) return { ok: false, error: "Describe what the image should show." };
   const style = await loadStyle(tenantId);
   if (!style.ok) return style;
+
+  // Two different things, deliberately. `modelConcept` is the full brief the
+  // model renders from — passage, title, and any typed direction. `concept`
+  // is what the ROW records, which becomes the alt text, the blob slug and
+  // the image's label in the library: a whole quoted paragraph would make
+  // all three unreadable, so a selection with nothing typed is labelled by
+  // its opening words instead.
+  const modelConcept = selection
+    ? selectionImageConcept({ title: piece.title, selection, instruction })
+    : instruction;
+  const concept = instruction || selectionImageLabel(selection);
 
   const altText = altFromConcept(concept);
   const image = await createImage({ tenantId, contentPieceId: piece.id, role: "body", concept, altText, sourceKind: "generated" });
@@ -186,7 +207,12 @@ export async function generateBodyImage(a: {
       contentPieceId: piece.id,
       role: "body",
       slug: imageSlug(concept),
-      prompt: buildImagePrompt({ styleBlock: style.styleBlock, concept, role: "body", allowText: style.vi.allowTextInImages }),
+      prompt: buildImagePrompt({
+        styleBlock: style.styleBlock,
+        concept: modelConcept,
+        role: "body",
+        allowText: style.vi.allowTextInImages,
+      }),
       size: sizeForRole("body"),
       referenceImages: await bodyReferences(tenantId, piece.id, style.vi),
     });
