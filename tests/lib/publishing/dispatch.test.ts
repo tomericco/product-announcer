@@ -82,8 +82,10 @@ describe("dispatch", () => {
     // directly) so the legacy composition column can't silently reappear here.
     const payload = JSON.parse((call[1] as RequestInit).body as string);
     expect(Object.keys(payload).sort()).toEqual(
-      ["body", "createdAt", "id", "publishedAt", "status", "tenantId", "title"].sort()
+      ["body", "coverImage", "createdAt", "id", "publishedAt", "status", "tenantId", "title"].sort()
     );
+    // The seeded piece has no cover row: the key is present, the value null.
+    expect(payload.coverImage).toBeNull();
 
     const [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.contentPieceId, update.id));
     expect(delivery.status).toBe("success");

@@ -29,7 +29,11 @@ export function WebhookConfigForm({ config }: { config: { url: string; active: b
   return (
     <form action={handleSave} className="space-y-4">
       <p className="text-sm text-muted-foreground">
-        Send every published release to your own endpoint.
+        Send every published piece to your own endpoint as JSON: <code>id</code>, <code>title</code>,{" "}
+        <code>body</code> (markdown with absolute image URLs), <code>status</code>, <code>createdAt</code>,{" "}
+        <code>publishedAt</code>, and <code>coverImage</code> (<code>{"{ url, alt, width, height }"}</code> or{" "}
+        <code>null</code>). Image URLs are stable and safe to hotlink. Deliveries are signed with{" "}
+        <code>x-product-announcer-signature</code> when a secret is set.
       </p>
       <div className="space-y-2">
         <Label htmlFor="url">URL</Label>

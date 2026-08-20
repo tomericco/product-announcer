@@ -2,6 +2,7 @@ import { createHmac } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { webhookConfigs } from "@/db/schema";
 import { decryptSecret } from "@/lib/credentials/encryption";
+import { loadCoverImagePayload, type CoverImagePayload } from "@/lib/publishing/cover-image";
 import type { Destination, DeliveryResult, DbClient, ContentPiece } from "./types";
 
 const DELIVERY_TIMEOUT_MS = 5000;
@@ -12,15 +13,21 @@ function signPayload(secret: string, payload: string): string {
   return `sha256=${createHmac("sha256", secret).update(payload).digest("hex")}`;
 }
 
-function buildPayload(piece: ContentPiece) {
+function buildPayload(piece: ContentPiece, coverImage: CoverImagePayload | null) {
   return {
     id: piece.id,
     tenantId: piece.tenantId,
     title: piece.title,
+    // Markdown. Body images are `![alt](https://…)` with absolute, stable,
+    // hotlinkable Blob URLs — receivers may embed them directly.
     body: piece.body,
     status: piece.status,
     createdAt: piece.createdAt,
     publishedAt: piece.publishedAt,
+    // The cover as a structured field (JSON Feed 1.1's `image` shape, spec
+    // §8): null when the piece has no ready cover. Additive — every earlier
+    // key keeps its meaning.
+    coverImage,
   };
 }
 
@@ -37,13 +44,12 @@ export const webhookDestination: Destination<WebhookConfig> = {
     return config ?? null;
   },
 
-  // `externalId` and `database` are part of the `Destination` interface
-  // (webflow needs `database` to record `needs_reauth`), but webhook
-  // delivery has no notion of an external id and no DB write of its own.
-  // `metadata` is likewise part of the interface (LinkedIn's cross-attempt
-  // state) but webhook keeps none, so the parameter is simply omitted here.
+  // `externalId` is part of the `Destination` interface (webflow updates an
+  // existing CMS item by it), but webhook delivery has no notion of an
+  // external id. `database` is used only to read the cover row.
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  async deliver(piece, config, _externalId, _database): Promise<DeliveryResult> {
+  async deliver(piece, config, _externalId, database): Promise<DeliveryResult> {
+    const coverImage = await loadCoverImagePayload(piece.tenantId, piece.id, database);
     // A secret is optional. With one, sign the body (HMAC) and, on a decrypt
     // failure (rotated/misconfigured CREDENTIALS_ENCRYPTION_KEY), fail
     // permanently as a config fault — retrying can't help, and it must not be
@@ -51,7 +57,7 @@ export const webhookDestination: Destination<WebhookConfig> = {
     // fetch's try block so a decrypt failure is never caught there and
     // misclassified as retryable. Without a secret, deliver unsigned: no
     // signature header at all.
-    const body = JSON.stringify(buildPayload(piece));
+    const body = JSON.stringify(buildPayload(piece, coverImage));
     let signature: string | null = null;
     if (config.secretCiphertext && config.secretIv && config.secretAuthTag) {
       let secret: string;
