@@ -6,6 +6,9 @@ import {
   listAdminOrganizations,
   createPost,
   escapeLittleText,
+  initializeImageUpload,
+  uploadImageBytes,
+  getImageStatus,
   LinkedinApiError,
 } from "../../../src/lib/integrations/linkedin/client";
 
@@ -98,5 +101,80 @@ describe("linkedin client", () => {
     const [, init] = mockFetch.mock.calls[0]!;
     const body = JSON.parse((init as RequestInit).body as string) as { commentary: string };
     expect(body.commentary).toBe("Ship it \\(v2\\) \\#launch");
+  });
+
+  describe("images api", () => {
+    it("initializeImageUpload posts the owner wrapper and returns uploadUrl + image urn", async () => {
+      vi.mocked(fetch).mockResolvedValue(
+        jsonResponse({ value: { uploadUrl: "https://media.example/upload/1", image: "urn:li:image:abc", uploadUrlExpiresAt: 1 } })
+      );
+      const res = await initializeImageUpload({ accessToken: "at", ownerUrn: "urn:li:organization:1" });
+      expect(res).toEqual({ uploadUrl: "https://media.example/upload/1", imageUrn: "urn:li:image:abc" });
+      const [url, init] = vi.mocked(fetch).mock.calls[0]!;
+      expect(url).toBe("https://api.linkedin.com/rest/images?action=initializeUpload");
+      expect((init as RequestInit).method).toBe("POST");
+      expect(JSON.parse((init as RequestInit).body as string)).toEqual({
+        initializeUploadRequest: { owner: "urn:li:organization:1" },
+      });
+      const headers = (init as RequestInit).headers as Record<string, string>;
+      expect(headers["LinkedIn-Version"]).toBeDefined();
+      expect(headers["X-Restli-Protocol-Version"]).toBe("2.0.0");
+    });
+
+    it("uploadImageBytes PUTs the bytes to the upload url as octet-stream with the bearer token", async () => {
+      vi.mocked(fetch).mockResolvedValue(new Response(null, { status: 201 }));
+      const bytes = new Uint8Array([137, 80, 78, 71]);
+      await uploadImageBytes({ uploadUrl: "https://media.example/upload/1", bytes, accessToken: "at" });
+      const [url, init] = vi.mocked(fetch).mock.calls[0]!;
+      expect(url).toBe("https://media.example/upload/1");
+      expect((init as RequestInit).method).toBe("PUT");
+      const headers = (init as RequestInit).headers as Record<string, string>;
+      expect(headers.Authorization).toBe("Bearer at");
+      expect(headers["content-type"]).toBe("application/octet-stream");
+      expect((init as RequestInit).body).toBe(bytes);
+    });
+
+    it("uploadImageBytes throws LinkedinApiError on a non-2xx", async () => {
+      vi.mocked(fetch).mockResolvedValue(new Response("nope", { status: 500 }));
+      await expect(
+        uploadImageBytes({ uploadUrl: "https://media.example/upload/1", bytes: new Uint8Array(), accessToken: "at" })
+      ).rejects.toMatchObject({ status: 500 });
+    });
+
+    it("getImageStatus GETs the url-encoded urn and maps the status", async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ id: "urn:li:image:abc", status: "AVAILABLE" }));
+      expect(await getImageStatus({ accessToken: "at", imageUrn: "urn:li:image:abc" })).toBe("AVAILABLE");
+      expect(vi.mocked(fetch).mock.calls[0]![0]).toBe("https://api.linkedin.com/rest/images/urn%3Ali%3Aimage%3Aabc");
+
+      vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ status: "FAILED" }));
+      expect(await getImageStatus({ accessToken: "at", imageUrn: "urn:li:image:abc" })).toBe("FAILED");
+
+      // WAITING_UPLOAD / PROCESSING / anything unknown → still processing.
+      vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ status: "WAITING_UPLOAD" }));
+      expect(await getImageStatus({ accessToken: "at", imageUrn: "urn:li:image:abc" })).toBe("PROCESSING");
+    });
+  });
+
+  it("createPost with media sends content.media { id, altText } and keeps the commentary", async () => {
+    const mockFetch = vi.mocked(fetch);
+    mockFetch.mockResolvedValue(new Response(null, { status: 201, headers: { "x-restli-id": "urn:li:share:7" } }));
+    const res = await createPost({
+      accessToken: "at",
+      authorUrn: "urn:li:organization:1",
+      commentary: "Look",
+      media: { imageUrn: "urn:li:image:abc", altText: "Lighthouse over a grid" },
+    });
+    expect(res.postUrn).toBe("urn:li:share:7");
+    const body = JSON.parse((mockFetch.mock.calls[0]![1] as RequestInit).body as string);
+    expect(body.content).toEqual({ media: { id: "urn:li:image:abc", altText: "Lighthouse over a grid" } });
+    expect(body.commentary).toBe("Look");
+  });
+
+  it("createPost without media sends no content key (text + link post exactly as before)", async () => {
+    const mockFetch = vi.mocked(fetch);
+    mockFetch.mockResolvedValue(new Response(null, { status: 201, headers: { "x-restli-id": "urn:li:share:8" } }));
+    await createPost({ accessToken: "at", authorUrn: "urn:li:organization:1", commentary: "hi" });
+    const body = JSON.parse((mockFetch.mock.calls[0]![1] as RequestInit).body as string);
+    expect(body).not.toHaveProperty("content");
   });
 });

@@ -153,6 +153,66 @@ export async function listAdminOrganizations(accessToken: string): Promise<Linke
   return orgs;
 }
 
+// ---- Images API (native image posts, spec §8) -------------------------------
+// Three-step upload: initialize (get an upload URL + image URN), PUT the bytes,
+// then poll the URN until LinkedIn has processed it. The URN is what a post
+// references. Same versioned-REST headers and same w_organization_social scope
+// as createPost — no re-auth.
+
+export type LinkedinImageStatus = "PROCESSING" | "AVAILABLE" | "FAILED";
+
+export async function initializeImageUpload(args: {
+  accessToken: string;
+  ownerUrn: string;
+}): Promise<{ uploadUrl: string; imageUrn: string }> {
+  const response = await restRequest(args.accessToken, "/rest/images?action=initializeUpload", {
+    method: "POST",
+    body: JSON.stringify({ initializeUploadRequest: { owner: args.ownerUrn } }),
+  });
+  const data = (await response.json()) as { value?: { uploadUrl?: string; image?: string } };
+  if (!data.value?.uploadUrl || !data.value.image) {
+    throw new LinkedinApiError(response.status, "LinkedIn initializeUpload returned no uploadUrl/image.");
+  }
+  return { uploadUrl: data.value.uploadUrl, imageUrn: data.value.image };
+}
+
+// The upload URL is an absolute LinkedIn media-host URL, not an api.linkedin.com
+// path, so it does not go through restRequest. Same bearer token; raw bytes.
+// Timeouts stay plain Errors (retryable) for the same reason as restRequest.
+export async function uploadImageBytes(args: { uploadUrl: string; bytes: Uint8Array; accessToken: string }): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetch(args.uploadUrl, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${args.accessToken}`, "content-type": "application/octet-stream" },
+      // Cast needed because the bare `Uint8Array` param type (as required by
+      // the exported interface) widens to Uint8Array<ArrayBufferLike>, which
+      // lib.dom.d.ts's BufferSource narrows to Uint8Array<ArrayBuffer> only.
+      // Runtime behavior is unaffected — fetch accepts any Uint8Array as body.
+      body: args.bytes as BodyInit,
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+  } catch (error) {
+    const name = (error as { name?: string } | undefined)?.name;
+    if (name === "TimeoutError" || name === "AbortError") {
+      throw new Error(`LinkedIn image upload timed out after ${REQUEST_TIMEOUT_MS}ms`);
+    }
+    throw error;
+  }
+  if (!response.ok) {
+    throw new LinkedinApiError(response.status, `LinkedIn image upload failed: HTTP ${response.status}`);
+  }
+}
+
+export async function getImageStatus(args: { accessToken: string; imageUrn: string }): Promise<LinkedinImageStatus> {
+  const response = await restRequest(args.accessToken, `/rest/images/${encodeURIComponent(args.imageUrn)}`);
+  const data = (await response.json()) as { status?: string };
+  if (data.status === "AVAILABLE") return "AVAILABLE";
+  if (data.status === "FAILED") return "FAILED";
+  // PROCESSING, WAITING_UPLOAD, or anything LinkedIn adds later: not ready yet.
+  return "PROCESSING";
+}
+
 // LinkedIn Posts API "commentary" is little-text format: these characters must
 // be backslash-escaped to render literally, else the post 422s or misrenders.
 // Backslash MUST be escaped first so we don't re-escape escapes we just added.
@@ -165,6 +225,11 @@ export async function createPost(args: {
   accessToken: string;
   authorUrn: string;
   commentary: string;
+  // When set, the post carries this image natively (Posts API `content.media`)
+  // — a larger card than a link preview, shown instead of the link's og:image.
+  // The URN comes from initializeImageUpload + uploadImageBytes and must be
+  // AVAILABLE (getImageStatus) before posting.
+  media?: { imageUrn: string; altText: string };
 }): Promise<{ postUrn: string }> {
   const response = await restRequest(args.accessToken, "/rest/posts", {
     method: "POST",
@@ -173,6 +238,7 @@ export async function createPost(args: {
       commentary: escapeLittleText(args.commentary),
       visibility: "PUBLIC",
       distribution: { feedDistribution: "MAIN_FEED", targetEntities: [], thirdPartyDistributionChannels: [] },
+      ...(args.media ? { content: { media: { id: args.media.imageUrn, altText: args.media.altText } } } : {}),
       lifecycleState: "PUBLISHED",
       isReshareDisabledByAuthor: false,
     }),
