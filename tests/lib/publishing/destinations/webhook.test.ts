@@ -63,7 +63,22 @@ describe("webhook destination payload", () => {
       alt: "A lighthouse over a grid",
       width: 1200,
       height: 630,
+    });
+  });
+
+  it("does not leak the internal renderId into the outgoing webhook payload", async () => {
+    vi.mocked(loadCoverImagePayload).mockResolvedValue({
+      url: "https://blob.example/cover.png",
+      alt: "A lighthouse over a grid",
+      width: 1200,
+      height: 630,
       renderId: "render-1",
     });
+
+    await webhookDestination.deliver(piece(), config, null, database);
+
+    const [, init] = vi.mocked(fetch).mock.calls[0];
+    const payload = JSON.parse((init as RequestInit).body as string);
+    expect(payload.coverImage).not.toHaveProperty("renderId");
   });
 });

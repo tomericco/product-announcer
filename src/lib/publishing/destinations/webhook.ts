@@ -26,8 +26,11 @@ function buildPayload(piece: ContentPiece, coverImage: CoverImagePayload | null)
     publishedAt: piece.publishedAt,
     // The cover as a structured field (JSON Feed 1.1's `image` shape, spec
     // §8): null when the piece has no ready cover. Additive — every earlier
-    // key keeps its meaning.
-    coverImage,
+    // key keeps its meaning. Picked explicitly (not spread) so an internal
+    // field added to CoverImagePayload later (e.g. renderId, added for
+    // LinkedIn's retry-safety bookkeeping) doesn't leak into this external,
+    // tenant-facing payload by accident.
+    coverImage: coverImage && { url: coverImage.url, alt: coverImage.alt, width: coverImage.width, height: coverImage.height },
   };
 }
 
