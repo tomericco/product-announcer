@@ -48,8 +48,14 @@ export type EditorOps = {
    * Snapshots the caret for a later `insertAtCursor`. Called from the insert
    * surface's Generate-image button (whose surface `preventDefault`s mousedown,
    * so the caret is still live) before the panel takes focus.
+   *
+   * `collapseToEnd` is for the SELECTION surface's Generate-image button,
+   * where the captured range is the user's highlighted text: collapsing to
+   * its end makes `insertAtCursor` place the image AFTER the selection
+   * instead of replacing it (which is what a non-collapsed range would
+   * otherwise do — see `insertAtCursor` below).
    */
-  captureInsertPoint: () => void;
+  captureInsertPoint: (options?: { collapseToEnd?: boolean }) => void;
   /**
    * Restores the captured caret and inserts markdown there; resolves with the
    * editor's authoritative body AFTER Lexical commits (same deferred-commit

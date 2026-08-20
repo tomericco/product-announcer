@@ -18,19 +18,28 @@ import { generateBodyImage, insertImageFromLibrary, suggestImagePrompt } from ".
 export function GenerateImagePanel({
   contentPieceId,
   heading,
+  selectionMarkdown,
   onInsert,
   onClose,
 }: {
   contentPieceId: string;
   /** Nearest heading above the caret at open time, for Suggest prompt. */
   heading: string | null;
+  /**
+   * Set when opened from the SELECTION surface: the highlighted markdown the
+   * image should depict. It becomes the source `suggestImagePrompt` reads
+   * instead of the whole body, and the panel suggests from it on open — the
+   * user asked for "an image of this", so arriving at a blank box and having
+   * to press Suggest would be asking them for what they already said.
+   */
+  selectionMarkdown?: string;
   /** Splices the returned markdown at the captured caret and persists. */
   onInsert: (markdown: string) => Promise<void>;
   onClose: () => void;
 }) {
   const { ops } = useAgentEdit();
   const [prompt, setPrompt] = useState("");
-  const [busy, setBusy] = useState<"idle" | "suggesting" | "generating">("idle");
+  const [busy, setBusy] = useState<"idle" | "suggesting" | "generating">(selectionMarkdown ? "suggesting" : "idle");
   const [pickerOpen, setPickerOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -38,13 +47,29 @@ export function GenerateImagePanel({
     textareaRef.current?.focus();
   }, []);
 
+  // `suggest` is intentionally not a dependency: this must run exactly once
+  // per panel (each open mounts a fresh one), and re-running on every render
+  // would spend a model call per keystroke in the textarea.
+  useEffect(() => {
+    if (selectionMarkdown) void suggest();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   async function suggest() {
     setBusy("suggesting");
     try {
       const out = await suggestImagePrompt({
         contentPieceId,
-        surroundingMarkdown: ops.current?.getMarkdown() ?? "",
-        heading,
+        // The selection when there is one, else the whole body — either way
+        // this is what the concept gets drawn from.
+        surroundingMarkdown: selectionMarkdown ?? ops.current?.getMarkdown() ?? "",
+        // No heading alongside a selection: the server slices its source
+        // down to the named heading's section, and the user has already said
+        // precisely which text they mean. (It would fall back to the whole
+        // string anyway whenever the heading sits above the selection rather
+        // than inside it — but relying on that would make "was the heading
+        // caught in the selection?" silently change the result.)
+        heading: selectionMarkdown ? null : heading,
       });
       setPrompt(out.concept);
     } catch (error) {

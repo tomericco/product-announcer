@@ -142,12 +142,29 @@ function AgentEditBridge({ editorRef }: { editorRef: React.RefObject<MDXEditorMe
           });
         }),
       getMarkdown: () => editorRef.current?.getMarkdown() ?? "",
-      captureInsertPoint: () => {
+      captureInsertPoint: (options) => {
         const editor = activeEditorRef.current;
         if (!editor) return;
         editor.getEditorState().read(() => {
           const sel = $getSelection();
-          savedInsertPoint.current = $isRangeSelection(sel) ? sel.clone() : null;
+          if (!$isRangeSelection(sel)) {
+            savedInsertPoint.current = null;
+            return;
+          }
+          const captured = sel.clone();
+          if (options?.collapseToEnd && !captured.isCollapsed()) {
+            // Document-order end: for a backward selection (dragged
+            // right-to-left) that is the anchor, not the focus. Mutating the
+            // CLONE, never the live selection — `PointType.set` is a no-op
+            // for editor state in read mode (it guards on
+            // `isCurrentlyReadOnlyMode`), so this is safe inside `.read()`
+            // and leaves what the user has highlighted untouched.
+            const end = captured.isBackward() ? captured.anchor : captured.focus;
+            const [key, offset, type] = [end.key, end.offset, end.type];
+            captured.anchor.set(key, offset, type);
+            captured.focus.set(key, offset, type);
+          }
+          savedInsertPoint.current = captured;
         });
       },
       insertAtCursor: (markdown) =>
@@ -315,6 +332,7 @@ export default function MdxEditor({
         selectionExtras={
           <>
             <AskAiSelectionButton />
+            <GenerateImageButton contentPieceId={contentPieceId} mode="selection" />
             <ExtractSelectionButton />
           </>
         }

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Sparkles } from "lucide-react";
+import { ImagePlus, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { nearestHeadingAbove } from "@/lib/images/nearest-heading";
 import { HoverTooltip } from "@/components/ui/tooltip";
@@ -18,10 +18,23 @@ import { GenerateImagePanel } from "./generate-image-panel";
  * surface element — the hook that positions the surface keeps it open while
  * focus is inside it (mdx-editor.tsx useSelectionSurface).
  */
-export function GenerateImageButton({ contentPieceId }: { contentPieceId: string }) {
+export function GenerateImageButton({
+  contentPieceId,
+  mode = "insert",
+}: {
+  contentPieceId: string;
+  /**
+   * `"insert"` — the insert surface (caret on an empty paragraph): the image
+   * goes at the caret, and the prompt starts blank.
+   * `"selection"` — the selection surface: the image goes AFTER the
+   * highlighted text (never replacing it) and the panel opens already
+   * suggesting a concept drawn from that text.
+   */
+  mode?: "insert" | "selection";
+}) {
   const { ops } = useAgentEdit();
   const { notifySaved } = useUnsavedChanges();
-  const [open, setOpen] = useState<{ heading: string | null } | null>(null);
+  const [open, setOpen] = useState<{ heading: string | null; selectionMarkdown?: string } | null>(null);
 
   async function insert(markdown: string) {
     const editorOps = ops.current;
@@ -33,23 +46,37 @@ export function GenerateImageButton({ contentPieceId }: { contentPieceId: string
 
   return (
     <>
-      {/* Sparkles, not a second image glyph: the surface already has the
-          built-in InsertImage frame icon one slot over, and two near-identical
-          image icons would be indistinguishable. Sparkles is this app's AI
-          affordance (Ask AI's selection button, brand-style import, cover
-          "Generate from post"), so "sparkle beside the image icon" reads as
-          "generate an image" — the tooltip and aria-label carry the words.
+      {/* The icon is whichever glyph its OWN neighbours don't already use.
+          In the insert surface that's Sparkles: the built-in InsertImage
+          frame icon sits one slot over, and two near-identical image icons
+          would be indistinguishable, while Sparkles is this app's AI
+          affordance (brand-style import, cover "Generate from post"). In the
+          selection surface it's the reverse — Ask AI is the Sparkles there,
+          so an image glyph is what reads as distinct. Either way the tooltip
+          and aria-label carry the words.
           HoverTooltip (components/ui/tooltip.tsx), not a plain
           Tooltip/TooltipTrigger — see its doc comment: the uncontrolled
           version opens on hover but never closes. */}
-      <HoverTooltip content="Generate image">
+      <HoverTooltip content={mode === "selection" ? "Generate an image from the selection" : "Generate image"}>
         <button
           type="button"
-          aria-label="Generate image"
+          aria-label={mode === "selection" ? "Generate an image from the selection" : "Generate image"}
           onClick={() => {
             const editorOps = ops.current;
             if (!editorOps) {
               toast.error("The editor isn't ready yet — try again in a moment.");
+              return;
+            }
+            if (mode === "selection") {
+              // Read the highlighted text BEFORE collapsing the insert point
+              // — it is what the panel's suggestion is drawn from.
+              const selectionMarkdown = editorOps.captureSelection();
+              if (!selectionMarkdown.trim()) {
+                toast.error("Highlight some text to base the image on first.");
+                return;
+              }
+              editorOps.captureInsertPoint({ collapseToEnd: true });
+              setOpen({ heading: nearestHeadingAbove(), selectionMarkdown });
               return;
             }
             editorOps.captureInsertPoint();
@@ -57,13 +84,14 @@ export function GenerateImageButton({ contentPieceId }: { contentPieceId: string
           }}
           className="flex items-center gap-1 rounded px-1.5 py-0.5 text-muted-foreground transition-colors hover:text-foreground"
         >
-          <Sparkles className="size-4" />
+          {mode === "selection" ? <ImagePlus className="size-4" /> : <Sparkles className="size-4" />}
         </button>
       </HoverTooltip>
       {open && (
         <GenerateImagePanel
           contentPieceId={contentPieceId}
           heading={open.heading}
+          selectionMarkdown={open.selectionMarkdown}
           onInsert={insert}
           onClose={() => setOpen(null)}
         />
