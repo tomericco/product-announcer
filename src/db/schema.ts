@@ -867,9 +867,14 @@ export const webflowConnectionStatusEnum = pgEnum("webflow_connection_status", [
 
 // Keyed by Webflow field *slug*, not id, so renaming a field's display name in
 // Webflow does not break the mapping.
+// Keyed by Webflow field *slug*, not id, so renaming a field's display name in
+// Webflow does not break the mapping. `coverImage` maps the piece's cover
+// (spec §8): the destination sends `{ url, alt }` and Webflow rehosts the
+// file itself — only valid on an Image-type field, which validateMapping
+// enforces at save time.
 export type WebflowFieldMapping = Record<
   string,
-  | { source: "title" | "body" | "slug" | "publishedAt" | "empty" }
+  | { source: "title" | "body" | "slug" | "publishedAt" | "coverImage" | "empty" }
   | { source: "static"; value: string }
 >;
 
