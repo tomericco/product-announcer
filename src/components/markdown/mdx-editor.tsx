@@ -3,6 +3,7 @@
 import "@mdxeditor/editor/style.css";
 import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
+import { HoverTooltip } from "@/components/ui/tooltip";
 import {
   MDXEditor,
   headingsPlugin,
@@ -228,6 +229,10 @@ function EditorSurfaces({
         {selectionExtras}
       </div>
 
+      {/* HoverTooltip (components/ui/tooltip.tsx), not a plain
+          Tooltip/TooltipTrigger: the uncontrolled version was confirmed live
+          (2026-08-20) to open on hover but never close — see its doc comment
+          for the full story. */}
       <div
         ref={insertSurfaceRef}
         className="mdx-surface mdx-surface-insert"
@@ -235,8 +240,12 @@ function EditorSurfaces({
         style={{ top: pos.top, left: pos.left }}
         onMouseDown={preserveSelection}
       >
-        <InsertImage />
-        <InsertCodeBlock />
+        <HoverTooltip content="Insert image">
+          <InsertImage />
+        </HoverTooltip>
+        <HoverTooltip content="Insert code block">
+          <InsertCodeBlock />
+        </HoverTooltip>
         {insertExtras}
       </div>
     </>

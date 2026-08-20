@@ -1,5 +1,6 @@
 "use client"
 
+import { useState } from "react"
 import { Tooltip as TooltipPrimitive } from "@base-ui/react/tooltip"
 
 import { cn } from "@/lib/utils"
@@ -63,4 +64,38 @@ function TooltipContent({
   )
 }
 
-export { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider }
+/**
+ * `Tooltip`/`TooltipTrigger` left fully uncontrolled (Base UI's own
+ * hover-tracking) was observed, live, to open correctly but never close: once
+ * a trigger is hovered, `[data-slot="tooltip-content"]` stays in the DOM and
+ * visible indefinitely, even after the browser's own `:hover` on the trigger
+ * genuinely goes false and multiple seconds pass — confirmed directly against
+ * the rendered DOM (2026-08-20), not assumed. Root cause not fully isolated
+ * (candidates: the default per-trigger close delay, or Base UI's own
+ * open/close state simply not reconciling in this app's React/Base UI
+ * version combination) — this sidesteps it rather than depending on it:
+ * `open` is driven by our OWN onMouseEnter/onMouseLeave/onFocus/onBlur, which
+ * the browser's real pointer/focus events fire reliably regardless of
+ * whatever is wrong with Base UI's internal tracking.
+ */
+function HoverTooltip({ content, children }: { content: React.ReactNode; children: React.ReactNode }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <TooltipProvider>
+      <Tooltip open={open} onOpenChange={setOpen}>
+        <TooltipTrigger
+          render={<span className="inline-flex" />}
+          onMouseEnter={() => setOpen(true)}
+          onMouseLeave={() => setOpen(false)}
+          onFocus={() => setOpen(true)}
+          onBlur={() => setOpen(false)}
+        >
+          {children}
+        </TooltipTrigger>
+        <TooltipContent>{content}</TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  )
+}
+
+export { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider, HoverTooltip }

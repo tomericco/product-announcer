@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { nearestHeadingAbove } from "@/lib/images/nearest-heading";
+import { HoverTooltip } from "@/components/ui/tooltip";
 import { useUnsavedChanges } from "../../unsaved-changes";
 import { useAgentEdit } from "./agent-edit-context";
 import { saveDraftBody } from "./actions";
@@ -37,24 +38,28 @@ export function GenerateImageButton({ contentPieceId }: { contentPieceId: string
           image icons would be indistinguishable. Sparkles is this app's AI
           affordance (Ask AI's selection button, brand-style import, cover
           "Generate from post"), so "sparkle beside the image icon" reads as
-          "generate an image" — the title/aria carry the words. */}
-      <button
-        type="button"
-        title="Generate image"
-        aria-label="Generate image"
-        onClick={() => {
-          const editorOps = ops.current;
-          if (!editorOps) {
-            toast.error("The editor isn't ready yet — try again in a moment.");
-            return;
-          }
-          editorOps.captureInsertPoint();
-          setOpen({ heading: nearestHeadingAbove() });
-        }}
-        className="flex items-center gap-1 rounded px-1.5 py-0.5 text-muted-foreground transition-colors hover:text-foreground"
-      >
-        <Sparkles className="size-4" />
-      </button>
+          "generate an image" — the tooltip and aria-label carry the words.
+          HoverTooltip (components/ui/tooltip.tsx), not a plain
+          Tooltip/TooltipTrigger — see its doc comment: the uncontrolled
+          version opens on hover but never closes. */}
+      <HoverTooltip content="Generate image">
+        <button
+          type="button"
+          aria-label="Generate image"
+          onClick={() => {
+            const editorOps = ops.current;
+            if (!editorOps) {
+              toast.error("The editor isn't ready yet — try again in a moment.");
+              return;
+            }
+            editorOps.captureInsertPoint();
+            setOpen({ heading: nearestHeadingAbove() });
+          }}
+          className="flex items-center gap-1 rounded px-1.5 py-0.5 text-muted-foreground transition-colors hover:text-foreground"
+        >
+          <Sparkles className="size-4" />
+        </button>
+      </HoverTooltip>
       {open && (
         <GenerateImagePanel
           contentPieceId={contentPieceId}
