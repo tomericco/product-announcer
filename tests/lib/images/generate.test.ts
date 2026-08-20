@@ -44,13 +44,13 @@ describe("renderAndStore", () => {
         role: "library",
         slug: "a-rocket",
         prompt: "FULL PROMPT",
-        size: "1200x900",
+        size: "1200x896",
         referenceImages: ["https://blob.example/ref.png"],
       },
       { renderImage, compressPng, uploadPng }
     );
 
-    expect(renderImage.mock.calls[0][0]).toMatchObject({ tenantId: tenant.id, prompt: "FULL PROMPT", size: "1200x900", referenceImages: ["https://blob.example/ref.png"] });
+    expect(renderImage.mock.calls[0][0]).toMatchObject({ tenantId: tenant.id, prompt: "FULL PROMPT", size: "1200x896", referenceImages: ["https://blob.example/ref.png"] });
     // Only covers ask renderImage to hold the shape.
     expect(renderImage.mock.calls[0][0].enforceAspect).toBe(false);
     expect(compressPng).toHaveBeenCalledWith(Buffer.from("RAW"), 1200);
@@ -79,12 +79,12 @@ describe("renderAndStore", () => {
         role: "cover",
         slug: "a-rocket",
         prompt: "FULL PROMPT",
-        size: "1200x630",
+        size: "1200x624",
       },
       { renderImage, compressPng, uploadPng: async (pathname) => ({ url: `https://blob.example/${pathname}`, pathname }) }
     );
 
-    expect(renderImage.mock.calls[0][0]).toMatchObject({ size: "1200x630", enforceAspect: true });
+    expect(renderImage.mock.calls[0][0]).toMatchObject({ size: "1200x624", enforceAspect: true });
     expect(compressPng).toHaveBeenCalledWith(Buffer.from("RAW"), 1200);
   });
 
@@ -100,7 +100,7 @@ describe("renderAndStore", () => {
         slug: "a-rocket",
         prompt: "make it darker",
         storedPrompt: "FULL PROMPT\n\nEdit: make it darker",
-        size: "1200x900",
+        size: "1200x896",
         editOf: "https://blob.example/current.png",
       },
       {

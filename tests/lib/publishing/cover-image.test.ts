@@ -127,13 +127,13 @@ describe("loadCoverImagePayload", () => {
     });
   });
 
-  it("reports the render's ACTUAL dimensions, not the requested 1200x630", async () => {
+  it("reports the render's ACTUAL dimensions, not the requested 1200x624", async () => {
     // Covers are generated wide and NEVER cropped (product owner decision 1,
     // 2026-08-19): `renderImage` restates the size + aspect ratio and re-asks
     // once, and `compressPng` only ever resizes by width. If a provider still
     // returns a square, that square is stored with its true dimensions rather
     // than cut — so whatever is on the row is exactly what receivers get. Pin
-    // that: a reader of the webhook payload must never be told 1200x630 about
+    // that: a reader of the webhook payload must never be told 1200x624 about
     // a 1024x1024 file.
     const { tenant, piece } = await seedPiece();
     const [image] = await db

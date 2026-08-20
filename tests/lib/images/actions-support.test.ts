@@ -129,8 +129,8 @@ describe("imageSlug and sizeForRole", () => {
     }
   });
   it("maps roles to render sizes", () => {
-    expect(sizeForRole("cover")).toBe("1200x630");
-    expect(sizeForRole("body")).toBe("1200x900");
-    expect(sizeForRole("library")).toBe("1200x900");
+    expect(sizeForRole("cover")).toBe("1200x624");
+    expect(sizeForRole("body")).toBe("1200x896");
+    expect(sizeForRole("library")).toBe("1200x896");
   });
 });

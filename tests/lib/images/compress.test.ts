@@ -79,7 +79,7 @@ describe("compressPng", () => {
 
   it("NEVER changes the aspect ratio — a square render stays square", async () => {
     // The no-crop guarantee (product owner decision 1). Providers sometimes
-    // round a 1200x630 request to a square supported size; `renderImage` asks
+    // round a 1200x624 request to a square supported size; `renderImage` asks
     // again once (Task 9) and, if the answer is still square, we store it
     // square rather than cut pixels the concept asked for. Plan 4 publishes
     // exactly these numbers as coverImage.width/height.

@@ -365,7 +365,7 @@ function PieceCardItem({
             failed. Those cards keep exactly today's layout, because the two
             rules above are conditional selectors that simply do not match.
 
-            `width`/`height` are the cover's real 1200x630 (never cropped —
+            `width`/`height` are the cover's real 1200x624 (never cropped —
             product owner decision 1), so the browser reserves the 1.91:1 box
             from the attributes and the card does not jump when the image
             lands. `sizes` keeps a ~300px column from pulling the 1200px

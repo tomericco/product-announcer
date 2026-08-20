@@ -224,19 +224,19 @@ describe("retryFailedIllustration", () => {
     expect(renderImage.mock.calls[0][0].referenceImages).toContain("https://blob.example/cover.png");
   });
 
-  it("holds a retried COVER to 1200x630", async () => {
+  it("holds a retried COVER to 1200x624", async () => {
     // Product owner decision 1: covers are generated wide, never cropped —
     // and a retry is a generation like any other, so it asks for the shape
     // the same way (renderImage restates size + aspect ratio and re-asks once).
     const { piece, image } = await seed({ role: "cover", anchor: null });
     await retryFailedIllustration({ contentPieceId: piece.id, imageId: image.id });
-    expect(renderImage.mock.calls[0][0]).toMatchObject({ size: "1200x630", enforceAspect: true });
+    expect(renderImage.mock.calls[0][0]).toMatchObject({ size: "1200x624", enforceAspect: true });
   });
 
   it("does not guard the shape of a retried body image", async () => {
     const { piece, image } = await seed();
     await retryFailedIllustration({ contentPieceId: piece.id, imageId: image.id });
-    expect(renderImage.mock.calls[0][0]).toMatchObject({ size: "1200x900" });
+    expect(renderImage.mock.calls[0][0]).toMatchObject({ size: "1200x896" });
     expect(renderImage.mock.calls[0][0].enforceAspect).toBeFalsy();
   });
 

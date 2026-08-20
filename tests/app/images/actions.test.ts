@@ -57,10 +57,11 @@ function refUrl(tenantId: string): string {
 }
 
 /**
- * Default status is "review", not "draft": the library only lists images of
- * pieces past drafting (product owner decision 4), so a draft-status piece is
- * the wrong fixture for a library test. `status: "draft"` is passed explicitly
- * where the exclusion itself is what is being tested.
+ * Default status is "review", not "brief": the library only excludes images
+ * of pieces still in "brief" (product owner decision, 2026-08-20 — a
+ * "draft"-status piece is a finished draft, always library-visible), so a
+ * brief-status piece is the wrong fixture for a library test. `status:
+ * "brief"` is passed explicitly where the exclusion itself is being tested.
  */
 async function seed(opts: { published?: boolean; status?: "brief" | "draft" | "review" | "scheduled" | "archived" } = {}) {
   const [tenant] = await db.insert(tenants).values({ name: TENANT_NAME }).returning();
@@ -190,12 +191,14 @@ describe("listImagesForPicker", () => {
     expect(piece.id).toBeTruthy();
   });
 
-  it("does not offer an image belonging to a piece that is still being drafted", async () => {
-    // Product owner decision 4: in-progress drafts keep their images to
-    // themselves. The picker reads `listLibraryImages`, so this is the same
-    // rule the /images page enforces — asserted here because the picker is the
-    // path that would otherwise paste an in-flight draft's image elsewhere.
-    const { tenant } = await seed({ status: "draft" });
+  it("does not offer an image belonging to a piece that is still being briefed", async () => {
+    // A "brief"-status piece is the only one generation can still be
+    // actively running under, so it's the one the picker must still keep to
+    // itself. The picker reads `listLibraryImages`, so this is the same rule
+    // the /images page enforces — asserted here because the picker is the
+    // path that would otherwise paste an in-flight generation's image
+    // elsewhere.
+    const { tenant } = await seed({ status: "brief" });
     const standalone = await createImage({ tenantId: tenant.id, contentPieceId: null, role: "library", concept: "compass", altText: "", sourceKind: "generated" });
     await addRender({ imageId: standalone.id, prompt: "p", blobUrl: "https://blob.example/compass.png", blobPathname: "p/compass.png", width: 1, height: 1, bytes: 1, model: "m" });
 
@@ -206,7 +209,7 @@ describe("listImagesForPicker", () => {
   it("filters to cover-shaped renders when asked for the cover slot", async () => {
     // Resolves the brief's open question (build option a): "From library"
     // for a cover only offers images whose stored render is cover-shaped
-    // (1200x630, 1.91:1) within the 2% tolerance renderImage's own guard
+    // (1200x624, 1.91:1) within the 2% tolerance renderImage's own guard
     // uses — a body-shaped (4:3) render picked into the cover slot would
     // ship distorted/cropped into LinkedIn and OG, which product owner
     // decision 1 forbids us to do ourselves.

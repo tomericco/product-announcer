@@ -17,7 +17,7 @@ import type { BoardCard } from "../../src/lib/content/board";
  *
  * `next/image` is stubbed to a prop-forwarding `<img>`: outside a Next build
  * its loader has no image config, and the assertions below are about what
- * this card asks for (a 1200x630 box, an empty alt, an uncropped fit), not
+ * this card asks for (a 1200x624 box, an empty alt, an uncropped fit), not
  * about Next's optimizer.
  */
 vi.mock("../../src/app/(dashboard)/board/actions", () => ({
@@ -95,7 +95,7 @@ describe("a card whose piece has a cover", () => {
     expect(card!.querySelector("img")?.getAttribute("src")).toBe("https://blob.example/cover-1.png");
   });
 
-  it("asks for the cover's native 1200x630 and never crops it", () => {
+  it("asks for the cover's native 1200x624 and never crops it", () => {
     const { container } = renderCard(COVERED);
     const img = container.querySelector("img")!;
     // The real render size. With width/height set, the browser reserves the

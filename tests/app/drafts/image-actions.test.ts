@@ -310,7 +310,7 @@ describe("restoreRender", () => {
 });
 
 describe("generateCover / removeCover / setCoverFromImage", () => {
-  it("from_post asks the text model for a cover concept and creates the cover row at 1200x630", async () => {
+  it("from_post asks the text model for a cover concept and creates the cover row at 1200x624", async () => {
     const { tenant, piece } = await seed();
     const result = await generateCover({ contentPieceId: piece.id, mode: "from_post" });
     expect(result.ok).toBe(true);
@@ -322,7 +322,7 @@ describe("generateCover / removeCover / setCoverFromImage", () => {
     expect(result.altText).toBe("Rocket over a laptop");
     const args = suggestImageConcept.mock.calls[0][0] as unknown as { role: string };
     expect(args.role).toBe("cover");
-    expect(renderImage.mock.calls[0][0]).toMatchObject({ size: "1200x630", referenceImages: [refUrl(tenant.id)] });
+    expect(renderImage.mock.calls[0][0]).toMatchObject({ size: "1200x624", referenceImages: [refUrl(tenant.id)] });
     const cover = await getCoverImage(tenant.id, piece.id);
     expect(cover).toMatchObject({ role: "cover", concept: "A rocket over a laptop", sourceKind: "generated" });
   });

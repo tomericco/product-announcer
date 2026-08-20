@@ -143,16 +143,16 @@ describe("illustratePiece", () => {
     expect(result.failures).toBe(0);
     expect(result.skipped).toBeUndefined();
 
-    // Cover first, at 1200x630, with only the brand references — and asking
+    // Cover first, at 1200x624, with only the brand references — and asking
     // renderImage to hold it to that shape (product owner decision 1: the
     // cover is GENERATED wide, never cropped afterwards).
-    expect(renderCalls[0]).toMatchObject({ prompt: "PROMPT cover", size: "1200x630", enforceAspect: true });
+    expect(renderCalls[0]).toMatchObject({ prompt: "PROMPT cover", size: "1200x624", enforceAspect: true });
     expect(renderCalls[0].referenceImages).toEqual([refUrl(tenant.id)]);
-    // Body renders after, at 1200x900, brand refs + the fresh cover bytes (pinStyleToCover).
+    // Body renders after, at 1200x896, brand refs + the fresh cover bytes (pinStyleToCover).
     const bodyCalls = renderCalls.slice(1);
     expect(bodyCalls.map((c) => c.prompt).sort()).toEqual(["PROMPT alpha", "PROMPT beta"]);
     for (const call of bodyCalls) {
-      expect(call.size).toBe("1200x900");
+      expect(call.size).toBe("1200x896");
       // Body images have no fixed shape to hold; only covers are guarded.
       expect(call.enforceAspect).toBeFalsy();
       expect(call.referenceImages[0]).toBe(refUrl(tenant.id));
@@ -225,7 +225,7 @@ describe("illustratePiece", () => {
     // The row persists with its concept — Plan 3's Add-cover menu pre-fills from it.
     expect(cover.status).toBe("failed");
     expect(cover.concept).toBe("lighthouse");
-    const bodyCalls = renderCalls.filter((c) => c.size === "1200x900");
+    const bodyCalls = renderCalls.filter((c) => c.size === "1200x896");
     expect(bodyCalls).toHaveLength(2);
     for (const call of bodyCalls) expect(call.referenceImages).toEqual([refUrl(tenant.id)]);
   });
@@ -237,7 +237,7 @@ describe("illustratePiece", () => {
       { tenantId: tenant.id, contentPieceId: piece.id, title: "T", body: BODY, contentType: "blog_post", database: db },
       deps
     );
-    for (const call of renderCalls.filter((c) => c.size === "1200x900")) {
+    for (const call of renderCalls.filter((c) => c.size === "1200x896")) {
       expect(call.referenceImages).toEqual([refUrl(tenant.id)]);
     }
   });

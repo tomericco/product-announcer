@@ -77,7 +77,9 @@ export async function retryFailedIllustration(input: {
     role: image.role,
     allowText: vi.allowTextInImages,
   });
-  const size = image.role === "cover" ? "1200x630" : "1200x900";
+  // Multiples of 16 (gpt-image-2 requires it) — see prompt.ts's IMAGE_SIZES
+  // doc comment for why these aren't the nominal 1200x630/1200x900.
+  const size = image.role === "cover" ? "1200x624" : "1200x896";
   const model = imageModelId(process.env.IMAGE_MODEL ?? IMAGE_MODEL_DEFAULT);
 
   // Same reference set the agent used (`illustratePiece`): brand references,

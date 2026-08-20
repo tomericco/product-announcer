@@ -192,7 +192,7 @@ export function CoverPanel({
       />
 
       {busy ? (
-        <div className="flex aspect-[1200/630] w-full items-center justify-center gap-3 rounded-lg border bg-muted/30 text-sm text-muted-foreground">
+        <div className="flex aspect-[1200/624] w-full items-center justify-center gap-3 rounded-lg border bg-muted/30 text-sm text-muted-foreground">
           <Loader2 className="size-4 animate-spin" /> {busy}
         </div>
       ) : cover ? (

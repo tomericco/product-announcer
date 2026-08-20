@@ -21,7 +21,7 @@ export type GenerateDeps = {
   uploadPng?: typeof defaultUploadPng;
 };
 
-/** Both cover (1200x630) and body (1200x900) masters are 1200 px wide (spec §7). */
+/** Both cover (1200x624) and body (1200x896) masters are 1200 px wide (spec §7). */
 export const RENDER_MAX_WIDTH = 1200;
 
 export async function storeRenderBytes(
@@ -63,7 +63,7 @@ export async function renderAndStore(
     slug: string;
     /** What the model receives: the full prompt, or the instruction when `editOf` is set. */
     prompt: string;
-    size: "1200x630" | "1200x900";
+    size: "1200x624" | "1200x896";
     referenceImages?: (string | Buffer)[];
     editOf?: string | Buffer;
     /** What the render row records; defaults to `prompt`. Edits store the history line. */
@@ -79,7 +79,7 @@ export async function renderAndStore(
     size: a.size,
     referenceImages: a.referenceImages,
     editOf: a.editOf,
-    // Covers are generated at 1200x630 natively and never cropped (product
+    // Covers are generated at 1200x624 natively and never cropped (product
     // owner decision 1, 2026-08-19). Derived from the role HERE rather than
     // passed by each caller, so every cover path in this plan — generate,
     // regenerate, edit, prompt — is guarded by construction, and Plan 2's

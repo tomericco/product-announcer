@@ -64,8 +64,10 @@ export type IllustrateDeps = {
   deleteBlobs?: (pathnames: string[]) => Promise<void>;
 };
 
-export const COVER_SIZE = "1200x630" as const;
-export const BODY_SIZE = "1200x900" as const;
+// Both multiples of 16 (gpt-image-2 requires it) — see prompt.ts's
+// IMAGE_SIZES doc comment for why these aren't the nominal 1200x630/1200x900.
+export const COVER_SIZE = "1200x624" as const;
+export const BODY_SIZE = "1200x896" as const;
 export const COVER_MAX_WIDTH = 1200;
 export const BODY_MAX_WIDTH = 1200;
 

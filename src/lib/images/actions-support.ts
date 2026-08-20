@@ -114,23 +114,24 @@ export function imageSlug(text: string): string {
   return slugForImage(text);
 }
 
-export function sizeForRole(role: "cover" | "body" | "library"): "1200x630" | "1200x900" {
-  return role === "cover" ? "1200x630" : "1200x900";
+export function sizeForRole(role: "cover" | "body" | "library"): "1200x624" | "1200x896" {
+  return role === "cover" ? "1200x624" : "1200x896";
 }
 
 /**
- * How far off the cover's 1.91:1 shape (1200×630) a render may be before
- * "From library" excludes it from the cover slot (spec §5b open question,
- * resolved as option (a): the cover picker never offers a body-shaped
- * render, since reuse pastes the existing blob with no new render — a
- * mismatched shape would ship distorted/cropped into LinkedIn and OG, which
- * product owner decision 1 forbids doing ourselves).
+ * How far off the cover's 1.91:1 shape (1200×624 — gpt-image-2 requires
+ * multiples of 16, see prompt.ts's IMAGE_SIZES doc comment) a render may be
+ * before "From library" excludes it from the cover slot (spec §5b open
+ * question, resolved as option (a): the cover picker never offers a
+ * body-shaped render, since reuse pastes the existing blob with no new
+ * render — a mismatched shape would ship distorted/cropped into LinkedIn and
+ * OG, which product owner decision 1 forbids doing ourselves).
  *
  * Reuses `ASPECT_TOLERANCE` (`src/lib/ai/images.ts`) — the render guard's own
  * tolerance — rather than a second, independently-maintained number, so this
  * filter and the generation guard can never drift apart.
  */
-const COVER_ASPECT = 1200 / 630;
+const COVER_ASPECT = 1200 / 624;
 
 export function isCoverShaped(width: number, height: number): boolean {
   return Math.abs(width / height - COVER_ASPECT) / COVER_ASPECT <= ASPECT_TOLERANCE;

@@ -40,17 +40,19 @@ describe("renderImage", () => {
     const tenant = await seedTenant(TENANT);
     const { generate, calls } = fakeGenerate();
 
-    const png = await renderImage({ tenantId: tenant.id, prompt: "a lighthouse", size: "1200x630" }, { generate });
+    const png = await renderImage({ tenantId: tenant.id, prompt: "a lighthouse", size: "1200x624" }, { generate });
 
     expect(Buffer.isBuffer(png)).toBe(true);
     expect(png.equals(PNG)).toBe(true);
     expect(calls).toHaveLength(1);
     expect(calls[0].prompt).toBe("a lighthouse");
-    expect(calls[0].size).toBe("1200x630");
+    expect(calls[0].size).toBe("1200x624");
     // Covers are generated wide NATIVELY, never cropped later: the request
     // states the shape both ways so a provider honouring either one returns
-    // 1.91:1 (product owner decision 1).
-    expect(calls[0].aspectRatio).toBe("40:21");
+    // 1.91:1 (product owner decision 1). "25:13" is the exact reduced ratio
+    // of 1200x624, not the nominal 40:21 (1200x630 isn't a multiple of 16 —
+    // gpt-image-2 rejects it).
+    expect(calls[0].aspectRatio).toBe("25:13");
     expect(calls[0].model.modelId).toBe("gpt-image-2");
   });
 
@@ -61,7 +63,7 @@ describe("renderImage", () => {
     const fetchImpl = vi.fn(async () => new Response(refBytes)) as unknown as typeof fetch;
 
     await renderImage(
-      { tenantId: tenant.id, prompt: "p", size: "1200x900", referenceImages: ["https://blob/ref.png", Buffer.from("local")] },
+      { tenantId: tenant.id, prompt: "p", size: "1200x896", referenceImages: ["https://blob/ref.png", Buffer.from("local")] },
       { generate, fetchImpl }
     );
 
@@ -73,12 +75,68 @@ describe("renderImage", () => {
     expect(Buffer.from(prompt.images[1]).toString()).toBe("local");
   });
 
+  it("routes a private brand-asset URL through readBrandAssetImpl, never a bare fetch, even mixed with a public content URL", async () => {
+    // Mirrors image-actions.ts's bodyReferences: style references (private
+    // store) and a piece's own cover (public store) can land in the SAME
+    // referenceImages array. A bare fetch 403s against the private store, so
+    // this must branch per-URL, not assume the whole array is one kind.
+    const tenant = await seedTenant(TENANT);
+    const { generate, calls } = fakeGenerate();
+    const publicBytes = Buffer.from("public-cover");
+    const privateBytes = Buffer.from("private-style-ref");
+    const fetchImpl = vi.fn(async () => new Response(publicBytes)) as unknown as typeof fetch;
+    const readBrandAssetImpl = vi.fn(async () => ({ bytes: privateBytes, contentType: "image/png" })) as unknown as NonNullable<
+      RenderImageDeps["readBrandAssetImpl"]
+    >;
+
+    await renderImage(
+      {
+        tenantId: tenant.id,
+        prompt: "p",
+        size: "1200x896",
+        referenceImages: [
+          "https://abc.private.blob.vercel-storage.com/tenants/t1/brand/style.png",
+          "https://abc.public.blob.vercel-storage.com/tenants/t1/content/p1/cover-x.png",
+        ],
+      },
+      { generate, fetchImpl, readBrandAssetImpl }
+    );
+
+    expect(readBrandAssetImpl).toHaveBeenCalledWith("https://abc.private.blob.vercel-storage.com/tenants/t1/brand/style.png");
+    expect(fetchImpl).toHaveBeenCalledWith("https://abc.public.blob.vercel-storage.com/tenants/t1/content/p1/cover-x.png");
+    // The private URL never reaches fetchImpl, and the public URL never
+    // reaches readBrandAssetImpl — each goes through exactly one path.
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(readBrandAssetImpl).toHaveBeenCalledTimes(1);
+    const prompt = calls[0].prompt as { images: Buffer[]; text: string };
+    expect(Buffer.from(prompt.images[0]).equals(privateBytes)).toBe(true);
+    expect(Buffer.from(prompt.images[1]).equals(publicBytes)).toBe(true);
+  });
+
+  it("throws a readable error when a private brand-asset URL cannot be read (deleted/missing)", async () => {
+    const tenant = await seedTenant(TENANT);
+    const { generate } = fakeGenerate();
+    const readBrandAssetImpl = vi.fn(async () => null) as unknown as NonNullable<RenderImageDeps["readBrandAssetImpl"]>;
+
+    await expect(
+      renderImage(
+        {
+          tenantId: tenant.id,
+          prompt: "p",
+          size: "1200x896",
+          referenceImages: ["https://abc.private.blob.vercel-storage.com/tenants/t1/brand/gone.png"],
+        },
+        { generate, readBrandAssetImpl }
+      )
+    ).rejects.toThrow(/Failed to fetch reference image/);
+  });
+
   it("edits: passes editOf as the single image and the prompt as the instruction", async () => {
     const tenant = await seedTenant(TENANT);
     const { generate, calls } = fakeGenerate();
     const original = Buffer.from("orig");
 
-    await renderImage({ tenantId: tenant.id, prompt: "make the background darker", size: "1200x900", editOf: original }, { generate });
+    await renderImage({ tenantId: tenant.id, prompt: "make the background darker", size: "1200x896", editOf: original }, { generate });
 
     const prompt = calls[0].prompt as { images: Buffer[]; text: string };
     expect(prompt.images).toHaveLength(1);
@@ -90,7 +148,7 @@ describe("renderImage", () => {
     const tenant = await seedTenant(TENANT);
     const { generate } = fakeGenerate();
 
-    await renderImage({ tenantId: tenant.id, prompt: "p", size: "1200x630" }, { generate });
+    await renderImage({ tenantId: tenant.id, prompt: "p", size: "1200x624" }, { generate });
 
     const [row] = await db.select().from(llmUsage).where(eq(llmUsage.tenantId, tenant.id));
     expect(row).toMatchObject({ operation: "image_generation", model: "gpt-image-2", imageCount: 1, inputTokens: 10, totalTokens: 30 });
@@ -98,9 +156,9 @@ describe("renderImage", () => {
 
   it("accepts a cover that came back the right shape without a second call", async () => {
     const tenant = await seedTenant(TENANT);
-    const { generate, calls } = fakeGenerate(await realPng(1200, 630));
+    const { generate, calls } = fakeGenerate(await realPng(1200, 624));
 
-    const png = await renderImage({ tenantId: tenant.id, prompt: "p", size: "1200x630", enforceAspect: true }, { generate });
+    const png = await renderImage({ tenantId: tenant.id, prompt: "p", size: "1200x624", enforceAspect: true }, { generate });
 
     expect(calls).toHaveLength(1);
     expect((await sharp(png).metadata()).width).toBe(1200);
@@ -112,13 +170,13 @@ describe("renderImage", () => {
     const square = await realPng(1024, 1024);
     const { generate, calls } = fakeGenerate(square);
 
-    const png = await renderImage({ tenantId: tenant.id, prompt: "p", size: "1200x630", enforceAspect: true }, { generate });
+    const png = await renderImage({ tenantId: tenant.id, prompt: "p", size: "1200x624", enforceAspect: true }, { generate });
 
     // Exactly two attempts — one retry, not a loop — and the retry is a
     // byte-identical repeat of the same size/aspect ratio, not a strengthened
     // second request.
     expect(calls).toHaveLength(2);
-    expect(calls[1]).toMatchObject({ size: "1200x630", aspectRatio: "40:21" });
+    expect(calls[1]).toMatchObject({ size: "1200x624", aspectRatio: "25:13" });
     // Still square, and returned untouched: no crop, no letterbox, no lie
     // about the dimensions. Plan 4 publishes 1024x1024 for this cover.
     const meta = await sharp(png).metadata();
@@ -133,22 +191,24 @@ describe("renderImage", () => {
     const tenant = await seedTenant(TENANT);
     const { generate, calls } = fakeGenerate(await realPng(1024, 1024));
 
-    await renderImage({ tenantId: tenant.id, prompt: "p", size: "1200x900" }, { generate });
+    await renderImage({ tenantId: tenant.id, prompt: "p", size: "1200x896" }, { generate });
 
     expect(calls).toHaveLength(1);
-    expect(calls[0].aspectRatio).toBe("4:3");
+    // "75:56" is the exact reduced ratio of 1200x896, not the nominal 4:3
+    // (1200x900 isn't a multiple of 16).
+    expect(calls[0].aspectRatio).toBe("75:56");
   });
 
   it("defaults enforceAspect to true for a cover render even when the caller never passes it", async () => {
     // A caller that forgets `enforceAspect: true` for a cover must not
     // silently lose the no-crop guard (product owner decision 1) — the
-    // default now turns it on for any 1200x630 (IMAGE_SIZES.cover) render.
+    // default now turns it on for any 1200x624 (IMAGE_SIZES.cover) render.
     const tenant = await seedTenant(TENANT);
     const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const square = await realPng(1024, 1024);
     const { generate, calls } = fakeGenerate(square);
 
-    await renderImage({ tenantId: tenant.id, prompt: "p", size: "1200x630" }, { generate });
+    await renderImage({ tenantId: tenant.id, prompt: "p", size: "1200x624" }, { generate });
 
     expect(calls).toHaveLength(2);
     consoleWarn.mockRestore();
@@ -159,7 +219,7 @@ describe("renderImage", () => {
     const square = await realPng(1024, 1024);
     const { generate, calls } = fakeGenerate(square);
 
-    await renderImage({ tenantId: tenant.id, prompt: "p", size: "1200x630", enforceAspect: false }, { generate });
+    await renderImage({ tenantId: tenant.id, prompt: "p", size: "1200x624", enforceAspect: false }, { generate });
 
     expect(calls).toHaveLength(1);
   });
@@ -171,7 +231,7 @@ describe("renderImage", () => {
     const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const { generate, calls } = fakeGenerate(PNG); // 7 bytes, not a real PNG
 
-    const png = await renderImage({ tenantId: tenant.id, prompt: "p", size: "1200x630", enforceAspect: true }, { generate });
+    const png = await renderImage({ tenantId: tenant.id, prompt: "p", size: "1200x624", enforceAspect: true }, { generate });
 
     expect(calls).toHaveLength(1);
     expect(png.equals(PNG)).toBe(true);
@@ -186,7 +246,7 @@ describe("renderImage", () => {
     const warnings = [{ type: "unsupported-setting", setting: "aspectRatio", details: "Use `size` instead." }];
     const { generate } = fakeGenerate(PNG, warnings);
 
-    await renderImage({ tenantId: tenant.id, prompt: "p", size: "1200x900" }, { generate });
+    await renderImage({ tenantId: tenant.id, prompt: "p", size: "1200x896" }, { generate });
 
     expect(consoleWarn).toHaveBeenCalledWith("[ai/images] generateImage warnings:", warnings);
     consoleWarn.mockRestore();
@@ -197,7 +257,7 @@ describe("renderImage", () => {
     const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const { generate } = fakeGenerate(PNG, []);
 
-    await renderImage({ tenantId: tenant.id, prompt: "p", size: "1200x900" }, { generate });
+    await renderImage({ tenantId: tenant.id, prompt: "p", size: "1200x896" }, { generate });
 
     expect(consoleWarn).not.toHaveBeenCalled();
     consoleWarn.mockRestore();
@@ -209,7 +269,7 @@ describe("renderImage", () => {
       throw new Error("model down");
     }) as unknown as NonNullable<RenderImageDeps["generate"]>;
 
-    await expect(renderImage({ tenantId: tenant.id, prompt: "p", size: "1200x630" }, { generate })).rejects.toThrow("model down");
+    await expect(renderImage({ tenantId: tenant.id, prompt: "p", size: "1200x624" }, { generate })).rejects.toThrow("model down");
     expect(await db.select().from(llmUsage).where(eq(llmUsage.tenantId, tenant.id))).toHaveLength(0);
   });
 });

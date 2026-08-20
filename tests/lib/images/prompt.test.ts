@@ -26,8 +26,13 @@ describe("buildImagePrompt", () => {
     expect(prompt).not.toContain(NO_TEXT_CLAUSE);
   });
 
-  it("exposes the two render sizes", () => {
-    expect(IMAGE_SIZES).toEqual({ cover: "1200x630", body: "1200x900" });
+  it("exposes the two render sizes — both multiples of 16 (gpt-image-2 requires it)", () => {
+    expect(IMAGE_SIZES).toEqual({ cover: "1200x624", body: "1200x896" });
+    for (const size of Object.values(IMAGE_SIZES)) {
+      const [w, h] = size.split("x").map(Number);
+      expect(w % 16).toBe(0);
+      expect(h % 16).toBe(0);
+    }
   });
 
   it("exposes an aspect ratio for every size, in generateImage's {w}:{h} form", () => {
@@ -36,7 +41,7 @@ describe("buildImagePrompt", () => {
     // pixels, `aspectRatio` for providers that take a ratio. The two must
     // agree, or a provider honouring the ratio would return a different shape
     // from one honouring the size.
-    expect(IMAGE_ASPECT_RATIOS).toEqual({ "1200x630": "40:21", "1200x900": "4:3" });
+    expect(IMAGE_ASPECT_RATIOS).toEqual({ "1200x624": "25:13", "1200x896": "75:56" });
     for (const [size, ratio] of Object.entries(IMAGE_ASPECT_RATIOS)) {
       const [sw, sh] = size.split("x").map(Number);
       const [rw, rh] = ratio.split(":").map(Number);
