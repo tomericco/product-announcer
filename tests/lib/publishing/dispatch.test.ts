@@ -837,7 +837,7 @@ describe("dispatch", () => {
       let [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.contentPieceId, update.id));
       expect(delivery.status).toBe("failed");
       expect(delivery.attempts).toBe(1);
-      expect(delivery.metadata).toEqual({ linkedinImageUrn: "urn:li:image:abc" });
+      expect(delivery.metadata).toEqual({ linkedinImageUrn: "urn:li:image:abc", coverRenderId: render.id });
       expect(delivery.lastError).toMatch(/still processing/i);
       expect(initializeCalls).toBe(1);
       expect(uploadCalls).toBe(1);
@@ -851,7 +851,7 @@ describe("dispatch", () => {
       expect(delivery.status).toBe("success");
       expect(delivery.attempts).toBe(2);
       expect(delivery.externalId).toBe("urn:li:share:9");
-      expect(delivery.metadata).toEqual({ linkedinImageUrn: "urn:li:image:abc" });
+      expect(delivery.metadata).toEqual({ linkedinImageUrn: "urn:li:image:abc", coverRenderId: render.id });
       expect(initializeCalls).toBe(1);
       expect(uploadCalls).toBe(1);
       expect(postCalls).toBe(1);

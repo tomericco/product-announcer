@@ -59,7 +59,13 @@ describe("buildFieldData", () => {
   it("emits { url, alt } for a coverImage mapping when a cover is supplied", () => {
     const mapping: WebflowFieldMapping = { "main-image": { source: "coverImage" } };
     const data = buildFieldData(update, mapping, fields, {
-      cover: { url: "https://blob.example/cover.png", alt: "Lighthouse over a grid", width: 1200, height: 630 },
+      cover: {
+        url: "https://blob.example/cover.png",
+        alt: "Lighthouse over a grid",
+        width: 1200,
+        height: 630,
+        renderId: "render-1",
+      },
     });
     expect(data["main-image"]).toEqual({ url: "https://blob.example/cover.png", alt: "Lighthouse over a grid" });
   });
@@ -86,7 +92,7 @@ describe("buildFieldData", () => {
     // required image field as empty when a perfectly good image exists.
     const mapping: WebflowFieldMapping = { "main-image": { source: "coverImage" } };
     const data = buildFieldData(update, mapping, fields, {
-      cover: { url: "https://blob.example/u.png", alt: "", width: 1200, height: 630 },
+      cover: { url: "https://blob.example/u.png", alt: "", width: 1200, height: 630, renderId: "render-1" },
     });
     expect(data["main-image"]).toEqual({ url: "https://blob.example/u.png", alt: "" });
   });

@@ -134,7 +134,13 @@ describe("linkedin destination", () => {
 });
 
 describe("linkedin destination — native image post", () => {
-  const COVER = { url: "https://blob.example/cover.png", alt: "Lighthouse over a grid", width: 1200, height: 630 };
+  const COVER = {
+    url: "https://blob.example/cover.png",
+    alt: "Lighthouse over a grid",
+    width: 1200,
+    height: 630,
+    renderId: "render-new",
+  };
   const PNG = new Uint8Array([137, 80, 78, 71]);
 
   beforeEach(() => {
@@ -168,7 +174,12 @@ describe("linkedin destination — native image post", () => {
 
     const result = await linkedinDestination.deliver(release(), connection(), null, database, null);
 
-    expect(result).toEqual({ status: "ok", externalId: "urn:li:share:1", metadata: { linkedinImageUrn: "urn:li:image:new" } });
+    expect(result).toEqual({
+      status: "ok",
+      externalId: "urn:li:share:1",
+      metadata: { linkedinImageUrn: "urn:li:image:new", coverRenderId: "render-new" },
+    });
+    expect(loadCoverImagePayload).toHaveBeenCalledWith("t1", "r1", database);
     expect(fetch).toHaveBeenCalledWith("https://blob.example/cover.png", expect.anything());
     expect(initializeImageUpload).toHaveBeenCalledWith({ accessToken: "at", ownerUrn: "urn:li:organization:1" });
     const upload = vi.mocked(uploadImageBytes).mock.calls[0][0];
@@ -189,7 +200,7 @@ describe("linkedin destination — native image post", () => {
     expect(result).toEqual({
       status: "retryable",
       error: expect.stringMatching(/still processing/i),
-      metadata: { linkedinImageUrn: "urn:li:image:new" },
+      metadata: { linkedinImageUrn: "urn:li:image:new", coverRenderId: "render-new" },
     });
     expect(getImageStatus).toHaveBeenCalledTimes(5);
     expect(createPost).not.toHaveBeenCalled();
@@ -201,13 +212,40 @@ describe("linkedin destination — native image post", () => {
 
     const result = await linkedinDestination.deliver(release(), connection(), null, database, {
       linkedinImageUrn: "urn:li:image:stored",
+      // Same render the cover is currently on (COVER.renderId) — this is the
+      // "reuse a still-valid urn" case, not the stale-render one.
+      coverRenderId: "render-new",
     });
 
-    expect(result).toEqual({ status: "ok", externalId: "urn:li:share:1", metadata: { linkedinImageUrn: "urn:li:image:stored" } });
+    expect(result).toEqual({
+      status: "ok",
+      externalId: "urn:li:share:1",
+      metadata: { linkedinImageUrn: "urn:li:image:stored", coverRenderId: "render-new" },
+    });
     expect(fetch).not.toHaveBeenCalled();
     expect(initializeImageUpload).not.toHaveBeenCalled();
     expect(uploadImageBytes).not.toHaveBeenCalled();
     expect(vi.mocked(createPost).mock.calls[0][0].media).toEqual({ imageUrn: "urn:li:image:stored", altText: "Lighthouse over a grid" });
+  });
+
+  it("when the stored urn's render id does not match the cover's current render id, ignores the stale urn and mints a fresh upload, never polling the stale one", async () => {
+    const { database } = dbStub();
+    vi.mocked(getImageStatus).mockResolvedValue("AVAILABLE");
+
+    const result = await linkedinDestination.deliver(release(), connection(), null, database, {
+      linkedinImageUrn: "urn:li:image:stale",
+      coverRenderId: "render-old",
+    });
+
+    expect(result).toEqual({
+      status: "ok",
+      externalId: "urn:li:share:1",
+      metadata: { linkedinImageUrn: "urn:li:image:new", coverRenderId: "render-new" },
+    });
+    expect(getImageStatus).not.toHaveBeenCalledWith({ accessToken: "at", imageUrn: "urn:li:image:stale" });
+    expect(initializeImageUpload).toHaveBeenCalledTimes(1);
+    expect(uploadImageBytes).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(createPost).mock.calls[0][0].media).toEqual({ imageUrn: "urn:li:image:new", altText: "Lighthouse over a grid" });
   });
 
   it("uploads fresh when the stored urn reports FAILED", async () => {
@@ -218,9 +256,14 @@ describe("linkedin destination — native image post", () => {
 
     const result = await linkedinDestination.deliver(release(), connection(), null, database, {
       linkedinImageUrn: "urn:li:image:stored",
+      coverRenderId: "render-new",
     });
 
-    expect(result).toEqual({ status: "ok", externalId: "urn:li:share:1", metadata: { linkedinImageUrn: "urn:li:image:new" } });
+    expect(result).toEqual({
+      status: "ok",
+      externalId: "urn:li:share:1",
+      metadata: { linkedinImageUrn: "urn:li:image:new", coverRenderId: "render-new" },
+    });
     expect(initializeImageUpload).toHaveBeenCalledTimes(1);
     expect(uploadImageBytes).toHaveBeenCalledTimes(1);
   });
@@ -242,7 +285,11 @@ describe("linkedin destination — native image post", () => {
 
     const result = await linkedinDestination.deliver(release(), connection(), null, database, null);
 
-    expect(result).toEqual({ status: "retryable", error: "down", metadata: { linkedinImageUrn: "urn:li:image:new" } });
+    expect(result).toEqual({
+      status: "retryable",
+      error: "down",
+      metadata: { linkedinImageUrn: "urn:li:image:new", coverRenderId: "render-new" },
+    });
   });
 
   it("classifies a failed blob download as retryable and never touches the Images API", async () => {
@@ -291,12 +338,13 @@ describe("linkedin destination — native image post", () => {
 
     const result = await linkedinDestination.deliver(release(), connection(), null, database, {
       linkedinImageUrn: "urn:li:image:stored",
+      coverRenderId: "render-new",
     });
 
     expect(result).toEqual({
       status: "retryable",
       error: expect.stringMatching(/still processing/i),
-      metadata: { linkedinImageUrn: "urn:li:image:stored" },
+      metadata: { linkedinImageUrn: "urn:li:image:stored", coverRenderId: "render-new" },
     });
     expect(initializeImageUpload).not.toHaveBeenCalled();
     expect(uploadImageBytes).not.toHaveBeenCalled();
@@ -313,7 +361,11 @@ describe("linkedin destination — native image post", () => {
 
     const result = await linkedinDestination.deliver(release(), connection(), null, database, null);
 
-    expect(result).toEqual({ status: "retryable", error: "down", metadata: { linkedinImageUrn: "urn:li:image:new" } });
+    expect(result).toEqual({
+      status: "retryable",
+      error: "down",
+      metadata: { linkedinImageUrn: "urn:li:image:new", coverRenderId: "render-new" },
+    });
   });
 
   it("still short-circuits on an existing externalId before touching the cover (post-once guard)", async () => {

@@ -51,6 +51,7 @@ describe("webhook destination payload", () => {
       alt: "A lighthouse over a grid",
       width: 1200,
       height: 630,
+      renderId: "render-1",
     });
 
     await webhookDestination.deliver(piece(), config, null, database);
@@ -62,6 +63,7 @@ describe("webhook destination payload", () => {
       alt: "A lighthouse over a grid",
       width: 1200,
       height: 630,
+      renderId: "render-1",
     });
   });
 });

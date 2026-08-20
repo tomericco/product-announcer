@@ -45,7 +45,13 @@ const mapping: WebflowFieldMapping = {
 
 const mappingWithCover: WebflowFieldMapping = { ...mapping, "main-image": { source: "coverImage" } };
 
-const COVER = { url: "https://blob.example/cover.png", alt: "Lighthouse over a grid", width: 1200, height: 630 };
+const COVER = {
+  url: "https://blob.example/cover.png",
+  alt: "Lighthouse over a grid",
+  width: 1200,
+  height: 630,
+  renderId: "render-1",
+};
 
 function connection(overrides: Record<string, unknown> = {}) {
   return {

@@ -804,7 +804,7 @@ export const destinationEnum = pgEnum("destination", ["webhook", "webflow", "lin
 // reuses the upload instead of minting a second one. jsonb rather than a
 // column per destination — the next destination that needs scratch state
 // adds a key, not a migration.
-export type DeliveryMetadata = { linkedinImageUrn?: string };
+export type DeliveryMetadata = { linkedinImageUrn?: string; coverRenderId?: string };
 
 export const deliveryAttempts = pgTable(
   "delivery_attempts",

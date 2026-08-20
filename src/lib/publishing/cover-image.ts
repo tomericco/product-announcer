@@ -4,7 +4,7 @@ import type { DbClient } from "./destinations/types";
 // The cover as every destination sees it. Naming follows JSON Feed 1.1's
 // `image` shape (spec §8, webhook): a public, stable, hotlinkable URL plus the
 // alt and the dimensions so receivers can render a card without fetching.
-export type CoverImagePayload = { url: string; alt: string; width: number; height: number };
+export type CoverImagePayload = { url: string; alt: string; width: number; height: number; renderId: string };
 
 // The one place delivery reads the cover row. A cover only travels when its
 // row is `ready` AND has a current render — a `pending` (mid-regeneration)
@@ -21,5 +21,6 @@ export async function loadCoverImagePayload(
     alt: cover.altText,
     width: cover.current.width,
     height: cover.current.height,
+    renderId: cover.current.id,
   };
 }

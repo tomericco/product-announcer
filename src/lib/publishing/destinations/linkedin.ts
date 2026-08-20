@@ -35,6 +35,12 @@ const BLOB_FETCH_TIMEOUT_MS = 10_000;
 // grow the poll budget without revisiting this. If the wait ever needs to be
 // longer, return `retryable` with the URN sooner and let the sweep own the
 // wait — which is exactly what the poll budget already does.
+//
+// No `maxDuration` is exported here (same stance as briefs/actions.ts):
+// Plan 4's final review put the worst case — blob download + initialize +
+// upload + 5 polls, each with its own timeout — at ~85 s, well inside the
+// platform's default function timeout of 300 s, so there's nothing to fix by
+// guessing a number.
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -99,15 +105,26 @@ type PreparedCover = { ok: true; imageUrn: string } | { ok: false; result: Deliv
 // previous attempt stored on the delivery row so a retry never uploads twice.
 // Any thrown error is classified exactly like a post error, and — once a URN
 // exists — a retryable classification carries it as metadata.
+//
+// The stored URN is only trusted when it was uploaded from the SAME render
+// that is currently the piece's cover (storedRenderId === cover.renderId).
+// Regenerating or restoring a different render on an already-published
+// piece's cover is a reachable flow, and a URN minted from a since-replaced
+// render is a valid LinkedIn asset — just the wrong image. A mismatch (or a
+// stored URN with no stored render id to confirm it against) is treated
+// exactly like no stored URN at all: skip straight to a fresh upload without
+// polling the stale one first.
 async function prepareCoverImage(args: {
   accessToken: string;
   ownerUrn: string;
   cover: CoverImagePayload;
   storedImageUrn: string | null;
+  storedRenderId: string | null;
   database: DbClient;
   connectionId: string;
 }): Promise<PreparedCover> {
-  let imageUrn = args.storedImageUrn;
+  const trustStored = args.storedImageUrn !== null && args.storedRenderId === args.cover.renderId;
+  let imageUrn = trustStored ? args.storedImageUrn : null;
   try {
     if (imageUrn) {
       const status = await pollImage(args.accessToken, imageUrn);
@@ -118,7 +135,7 @@ async function prepareCoverImage(args: {
           result: {
             status: "retryable",
             error: "LinkedIn is still processing the cover image; will retry.",
-            metadata: { linkedinImageUrn: imageUrn },
+            metadata: { linkedinImageUrn: imageUrn, coverRenderId: args.cover.renderId },
           },
         };
       }
@@ -141,20 +158,24 @@ async function prepareCoverImage(args: {
       result: {
         status: "retryable",
         error: "LinkedIn is still processing the cover image; will retry.",
-        metadata: { linkedinImageUrn: imageUrn },
+        metadata: { linkedinImageUrn: imageUrn, coverRenderId: args.cover.renderId },
       },
     };
   } catch (error) {
     const result = await classifyAndRecord(error, args.database, args.connectionId);
-    return { ok: false, result: withImageUrn(result, imageUrn) };
+    return { ok: false, result: withImageUrn(result, imageUrn, args.cover.renderId) };
   }
 }
 
-// Attach the URN to a retryable result so the next attempt skips the upload.
-// ok/permanent results are returned unchanged (ok gets its metadata at the
-// post step; permanent rows are done).
-function withImageUrn(result: DeliveryResult, imageUrn: string | null): DeliveryResult {
-  if (imageUrn && result.status === "retryable") return { ...result, metadata: { linkedinImageUrn: imageUrn } };
+// Attach the URN (and the render it came from) to a retryable result so the
+// next attempt skips the upload — but only when it can validate the reuse
+// against the same render on its next pass. ok/permanent results are
+// returned unchanged (ok gets its metadata at the post step; permanent rows
+// are done).
+function withImageUrn(result: DeliveryResult, imageUrn: string | null, coverRenderId: string): DeliveryResult {
+  if (imageUrn && result.status === "retryable") {
+    return { ...result, metadata: { linkedinImageUrn: imageUrn, coverRenderId } };
+  }
   return result;
 }
 
@@ -226,22 +247,28 @@ export const linkedinDestination: Destination<LinkedinConnection> = {
     // feed than a link card and independent of the blog page's og:image. No
     // ready cover → text + link, exactly as before.
     const cover = await loadCoverImagePayload(piece.tenantId, piece.id, database);
-    let media: { imageUrn: string; altText: string } | undefined;
+    let media: { imageUrn: string; altText: string; renderId: string } | undefined;
     if (cover) {
       const prepared = await prepareCoverImage({
         accessToken,
         ownerUrn: connection.organizationUrn,
         cover,
         storedImageUrn: metadata?.linkedinImageUrn ?? null,
+        storedRenderId: metadata?.coverRenderId ?? null,
         database,
         connectionId: connection.id,
       });
       if (!prepared.ok) return prepared.result;
-      media = { imageUrn: prepared.imageUrn, altText: cover.alt };
+      media = { imageUrn: prepared.imageUrn, altText: cover.alt, renderId: cover.renderId };
     }
 
     try {
-      const { postUrn } = await createPost({ accessToken, authorUrn: connection.organizationUrn, commentary, media });
+      const { postUrn } = await createPost({
+        accessToken,
+        authorUrn: connection.organizationUrn,
+        commentary,
+        media: media ? { imageUrn: media.imageUrn, altText: media.altText } : undefined,
+      });
       if (!postUrn) {
         return {
           status: "permanent",
@@ -249,11 +276,11 @@ export const linkedinDestination: Destination<LinkedinConnection> = {
         };
       }
       return media
-        ? { status: "ok", externalId: postUrn, metadata: { linkedinImageUrn: media.imageUrn } }
+        ? { status: "ok", externalId: postUrn, metadata: { linkedinImageUrn: media.imageUrn, coverRenderId: media.renderId } }
         : { status: "ok", externalId: postUrn };
     } catch (error) {
       const result = await classifyAndRecord(error, database, connection.id);
-      return withImageUrn(result, media?.imageUrn ?? null);
+      return withImageUrn(result, media?.imageUrn ?? null, media?.renderId ?? "");
     }
   },
 };

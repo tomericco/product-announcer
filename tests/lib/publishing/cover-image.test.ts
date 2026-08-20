@@ -57,7 +57,7 @@ describe("loadCoverImagePayload", () => {
 
   it("returns url/alt/width/height for a ready cover with a current render", async () => {
     const { tenant, piece } = await seedPiece();
-    await seedCover(tenant.id, piece.id);
+    const { render } = await seedCover(tenant.id, piece.id);
 
     const cover = await loadCoverImagePayload(tenant.id, piece.id, db);
 
@@ -66,6 +66,7 @@ describe("loadCoverImagePayload", () => {
       alt: "Lighthouse beam over a grid of glowing tiles",
       width: 1200,
       height: 630,
+      renderId: render.id,
     });
   });
 
@@ -122,6 +123,7 @@ describe("loadCoverImagePayload", () => {
       alt: "",
       width: 1200,
       height: 630,
+      renderId: render.id,
     });
   });
 
