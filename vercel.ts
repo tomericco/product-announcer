@@ -13,6 +13,16 @@ export const config: VercelConfig = {
   // dotenv on .env.local, which doesn't exist in a Vercel build; dotenv treats
   // a missing file as a no-op, so the injected Vercel environment is used.
   buildCommand: "npm run db:migrate && next build",
+  // `npm ci`, not the default `npm install`. Vercel restores node_modules from
+  // a build cache, and `npm install` then reconciles it incrementally — which
+  // it can get wrong. It shipped a production build carrying a stale
+  // sharp@0.34.5 while the lockfile said 0.35.3, reported "up to date in 2s",
+  // and left sharp's libvips native library missing, so every route that
+  // transitively imported image code died on load with ERR_DLOPEN_FAILED.
+  // `npm ci` deletes node_modules and installs exactly what the lockfile says,
+  // which is the property a deploy needs — a cache may make a build faster,
+  // never different.
+  installCommand: "npm ci",
   // Hobby permits one cron invocation per day at an imprecise time. Delivery
   // retries and the unresolved-event sweep therefore run daily. Restore
   // "0 * * * *" on upgrading to Pro.
