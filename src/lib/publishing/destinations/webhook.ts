@@ -40,6 +40,8 @@ export const webhookDestination: Destination<WebhookConfig> = {
   // `externalId` and `database` are part of the `Destination` interface
   // (webflow needs `database` to record `needs_reauth`), but webhook
   // delivery has no notion of an external id and no DB write of its own.
+  // `metadata` is likewise part of the interface (LinkedIn's cross-attempt
+  // state) but webhook keeps none, so the parameter is simply omitted here.
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   async deliver(piece, config, _externalId, _database): Promise<DeliveryResult> {
     // A secret is optional. With one, sign the body (HMAC) and, on a decrypt

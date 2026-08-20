@@ -798,6 +798,14 @@ export const webhookConfigs = pgTable("webhook_configs", {
 
 export const destinationEnum = pgEnum("destination", ["webhook", "webflow", "linkedin"]);
 
+// Destination-private state that must survive across attempts of the SAME
+// delivery. Today only LinkedIn uses it: the image URN minted by the Images
+// API before the post step, so a retry after a stuck upload or a failed post
+// reuses the upload instead of minting a second one. jsonb rather than a
+// column per destination — the next destination that needs scratch state
+// adds a key, not a migration.
+export type DeliveryMetadata = { linkedinImageUrn?: string };
+
 export const deliveryAttempts = pgTable(
   "delivery_attempts",
   {
@@ -813,6 +821,9 @@ export const deliveryAttempts = pgTable(
     // Destination-side identifier, e.g. the Webflow CMS item id, so a
     // re-publish updates instead of duplicating.
     externalId: text("external_id"),
+    // See DeliveryMetadata. Null until a destination returns some; carried
+    // forward unchanged by dispatch when a later result returns none.
+    metadata: jsonb("metadata").$type<DeliveryMetadata>(),
     lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },

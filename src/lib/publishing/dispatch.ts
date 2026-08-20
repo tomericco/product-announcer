@@ -137,8 +137,12 @@ async function claimAndDeliver(
       return;
     }
 
-    const result = await destination.deliver(piece, config, attempt.externalId, tx);
+    const result = await destination.deliver(piece, config, attempt.externalId, tx, attempt.metadata);
     const attempts = attemptsFor(result, attempt.attempts);
+    // Carry metadata forward unless this result replaced it. A permanent
+    // failure never returns any (the row is done), so it keeps whatever the
+    // last non-permanent attempt left — harmless, and useful in the UI.
+    const metadata = result.status !== "permanent" && result.metadata ? result.metadata : attempt.metadata;
 
     await tx
       .update(deliveryAttempts)
@@ -147,6 +151,7 @@ async function claimAndDeliver(
         ...(attempts !== undefined ? { attempts } : {}),
         lastError: result.status === "ok" ? null : result.error,
         externalId: result.status === "ok" ? (result.externalId ?? attempt.externalId) : attempt.externalId,
+        metadata,
         lastAttemptAt: new Date(),
       })
       .where(eq(deliveryAttempts.id, attempt.id));
