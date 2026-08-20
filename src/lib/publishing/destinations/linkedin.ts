@@ -1,12 +1,44 @@
 import { and, eq, isNotNull } from "drizzle-orm";
 import { linkedinConnections } from "@/db/schema";
 import { getValidAccessToken } from "@/lib/integrations/linkedin/token";
-import { createPost, LinkedinApiError } from "@/lib/integrations/linkedin/client";
+import {
+  createPost,
+  getImageStatus,
+  initializeImageUpload,
+  uploadImageBytes,
+  LinkedinApiError,
+} from "@/lib/integrations/linkedin/client";
 import { slugify } from "@/lib/publishing/slug";
 import { readVariant } from "@/lib/publishing/channel-variants";
+import { loadCoverImagePayload, type CoverImagePayload } from "@/lib/publishing/cover-image";
 import type { Destination, DeliveryResult, DbClient, ContentPiece } from "./types";
 
 type LinkedinConnection = typeof linkedinConnections.$inferSelect;
+
+// How many times to ask LinkedIn whether the uploaded image is AVAILABLE
+// before handing the wait to the delivery_attempts retry sweep. Uploads are
+// usually ready within a second or two; five polls a second apart bounds a
+// single publish action at ~5 s of waiting plus the per-request 10 s timeouts.
+const IMAGE_STATUS_POLLS = 5;
+function imagePollIntervalMs(): number {
+  return Number(process.env.LINKEDIN_IMAGE_POLL_INTERVAL_MS ?? 1000);
+}
+const BLOB_FETCH_TIMEOUT_MS = 10_000;
+
+// NOTE ON WHERE THIS RUNS. `deliver` is called from inside
+// `claimAndDeliver`'s transaction, holding `SELECT ... FOR UPDATE` on the
+// delivery_attempts row for the whole call (dispatch.ts:88-153, and its
+// comment explains why the lock must span the network call). This flow adds a
+// blob download, an upload and up to 5 one-second polls to that span — call it
+// ~5-10 s of lock, up from ~1 s. That is one row of one table, and the only
+// contender is the hourly sweep, so it is acceptable; it is NOT acceptable to
+// grow the poll budget without revisiting this. If the wait ever needs to be
+// longer, return `retryable` with the URN sooner and let the sweep own the
+// wait — which is exactly what the poll budget already does.
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function isAuthFailure(error: unknown): boolean {
   return error instanceof LinkedinApiError && (error.status === 401 || error.status === 403);
@@ -40,6 +72,92 @@ async function classifyAndRecord(error: unknown, database: DbClient, connectionI
   return classify(error);
 }
 
+// Fetches the cover PNG from Blob. A plain Error (not LinkedinApiError) on any
+// failure so classify() treats it as retryable — Blob is a CDN, this is a
+// transient network problem, never a content problem.
+async function downloadCover(url: string): Promise<Uint8Array> {
+  const response = await fetch(url, { signal: AbortSignal.timeout(BLOB_FETCH_TIMEOUT_MS) });
+  if (!response.ok) throw new Error(`Could not download the cover image: HTTP ${response.status}`);
+  return new Uint8Array(await response.arrayBuffer());
+}
+
+// Polls one image URN. Returns the terminal status, or "PROCESSING" once the
+// poll budget is spent — the caller turns that into `retryable` so the sweep
+// picks it up later without re-uploading.
+async function pollImage(accessToken: string, imageUrn: string): Promise<"AVAILABLE" | "FAILED" | "PROCESSING"> {
+  for (let poll = 0; poll < IMAGE_STATUS_POLLS; poll++) {
+    if (poll > 0) await sleep(imagePollIntervalMs());
+    const status = await getImageStatus({ accessToken, imageUrn });
+    if (status !== "PROCESSING") return status;
+  }
+  return "PROCESSING";
+}
+
+type PreparedCover = { ok: true; imageUrn: string } | { ok: false; result: DeliveryResult };
+
+// Turns the cover into an AVAILABLE LinkedIn image URN, reusing the URN a
+// previous attempt stored on the delivery row so a retry never uploads twice.
+// Any thrown error is classified exactly like a post error, and — once a URN
+// exists — a retryable classification carries it as metadata.
+async function prepareCoverImage(args: {
+  accessToken: string;
+  ownerUrn: string;
+  cover: CoverImagePayload;
+  storedImageUrn: string | null;
+  database: DbClient;
+  connectionId: string;
+}): Promise<PreparedCover> {
+  let imageUrn = args.storedImageUrn;
+  try {
+    if (imageUrn) {
+      const status = await pollImage(args.accessToken, imageUrn);
+      if (status === "AVAILABLE") return { ok: true, imageUrn };
+      if (status === "PROCESSING") {
+        return {
+          ok: false,
+          result: {
+            status: "retryable",
+            error: "LinkedIn is still processing the cover image; will retry.",
+            metadata: { linkedinImageUrn: imageUrn },
+          },
+        };
+      }
+      // FAILED: the earlier upload is dead — mint a fresh one below.
+      imageUrn = null;
+    }
+
+    const bytes = await downloadCover(args.cover.url);
+    const init = await initializeImageUpload({ accessToken: args.accessToken, ownerUrn: args.ownerUrn });
+    imageUrn = init.imageUrn;
+    await uploadImageBytes({ uploadUrl: init.uploadUrl, bytes, accessToken: args.accessToken });
+
+    const status = await pollImage(args.accessToken, imageUrn);
+    if (status === "AVAILABLE") return { ok: true, imageUrn };
+    if (status === "FAILED") {
+      return { ok: false, result: { status: "permanent", error: "LinkedIn could not process the cover image." } };
+    }
+    return {
+      ok: false,
+      result: {
+        status: "retryable",
+        error: "LinkedIn is still processing the cover image; will retry.",
+        metadata: { linkedinImageUrn: imageUrn },
+      },
+    };
+  } catch (error) {
+    const result = await classifyAndRecord(error, args.database, args.connectionId);
+    return { ok: false, result: withImageUrn(result, imageUrn) };
+  }
+}
+
+// Attach the URN to a retryable result so the next attempt skips the upload.
+// ok/permanent results are returned unchanged (ok gets its metadata at the
+// post step; permanent rows are done).
+function withImageUrn(result: DeliveryResult, imageUrn: string | null): DeliveryResult {
+  if (imageUrn && result.status === "retryable") return { ...result, metadata: { linkedinImageUrn: imageUrn } };
+  return result;
+}
+
 export const linkedinDestination: Destination<LinkedinConnection> = {
   id: "linkedin",
   label: "LinkedIn",
@@ -60,7 +178,7 @@ export const linkedinDestination: Destination<LinkedinConnection> = {
     return connection ?? null;
   },
 
-  async deliver(piece: ContentPiece, connection, externalId, database): Promise<DeliveryResult> {
+  async deliver(piece: ContentPiece, connection, externalId, database, metadata): Promise<DeliveryResult> {
     // Post-once: a piece already posted to LinkedIn must never be re-posted
     // (that would duplicate/spam), unlike Webflow which updates in place.
     if (externalId) return { status: "ok", externalId };
@@ -104,17 +222,38 @@ export const linkedinDestination: Destination<LinkedinConnection> = {
       };
     }
 
+    // The cover rides along as the post's own image (spec §8): larger in the
+    // feed than a link card and independent of the blog page's og:image. No
+    // ready cover → text + link, exactly as before.
+    const cover = await loadCoverImagePayload(piece.tenantId, piece.id, database);
+    let media: { imageUrn: string; altText: string } | undefined;
+    if (cover) {
+      const prepared = await prepareCoverImage({
+        accessToken,
+        ownerUrn: connection.organizationUrn,
+        cover,
+        storedImageUrn: metadata?.linkedinImageUrn ?? null,
+        database,
+        connectionId: connection.id,
+      });
+      if (!prepared.ok) return prepared.result;
+      media = { imageUrn: prepared.imageUrn, altText: cover.alt };
+    }
+
     try {
-      const { postUrn } = await createPost({ accessToken, authorUrn: connection.organizationUrn, commentary });
+      const { postUrn } = await createPost({ accessToken, authorUrn: connection.organizationUrn, commentary, media });
       if (!postUrn) {
         return {
           status: "permanent",
           error: "LinkedIn accepted the post but returned no post id; not retrying to avoid duplicating it.",
         };
       }
-      return { status: "ok", externalId: postUrn };
+      return media
+        ? { status: "ok", externalId: postUrn, metadata: { linkedinImageUrn: media.imageUrn } }
+        : { status: "ok", externalId: postUrn };
     } catch (error) {
-      return classifyAndRecord(error, database, connection.id);
+      const result = await classifyAndRecord(error, database, connection.id);
+      return withImageUrn(result, media?.imageUrn ?? null);
     }
   },
 };

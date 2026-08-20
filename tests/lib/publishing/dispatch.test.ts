@@ -7,6 +7,10 @@ import {
   contentPieces,
   webhookConfigs,
   webflowConnections,
+  linkedinConnections,
+  channelVariants,
+  contentImages,
+  imageRenders,
   deliveryAttempts,
   type WebflowFieldMapping,
 } from "../../../src/db/schema";
@@ -759,5 +763,100 @@ describe("dispatch", () => {
     expect(delivery.status).toBe("success");
     // Started at 1, one sweep's delivery increments it — not two.
     expect(delivery.attempts).toBe(2);
+  });
+
+  it("linkedin: a still-processing upload is stored as metadata and the sweep retry posts without re-uploading", async () => {
+    const { tenant, update } = await seed();
+    const li = encryptSecret("li-tok");
+    await db.insert(linkedinConnections).values({
+      tenantId: tenant.id,
+      accessTokenCiphertext: li.ciphertext,
+      accessTokenIv: li.iv,
+      accessTokenAuthTag: li.authTag,
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      organizationUrn: "urn:li:organization:1",
+      baseUrl: "https://acme.com/blog/",
+      status: "active",
+    });
+    await db.insert(channelVariants).values({ contentPieceId: update.id, channel: "linkedin", body: "Hook." });
+    const [image] = await db
+      .insert(contentImages)
+      .values({
+        tenantId: tenant.id,
+        contentPieceId: update.id,
+        role: "cover",
+        concept: "c",
+        altText: "Alt",
+        sourceKind: "generated",
+        status: "ready",
+      })
+      .returning();
+    const [render] = await db
+      .insert(imageRenders)
+      .values({
+        imageId: image.id,
+        prompt: "p",
+        blobUrl: "https://blob.example/cover.png",
+        blobPathname: "tenants/x/cover.png",
+        width: 1200,
+        height: 630,
+        bytes: 10,
+        model: "m",
+      })
+      .returning();
+    await db.update(contentImages).set({ currentRenderId: render.id }).where(eq(contentImages.id, image.id));
+    process.env.LINKEDIN_IMAGE_POLL_INTERVAL_MS = "0";
+
+    let initializeCalls = 0;
+    let uploadCalls = 0;
+    let postCalls = 0;
+    let imageStatus = "PROCESSING";
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url === "https://blob.example/cover.png") return new Response(new Uint8Array([1, 2, 3]), { status: 200 });
+      if (url.endsWith("/rest/images?action=initializeUpload")) {
+        initializeCalls++;
+        return jsonResponse({ value: { uploadUrl: "https://media.example/up/1", image: "urn:li:image:abc" } });
+      }
+      if (url === "https://media.example/up/1" && method === "PUT") {
+        uploadCalls++;
+        return new Response(null, { status: 201 });
+      }
+      if (url.includes("/rest/images/urn%3Ali%3Aimage%3Aabc")) return jsonResponse({ status: imageStatus });
+      if (url.endsWith("/rest/posts") && method === "POST") {
+        postCalls++;
+        return new Response(null, { status: 201, headers: { "x-restli-id": "urn:li:share:9" } });
+      }
+      throw new Error(`Unexpected fetch: ${method} ${url}`);
+    });
+
+    try {
+      await dispatchAllDestinations(update.id, db, ["linkedin"]);
+
+      let [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.contentPieceId, update.id));
+      expect(delivery.status).toBe("failed");
+      expect(delivery.attempts).toBe(1);
+      expect(delivery.metadata).toEqual({ linkedinImageUrn: "urn:li:image:abc" });
+      expect(delivery.lastError).toMatch(/still processing/i);
+      expect(initializeCalls).toBe(1);
+      expect(uploadCalls).toBe(1);
+      expect(postCalls).toBe(0);
+
+      // LinkedIn finishes processing; the sweep retries and must reuse the urn.
+      imageStatus = "AVAILABLE";
+      await retryFailedDeliveries();
+
+      [delivery] = await db.select().from(deliveryAttempts).where(eq(deliveryAttempts.contentPieceId, update.id));
+      expect(delivery.status).toBe("success");
+      expect(delivery.attempts).toBe(2);
+      expect(delivery.externalId).toBe("urn:li:share:9");
+      expect(delivery.metadata).toEqual({ linkedinImageUrn: "urn:li:image:abc" });
+      expect(initializeCalls).toBe(1);
+      expect(uploadCalls).toBe(1);
+      expect(postCalls).toBe(1);
+    } finally {
+      delete process.env.LINKEDIN_IMAGE_POLL_INTERVAL_MS;
+    }
   });
 });
