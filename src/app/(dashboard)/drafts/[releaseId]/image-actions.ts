@@ -442,7 +442,7 @@ export async function uploadImageFile(
   const role: ImageRole = roleField === "cover" ? "cover" : roleField === "library" ? "library" : "body";
   const file = formData.get("file");
   if (!(file instanceof File)) return { ok: false, error: "Choose an image file to upload." };
-  const valid = validateUploadFile({ type: file.type, size: file.size });
+  const valid = validateUploadFile({ type: file.type, size: file.size, name: file.name });
   if (!valid.ok) return valid;
 
   if (contentPieceId) assertDraftEditable(await loadOwnedDraft(tenantId, contentPieceId));

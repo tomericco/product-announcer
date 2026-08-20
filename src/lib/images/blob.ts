@@ -1,6 +1,27 @@
-import { put, del } from "@vercel/blob";
+import { put, del, get } from "@vercel/blob";
 import type { ImageRole } from "@/db/schema";
 import { MAX_DELIVERABLE_BYTES } from "@/lib/images/compress";
+
+// Brand assets (style reference images) live in a SEPARATE, private Blob
+// store from content images — they're inputs the LLM reads, never things a
+// blog reader, Webflow, LinkedIn, or a webhook subscriber fetches directly,
+// so unlike content they don't need a bare-fetchable URL. Its own token: the
+// default `BLOB_READ_WRITE_TOKEN` (used implicitly by every `put`/`del` call
+// below that doesn't pass `token`) stays pointed at the public content store,
+// so none of that existing code needs to change.
+const BRAND_ASSETS_TOKEN = process.env.BRAND_ASSETS_BLOB_READ_WRITE_TOKEN;
+const PRIVATE_BLOB_HOST = /\.private\.blob\.vercel-storage\.com$/;
+
+/** Whether a URL points at the private brand-assets store (vs. the public
+ * content store, or anything else) — the signal `toBytes` (src/lib/ai/images.ts)
+ * needs to pick an authenticated read over a bare fetch. */
+export function isBrandAssetUrl(url: string): boolean {
+  try {
+    return PRIVATE_BLOB_HOST.test(new URL(url).hostname);
+  } catch {
+    return false;
+  }
+}
 
 const MAX_SLUG = 40;
 
@@ -41,8 +62,20 @@ export function brandAssetPathname(a: { tenantId: string; slug: string }): strin
 export const UPLOAD_MAX_BYTES = 10 * 1024 * 1024;
 export const UPLOAD_MIME_TYPES = ["image/png", "image/jpeg", "image/webp"] as const;
 
-export function validateUploadFile(file: { type: string; size: number }): { ok: true } | { ok: false; error: string } {
-  if (!(UPLOAD_MIME_TYPES as readonly string[]).includes(file.type)) {
+// Extension -> the format it implies, for files whose reported `type` this
+// app doesn't recognize. Some tools/OSes still emit the legacy `image/x-png`
+// for PNGs, or report "" when the system has no MIME association registered
+// — the bytes are still a real image, only the browser's guess at its own
+// `type` field was wrong. Safe to trust the extension here because it is
+// only a fast-fail UX gate: `compressPng`'s `sharp(...).metadata()` call is
+// what actually verifies the bytes downstream, regardless of either signal.
+const UPLOAD_EXTENSIONS: Record<string, true> = { png: true, jpg: true, jpeg: true, webp: true };
+
+export function validateUploadFile(file: { type: string; size: number; name?: string }): { ok: true } | { ok: false; error: string } {
+  const extension = file.name?.match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase();
+  const recognized =
+    (UPLOAD_MIME_TYPES as readonly string[]).includes(file.type) || (extension !== undefined && UPLOAD_EXTENSIONS[extension]);
+  if (!recognized) {
     return { ok: false, error: "Only PNG, JPEG or WebP images can be uploaded." };
   }
   if (file.size > UPLOAD_MAX_BYTES) {
@@ -117,4 +150,47 @@ export async function deleteBlobs(pathnames: string[]): Promise<void> {
   } catch (error) {
     console.error("Failed to delete blobs:", pathnames, error);
   }
+}
+
+/**
+ * Uploads one already-compressed PNG to the PRIVATE brand-assets store.
+ * `access: "private"` — a style reference image is never delivered to a
+ * reader, Webflow, LinkedIn, or a webhook subscriber, so unlike `uploadPng`'s
+ * content it has no reason to be bare-fetchable. Dashboard previews and the
+ * illustration agent's own reads (`readBrandAsset`, `toBytes` in
+ * `src/lib/ai/images.ts`) both go through the token, not the URL alone.
+ */
+export async function uploadBrandAsset(pathname: string, png: Buffer): Promise<{ url: string; pathname: string }> {
+  if (png.byteLength > MAX_DELIVERABLE_BYTES) {
+    throw new Error(
+      `uploadBrandAsset: ${png.byteLength} bytes exceeds the ${MAX_DELIVERABLE_BYTES}-byte ceiling — did this skip compressPng?`
+    );
+  }
+  const blob = await put(pathname, png, { access: "private", addRandomSuffix: true, contentType: "image/png", token: BRAND_ASSETS_TOKEN });
+  return { url: blob.url, pathname: blob.pathname };
+}
+
+/** `deleteBlobs`'s counterpart for the private store — same swallow-and-log
+ * shape, different token. */
+export async function deleteBrandAssets(pathnames: string[]): Promise<void> {
+  if (pathnames.length === 0) return;
+  try {
+    await del(pathnames, { token: BRAND_ASSETS_TOKEN });
+  } catch (error) {
+    console.error("Failed to delete brand assets:", pathnames, error);
+  }
+}
+
+/**
+ * Reads one brand asset's bytes through the token — the only way to read a
+ * private blob, whether the caller is our own dashboard (a proxy route, since
+ * the browser has no token) or the illustration agent (`toBytes`). Returns
+ * null for a 404/deleted blob rather than throwing, mirroring `get`'s own
+ * null-on-not-found contract.
+ */
+export async function readBrandAsset(urlOrPathname: string): Promise<{ bytes: Buffer; contentType: string | null } | null> {
+  const result = await get(urlOrPathname, { access: "private", token: BRAND_ASSETS_TOKEN });
+  if (!result || !result.stream) return null;
+  const bytes = Buffer.from(await new Response(result.stream).arrayBuffer());
+  return { bytes, contentType: result.blob.contentType };
 }

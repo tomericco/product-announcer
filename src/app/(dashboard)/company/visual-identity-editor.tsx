@@ -285,8 +285,12 @@ export function VisualIdentityEditor({
               <ul className="flex flex-wrap gap-2">
                 {identity.styleReferenceImages.map((ref) => (
                   <li key={ref} className="group relative">
+                    {/* Style references are stored in the private brand-assets
+                        store (the browser has no Blob token), so the thumbnail
+                        goes through the authenticated proxy route rather than
+                        the raw blob URL. */}
                     <Image
-                      src={ref}
+                      src={`/api/brand-assets?url=${encodeURIComponent(ref)}`}
                       alt=""
                       width={96}
                       height={72}

@@ -1,15 +1,19 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-vi.mock("@vercel/blob", () => ({ put: vi.fn(), del: vi.fn() }));
+vi.mock("@vercel/blob", () => ({ put: vi.fn(), del: vi.fn(), get: vi.fn() }));
 
-import { put, del } from "@vercel/blob";
+import { put, del, get } from "@vercel/blob";
 import {
   UPLOAD_MAX_BYTES,
   blobPathnameFromUrl,
   brandAssetPathname,
   deleteBlobs,
+  deleteBrandAssets,
   imagePathname,
+  isBrandAssetUrl,
+  readBrandAsset,
   slugForImage,
+  uploadBrandAsset,
   uploadPng,
   validateUploadFile,
 } from "../../../src/lib/images/blob";
@@ -18,6 +22,7 @@ import { MAX_DELIVERABLE_BYTES } from "../../../src/lib/images/compress";
 beforeEach(() => {
   vi.mocked(put).mockReset();
   vi.mocked(del).mockReset();
+  vi.mocked(get).mockReset();
   vi.restoreAllMocks();
 });
 
@@ -150,5 +155,83 @@ describe("deleteBlobs", () => {
     vi.mocked(del).mockRejectedValue(new Error("quota"));
     await expect(deleteBlobs(["a.png"])).resolves.toBeUndefined();
     expect(consoleError).toHaveBeenCalled();
+  });
+});
+
+describe("isBrandAssetUrl", () => {
+  it("is true only for the private store's host", () => {
+    expect(isBrandAssetUrl("https://abc.private.blob.vercel-storage.com/tenants/t1/brand/x.png")).toBe(true);
+  });
+  it("is false for the public content store, or anything else", () => {
+    expect(isBrandAssetUrl("https://abc.public.blob.vercel-storage.com/tenants/t1/content/p1/cover-x.png")).toBe(false);
+    expect(isBrandAssetUrl("https://evil.example.com/x.png")).toBe(false);
+    expect(isBrandAssetUrl("not a url")).toBe(false);
+  });
+});
+
+describe("uploadBrandAsset", () => {
+  it("puts a PRIVATE, random-suffixed PNG and returns url + pathname", async () => {
+    vi.mocked(put).mockResolvedValue({ url: "https://x.private.blob.vercel-storage.com/t/x-abc.png", pathname: "tenants/t/x-abc.png" } as never);
+    const png = Buffer.from("png");
+    const result = await uploadBrandAsset("tenants/t/x.png", png);
+    expect(put).toHaveBeenCalledWith(
+      "tenants/t/x.png",
+      png,
+      expect.objectContaining({ access: "private", addRandomSuffix: true, contentType: "image/png" })
+    );
+    expect(result).toEqual({ url: "https://x.private.blob.vercel-storage.com/t/x-abc.png", pathname: "tenants/t/x-abc.png" });
+  });
+
+  it("throws for a buffer over MAX_DELIVERABLE_BYTES without ever calling put()", async () => {
+    const png = Buffer.alloc(MAX_DELIVERABLE_BYTES + 1);
+    await expect(uploadBrandAsset("tenants/t/big.png", png)).rejects.toThrow(/exceeds/);
+    expect(put).not.toHaveBeenCalled();
+  });
+});
+
+describe("deleteBrandAssets", () => {
+  it("deletes in one call and is a no-op for an empty list", async () => {
+    vi.mocked(del).mockResolvedValue(undefined as never);
+    await deleteBrandAssets(["a.png", "b.png"]);
+    expect(del).toHaveBeenCalledWith(["a.png", "b.png"], expect.objectContaining({}));
+    await deleteBrandAssets([]);
+    expect(del).toHaveBeenCalledTimes(1);
+  });
+
+  it("swallows and logs failures", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(del).mockRejectedValue(new Error("quota"));
+    await expect(deleteBrandAssets(["a.png"])).resolves.toBeUndefined();
+    expect(consoleError).toHaveBeenCalled();
+  });
+});
+
+describe("readBrandAsset", () => {
+  function streamOf(bytes: string): ReadableStream<Uint8Array> {
+    const data = new TextEncoder().encode(bytes);
+    return new ReadableStream({
+      start(controller) {
+        controller.enqueue(data);
+        controller.close();
+      },
+    });
+  }
+
+  it("reads the bytes and content type through the token", async () => {
+    vi.mocked(get).mockResolvedValue({
+      stream: streamOf("png-bytes"),
+      blob: { contentType: "image/png" },
+    } as never);
+
+    const result = await readBrandAsset("https://x.private.blob.vercel-storage.com/t/a.png");
+
+    expect(get).toHaveBeenCalledWith("https://x.private.blob.vercel-storage.com/t/a.png", expect.objectContaining({ access: "private" }));
+    expect(result?.bytes.toString()).toBe("png-bytes");
+    expect(result?.contentType).toBe("image/png");
+  });
+
+  it("returns null when the blob is not found", async () => {
+    vi.mocked(get).mockResolvedValue(null as never);
+    expect(await readBrandAsset("https://x.private.blob.vercel-storage.com/t/gone.png")).toBeNull();
   });
 });

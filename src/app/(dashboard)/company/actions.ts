@@ -15,7 +15,14 @@ import { discoverCompetitorSources } from "@/lib/signals/discover-sources";
 import { DEFAULT_VISUAL_IDENTITY, MAX_REFERENCE_IMAGES, parseVisualIdentity } from "@/lib/images/visual-identity";
 import { deriveVisualIdentityFromPage } from "@/lib/workspace/derive-visual-identity";
 import { compressPng } from "@/lib/images/compress";
-import { blobPathnameFromUrl, brandAssetPathname, deleteBlobs, slugForImage, uploadPng, validateUploadFile } from "@/lib/images/blob";
+import {
+  blobPathnameFromUrl,
+  brandAssetPathname,
+  deleteBrandAssets,
+  slugForImage,
+  uploadBrandAsset,
+  validateUploadFile,
+} from "@/lib/images/blob";
 import type { VisualIdentity } from "@/db/schema";
 
 /**
@@ -295,7 +302,7 @@ export async function uploadStyleReference(
   const session = await requireSession();
   const file = formData.get("file");
   if (!(file instanceof File)) return { ok: false, error: "Choose an image file to upload." };
-  const valid = validateUploadFile({ type: file.type, size: file.size });
+  const valid = validateUploadFile({ type: file.type, size: file.size, name: file.name });
   if (!valid.ok) return { ok: false, error: valid.error };
 
   const profile = await getOrCreateCompanyProfile(session.user.tenantId);
@@ -311,10 +318,22 @@ export async function uploadStyleReference(
     };
   }
 
+  // Narrowed to compressPng alone: it throws for bytes that are not an
+  // image, whatever the browser claimed the mime type was, so this catch's
+  // message is honest only about this step. A wider catch around the Blob
+  // upload/DB write below would blame the file for e.g. a missing
+  // BLOB_READ_WRITE_TOKEN locally or a transient Blob error, which has
+  // nothing to do with whether the image could be read.
+  let png: Buffer;
   try {
-    const { png } = await compressPng(Buffer.from(await file.arrayBuffer()), RENDER_MAX_WIDTH);
+    ({ png } = await compressPng(Buffer.from(await file.arrayBuffer()), RENDER_MAX_WIDTH));
+  } catch {
+    return { ok: false, error: "That file couldn't be read as an image — try a PNG, JPEG or WebP." };
+  }
+
+  try {
     const slug = slugForImage(file.name.replace(/\.[a-z0-9]+$/i, ""));
-    const { url } = await uploadPng(brandAssetPathname({ tenantId: session.user.tenantId, slug }), png);
+    const { url } = await uploadBrandAsset(brandAssetPathname({ tenantId: session.user.tenantId, slug }), png);
     const styleReferenceImages = [...identity.styleReferenceImages, url];
 
     await db
@@ -324,10 +343,9 @@ export async function uploadStyleReference(
 
     revalidatePath("/company");
     return { ok: true, styleReferenceImages };
-  } catch {
-    // compressPng throws for bytes that are not an image, whatever the
-    // browser claimed the mime type was.
-    return { ok: false, error: "That file couldn't be read as an image — try a PNG, JPEG or WebP." };
+  } catch (error) {
+    console.error("uploadStyleReference: upload/save failed", error);
+    return { ok: false, error: "Couldn't upload that image — try again." };
   }
 }
 
@@ -367,7 +385,7 @@ export async function removeStyleReference(
     .update(companyProfiles)
     .set({ visualIdentity: { ...identity, styleReferenceImages }, updatedAt: new Date() })
     .where(eq(companyProfiles.id, profile.id));
-  await deleteBlobs([pathname]);
+  await deleteBrandAssets([pathname]);
 
   revalidatePath("/company");
   return { ok: true, styleReferenceImages };

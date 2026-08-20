@@ -149,16 +149,20 @@ export function isVisualIdentityReady(vi: VisualIdentity | null): boolean {
 const HEX = /^#[0-9a-f]{6}$/;
 
 /**
- * Style reference images must be `https://<store-id>.public.blob.vercel-storage.com/…`
- * — the exact host `uploadPng`/`put()` returns (`blob.ts`'s `brandAssetPathname`
- * lives under `tenants/{tenantId}/brand/…` on that same host) and the only host
- * `next.config.ts`'s `images.remotePatterns` allow-lists. Anything else is
- * rejected here rather than trusted as "some URL a tenant typed": `saveVisualIdentity`
- * persists this array verbatim, and `removeStyleReference` later calls `del()`
- * against a pathname derived from it, so an arbitrary host would let one tenant
- * point at (and, via removal, delete) a blob outside this store entirely.
+ * Style reference images must be `https://<store-id>.private.blob.vercel-storage.com/…`
+ * — the exact host `uploadBrandAsset`/`put({access:"private"})` returns
+ * (`blob.ts`'s `brandAssetPathname` lives under `tenants/{tenantId}/brand/…`
+ * on that same host). Private, unlike content images: a style reference is
+ * only ever read back through the `BRAND_ASSETS_BLOB_READ_WRITE_TOKEN` (the
+ * dashboard's proxy route, or `toBytes` in `src/lib/ai/images.ts`), never
+ * fetched bare by a reader, Webflow, LinkedIn, or a webhook subscriber.
+ * Anything else is rejected here rather than trusted as "some URL a tenant
+ * typed": `saveVisualIdentity` persists this array verbatim, and
+ * `removeStyleReference` later calls `del()` against a pathname derived from
+ * it, so an arbitrary host would let one tenant point at (and, via removal,
+ * delete) a blob outside this store entirely.
  */
-const BLOB_HOST = /\.public\.blob\.vercel-storage\.com$/;
+const BLOB_HOST = /\.private\.blob\.vercel-storage\.com$/;
 const BLOB_URL_SCHEMA = z.url().refine((s) => {
   try {
     const url = new URL(s);

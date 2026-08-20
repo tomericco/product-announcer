@@ -172,18 +172,25 @@ describe("parseVisualIdentity", () => {
     expect(parseVisualIdentity({ ...IDENTITY, palette: [] })?.palette).toEqual([]);
   });
 
-  it("restricts styleReferenceImages to this app's blob-storage host", () => {
-    // Only `https://<store-id>.public.blob.vercel-storage.com/…` — the host
-    // `uploadPng`/`put()` actually returns and the only one `next.config.ts`
-    // allow-lists. `saveVisualIdentity` persists this array verbatim and
-    // `removeStyleReference` later deletes by a pathname derived from it, so
-    // any other host must be rejected here, not trusted as "some URL".
-    const valid = "https://abc123.public.blob.vercel-storage.com/tenants/t1/brand/logo-xyz.png";
+  it("restricts styleReferenceImages to this app's private blob-storage host", () => {
+    // Only `https://<store-id>.private.blob.vercel-storage.com/…` — the host
+    // `uploadBrandAsset`/`put({access:"private"})` actually returns. Brand
+    // assets are private (unlike content images), so this is a DIFFERENT
+    // host than the public content store. `saveVisualIdentity` persists this
+    // array verbatim and `removeStyleReference` later deletes by a pathname
+    // derived from it, so any other host must be rejected here, not trusted
+    // as "some URL".
+    const valid = "https://abc123.private.blob.vercel-storage.com/tenants/t1/brand/logo-xyz.png";
     expect(parseVisualIdentity({ ...IDENTITY, styleReferenceImages: [valid] })?.styleReferenceImages).toEqual([valid]);
 
     expect(parseVisualIdentity({ ...IDENTITY, styleReferenceImages: ["https://evil.example.com/logo.png"] })).toBeNull();
     expect(
-      parseVisualIdentity({ ...IDENTITY, styleReferenceImages: ["http://abc123.public.blob.vercel-storage.com/logo.png"] })
+      parseVisualIdentity({ ...IDENTITY, styleReferenceImages: ["http://abc123.private.blob.vercel-storage.com/logo.png"] })
+    ).toBeNull();
+    // The public content-store host is no longer a valid host for a style
+    // reference — brand assets and content images are different stores now.
+    expect(
+      parseVisualIdentity({ ...IDENTITY, styleReferenceImages: ["https://abc123.public.blob.vercel-storage.com/logo.png"] })
     ).toBeNull();
   });
 });

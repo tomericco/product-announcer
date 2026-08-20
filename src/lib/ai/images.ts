@@ -3,6 +3,7 @@ import type { DbClient } from "@/lib/publishing/destinations/types";
 import { recordLlmUsage } from "@/lib/ai/llm-usage";
 import { IMAGE_MODEL_DEFAULT, imageModelId, resolveImageModel } from "@/lib/ai/image-model";
 import { imageDimensions } from "@/lib/images/compress";
+import { isBrandAssetUrl, readBrandAsset } from "@/lib/images/blob";
 import { IMAGE_ASPECT_RATIOS, IMAGE_SIZES, type ImageSize } from "@/lib/images/prompt";
 
 export type RenderImageArgs = {
@@ -30,20 +31,36 @@ export type RenderImageArgs = {
 /** How far off 1.91:1 a cover may be before we ask again. 2% ≈ 1.87–1.94:1. */
 export const ASPECT_TOLERANCE = 0.02;
 
-/** Injectable for tests. `generate` is `ai`'s generateImage; `fetchImpl` downloads URL references. */
+/** Injectable for tests. `generate` is `ai`'s generateImage; `fetchImpl` downloads
+ * URL references from the public content store; `readBrandAssetImpl` reads
+ * private brand-asset URLs (style references) through their own token. */
 export type RenderImageDeps = {
   generate?: typeof generateImage;
   fetchImpl?: typeof fetch;
+  readBrandAssetImpl?: typeof readBrandAsset;
 };
 
-async function toBytes(ref: string | Buffer, fetchImpl: typeof fetch): Promise<Buffer> {
+/**
+ * `bodyReferences` (image-actions.ts) mixes brand-asset URLs (style
+ * references, private store) with a content URL (the piece's own cover, if
+ * `pinStyleToCover`, public store) in the SAME `referenceImages` array, so
+ * this branches per-URL rather than per-array: a bare `fetchImpl` 403s
+ * against the private store, and the token-based read has no reason to work
+ * for a public content URL it wasn't issued for.
+ */
+async function toBytes(ref: string | Buffer, fetchImpl: typeof fetch, readBrandAssetImpl: typeof readBrandAsset): Promise<Buffer> {
   if (Buffer.isBuffer(ref)) return ref;
+  if (isBrandAssetUrl(ref)) {
+    const asset = await readBrandAssetImpl(ref);
+    if (!asset) throw new Error(`Failed to fetch reference image (not found): ${ref}`);
+    return asset.bytes;
+  }
   const res = await fetchImpl(ref);
   if (!res.ok) throw new Error(`Failed to fetch reference image (${res.status}): ${ref}`);
   return Buffer.from(await res.arrayBuffer());
 }
 
-/** The shape `size` asks for, as a number. "1200x630" -> 1.904…  */
+/** The shape `size` asks for, as a number. "1200x624" -> 1.923…  */
 function targetAspect(size: ImageSize): number {
   const [width, height] = size.split("x").map(Number);
   return width / height;
@@ -84,14 +101,15 @@ async function aspectDeviation(png: Buffer, wanted: number): Promise<number | nu
 export async function renderImage(args: RenderImageArgs, deps: RenderImageDeps = {}): Promise<Buffer> {
   const generate = deps.generate ?? generateImage;
   const fetchImpl = deps.fetchImpl ?? fetch;
+  const readBrandAssetImpl = deps.readBrandAssetImpl ?? readBrandAsset;
   const spec = process.env.IMAGE_MODEL ?? IMAGE_MODEL_DEFAULT;
   const model = resolveImageModel(spec);
 
   let prompt: Parameters<typeof generateImage>[0]["prompt"];
   if (args.editOf !== undefined) {
-    prompt = { images: [await toBytes(args.editOf, fetchImpl)], text: args.prompt };
+    prompt = { images: [await toBytes(args.editOf, fetchImpl, readBrandAssetImpl)], text: args.prompt };
   } else if (args.referenceImages && args.referenceImages.length > 0) {
-    const images = await Promise.all(args.referenceImages.map((r) => toBytes(r, fetchImpl)));
+    const images = await Promise.all(args.referenceImages.map((r) => toBytes(r, fetchImpl, readBrandAssetImpl)));
     prompt = { images, text: args.prompt };
   } else {
     prompt = args.prompt;
@@ -150,7 +168,7 @@ export async function renderImage(args: RenderImageArgs, deps: RenderImageDeps =
   const second = await renderOnce();
   const secondDeviation = await aspectDeviation(second, wanted);
   if (secondDeviation !== null && secondDeviation > ASPECT_TOLERANCE) {
-    // Store the truth. Cropping to 1200x630 would cut detail the concept put
+    // Store the truth. Cropping to 1200x624 would cut detail the concept put
     // there on purpose, and lying about width/height would break every
     // downstream consumer (Plan 4 publishes these numbers verbatim).
     console.warn(

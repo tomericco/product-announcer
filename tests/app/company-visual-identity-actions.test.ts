@@ -20,13 +20,13 @@ vi.mock("../../src/lib/workspace/derive-visual-identity", () => ({
 vi.mock("../../src/lib/images/compress", () => ({
   compressPng: vi.fn(async (png: Buffer, maxWidth: number) => ({ png, width: maxWidth, height: 900 })),
 }));
-const deleteBlobs = vi.fn(async (_pathnames: string[]) => {});
+const deleteBrandAssets = vi.fn(async (_pathnames: string[]) => {});
 vi.mock("../../src/lib/images/blob", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/lib/images/blob")>();
   return {
     ...actual,
-    uploadPng: vi.fn(async (pathname: string) => ({ url: `https://blob.example/${pathname}`, pathname })),
-    deleteBlobs: (pathnames: string[]) => deleteBlobs(pathnames),
+    uploadBrandAsset: vi.fn(async (pathname: string) => ({ url: `https://blob.example.private.blob.vercel-storage.com/${pathname}`, pathname })),
+    deleteBrandAssets: (pathnames: string[]) => deleteBrandAssets(pathnames),
   };
 });
 
@@ -118,7 +118,7 @@ describe("uploadStyleReference", () => {
 
     expect(result).toEqual({
       ok: true,
-      styleReferenceImages: [`https://blob.example/tenants/${tenant.id}/brand/our-hero-illustration.png`],
+      styleReferenceImages: [`https://blob.example.private.blob.vercel-storage.com/tenants/${tenant.id}/brand/our-hero-illustration.png`],
     });
     const [profile] = await db.select().from(companyProfiles).where(eq(companyProfiles.tenantId, tenant.id));
     expect(profile.visualIdentity?.styleReferenceImages).toEqual(result.ok ? result.styleReferenceImages : []);
@@ -168,7 +168,7 @@ describe("removeStyleReference", () => {
     const url = added.ok ? added.styleReferenceImages[0] : "";
 
     expect(await removeStyleReference(url)).toEqual({ ok: true, styleReferenceImages: [] });
-    expect(deleteBlobs).toHaveBeenCalledWith([`tenants/${tenant.id}/brand/a.png`]);
+    expect(deleteBrandAssets).toHaveBeenCalledWith([`tenants/${tenant.id}/brand/a.png`]);
     const [profile] = await db.select().from(companyProfiles).where(eq(companyProfiles.tenantId, tenant.id));
     expect(profile.visualIdentity?.styleReferenceImages).toEqual([]);
   });
@@ -179,7 +179,7 @@ describe("removeStyleReference", () => {
     await saveVisualIdentity(IDENTITY);
 
     expect(await removeStyleReference("https://blob.example/somebody/else.png")).toEqual({ ok: true, styleReferenceImages: [] });
-    expect(deleteBlobs).not.toHaveBeenCalled();
+    expect(deleteBrandAssets).not.toHaveBeenCalled();
   });
 
   it("refuses to delete another tenant's blob even when it is (maliciously) in this tenant's own array", async () => {
@@ -188,9 +188,9 @@ describe("removeStyleReference", () => {
     // host as `next.config.ts`, so it passes the schema's host check), then
     // calls removeStyleReference with that same URL. Array membership alone
     // used to be treated as proof of ownership; it is not — this must be
-    // rejected by the tenant-prefix check before `deleteBlobs` ever runs.
+    // rejected by the tenant-prefix check before `deleteBrandAssets` ever runs.
     const otherTenantId = "00000000-0000-0000-0000-000000000099";
-    const foreignUrl = `https://example.public.blob.vercel-storage.com/tenants/${otherTenantId}/brand/cover-abc123.png`;
+    const foreignUrl = `https://example.private.blob.vercel-storage.com/tenants/${otherTenantId}/brand/cover-abc123.png`;
 
     const tenant = await seedTenant(TENANT);
     currentTenantId = tenant.id;
@@ -199,7 +199,7 @@ describe("removeStyleReference", () => {
 
     const result = await removeStyleReference(foreignUrl);
     expect(result).toEqual({ ok: true, styleReferenceImages: [foreignUrl] });
-    expect(deleteBlobs).toHaveBeenCalledTimes(0);
+    expect(deleteBrandAssets).toHaveBeenCalledTimes(0);
 
     const [profile] = await db.select().from(companyProfiles).where(eq(companyProfiles.tenantId, tenant.id));
     expect(profile.visualIdentity?.styleReferenceImages).toEqual([foreignUrl]);
