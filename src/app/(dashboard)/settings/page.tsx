@@ -8,8 +8,15 @@ import { saveWorkspaceName } from "./actions";
 import { CalendarForm } from "./calendar-form";
 import { MembersSection } from "./members-section";
 import { ScheduleForm } from "./schedule-form";
+import { AiVisibilityForm } from "./ai-visibility-form";
 import { normalizeWeekStart } from "@/lib/workspace/calendar-settings";
 import { getOrCreateCompanyProfile } from "@/lib/workspace/company-profile";
+import { getAiVisibilitySettings } from "@/lib/ai-visibility/settings";
+import { listPrompts } from "@/lib/ai-visibility/prompts";
+import { capExceeded } from "@/lib/ai-visibility/cost";
+import { engineCost } from "@/lib/ai-visibility/engines";
+import { ENGINE_ORDER } from "../ai-visibility/engine-labels";
+import type { EngineId } from "@/lib/ai-visibility/types";
 import { ImagePolicyForm } from "./image-policy-form";
 import { ToastForm } from "./toast-form";
 import { Button } from "@/components/ui/button";
@@ -26,6 +33,19 @@ export default async function SettingsPage() {
     .from(scheduleConfigs)
     .where(eq(scheduleConfigs.tenantId, session.user.tenantId));
   const profile = await getOrCreateCompanyProfile(session.user.tenantId);
+  const aiVisibilitySettings = await getAiVisibilitySettings(session.user.tenantId);
+  const aiVisibilityPrompts = await listPrompts(session.user.tenantId, { status: "active" });
+  // Read here, in the Server Component, and handed down as plain numbers:
+  // `engineCost` lives with the four fetch-based API clients, so importing it
+  // from the form would pull all four into the browser bundle.
+  const engineCosts = Object.fromEntries(
+    ENGINE_ORDER.map((engine) => [engine, engineCost(engine)])
+  ) as Record<EngineId, number>;
+  const aiVisibilitySpend = await capExceeded(
+    session.user.tenantId,
+    aiVisibilitySettings,
+    new Date()
+  );
 
   return (
     <div className="space-y-8">
@@ -57,6 +77,23 @@ export default async function SettingsPage() {
         </CardHeader>
         <CardContent>
           <ScheduleForm defaults={{ hour: workspaceSchedule?.hour ?? 9 }} />
+        </CardContent>
+      </Card>
+
+      <Card id="ai-visibility">
+        <CardHeader>
+          <CardTitle>AI visibility</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {/* Keyed on the server values like every other card on this page:
+              the form seeds its state once. */}
+          <AiVisibilityForm
+            key={JSON.stringify(aiVisibilitySettings)}
+            defaults={aiVisibilitySettings}
+            promptCount={aiVisibilityPrompts.length}
+            costPerCall={engineCosts}
+            spentUsd={aiVisibilitySpend.spentUsd}
+          />
         </CardContent>
       </Card>
 
