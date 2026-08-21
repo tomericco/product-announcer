@@ -1,10 +1,18 @@
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
-import { aiVisibilityPrompts, aiVisibilityRuns, aiVisibilitySamples, sources } from "@/db/schema";
+import {
+  aiVisibilityPrompts,
+  aiVisibilityRuns,
+  aiVisibilitySamples,
+  sources,
+  type AiVisibilityRun,
+} from "@/db/schema";
 import { getAiVisibilitySettings, ensureAiVisibilitySource } from "@/lib/ai-visibility/settings";
+import { computeAggregates } from "@/lib/ai-visibility/aggregate";
 import { capExceeded } from "@/lib/ai-visibility/cost";
 import { ENGINE_CLIENTS } from "@/lib/ai-visibility/engines";
 import { extractSample, loadBrandTargets, type ExtractSampleDeps } from "@/lib/ai-visibility/extract";
+import { judgeRun } from "@/lib/ai-visibility/judge";
 import { mapWithConcurrency } from "@/lib/concurrency";
 import type { EngineClient, EngineId } from "@/lib/ai-visibility/types";
 
@@ -339,4 +347,187 @@ export async function runSlice(
   }
 
   return { processed, remaining, budgetSpent, pausedByCap };
+}
+
+export type FinalizeDeps = RunDeps & {
+  judge?: typeof judgeRun;
+  aggregate?: typeof computeAggregates;
+  emit?: (
+    runId: string,
+    opts: { now: Clock },
+    deps?: { database?: typeof defaultDb }
+  ) => Promise<{ written: number; considered: number }>;
+};
+
+/**
+ * Per-engine failure summary for the source row's `lastError`.
+ *
+ * Reads like the news agent's partial-failure line, and for the same reason: a
+ * run where Perplexity rate-limited nine prompts did its job, and the operator
+ * needs the sentence rather than a red badge.
+ */
+async function engineFailureSummary(
+  database: typeof defaultDb,
+  runId: string
+): Promise<{ message: string | null; okSamples: number; totalSamples: number }> {
+  const rows = await database
+    .select({
+      engine: aiVisibilitySamples.engine,
+      status: aiVisibilitySamples.status,
+      error: aiVisibilitySamples.error,
+    })
+    .from(aiVisibilitySamples)
+    .where(eq(aiVisibilitySamples.runId, runId));
+
+  const byEngine = new Map<string, { total: number; failed: number; lastError: string | null }>();
+  let okSamples = 0;
+  for (const row of rows) {
+    const entry = byEngine.get(row.engine) ?? { total: 0, failed: 0, lastError: null };
+    entry.total += 1;
+    if (row.status === "ok") okSamples += 1;
+    else {
+      entry.failed += 1;
+      if (row.error) entry.lastError = row.error;
+    }
+    byEngine.set(row.engine, entry);
+  }
+
+  const parts: string[] = [];
+  for (const [engine, entry] of byEngine) {
+    if (entry.failed === 0) continue;
+    parts.push(
+      `${engine} failed on ${entry.failed} of ${entry.total} calls${entry.lastError ? ` — ${entry.lastError}` : ""}`
+    );
+  }
+
+  return {
+    message: parts.length > 0 ? parts.join("; ") : null,
+    okSamples,
+    totalSamples: rows.length,
+  };
+}
+
+/**
+ * Records the outcome of a run on the `sources` row.
+ *
+ * Copied from `news-agent.ts`'s `finish()` deliberately, including its ruling:
+ * `productive` — not "were there any errors" — decides the badge, so the shared
+ * `SourceStatusBadge` means the same thing on the AI-visibility card as on the
+ * news card. `failing` is advisory, never terminal; only a human setting
+ * `disabled` retires a source.
+ */
+async function finish(
+  database: typeof defaultDb,
+  sourceId: string | null,
+  now: Date,
+  error: string | null,
+  productive: boolean
+): Promise<void> {
+  if (!sourceId) return;
+  await database
+    .update(sources)
+    .set({
+      lastRunAt: now,
+      lastSuccessAt: productive ? now : undefined,
+      lastError: error,
+      status: productive ? "active" : "failing",
+    })
+    .where(eq(sources.id, sourceId));
+}
+
+/**
+ * Closes out a run whose samples are all answered.
+ *
+ * Order is load-bearing and asserted by the tests: judge, then aggregate, then
+ * emit signals, then mark complete. Aggregates read the judge's `recommended`
+ * level and its `flagged` rows, and signals read the aggregates — running any
+ * of them early produces numbers that are quietly wrong rather than absent.
+ *
+ * Resumable at the judge step only. If the judge budget runs out the run stays
+ * `running` and nothing downstream happens, because a partial judge pass would
+ * make `n` smaller than it really is and every rate correspondingly noisier —
+ * and those aggregates are then the permanent record for that run.
+ *
+ * Never throws. A run is a scheduled background job; a failure has to land on
+ * the run row and the source badge where a human can see it, not in a cron log.
+ */
+export async function finalizeRun(
+  runId: string,
+  opts: { budgetMs: number; now: Clock },
+  deps: FinalizeDeps = {}
+): Promise<{ status: "complete" | "running" | "failed"; judged: number; signals: number }> {
+  const database = deps.database ?? defaultDb;
+  const judge = deps.judge ?? judgeRun;
+  const aggregate = deps.aggregate ?? computeAggregates;
+  // Stubbed until Task F2 lands; Step 4 below replaces the default with the
+  // real `emitSignals`.
+  const emit = deps.emit ?? (async () => ({ written: 0, considered: 0 }));
+
+  const [run] = await database.select().from(aiVisibilityRuns).where(eq(aiVisibilityRuns.id, runId));
+  if (!run) return { status: "failed", judged: 0, signals: 0 };
+  // Finalizing twice would emit a second set of signals for the same run. The
+  // externalId dedupe would absorb most of them, but "most" is not a guarantee
+  // worth relying on when the check is one comparison.
+  if (run.status === "complete") return { status: "complete", judged: 0, signals: 0 };
+
+  try {
+    const judged = await judge(runId, { budgetMs: opts.budgetMs, now: opts.now }, { database });
+    if (judged.remaining > 0) {
+      // Deliberately leaves the run `running`: the next cron tick — or an
+      // earlier manual "Run now", which also drives in-flight runs — resumes
+      // here.
+      return { status: "running", judged: judged.judged, signals: 0 };
+    }
+
+    await aggregate(runId, database);
+    const emitted = await emit(runId, { now: opts.now }, { database });
+
+    const summary = await engineFailureSummary(database, runId);
+    const errorText = [summary.message, ...judged.errors].filter(Boolean).join("; ") || null;
+
+    await database
+      .update(aiVisibilityRuns)
+      .set({ status: "complete", finishedAt: opts.now(), error: errorText })
+      .where(eq(aiVisibilityRuns.id, runId));
+
+    // Productive = the run got at least one usable answer. A run where every
+    // engine failed is genuinely `failing`; one where three of four answered is
+    // not, however loud its lastError.
+    await finish(database, run.sourceId, opts.now(), errorText, summary.okSamples > 0);
+
+    return { status: "complete", judged: judged.judged, signals: emitted.written };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    try {
+      await database
+        .update(aiVisibilityRuns)
+        .set({ status: "failed", error: message, finishedAt: opts.now() })
+        .where(eq(aiVisibilityRuns.id, runId));
+      await finish(database, run.sourceId, opts.now(), message, false);
+    } catch (secondary) {
+      console.error(`[ai-visibility] could not record finalize failure for run ${runId}:`, secondary);
+    }
+    return { status: "failed", judged: 0, signals: 0 };
+  }
+}
+
+/**
+ * The tenant's most recent run, whatever its status.
+ *
+ * Any status on purpose: the overview header has to render "Running… 41 / 360
+ * calls" and "Paused — monthly cap reached" off this row, and filtering to
+ * `complete` would make both states invisible on the one page that exists to
+ * show them.
+ */
+export async function latestRun(
+  tenantId: string,
+  database: typeof defaultDb = defaultDb
+): Promise<AiVisibilityRun | null> {
+  const [run] = await database
+    .select()
+    .from(aiVisibilityRuns)
+    .where(eq(aiVisibilityRuns.tenantId, tenantId))
+    .orderBy(desc(aiVisibilityRuns.startedAt))
+    .limit(1);
+  return run ?? null;
 }

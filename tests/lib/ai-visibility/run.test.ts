@@ -1,15 +1,16 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { db } from "../../../src/db";
 import {
   aiVisibilityPrompts,
   aiVisibilityRuns,
   aiVisibilitySamples,
+  aiVisibilityAggregates,
   aiVisibilitySettings,
   sources,
 } from "../../../src/db/schema";
 import type { EngineAnswer, EngineClient, EngineError } from "../../../src/lib/ai-visibility/types";
-import { planRun, runSlice } from "../../../src/lib/ai-visibility/run";
+import { finalizeRun, latestRun, planRun, runSlice } from "../../../src/lib/ai-visibility/run";
 import { seedTenant, dropTenant } from "../../helpers/fixtures";
 
 const TENANT = "AI Visibility Run Test Tenant";
@@ -466,5 +467,243 @@ describe("runSlice", () => {
     );
 
     expect(extracted).toEqual([]);
+  });
+});
+
+describe("finalizeRun", () => {
+  async function ran(sampleStatuses: string[]) {
+    const tenant = await seedTenant(TENANT);
+    await seedSettings(tenant.id, { engines: ["openai"], samplesPerPrompt: sampleStatuses.length });
+    await seedPrompt(tenant.id, { text: "best issue tracker" });
+    const planned = await planRun(tenant.id, { trigger: "manual", now: frozen("2026-03-02T09:00:00Z") });
+    if (!planned.ok) throw new Error(`planRun refused: ${planned.reason}`);
+
+    const rows = await db
+      .select()
+      .from(aiVisibilitySamples)
+      .where(eq(aiVisibilitySamples.runId, planned.runId))
+      .orderBy(asc(aiVisibilitySamples.sampleIndex));
+    for (const [i, status] of sampleStatuses.entries()) {
+      await db
+        .update(aiVisibilitySamples)
+        .set({
+          status,
+          answerText: status === "ok" ? "Rival is strongest." : null,
+          error: status === "ok" ? null : "429 rate limited",
+          extraction:
+            status === "ok"
+              ? { deterministic: { tenantMentioned: false, competitorIds: [], ownDomainCited: false } }
+              : null,
+        })
+        .where(eq(aiVisibilitySamples.id, rows[i].id));
+    }
+    await db
+      .update(aiVisibilityRuns)
+      .set({ status: "running", completedCalls: sampleStatuses.length, costUsd: 0.05 })
+      .where(eq(aiVisibilityRuns.id, planned.runId));
+    return { tenant, runId: planned.runId };
+  }
+
+  const noopJudge = async () => ({ judged: 0, flagged: 0, remaining: 0, budgetSpent: false, errors: [] });
+
+  it("judges, aggregates, emits and marks the run complete, in that order", async () => {
+    const { runId } = await ran(["ok", "ok", "ok"]);
+    const order: string[] = [];
+
+    const out = await finalizeRun(
+      runId,
+      { budgetMs: 60_000, now: frozen("2026-03-02T09:10:00Z") },
+      {
+        judge: async () => {
+          order.push("judge");
+          return { judged: 3, flagged: 0, remaining: 0, budgetSpent: false, errors: [] };
+        },
+        aggregate: async () => {
+          order.push("aggregate");
+          return { engineRows: 1, promptRows: 1 };
+        },
+        emit: async () => {
+          order.push("emit");
+          return { written: 2, considered: 5 };
+        },
+      }
+    );
+
+    expect(order).toEqual(["judge", "aggregate", "emit"]);
+    expect(out).toEqual({ status: "complete", judged: 3, signals: 2 });
+
+    const [run] = await db.select().from(aiVisibilityRuns).where(eq(aiVisibilityRuns.id, runId));
+    expect(run.status).toBe("complete");
+    expect(run.finishedAt?.toISOString()).toBe("2026-03-02T09:10:00.000Z");
+  });
+
+  it("runs the real aggregate pass when none is injected", async () => {
+    const { runId } = await ran(["ok", "ok", "ok"]);
+
+    await finalizeRun(
+      runId,
+      { budgetMs: 60_000, now: frozen("2026-03-02T09:10:00Z") },
+      { judge: noopJudge, emit: async () => ({ written: 0, considered: 0 }) }
+    );
+
+    const rows = await db.select().from(aiVisibilityAggregates).where(eq(aiVisibilityAggregates.runId, runId));
+    expect(rows.length).toBeGreaterThan(0);
+  });
+
+  it("stays running and does not aggregate when the judge budget runs out", async () => {
+    const { runId } = await ran(["ok", "ok", "ok"]);
+    let aggregated = false;
+
+    const out = await finalizeRun(
+      runId,
+      { budgetMs: 60_000, now: frozen("2026-03-02T09:10:00Z") },
+      {
+        judge: async () => ({ judged: 1, flagged: 0, remaining: 2, budgetSpent: true, errors: [] }),
+        aggregate: async () => {
+          aggregated = true;
+          return { engineRows: 0, promptRows: 0 };
+        },
+        emit: async () => ({ written: 0, considered: 0 }),
+      }
+    );
+
+    expect(out).toEqual({ status: "running", judged: 1, signals: 0 });
+    expect(aggregated).toBe(false);
+    const [run] = await db.select().from(aiVisibilityRuns).where(eq(aiVisibilityRuns.id, runId));
+    expect(run.status).toBe("running");
+    expect(run.finishedAt).toBeNull();
+  });
+
+  it("marks the source active with lastSuccessAt when the run produced answers", async () => {
+    const { tenant, runId } = await ran(["ok", "ok", "ok"]);
+
+    await finalizeRun(
+      runId,
+      { budgetMs: 60_000, now: frozen("2026-03-02T09:10:00Z") },
+      { judge: noopJudge, emit: async () => ({ written: 0, considered: 0 }) }
+    );
+
+    const [source] = await db
+      .select()
+      .from(sources)
+      .where(and(eq(sources.tenantId, tenant.id), eq(sources.type, "ai_visibility")));
+    expect(source.status).toBe("active");
+    expect(source.lastRunAt?.toISOString()).toBe("2026-03-02T09:10:00.000Z");
+    expect(source.lastSuccessAt?.toISOString()).toBe("2026-03-02T09:10:00.000Z");
+    expect(source.lastError).toBeNull();
+  });
+
+  it("stays active but records the partial failure when some engines failed", async () => {
+    const { tenant, runId } = await ran(["ok", "error", "error"]);
+
+    await finalizeRun(
+      runId,
+      { budgetMs: 60_000, now: frozen("2026-03-02T09:10:00Z") },
+      { judge: noopJudge, emit: async () => ({ written: 0, considered: 0 }) }
+    );
+
+    const [source] = await db
+      .select()
+      .from(sources)
+      .where(and(eq(sources.tenantId, tenant.id), eq(sources.type, "ai_visibility")));
+    expect(source.status).toBe("active");
+    expect(source.lastError).toContain("openai");
+    expect(source.lastError).toContain("2 of 3");
+  });
+
+  it("marks the source failing when every answer failed", async () => {
+    const { tenant, runId } = await ran(["error", "error", "error"]);
+
+    await finalizeRun(
+      runId,
+      { budgetMs: 60_000, now: frozen("2026-03-02T09:10:00Z") },
+      { judge: noopJudge, emit: async () => ({ written: 0, considered: 0 }) }
+    );
+
+    const [source] = await db
+      .select()
+      .from(sources)
+      .where(and(eq(sources.tenantId, tenant.id), eq(sources.type, "ai_visibility")));
+    expect(source.status).toBe("failing");
+    expect(source.lastSuccessAt).toBeNull();
+    // Still marks the run complete: it did all the work there was to do.
+    const [run] = await db.select().from(aiVisibilityRuns).where(eq(aiVisibilityRuns.id, runId));
+    expect(run.status).toBe("complete");
+  });
+
+  it("marks the run failed and the source failing when a step throws, without rethrowing", async () => {
+    const { tenant, runId } = await ran(["ok", "ok", "ok"]);
+
+    const out = await finalizeRun(
+      runId,
+      { budgetMs: 60_000, now: frozen("2026-03-02T09:10:00Z") },
+      {
+        judge: noopJudge,
+        aggregate: async () => {
+          throw new Error("aggregate exploded");
+        },
+      }
+    );
+
+    expect(out.status).toBe("failed");
+    const [run] = await db.select().from(aiVisibilityRuns).where(eq(aiVisibilityRuns.id, runId));
+    expect(run.status).toBe("failed");
+    expect(run.error).toContain("aggregate exploded");
+    const [source] = await db
+      .select()
+      .from(sources)
+      .where(and(eq(sources.tenantId, tenant.id), eq(sources.type, "ai_visibility")));
+    expect(source.status).toBe("failing");
+  });
+
+  it("does not emit signals a second time for an already complete run", async () => {
+    const { runId } = await ran(["ok", "ok", "ok"]);
+    await db.update(aiVisibilityRuns).set({ status: "complete" }).where(eq(aiVisibilityRuns.id, runId));
+    let emitted = 0;
+
+    const out = await finalizeRun(
+      runId,
+      { budgetMs: 60_000, now: frozen("2026-03-02T09:10:00Z") },
+      {
+        judge: noopJudge,
+        emit: async () => {
+          emitted++;
+          return { written: 0, considered: 0 };
+        },
+      }
+    );
+
+    expect(out.status).toBe("complete");
+    expect(emitted).toBe(0);
+  });
+});
+
+describe("latestRun", () => {
+  it("returns the most recent run whatever its status, and null when there are none", async () => {
+    const tenant = await seedTenant(TENANT);
+    expect(await latestRun(tenant.id)).toBeNull();
+
+    await db.insert(aiVisibilityRuns).values([
+      {
+        tenantId: tenant.id,
+        trigger: "scheduled",
+        engines: ["openai"],
+        samplesPerPrompt: 3,
+        status: "complete",
+        startedAt: new Date("2026-03-01T09:00:00Z"),
+      },
+      {
+        tenantId: tenant.id,
+        trigger: "manual",
+        engines: ["openai"],
+        samplesPerPrompt: 3,
+        status: "paused_by_cap",
+        startedAt: new Date("2026-03-08T09:00:00Z"),
+      },
+    ]);
+
+    const run = await latestRun(tenant.id);
+    expect(run?.status).toBe("paused_by_cap");
+    expect(run?.trigger).toBe("manual");
   });
 });
