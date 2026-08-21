@@ -8,14 +8,30 @@ import {
   ensureAiVisibilitySource,
   setAiVisibilityEnabled,
   DEFAULT_AI_VISIBILITY_SETTINGS,
+  MIN_MONTHLY_CAP_USD,
+  MAX_MONTHLY_CAP_USD,
 } from "../../../src/lib/ai-visibility/settings";
 import { seedTenant, dropTenant } from "../../helpers/fixtures";
 
 const TENANT = "AI Visibility Settings Test Tenant";
+/**
+ * The isolation cases need a second workspace. Named off the first so the two
+ * stay unique to this file — `dropTenant` deletes by name against a shared
+ * Postgres, so a generic "Other Tenant" would collide with another file.
+ */
+const OTHER_TENANT = "AI Visibility Settings Test Tenant (Other)";
 
 afterEach(async () => {
   await dropTenant(TENANT);
+  await dropTenant(OTHER_TENANT);
 });
+
+async function aiVisibilitySource(tenantId: string) {
+  return db
+    .select()
+    .from(sources)
+    .where(and(eq(sources.tenantId, tenantId), eq(sources.type, "ai_visibility")));
+}
 
 const VALID = {
   cadence: "fortnightly",
@@ -94,6 +110,74 @@ describe("getAiVisibilitySettings", () => {
     expect(settings.cadence).toBe("weekly");
     expect(settings.samplesPerPrompt).toBe(3);
     expect(settings.dayOfWeek).toBe(1);
+  });
+
+  it("falls back for a negative dayOfWeek, not only an over-large one", async () => {
+    const tenant = await seedTenant(TENANT);
+    // The read clamps at both ends of 0..6. Only the upper end was pinned, so
+    // a `row.dayOfWeek >= 0` that got dropped would have gone unnoticed.
+    await db.insert(aiVisibilitySettings).values({ tenantId: tenant.id, dayOfWeek: -1 });
+
+    expect((await getAiVisibilitySettings(tenant.id)).dayOfWeek).toBe(1);
+  });
+
+  it("keeps the legal edges of dayOfWeek — Sunday and Saturday are not fallbacks", async () => {
+    const tenant = await seedTenant(TENANT);
+    await db.insert(aiVisibilitySettings).values({ tenantId: tenant.id, dayOfWeek: 0 });
+    expect((await getAiVisibilitySettings(tenant.id)).dayOfWeek).toBe(0);
+
+    await db
+      .update(aiVisibilitySettings)
+      .set({ dayOfWeek: 6 })
+      .where(eq(aiVisibilitySettings.tenantId, tenant.id));
+    expect((await getAiVisibilitySettings(tenant.id)).dayOfWeek).toBe(6);
+  });
+
+  it("clamps a cap below the floor as well as one above the ceiling", async () => {
+    const tenant = await seedTenant(TENANT);
+    await db.insert(aiVisibilitySettings).values({ tenantId: tenant.id, monthlyCapUsd: 0 });
+
+    // A zero cap would pause every run the moment the first sample cost
+    // anything; the floor is what stops a hand-edited row doing that silently.
+    expect((await getAiVisibilitySettings(tenant.id)).monthlyCapUsd).toBe(MIN_MONTHLY_CAP_USD);
+  });
+
+  it("passes the legal cap edges through untouched", async () => {
+    const tenant = await seedTenant(TENANT);
+    await db
+      .insert(aiVisibilitySettings)
+      .values({ tenantId: tenant.id, monthlyCapUsd: MIN_MONTHLY_CAP_USD });
+    expect((await getAiVisibilitySettings(tenant.id)).monthlyCapUsd).toBe(MIN_MONTHLY_CAP_USD);
+
+    await db
+      .update(aiVisibilitySettings)
+      .set({ monthlyCapUsd: MAX_MONTHLY_CAP_USD })
+      .where(eq(aiVisibilitySettings.tenantId, tenant.id));
+    expect((await getAiVisibilitySettings(tenant.id)).monthlyCapUsd).toBe(MAX_MONTHLY_CAP_USD);
+  });
+
+  it("reads `enabled` back off the row rather than assuming the default", async () => {
+    const tenant = await seedTenant(TENANT);
+    await db.insert(aiVisibilitySettings).values({ tenantId: tenant.id, enabled: true });
+
+    expect((await getAiVisibilitySettings(tenant.id)).enabled).toBe(true);
+  });
+
+  it("keeps a cadence of `off`, which is a setting and not a bad value", async () => {
+    const tenant = await seedTenant(TENANT);
+    await db.insert(aiVisibilitySettings).values({ tenantId: tenant.id, cadence: "off" });
+
+    expect((await getAiVisibilitySettings(tenant.id)).cadence).toBe("off");
+  });
+
+  it("answers for one tenant without seeing the other's row", async () => {
+    const tenant = await seedTenant(TENANT);
+    const other = await seedTenant(OTHER_TENANT);
+    await saveAiVisibilitySettings(tenant.id, VALID);
+
+    // The neighbour saved nothing, so it must still get the untouched defaults.
+    expect(await getAiVisibilitySettings(other.id)).toEqual(DEFAULT_AI_VISIBILITY_SETTINGS);
+    expect((await getAiVisibilitySettings(tenant.id)).engines).toEqual(["openai", "gemini"]);
   });
 });
 
@@ -193,6 +277,179 @@ describe("saveAiVisibilitySettings", () => {
       },
     });
   });
+
+  it("accepts both ends of dayOfWeek", async () => {
+    const tenant = await seedTenant(TENANT);
+
+    // 0 is Sunday and 6 is Saturday: both legal, and both the values an
+    // off-by-one in the range check would reject.
+    for (const dayOfWeek of [0, 6]) {
+      const result = await saveAiVisibilitySettings(tenant.id, { ...VALID, dayOfWeek });
+      expect(result.ok).toBe(true);
+      expect(result.ok && result.settings.dayOfWeek).toBe(dayOfWeek);
+    }
+  });
+
+  it("accepts every sample count the spec offers", async () => {
+    const tenant = await seedTenant(TENANT);
+
+    for (const samplesPerPrompt of [1, 3, 5]) {
+      const result = await saveAiVisibilitySettings(tenant.id, { ...VALID, samplesPerPrompt });
+      expect(result.ok).toBe(true);
+      expect(result.ok && result.settings.samplesPerPrompt).toBe(samplesPerPrompt);
+    }
+  });
+
+  it("accepts a cap sitting exactly on the floor and on the ceiling", async () => {
+    const tenant = await seedTenant(TENANT);
+
+    // The bounds are inclusive — $1 and $500 are offered in the UI, so an
+    // exclusive comparison would reject the two values a user is most likely
+    // to pick from the ends of the range.
+    for (const monthlyCapUsd of [MIN_MONTHLY_CAP_USD, MAX_MONTHLY_CAP_USD]) {
+      const result = await saveAiVisibilitySettings(tenant.id, { ...VALID, monthlyCapUsd });
+      expect(result).toEqual(
+        expect.objectContaining({ ok: true, settings: expect.objectContaining({ monthlyCapUsd }) })
+      );
+    }
+  });
+
+  it("accepts every cadence, including `off`", async () => {
+    const tenant = await seedTenant(TENANT);
+
+    for (const cadence of ["weekly", "fortnightly", "off"]) {
+      const result = await saveAiVisibilitySettings(tenant.id, { ...VALID, cadence });
+      expect(result.ok).toBe(true);
+      expect(result.ok && result.settings.cadence).toBe(cadence);
+    }
+  });
+
+  it("accepts one engine and accepts all four", async () => {
+    const tenant = await seedTenant(TENANT);
+
+    const one = await saveAiVisibilitySettings(tenant.id, { ...VALID, engines: ["perplexity"] });
+    expect(one.ok && one.settings.engines).toEqual(["perplexity"]);
+
+    const all = await saveAiVisibilitySettings(tenant.id, {
+      ...VALID,
+      engines: ["openai", "perplexity", "gemini", "anthropic"],
+    });
+    expect(all.ok && all.settings.engines).toEqual(["openai", "perplexity", "gemini", "anthropic"]);
+  });
+
+  it("collapses a repeated engine id rather than planning the call twice", async () => {
+    const tenant = await seedTenant(TENANT);
+
+    // A checkbox group that double-submits would otherwise double this
+    // tenant's call count — and their bill — for that engine.
+    const result = await saveAiVisibilitySettings(tenant.id, {
+      ...VALID,
+      engines: ["openai", "openai", "gemini"],
+    });
+
+    expect(result.ok && result.settings.engines).toEqual(["openai", "gemini"]);
+    const [row] = await db
+      .select()
+      .from(aiVisibilitySettings)
+      .where(eq(aiVisibilitySettings.tenantId, tenant.id));
+    expect(row.engines).toEqual(["openai", "gemini"]);
+  });
+
+  it("rejects the shapes a form can produce that are not merely out of range", async () => {
+    const tenant = await seedTenant(TENANT);
+
+    // Missing keys — the whole point of taking `unknown`.
+    expect(await saveAiVisibilitySettings(tenant.id, {})).toEqual({ ok: false, error: "cadence" });
+    expect(await saveAiVisibilitySettings(tenant.id, { ...VALID, dayOfWeek: undefined })).toEqual({
+      ok: false,
+      error: "dayOfWeek",
+    });
+    // A number where a cadence string belongs.
+    expect(await saveAiVisibilitySettings(tenant.id, { ...VALID, cadence: 1 })).toEqual({
+      ok: false,
+      error: "cadence",
+    });
+    // Fractional days have no meaning against `Date#getUTCDay()`.
+    expect(await saveAiVisibilitySettings(tenant.id, { ...VALID, dayOfWeek: 3.5 })).toEqual({
+      ok: false,
+      error: "dayOfWeek",
+    });
+    expect(await saveAiVisibilitySettings(tenant.id, { ...VALID, dayOfWeek: -1 })).toEqual({
+      ok: false,
+      error: "dayOfWeek",
+    });
+    expect(await saveAiVisibilitySettings(tenant.id, { ...VALID, dayOfWeek: "" })).toEqual({
+      ok: false,
+      error: "dayOfWeek",
+    });
+    // A single id rather than a list: `"openai".includes` would pass a naive check.
+    expect(await saveAiVisibilitySettings(tenant.id, { ...VALID, engines: "openai" })).toEqual({
+      ok: false,
+      error: "engines",
+    });
+    expect(await saveAiVisibilitySettings(tenant.id, { ...VALID, engines: [0] })).toEqual({
+      ok: false,
+      error: "engines",
+    });
+    expect(await saveAiVisibilitySettings(tenant.id, { ...VALID, samplesPerPrompt: null })).toEqual({
+      ok: false,
+      error: "samplesPerPrompt",
+    });
+    expect(await saveAiVisibilitySettings(tenant.id, { ...VALID, monthlyCapUsd: "twenty" })).toEqual({
+      ok: false,
+      error: "monthlyCapUsd",
+    });
+    expect(await saveAiVisibilitySettings(tenant.id, { ...VALID, monthlyCapUsd: Number.NaN })).toEqual({
+      ok: false,
+      error: "monthlyCapUsd",
+    });
+
+    // Not one of them wrote a row.
+    const rows = await db
+      .select()
+      .from(aiVisibilitySettings)
+      .where(eq(aiVisibilitySettings.tenantId, tenant.id));
+    expect(rows).toHaveLength(0);
+  });
+
+  it("leaves a rejected save with the row it already had", async () => {
+    const tenant = await seedTenant(TENANT);
+    await saveAiVisibilitySettings(tenant.id, VALID);
+
+    expect(await saveAiVisibilitySettings(tenant.id, { ...VALID, cadence: "daily" })).toEqual({
+      ok: false,
+      error: "cadence",
+    });
+
+    // A validation failure must not be a partial write: the surviving row is
+    // the last good one, not a half-applied version of the rejected form.
+    expect(await getAiVisibilitySettings(tenant.id)).toEqual({
+      enabled: false,
+      cadence: "fortnightly",
+      dayOfWeek: 3,
+      engines: ["openai", "gemini"],
+      samplesPerPrompt: 5,
+      monthlyCapUsd: 45,
+    });
+  });
+
+  it("writes one tenant's settings without disturbing the other's", async () => {
+    const tenant = await seedTenant(TENANT);
+    const other = await seedTenant(OTHER_TENANT);
+
+    await saveAiVisibilitySettings(tenant.id, VALID);
+    await saveAiVisibilitySettings(other.id, {
+      ...VALID,
+      cadence: "weekly",
+      engines: ["anthropic"],
+      monthlyCapUsd: 7,
+    });
+
+    expect((await getAiVisibilitySettings(tenant.id)).engines).toEqual(["openai", "gemini"]);
+    expect((await getAiVisibilitySettings(tenant.id)).monthlyCapUsd).toBe(45);
+    expect((await getAiVisibilitySettings(other.id)).engines).toEqual(["anthropic"]);
+    expect((await getAiVisibilitySettings(other.id)).monthlyCapUsd).toBe(7);
+  });
 });
 
 describe("ensureAiVisibilitySource", () => {
@@ -225,6 +482,59 @@ describe("ensureAiVisibilitySource", () => {
     expect(source.type).toBe("ai_visibility");
     const rows = await db.select().from(sources).where(eq(sources.tenantId, tenant.id));
     expect(rows).toHaveLength(2);
+  });
+
+  it("applies the overrides on the insert half of the upsert", async () => {
+    const tenant = await seedTenant(TENANT);
+
+    const source = await ensureAiVisibilitySource(tenant.id, db, {
+      status: "failing",
+      lastError: "OpenAI returned 429",
+    });
+
+    // The row did not exist, so these can only have come from the INSERT — the
+    // whole point of taking overrides rather than making callers update after.
+    expect(source.status).toBe("failing");
+    expect(source.lastError).toBe("OpenAI returned 429");
+  });
+
+  it("applies the overrides on the conflict half too, on the same row", async () => {
+    const tenant = await seedTenant(TENANT);
+    const first = await ensureAiVisibilitySource(tenant.id);
+
+    const second = await ensureAiVisibilitySource(tenant.id, db, {
+      status: "failing",
+      lastError: "Perplexity timed out",
+    });
+
+    expect(second.id).toBe(first.id);
+    expect(second.status).toBe("failing");
+    expect(second.lastError).toBe("Perplexity timed out");
+  });
+
+  it("leaves an existing row's health alone when called with no overrides", async () => {
+    const tenant = await seedTenant(TENANT);
+    await ensureAiVisibilitySource(tenant.id, db, { status: "failing", lastError: "Gemini 500" });
+
+    // A plain `ensure` is "make sure the row is there", not "reset it": a run
+    // that calls this on its way past must not erase the last failure the
+    // operator is looking at.
+    const again = await ensureAiVisibilitySource(tenant.id);
+
+    expect(again.status).toBe("failing");
+    expect(again.lastError).toBe("Gemini 500");
+  });
+
+  it("gives each tenant its own source row", async () => {
+    const tenant = await seedTenant(TENANT);
+    const other = await seedTenant(OTHER_TENANT);
+
+    const mine = await ensureAiVisibilitySource(tenant.id, db, { status: "failing" });
+    const theirs = await ensureAiVisibilitySource(other.id);
+
+    expect(theirs.id).not.toBe(mine.id);
+    expect(theirs.status).toBe("active");
+    expect((await aiVisibilitySource(tenant.id))[0].status).toBe("failing");
   });
 });
 
@@ -295,5 +605,50 @@ describe("setAiVisibilityEnabled", () => {
       .where(and(eq(sources.tenantId, tenant.id), eq(sources.type, "ai_visibility")));
     expect(afterOn.lastError).toBeNull();
     expect(afterOn.status).toBe("active");
+  });
+
+  it("survives on → off → on with one settings row, one source, and the settings intact", async () => {
+    const tenant = await seedTenant(TENANT);
+    await saveAiVisibilitySettings(tenant.id, VALID);
+
+    await setAiVisibilityEnabled(tenant.id, true);
+    await setAiVisibilityEnabled(tenant.id, false);
+    await setAiVisibilityEnabled(tenant.id, true);
+
+    // Both halves of "is this feature on" agree, and neither upsert has
+    // accumulated a duplicate along the way.
+    const settingsRows = await db
+      .select()
+      .from(aiVisibilitySettings)
+      .where(eq(aiVisibilitySettings.tenantId, tenant.id));
+    expect(settingsRows).toHaveLength(1);
+    const sourceRows = await aiVisibilitySource(tenant.id);
+    expect(sourceRows).toHaveLength(1);
+    expect(sourceRows[0].status).toBe("active");
+
+    // Toggling is not a reset: the cadence, engines, samples and cap the
+    // settings card wrote are all still what they were.
+    expect(await getAiVisibilitySettings(tenant.id)).toEqual({
+      enabled: true,
+      cadence: "fortnightly",
+      dayOfWeek: 3,
+      engines: ["openai", "gemini"],
+      samplesPerPrompt: 5,
+      monthlyCapUsd: 45,
+    });
+  });
+
+  it("toggles one tenant without touching the other's switch or badge", async () => {
+    const tenant = await seedTenant(TENANT);
+    const other = await seedTenant(OTHER_TENANT);
+    await setAiVisibilityEnabled(tenant.id, true);
+    await setAiVisibilityEnabled(other.id, true);
+
+    await setAiVisibilityEnabled(tenant.id, false);
+
+    expect((await getAiVisibilitySettings(tenant.id)).enabled).toBe(false);
+    expect((await aiVisibilitySource(tenant.id))[0].status).toBe("disabled");
+    expect((await getAiVisibilitySettings(other.id)).enabled).toBe(true);
+    expect((await aiVisibilitySource(other.id))[0].status).toBe("active");
   });
 });
