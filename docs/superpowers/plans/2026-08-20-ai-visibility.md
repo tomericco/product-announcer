@@ -26,6 +26,42 @@
 - UI: Base UI `render={...}` (never `asChild`); `font-heading` only on page `<h1>`; chartreuse structural only; `--destructive` owns all warning/error states.
 - Only new runtime dependency: `recharts` (via the shadcn chart component).
 
+## Corrections made during execution
+
+Review and QA gates changed decisions after the tasks below were written. **Where
+this section and a task disagree, this section wins** — the task text is left
+intact as the record of what was originally planned.
+
+- **`planRun` has no `no_engines` refusal.** `getAiVisibilitySettings` substitutes
+  the full engine list when a row's list is empty (the save path forbids empty, so
+  only a hand-written row can produce one), which makes the arm unreachable. It was
+  removed from the result union. Tasks G1, H3 and H4 must not branch on it or render
+  "Turn on at least one engine in Settings." A *client-side* warning in the settings
+  form (Task I4), shown while the user has unchecked everything before saving, is
+  still correct and still wanted.
+- **A successful judge chunk closes out a row the model returned no label for**
+  (`judged: true`, unlabelled, unflagged — it keeps its deterministic mention and
+  loses only level/framing/quote). Task D6's step titled *"leaves a sample the model
+  returned no label for unjudged, not flagged"* asserts the pre-fix behaviour and is
+  superseded: leaving such rows unjudged stalled the run forever, blocked every
+  future run behind `run_in_flight`, and re-billed the failed chunks daily. Errored
+  chunks are instead bounded by `ai_visibility_samples.judge_attempts` ≤ 3.
+- **Concurrency control was added** beyond what the tasks describe:
+  `ai_visibility_runs.slice_lease_until` + `slice_lease_owner` (CAS acquire,
+  owner-scoped renew and release) so two drivers cannot slice one run, plus a partial
+  unique index on `(tenant_id) WHERE status IN ('pending','running')` enforcing
+  one-run-in-flight in Postgres rather than by timing. `finalizeRun` returns the
+  exported `FinalizeRunResult` = `"complete" | "running" | "paused_by_cap" | "failed"`.
+- **`EngineError` carries an optional `costUsd`.** Undefined means *unknown*, not
+  free — a failed call that burned tokens still reports what it cost.
+- **The per-engine cost constants are known to be ~7× low** against a measured live
+  call, so the $20 default cap is not reachable at the specced run shape. Constants
+  are unchanged pending a product decision; the cap gate reads them only through
+  `engineCost`, so correcting them is a four-constant change.
+- **Gemini and Perplexity request/response shapes are documentation-derived only** —
+  no API key was available to verify them. Their tests prove safe degradation, not
+  contract correctness.
+
 ---
 
 ## Phase A — Foundations
