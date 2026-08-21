@@ -484,6 +484,13 @@
       "when": 1787301730599,
       "tag": "0068_empty_gunslinger",
       "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1787302491346,
+      "tag": "0069_closed_stardust",
+      "breakpoints": true
     }
   ]
 }

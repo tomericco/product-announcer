@@ -621,6 +621,11 @@ export const aiVisibilityRuns = pgTable(
     // Expiry rather than a boolean so a driver that dies mid-slice cannot
     // strand the run: the next tick takes the lease once the old one lapses.
     sliceLeaseUntil: timestamp("slice_lease_until", { withTimezone: true }),
+    // Who holds the lease above. Written fresh every time it is taken, and
+    // compared on every renewal and release, so a driver whose lease lapsed
+    // cannot renew over the top of the successor that took it — or release a
+    // claim that is no longer its own.
+    sliceLeaseOwner: uuid("slice_lease_owner"),
     startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
   },

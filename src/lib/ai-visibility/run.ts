@@ -79,11 +79,16 @@ async function acquireSliceLease(
   runId: string,
   now: Date,
   budgetMs: number
-): Promise<boolean> {
-  const until = new Date(now.getTime() + Math.max(0, budgetMs) + LEASE_GRACE_MS);
+): Promise<string | null> {
+  // A token, not a flag. Without it "am I still the holder?" is unanswerable,
+  // and a driver whose lease lapsed mid-slice would renew straight over the top
+  // of the successor that legitimately took the run — two drivers holding what
+  // each believes is an exclusive claim, which is worse than no lease at all
+  // because both of them think they are safe.
+  const owner = crypto.randomUUID();
   const claimed = await database
     .update(aiVisibilityRuns)
-    .set({ sliceLeaseUntil: until })
+    .set({ sliceLeaseUntil: leaseUntil(now, budgetMs), sliceLeaseOwner: owner })
     .where(
       and(
         eq(aiVisibilityRuns.id, runId),
@@ -94,31 +99,51 @@ async function acquireSliceLease(
       )
     )
     .returning({ id: aiVisibilityRuns.id });
-  return claimed.length > 0;
+  return claimed.length > 0 ? owner : null;
 }
 
-/** Pushes the lease out for another batch. Only the holder should be calling this. */
+function leaseUntil(now: Date, budgetMs: number): Date {
+  return new Date(now.getTime() + Math.max(0, budgetMs) + LEASE_GRACE_MS);
+}
+
+/**
+ * Pushes the lease out for another batch, and reports whether we still hold it.
+ *
+ * `false` means our lease lapsed and somebody else took the run. The only
+ * correct response is to stop handing out work immediately: every sample the
+ * new holder has claimed is one we would be paying for twice.
+ */
 async function renewSliceLease(
   database: typeof defaultDb,
   runId: string,
+  owner: string,
   now: Date,
   budgetMs: number
-): Promise<void> {
-  await database
+): Promise<boolean> {
+  const renewed = await database
     .update(aiVisibilityRuns)
-    .set({ sliceLeaseUntil: new Date(now.getTime() + Math.max(0, budgetMs) + LEASE_GRACE_MS) })
-    .where(eq(aiVisibilityRuns.id, runId));
+    .set({ sliceLeaseUntil: leaseUntil(now, budgetMs) })
+    .where(and(eq(aiVisibilityRuns.id, runId), eq(aiVisibilityRuns.sliceLeaseOwner, owner)))
+    .returning({ id: aiVisibilityRuns.id });
+  return renewed.length > 0;
 }
 
 /**
  * Hands the run back, so the next tick can pick it up immediately instead of
  * waiting out a lease nobody is using.
+ *
+ * Owner-scoped like the renewal: a driver that lost the race must not clear the
+ * lease its successor is currently working under.
  */
-async function releaseSliceLease(database: typeof defaultDb, runId: string): Promise<void> {
+async function releaseSliceLease(
+  database: typeof defaultDb,
+  runId: string,
+  owner: string
+): Promise<void> {
   await database
     .update(aiVisibilityRuns)
-    .set({ sliceLeaseUntil: null })
-    .where(eq(aiVisibilityRuns.id, runId));
+    .set({ sliceLeaseUntil: null, sliceLeaseOwner: null })
+    .where(and(eq(aiVisibilityRuns.id, runId), eq(aiVisibilityRuns.sliceLeaseOwner, owner)));
 }
 
 /** The tenant's in-flight run, if any. Takes a `tx` so the plan can re-check inside its transaction. */
@@ -300,7 +325,8 @@ export async function runSlice(
   // collide on the partial unique index so a perfectly good run is recorded as
   // `failed`. Losing the race is a no-op, not an error: the holder is already
   // doing this work.
-  if (!(await acquireSliceLease(database, runId, opts.now(), opts.budgetMs))) {
+  const lease = await acquireSliceLease(database, runId, opts.now(), opts.budgetMs);
+  if (!lease) {
     return { processed: 0, remaining: 0, budgetSpent: false, pausedByCap: false };
   }
 
@@ -322,6 +348,7 @@ export async function runSlice(
   let processed = 0;
   let budgetSpent = false;
   let pausedByCap = false;
+  let leaseLost = false;
 
   while (true) {
     if (opts.now().getTime() - startedAt >= opts.budgetMs) {
@@ -355,8 +382,14 @@ export async function runSlice(
     if (batch.length === 0) break;
 
     // Pushed out per batch rather than held for the whole slice, so a slice
-    // that outlives its budget keeps its claim while it finishes.
-    await renewSliceLease(database, runId, opts.now(), opts.budgetMs);
+    // that outlives its budget keeps its claim while it finishes — and checked,
+    // because the answer can be no. If our lease lapsed and another driver took
+    // the run, every sample it has claimed is one we would pay for twice. Stop
+    // handing out work; the holder finishes it.
+    if (!(await renewSliceLease(database, runId, lease, opts.now(), opts.budgetMs))) {
+      leaseLost = true;
+      break;
+    }
 
     const results = await mapWithConcurrency(batch, batchSize(opts.concurrency), async (row) => {
       const failed = { costUsd: 0, engine: row.engine, modelId: null as string | null };
@@ -461,8 +494,9 @@ export async function runSlice(
   }
 
   // Handed back the moment this driver stops, so the next tick starts
-  // immediately rather than waiting out a lease nobody is holding.
-  await releaseSliceLease(database, runId);
+  // immediately rather than waiting out a lease nobody is holding. Owner-scoped,
+  // so a driver that already lost the lease cannot free its successor's claim.
+  if (!leaseLost) await releaseSliceLease(database, runId, lease);
 
   const [pending] = await database
     .select({ count: sql<number>`count(*)::int` })
@@ -489,6 +523,19 @@ export async function runSlice(
 
   return { processed, remaining, budgetSpent, pausedByCap };
 }
+
+/**
+ * `paused_by_cap` is a status of its own, not a flavour of `running`.
+ *
+ * A cap-paused run needs "raise your cap or wait for the reset" on the page and
+ * no further work from the sweep; a running one needs a spinner and another
+ * tick. Collapsing the two would make both callers guess, and guess differently.
+ */
+export type FinalizeRunResult = {
+  status: "complete" | "running" | "paused_by_cap" | "failed";
+  judged: number;
+  signals: number;
+};
 
 export type FinalizeDeps = RunDeps & {
   judge?: typeof judgeRun;
@@ -625,7 +672,7 @@ export async function finalizeRun(
   runId: string,
   opts: { budgetMs: number; now: Clock },
   deps: FinalizeDeps = {}
-): Promise<{ status: "complete" | "running" | "failed"; judged: number; signals: number }> {
+): Promise<FinalizeRunResult> {
   const database = deps.database ?? defaultDb;
   const judge = deps.judge ?? judgeRun;
   const aggregate = deps.aggregate ?? computeAggregates;
@@ -643,8 +690,9 @@ export async function finalizeRun(
   // alone was too narrow a guard: a `paused_by_cap` run would be un-paused
   // here, its remaining samples judged, and judge tokens spent for a run the
   // cap stopped on purpose; a `failed` one would be quietly resurrected.
-  // Reported as `running`/`failed` rather than thrown — both are states a
-  // caller polls, and neither is this function's failure.
+  // Reported rather than thrown — these are states a caller polls, and none of
+  // them is this function's own failure.
+  if (run.status === "paused_by_cap") return { status: "paused_by_cap", judged: 0, signals: 0 };
   if (!IN_FLIGHT.includes(run.status)) {
     return { status: run.status === "failed" ? "failed" : "running", judged: 0, signals: 0 };
   }
@@ -653,7 +701,8 @@ export async function finalizeRun(
   // manual Run-now finalizing the same run concurrently run `computeAggregates`
   // twice, and the second collides with the partial unique index — which the
   // catch below would record as a FAILED run that in fact succeeded.
-  if (!(await acquireSliceLease(database, runId, opts.now(), opts.budgetMs))) {
+  const lease = await acquireSliceLease(database, runId, opts.now(), opts.budgetMs);
+  if (!lease) {
     return { status: "running", judged: 0, signals: 0 };
   }
 
@@ -712,7 +761,7 @@ export async function finalizeRun(
     // engine failed is genuinely `failing`; one where three of four answered is
     // not, however loud its lastError.
     await finish(database, run.sourceId, opts.now(), errorText, summary.okSamples > 0);
-    await releaseSliceLease(database, runId);
+    await releaseSliceLease(database, runId, lease);
 
     return { status: "complete", judged: judged.judged, signals: emitted.written };
   } catch (error) {
@@ -723,7 +772,7 @@ export async function finalizeRun(
         .set({ status: "failed", error: message, finishedAt: opts.now() })
         .where(eq(aiVisibilityRuns.id, runId));
       await finish(database, run.sourceId, opts.now(), message, false);
-      await releaseSliceLease(database, runId);
+      await releaseSliceLease(database, runId, lease);
     } catch (secondary) {
       console.error(`[ai-visibility] could not record finalize failure for run ${runId}:`, secondary);
     }

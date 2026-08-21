@@ -513,6 +513,48 @@ describe("runSlice", () => {
     expect(run.sliceLeaseUntil).toBeNull();
   });
 
+  it("stops handing out work when its lease lapses and another driver takes over", async () => {
+    const { runId } = await planned();
+    const stealer = "11111111-2222-3333-4444-555555555555";
+    // Driver B takes the run while A is inside its first engine call — the
+    // interleaving A's own clock can never observe on its own.
+    const calls: string[] = [];
+    const openai: EngineClient = {
+      id: "openai",
+      label: "openai (fake)",
+      async ask(prompt: string) {
+        calls.push(prompt);
+        if (calls.length === 1) {
+          // Awaited, not fired and forgotten: the steal has to have COMMITTED
+          // before A's next renewal, or the test races its own premise.
+          await db
+            .update(aiVisibilityRuns)
+            .set({ sliceLeaseUntil: new Date("2026-03-02T10:00:00Z"), sliceLeaseOwner: stealer })
+            .where(eq(aiVisibilityRuns.id, runId));
+        }
+        return answer();
+      },
+    };
+
+    const outcome = await runSlice(
+      runId,
+      { budgetMs: 60_000, concurrency: 1, now: advancingClock("2026-03-02T09:00:00Z", 10) },
+      { engines: { openai } }
+    );
+
+    // A renews before each batch; the renewal is owner-scoped, so it is a
+    // no-op once B holds the lease and A stops rather than paying a second
+    // time for every sample B is already working through.
+    expect(calls).toHaveLength(1);
+    expect(outcome.processed).toBe(1);
+    expect(outcome.remaining).toBe(2);
+
+    // And A's exit does not free the claim B is working under.
+    const [run] = await db.select().from(aiVisibilityRuns).where(eq(aiVisibilityRuns.id, runId));
+    expect(run.sliceLeaseOwner).toBe(stealer);
+    expect(run.sliceLeaseUntil?.toISOString()).toBe("2026-03-02T10:00:00.000Z");
+  });
+
   it("keeps a paid-for answer when extraction fails", async () => {
     const { runId } = await planned();
     const openai = fakeEngine("openai", () => answer());
@@ -783,7 +825,9 @@ describe("finalizeRun", () => {
     // Un-pausing here would spend judge tokens on a run the cap stopped, and
     // silently move it out of the state the settings card explains.
     expect(judgedCalls).toBe(0);
-    expect(out.status).toBe("running");
+    // Reported as itself, not as "running": the page owes the reader "raise
+    // your cap or wait for the reset", not a spinner.
+    expect(out.status).toBe("paused_by_cap");
     const [run] = await db.select().from(aiVisibilityRuns).where(eq(aiVisibilityRuns.id, runId));
     expect(run.status).toBe("paused_by_cap");
   });
