@@ -116,6 +116,47 @@ describe("citedDomains", () => {
     expect(docs.tenantAbsent).toBe(false);
   });
 
+  it("counts DISTINCT prompts the tenant was absent from, not answers", async () => {
+    const { tenant, run, prompt } = await fixture();
+    const [second] = await db
+      .insert(aiVisibilityPrompts)
+      .values({ tenantId: tenant.id, text: "issue tracker alternatives", intent: "alternatives", origin: "generated", status: "active" })
+      .returning();
+
+    // Three answers, all on ONE prompt. A three-prompt gate that counts answers
+    // clears here on the strength of a single prompt, and the signal title then
+    // says "cited on 3 prompts" about one.
+    for (const sampleIndex of [0, 1, 2]) {
+      await answer({ tenantId: tenant.id, runId: run.id, promptId: prompt.id, engine: "openai", sampleIndex, tenantMentioned: false, domains: [{ domain: "g2.com", domainClass: "review" }] });
+    }
+    await answer({ tenantId: tenant.id, runId: run.id, promptId: second.id, engine: "openai", sampleIndex: 0, tenantMentioned: true, domains: [{ domain: "g2.com", domainClass: "review" }] });
+
+    const g2 = (await citedDomains(tenant.id, {})).find((r) => r.domain === "g2.com")!;
+    expect(g2.tenantAbsentAnswers).toBe(3);
+    expect(g2.tenantAbsentPrompts).toBe(1);
+  });
+
+  it("returns a real cited url per domain rather than a synthesised homepage", async () => {
+    const { tenant, run, prompt } = await fixture();
+    await answer({ tenantId: tenant.id, runId: run.id, promptId: prompt.id, engine: "openai", sampleIndex: 0, tenantMentioned: false, domains: [{ domain: "g2.com", domainClass: "review" }] });
+
+    const g2 = (await citedDomains(tenant.id, {})).find((r) => r.domain === "g2.com")!;
+    expect(g2.sampleUrl).toBe("https://g2.com/p0");
+  });
+
+  it("includes a named in-flight run so a run can be read while it is being finalized", async () => {
+    const { tenant, prompt } = await fixture();
+    const [running] = await db
+      .insert(aiVisibilityRuns)
+      .values({ tenantId: tenant.id, trigger: "manual", engines: ["openai"], samplesPerPrompt: 3, status: "running", startedAt: new Date("2026-03-08T09:00:00Z") })
+      .returning();
+    await answer({ tenantId: tenant.id, runId: running.id, promptId: prompt.id, engine: "openai", sampleIndex: 0, tenantMentioned: false, domains: [{ domain: "g2.com", domainClass: "review" }] });
+
+    expect(await citedDomains(tenant.id, {})).toHaveLength(0);
+    const rows = await citedDomains(tenant.id, { includeRunId: running.id });
+    expect(rows.map((r) => r.domain)).toEqual(["g2.com"]);
+  });
+
   it("carries the competitor id through for competitor-owned domains", async () => {
     const { tenant, rival, run, prompt } = await fixture();
     await answer({ tenantId: tenant.id, runId: run.id, promptId: prompt.id, engine: "openai", sampleIndex: 0, tenantMentioned: true, domains: [{ domain: "rival.com", domainClass: "competitor", competitorId: rival.id }] });

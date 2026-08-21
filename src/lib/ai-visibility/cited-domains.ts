@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, or } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
 import {
   aiVisibilityCitations,
@@ -24,6 +24,24 @@ export type CitedDomainRow = {
   competitorId: string | null;
   /** Of the citing answers, how many never named the tenant. */
   tenantAbsentAnswers: number;
+  /**
+   * DISTINCT prompts among those answers — the number any "cited on N prompts"
+   * rule or sentence must use.
+   *
+   * At three samples per prompt, `tenantAbsentAnswers` reaches three on a
+   * single prompt, so a three-prompt threshold read off it fires on one prompt
+   * and the sentence built from it says "3 prompts" about one question.
+   */
+  tenantAbsentPrompts: number;
+  /**
+   * One URL actually cited on this domain — the lowest citation position, ties
+   * broken alphabetically so the same window always yields the same URL.
+   *
+   * Callers put this in evidence payloads, whose contract is CITED urls. A
+   * synthesised `https://<domain>` homepage is not one: it is a page no engine
+   * pointed at, and following it is a dead end for whoever reads the brief.
+   */
+  sampleUrl: string;
   /** True when the tenant was named in NONE of the citing answers. */
   tenantAbsent: boolean;
 };
@@ -81,13 +99,25 @@ function dominantClass(counts: Map<string, number>): DomainClass {
  */
 export async function citedDomains(
   tenantId: string,
-  opts: { runs?: number; limit?: number; promptId?: string },
+  opts: { runs?: number; limit?: number; promptId?: string; includeRunId?: string },
   database: typeof defaultDb = defaultDb
 ): Promise<CitedDomainRow[]> {
   const runs = await database
     .select({ id: aiVisibilityRuns.id })
     .from(aiVisibilityRuns)
-    .where(and(eq(aiVisibilityRuns.tenantId, tenantId), eq(aiVisibilityRuns.status, "complete")))
+    .where(
+      and(
+        eq(aiVisibilityRuns.tenantId, tenantId),
+        // `includeRunId` admits one named run whatever its status. `emitSignals`
+        // runs inside `finalizeRun`, before the run it is closing is marked
+        // complete; without this its citations are invisible to the leaderboard
+        // and every domain it introduced looks a week old by the time it shows
+        // up. Only the named run is admitted — a stray `failed` run never is.
+        opts.includeRunId
+          ? or(eq(aiVisibilityRuns.id, opts.includeRunId), eq(aiVisibilityRuns.status, "complete"))
+          : eq(aiVisibilityRuns.status, "complete")
+      )
+    )
     .orderBy(desc(aiVisibilityRuns.startedAt))
     .limit(opts.runs ?? WINDOW_RUNS);
   if (runs.length === 0) return [];
@@ -97,6 +127,7 @@ export async function citedDomains(
     .select({
       id: aiVisibilitySamples.id,
       engine: aiVisibilitySamples.engine,
+      promptId: aiVisibilitySamples.promptId,
       status: aiVisibilitySamples.status,
       flagged: aiVisibilitySamples.flagged,
       extraction: aiVisibilitySamples.extraction,
@@ -113,11 +144,12 @@ export async function citedDomains(
       )
     );
 
-  const eligible = new Map<string, { engine: string; tenantMentioned: boolean }>();
+  const eligible = new Map<string, { engine: string; promptId: string; tenantMentioned: boolean }>();
   for (const sample of samples) {
     if (!isEligible(sample, sample)) continue;
     eligible.set(sample.id, {
       engine: sample.engine,
+      promptId: sample.promptId,
       tenantMentioned: sample.extraction?.deterministic.tenantMentioned ?? false,
     });
   }
@@ -126,12 +158,16 @@ export async function citedDomains(
   const citations = await database
     .select({
       sampleId: aiVisibilityCitations.sampleId,
+      url: aiVisibilityCitations.url,
+      position: aiVisibilityCitations.position,
       domain: aiVisibilityCitations.domain,
       domainClass: aiVisibilityCitations.domainClass,
       competitorId: aiVisibilityCitations.competitorId,
     })
     .from(aiVisibilityCitations)
-    .where(inArray(aiVisibilityCitations.sampleId, [...eligible.keys()]));
+    .where(inArray(aiVisibilityCitations.sampleId, [...eligible.keys()]))
+    // Ordered so `sampleUrl` and the class tally do not depend on scan order.
+    .orderBy(asc(aiVisibilityCitations.position), asc(aiVisibilityCitations.url));
 
   type Acc = {
     domain: string;
@@ -142,6 +178,8 @@ export async function citedDomains(
     answers: Set<string>;
     engines: Set<string>;
     absent: Set<string>;
+    absentPrompts: Set<string>;
+    sampleUrl: { url: string; position: number } | null;
   };
   const byDomain = new Map<string, Acc>();
 
@@ -156,12 +194,24 @@ export async function citedDomains(
       answers: new Set<string>(),
       engines: new Set<string>(),
       absent: new Set<string>(),
+      absentPrompts: new Set<string>(),
+      sampleUrl: null,
     };
     acc.classCounts.set(citation.domainClass, (acc.classCounts.get(citation.domainClass) ?? 0) + 1);
     acc.citations += 1;
     acc.answers.add(citation.sampleId);
     acc.engines.add(sample.engine);
-    if (!sample.tenantMentioned) acc.absent.add(citation.sampleId);
+    if (!sample.tenantMentioned) {
+      acc.absent.add(citation.sampleId);
+      acc.absentPrompts.add(sample.promptId);
+    }
+    if (
+      acc.sampleUrl === null ||
+      citation.position < acc.sampleUrl.position ||
+      (citation.position === acc.sampleUrl.position && citation.url.localeCompare(acc.sampleUrl.url) < 0)
+    ) {
+      acc.sampleUrl = { url: citation.url, position: citation.position };
+    }
     // A competitor id, once known, wins over a null: classification depends on
     // the competitor list at extraction time, and a domain added to that list
     // mid-window would otherwise report null for its older citations.
@@ -183,6 +233,8 @@ export async function citedDomains(
       engines: ENGINE_IDS.filter((engine) => acc.engines.has(engine)),
       competitorId: acc.competitorId,
       tenantAbsentAnswers: acc.absent.size,
+      tenantAbsentPrompts: acc.absentPrompts.size,
+      sampleUrl: acc.sampleUrl?.url ?? `https://${acc.domain}`,
       tenantAbsent: acc.absent.size === acc.answers.size,
     }))
     .sort((a, b) => b.answers - a.answers || b.citations - a.citations || a.domain.localeCompare(b.domain))

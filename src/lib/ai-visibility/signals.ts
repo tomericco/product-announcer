@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull, lt, ne, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, lt, ne, or, sql } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
 import {
   competitors,
@@ -13,7 +13,7 @@ import { isEligible } from "@/lib/ai-visibility/aggregate";
 import { citedDomains } from "@/lib/ai-visibility/cited-domains";
 import { engineLabel as labelFor } from "@/lib/ai-visibility/engines";
 import type { Clock } from "@/lib/ai-visibility/run";
-import { MIN_N_AGGREGATE, MIN_N_PROMPT, WINDOW_RUNS } from "@/lib/ai-visibility/metrics";
+import { HISTORY_RUNS, MIN_N_AGGREGATE, MIN_N_PROMPT, WINDOW_RUNS } from "@/lib/ai-visibility/metrics";
 import { ENGINE_IDS } from "@/lib/ai-visibility/types";
 import type {
   AiVisibilityPayload,
@@ -111,6 +111,15 @@ export type RunBand = {
   n: number;
   /** competitorId -> samples in this run naming that competitor. */
   competitorHits: Record<string, number>;
+  /**
+   * Own-domain citations in THIS run alone.
+   *
+   * `own_page_cited` is a one-time event and has to be tested against the run
+   * it happened in. A window-wide count keeps qualifying for as long as the
+   * citing run stays in the rolling window — four runs, four different ISO
+   * weeks, four signals the dedupe key cannot merge.
+   */
+  ownCitations: number;
 };
 
 export type SignalEvidence = {
@@ -150,6 +159,9 @@ export type DomainWindow = {
   domainClass: string;
   /** 1-based position in this window's cited-domain leaderboard. */
   rank: number;
+  /** Cited by at least one eligible answer in the run being reported. */
+  citedInCurrentRun: boolean;
+  /** Cited in ANY run before this one, not merely in the previous window. */
   seenBefore: boolean;
   promptsTenantAbsent: number;
   engines: EngineId[];
@@ -231,11 +243,12 @@ export function rankTriggers(input: TriggerInput): SignalCandidate[] {
     weight: number;
     payload: Partial<AiVisibilityPayload>;
   }) => {
+    const excerpt = a.excerpt ? a.excerpt.slice(0, MAX_EXCERPT_CHARS) : null;
     candidates.push({
       externalId: externalId(a.signalType, a.subject, a.engine, isoWeek),
       signalType: a.signalType,
       title: a.title,
-      excerpt: a.excerpt ? a.excerpt.slice(0, MAX_EXCERPT_CHARS) : null,
+      excerpt,
       competitorId: a.competitorId ?? null,
       // Type weight dominates; evidence volume only breaks ties within a type.
       score: TYPE_WEIGHT[a.signalType] * 1_000 + a.weight,
@@ -244,6 +257,10 @@ export function rankTriggers(input: TriggerInput): SignalCandidate[] {
         runId: input.runId,
         runDate,
         samples: "",
+        // Carried in the payload as well as the column: the evidence dialog and
+        // the brief agent read the payload, and an `excerpt` field that is
+        // always undefined is a field a UI task will quietly render as blank.
+        ...(excerpt ? { excerpt } : {}),
         ...a.payload,
       } as AiVisibilityPayload,
     });
@@ -272,7 +289,11 @@ export function rankTriggers(input: TriggerInput): SignalCandidate[] {
     let riserPp = 0;
     for (const [id, now] of Object.entries(engine.competitorSharesNow)) {
       const gain = now - (engine.competitorSharesPrev[id] ?? 0);
-      if (gain >= ENGINE_SOV_MOVE_PP && gain > riserPp) {
+      if (gain < ENGINE_SOV_MOVE_PP) continue;
+      // Ties broken on the id, as `gap_vs_competitor` does: two competitors up
+      // by exactly the same amount must not pick a winner by object key order,
+      // or the same run writes a different dedupe key on a retry.
+      if (gain > riserPp || (gain === riserPp && riser !== null && id.localeCompare(riser) < 0)) {
         riser = id;
         riserPp = gain;
       }
@@ -403,7 +424,12 @@ export function rankTriggers(input: TriggerInput): SignalCandidate[] {
     //    engine) below, because the rule counts across prompts.
     if (now && prev) {
       for (const [id, hits] of Object.entries(now.competitorHits)) {
-        const wasBelowAThird = (prev.competitorHits[id] ?? 0) / Math.max(1, prev.n) < WEAK;
+        // A previous run below the measurement floor tells us nothing about
+        // where this competitor stood — `n = 0` is what a prompt approved last
+        // week looks like — and `0 / max(1, 0)` would read it as "was low",
+        // manufacturing a gain out of a run that measured nothing.
+        if (band(prev.competitorHits[id] ?? 0, prev.n) === null) continue;
+        const wasBelowAThird = (prev.competitorHits[id] ?? 0) / prev.n < WEAK;
         if (band(hits, now.n) !== "strong" || !wasBelowAThird) continue;
         const key = `${id} ${p.engine}`;
         const entry = competitorGains.get(key) ?? { competitorId: id, engine: p.engine, prompts: [] };
@@ -412,16 +438,23 @@ export function rankTriggers(input: TriggerInput): SignalCandidate[] {
       }
     }
 
-    // 5. own_page_cited — the FIRST own-URL citation on this prompt, ever.
-    if (p.ownCitationsWindow > 0 && p.ownCitationsBefore === 0 && allowed("own_page_cited", p.engine)) {
+    // 5. own_page_cited — the FIRST own-URL citation on this prompt, ever, and
+    //    only in the run it actually happened in. "First" is singular: the
+    //    citation must be in THIS run, absent from every earlier run still in
+    //    the window, and absent from the history before it.
+    const firstOwnCitation =
+      (now?.ownCitations ?? 0) > 0 &&
+      p.runs.slice(1).every((r) => r.ownCitations === 0) &&
+      p.ownCitationsBefore === 0;
+    if (firstOwnCitation && allowed("own_page_cited", p.engine)) {
       make({
         signalType: "own_page_cited",
         subject: p.promptId,
         engine: p.engine,
         title: `Your page is cited for "${shortPrompt(p.promptText)}" on ${label}`,
         excerpt: p.evidence.excerpt,
-        weight: p.ownCitationsWindow,
-        payload: { ...basePayload, samples: samplesLabel(p.ownCitationsWindow, p.nWindow, p.runs.length) },
+        weight: now!.ownCitations,
+        payload: { ...basePayload, samples: samplesLabel(now!.ownCitations, now!.n, 1) },
       });
     }
 
@@ -430,6 +463,10 @@ export function rankTriggers(input: TriggerInput): SignalCandidate[] {
       p.nWindow >= MIN_N_PROMPT &&
       p.recommendationsWindow / p.nWindow >= STRONG &&
       p.ownCitationsWindow === 0 &&
+      // The spec's rule is "no own-domain citation", not "none lately": a page
+      // cited five runs ago is cited, and telling the tenant to go write one is
+      // wrong advice.
+      p.ownCitationsBefore === 0 &&
       allowed("recommended_not_cited", p.engine)
     ) {
       make({
@@ -458,7 +495,12 @@ export function rankTriggers(input: TriggerInput): SignalCandidate[] {
         weight: p.contradictionSamples,
         payload: {
           ...basePayload,
-          samples: samplesLabel(p.contradictionSamples, p.nWindow, p.runs.length),
+          // Contradictions are counted over this run's samples only (the
+          // evidence pass reads one run), so the denominator has to be this
+          // run's n. Rendering 2 contradictions of 3 samples as "2 of 12, 4
+          // runs" turns a solid pattern into a fluke in the one line the brief
+          // agent reads.
+          samples: samplesLabel(p.contradictionSamples, now?.n ?? p.nWindow, 1),
         },
       });
     }
@@ -490,6 +532,11 @@ export function rankTriggers(input: TriggerInput): SignalCandidate[] {
   // 8. new_cited_domain — a domain the engines newly lean on.
   for (const domain of input.domains) {
     if (domain.seenBefore) continue;
+    // The leaderboard spans the whole window, so a domain that arrived three
+    // runs ago is still on it. Only a domain this run actually cited is news
+    // this run — without this the same domain re-fires every week until it
+    // falls out of the window, each time under a fresh ISO week key.
+    if (!domain.citedInCurrentRun) continue;
     if (domain.rank > 10 && domain.promptsTenantAbsent < 3) continue;
     // A domain has no single engine, so the whole signal is suppressed if any
     // engine that cited it changed model this run: the "new" is unreliable.
@@ -529,6 +576,23 @@ export function evaluateTriggers(input: TriggerInput): SignalCandidate[] {
 }
 
 export type EmitSignalsDeps = { database?: typeof defaultDb };
+
+/**
+ * Statuses `emitSignals` will read a run in.
+ *
+ * Mirrors `IN_FLIGHT` in `run.ts` plus `complete`, deliberately duplicated
+ * rather than imported: `run.ts` imports this module's `emitSignals` as a
+ * value, and importing a value back would turn today's type-only cycle into a
+ * runtime one.
+ */
+const EMITTABLE_STATUSES = ["pending", "running", "complete"];
+
+/**
+ * How much of the leaderboard `new_cited_domain` may consider. Passed
+ * explicitly because `citedDomains` defaults to the overview table's 25, and a
+ * rule that reads "inside the top ten" should not silently depend on it.
+ */
+const DOMAIN_LEADERBOARD_LIMIT = 25;
 
 type AggregateRow = {
   runId: string;
@@ -583,6 +647,13 @@ function sharesOf(rows: AggregateRow[]): {
  * Called by `finalizeRun` after aggregates exist, never before: every window
  * below reads `ai_visibility_aggregates`, and running early would evaluate the
  * previous run's numbers against itself.
+ *
+ * `opts.now` is deliberately UNUSED. Every date this writes — the ISO week in
+ * the dedupe key, `occurredAt`, the payload's `runDate` — comes from
+ * `run.startedAt`, so re-finalizing a run next Tuesday reproduces exactly the
+ * same keys and writes nothing new. Deriving any of them from the wall clock
+ * would make idempotency depend on when the retry happened. It stays in the
+ * signature because `FinalizeDeps.emit` types it and tests inject it.
  */
 export async function emitSignals(
   runId: string,
@@ -609,9 +680,17 @@ export async function emitSignals(
         // The run being finalized is still `running` when `finalizeRun` calls
         // this — it is marked complete only after signals are written — so it
         // has to be admitted by id. Without that it is missing from its own
-        // window, every band reads one run short, and nothing ever fires from
-        // the run that just finished.
-        or(eq(aiVisibilityRuns.id, runId), eq(aiVisibilityRuns.status, "complete")),
+        // window, every band reads one run short, and the evidence quoted from
+        // this run gets attached to last run's numbers.
+        //
+        // The status test on the left arm stops that admitting a `failed` or
+        // `paused_by_cap` run: those have partial sample sets by definition,
+        // and a caller passing one by id must not get signals computed off
+        // half a run.
+        or(
+          and(eq(aiVisibilityRuns.id, runId), inArray(aiVisibilityRuns.status, EMITTABLE_STATUSES)),
+          eq(aiVisibilityRuns.status, "complete")
+        ),
         // `<=` this run's start, so a run finalized late cannot pick up a newer
         // one as if it were history.
         lt(aiVisibilityRuns.startedAt, new Date(run.startedAt.getTime() + 1))
@@ -634,8 +713,37 @@ export async function emitSignals(
       recommendations: aiVisibilityAggregates.recommendations,
     })
     .from(aiVisibilityAggregates)
-    .where(inArray(aiVisibilityAggregates.runId, windowIds))) as AggregateRow[];
+    .where(inArray(aiVisibilityAggregates.runId, windowIds))
+    // Candidate order is a tie-break in the cap, so the scan order of this
+    // select must not decide which ten signals a run writes.
+    .orderBy(
+      asc(aiVisibilityAggregates.promptId),
+      asc(aiVisibilityAggregates.engine),
+      asc(aiVisibilityAggregates.runId)
+    )) as AggregateRow[];
   if (aggregates.length === 0) return { written: 0, considered: 0 };
+
+  // Runs strictly BEFORE this one, newest first. Both "first ever" tests —
+  // own_page_cited and new_cited_domain — need history the four-run window
+  // cannot see. Bounded at HISTORY_RUNS (12) rather than unbounded: a signal
+  // about something that last happened a quarter ago is not news, and an
+  // unbounded scan grows without limit as a tenant accumulates runs.
+  const historyRuns = await database
+    .select({ id: aiVisibilityRuns.id })
+    .from(aiVisibilityRuns)
+    .where(
+      and(
+        eq(aiVisibilityRuns.tenantId, tenantId),
+        eq(aiVisibilityRuns.status, "complete"),
+        lt(aiVisibilityRuns.startedAt, run.startedAt),
+        ne(aiVisibilityRuns.id, runId)
+      )
+    )
+    .orderBy(desc(aiVisibilityRuns.startedAt))
+    .limit(HISTORY_RUNS);
+  const historyIds = historyRuns.map((r) => r.id);
+  /** History outside the rolling window — what "before the window" means. */
+  const olderIds = historyIds.filter((id) => !windowIds.includes(id));
 
   const prompts = await database
     .select({
@@ -677,14 +785,18 @@ export async function emitSignals(
   const evidenceBy = new Map<string, SignalEvidence>();
   /** Which sample each key's evidence came from, so citations attach in one pass. */
   const sampleForKey = new Map<string, string>();
-  const evidenceSampleIds: string[] = [];
+  /** Every eligible sample in THIS run — the citation scan's work list. */
+  const eligibleSampleIds: string[] = [];
   const contradictionsBy = new Map<string, number>();
+  /** Domains cited by an eligible answer in this run. */
+  const citedNow = new Set<string>();
 
   for (const sample of latestSamples) {
     const key = evidenceKey(sample.promptId, sample.engine);
     // A quote from a flagged row is a quote we could not verify — excluded as
     // evidence for the same reason the row is excluded from rates.
     if (!isEligible(sample, sample)) continue;
+    eligibleSampleIds.push(sample.id);
 
     const judged = sample.extraction?.judged;
     if (judged) {
@@ -695,16 +807,21 @@ export async function emitSignals(
 
     if (!evidenceBy.has(key)) {
       evidenceBy.set(key, {
-        excerpt: judged?.quote ?? sample.answerText?.slice(0, 400) ?? null,
+        // The judge's verbatim quote is the evidence the design asks for. The
+        // answer-text fallback covers a sample a successful judge chunk closed
+        // out without a label (see the plan's correction on unlabelled rows):
+        // the row is eligible and its answer is real, so a head of it is better
+        // evidence than none. 400 chars matches MAX_EXCERPT_CHARS, which is
+        // module-private above — keep them in step.
+        excerpt: judged?.quote ?? sample.answerText?.slice(0, MAX_EXCERPT_CHARS) ?? null,
         modelId: sample.modelId,
         citedUrls: [],
       });
-      evidenceSampleIds.push(sample.id);
       sampleForKey.set(key, sample.id);
     }
   }
 
-  if (evidenceSampleIds.length > 0) {
+  if (eligibleSampleIds.length > 0) {
     const citations = await database
       .select({
         sampleId: aiVisibilityCitations.sampleId,
@@ -713,10 +830,14 @@ export async function emitSignals(
         domainClass: aiVisibilityCitations.domainClass,
       })
       .from(aiVisibilityCitations)
-      .where(inArray(aiVisibilityCitations.sampleId, evidenceSampleIds))
-      .orderBy(asc(aiVisibilityCitations.position));
+      // Every eligible answer in this run, not just the ones quoted: the same
+      // rows answer "which domains did this run cite", which `new_cited_domain`
+      // needs and which must use the SAME eligibility cut as the leaderboard.
+      .where(inArray(aiVisibilityCitations.sampleId, eligibleSampleIds))
+      .orderBy(asc(aiVisibilityCitations.position), asc(aiVisibilityCitations.url));
     const bySample = new Map<string, { url: string; domain: string; domainClass: string }[]>();
     for (const citation of citations) {
+      citedNow.add(citation.domain);
       const list = bySample.get(citation.sampleId) ?? [];
       list.push({ url: citation.url, domain: citation.domain, domainClass: citation.domainClass });
       bySample.set(citation.sampleId, list);
@@ -724,6 +845,34 @@ export async function emitSignals(
     for (const [key, evidence] of evidenceBy) {
       const sampleId = sampleForKey.get(key);
       if (sampleId) evidence.citedUrls = bySample.get(sampleId) ?? [];
+    }
+  }
+
+  // Own-domain citations older than the window, per (prompt, engine). One
+  // grouped query rather than one per pair: a 30-prompt tenant on four engines
+  // is 120 sequential round-trips inside a lease budget, which is the kind of
+  // cost that only shows up in production.
+  const ownCitationsBeforeBy = new Map<string, number>();
+  if (olderIds.length > 0) {
+    const olderRows = await database
+      .select({
+        promptId: aiVisibilityAggregates.promptId,
+        engine: aiVisibilityAggregates.engine,
+        total: sql<number>`sum(${aiVisibilityAggregates.ownCitations})::int`,
+      })
+      .from(aiVisibilityAggregates)
+      .where(
+        and(
+          // The one query in here that used to have no tenant predicate.
+          eq(aiVisibilityAggregates.tenantId, tenantId),
+          inArray(aiVisibilityAggregates.runId, olderIds),
+          ne(aiVisibilityAggregates.ownCitations, 0)
+        )
+      )
+      .groupBy(aiVisibilityAggregates.promptId, aiVisibilityAggregates.engine);
+    for (const row of olderRows) {
+      if (!row.promptId) continue;
+      ownCitationsBeforeBy.set(`${row.promptId} ${row.engine}`, row.total ?? 0);
     }
   }
 
@@ -751,26 +900,13 @@ export async function emitSignals(
         hits: r?.tenantMentions ?? 0,
         n: r?.n ?? 0,
         competitorHits: r?.competitorMentions ?? {},
+        ownCitations: r?.ownCitations ?? 0,
       };
     });
 
     const nWindow = mine.reduce((s, r) => s + r.n, 0);
     const ownCitationsWindow = mine.reduce((s, r) => s + r.ownCitations, 0);
     const recommendationsWindow = mine.reduce((s, r) => s + r.recommendations, 0);
-
-    // "First own-URL citation on a prompt" needs history OUTSIDE the window —
-    // an own citation four runs ago means this one is not the first.
-    const [older] = await database
-      .select({ count: sql<number>`count(*)::int` })
-      .from(aiVisibilityAggregates)
-      .where(
-        and(
-          eq(aiVisibilityAggregates.promptId, row.promptId!),
-          eq(aiVisibilityAggregates.engine, row.engine),
-          ne(aiVisibilityAggregates.ownCitations, 0),
-          notInArray(aiVisibilityAggregates.runId, windowIds)
-        )
-      );
 
     promptWindows.push({
       promptId: row.promptId!,
@@ -781,7 +917,9 @@ export async function emitSignals(
       nWindow,
       recommendationsWindow,
       ownCitationsWindow,
-      ownCitationsBefore: older?.count ?? 0,
+      // History outside the window: an own citation four runs ago means this
+      // one is not the first.
+      ownCitationsBefore: ownCitationsBeforeBy.get(key) ?? 0,
       contradictionSamples: contradictionsBy.get(key) ?? 0,
       evidence: evidenceBy.get(key) ?? { excerpt: null, modelId: null, citedUrls: [] },
     });
@@ -850,14 +988,22 @@ export async function emitSignals(
   });
 
   // ── Domains ────────────────────────────────────────────────────────────
-  const leaderboard = await citedDomains(tenantId, { runs: WINDOW_RUNS }, database);
+  const leaderboard = await citedDomains(
+    tenantId,
+    { runs: WINDOW_RUNS, limit: DOMAIN_LEADERBOARD_LIMIT, includeRunId: runId },
+    database
+  );
+
+  // "Seen before" is EVERY run before this one, not the previous window. The
+  // previous window (N-4…N-7) is offset from the leaderboard's window by one
+  // and overlaps it by one, so a domain that arrived in N-1 was new by that
+  // test in four consecutive runs — four ISO weeks, four signals.
   const seenEarlier = new Set<string>();
-  if (previousRuns.length > 0) {
-    const beforeIds = previousRuns.map((r) => r.id);
+  if (historyIds.length > 0) {
     const rows = await database
       .select({ domain: aiVisibilityCitations.domain })
       .from(aiVisibilityCitations)
-      .where(and(eq(aiVisibilityCitations.tenantId, tenantId), inArray(aiVisibilityCitations.runId, beforeIds)));
+      .where(and(eq(aiVisibilityCitations.tenantId, tenantId), inArray(aiVisibilityCitations.runId, historyIds)));
     for (const row of rows) seenEarlier.add(row.domain);
   }
 
@@ -865,12 +1011,17 @@ export async function emitSignals(
     domain: row.domain,
     domainClass: row.domainClass,
     rank: index + 1,
+    citedInCurrentRun: citedNow.has(row.domain),
     // A brand-new tenant has no earlier runs at all; nothing is "new" then, or
-    // the first run would emit a domain signal for every source it saw.
-    seenBefore: previousRuns.length === 0 || seenEarlier.has(row.domain),
-    promptsTenantAbsent: row.tenantAbsentAnswers,
+    // the first run would emit a domain signal for every source it saw and fill
+    // the whole cap with a baseline.
+    seenBefore: historyIds.length === 0 || seenEarlier.has(row.domain),
+    // DISTINCT prompts. `tenantAbsentAnswers` counts samples, so at three
+    // samples a prompt one prompt clears the rule's three-prompt bar on its own
+    // and the title says "3 prompts" about one question.
+    promptsTenantAbsent: row.tenantAbsentPrompts,
     engines: row.engines,
-    sampleUrl: `https://${row.domain}`,
+    sampleUrl: row.sampleUrl,
   }));
 
   // ── Evaluate and write ─────────────────────────────────────────────────

@@ -28,11 +28,18 @@ import {
 const RUN_ID = "run-now";
 const RUN_DATE = new Date("2026-03-02T09:00:00Z");
 
-const runBand = (runId: string, hits: number, n = 3, competitorHits: Record<string, number> = {}): RunBand => ({
+const runBand = (
+  runId: string,
+  hits: number,
+  n = 3,
+  competitorHits: Record<string, number> = {},
+  ownCitations = 0
+): RunBand => ({
   runId,
   hits,
   n,
   competitorHits,
+  ownCitations,
 });
 
 function promptWindow(overrides: Partial<PromptEngineWindow> = {}): PromptEngineWindow {
@@ -213,6 +220,19 @@ describe("competitor_gained across prompts", () => {
     expect(out.filter((c) => c.signalType === "competitor_gained")).toHaveLength(0);
   });
 
+  it("does not fire when the previous run was not measurable at all", () => {
+    // n = 0 is what a brand-new prompt looks like one run in. The old test was
+    // `hits / max(1, n) < 1/3`, which reads 0/0 as "was low" and manufactures a
+    // gain out of a run that measured nothing.
+    const fresh = (promptId: string) =>
+      promptWindow({
+        promptId,
+        runs: [runBand(RUN_ID, 1, 3, { "c-1": 3 }), runBand("r2", 0, 0, {})],
+      });
+    const out = evaluateTriggers(input({ prompts: [fresh("p1"), fresh("p2"), fresh("p3")] }));
+    expect(out.filter((c) => c.signalType === "competitor_gained")).toHaveLength(0);
+  });
+
   it("does not fire when the competitor was already above a third", () => {
     const already = (promptId: string) =>
       promptWindow({
@@ -257,16 +277,54 @@ describe("competitor_gained across prompts", () => {
 describe("own_page_cited, recommended_not_cited, misdescription", () => {
   it("fires own_page_cited on the first own citation for a prompt", () => {
     const out = evaluateTriggers(
-      input({ prompts: [promptWindow({ ownCitationsWindow: 2, ownCitationsBefore: 0 })] })
+      input({
+        prompts: [
+          promptWindow({
+            runs: [runBand(RUN_ID, 3, 3, {}, 2), runBand("r2", 3), runBand("r3", 3), runBand("r4", 3)],
+            ownCitationsWindow: 2,
+            ownCitationsBefore: 0,
+          }),
+        ],
+      })
     );
     expect(out.map((c) => c.signalType)).toContain("own_page_cited");
   });
 
   it("does not fire own_page_cited when the page was already cited before the window", () => {
     const out = evaluateTriggers(
-      input({ prompts: [promptWindow({ ownCitationsWindow: 2, ownCitationsBefore: 5 })] })
+      input({
+        prompts: [
+          promptWindow({
+            runs: [runBand(RUN_ID, 3, 3, {}, 2), runBand("r2", 3), runBand("r3", 3), runBand("r4", 3)],
+            ownCitationsWindow: 2,
+            ownCitationsBefore: 5,
+          }),
+        ],
+      })
     );
     expect(out.map((c) => c.signalType)).not.toContain("own_page_cited");
+  });
+
+  it("does not re-fire own_page_cited on later runs while the citation is still in the window", () => {
+    // The citation landed in the PREVIOUS run. It is still inside the rolling
+    // four-run window, so a window-wide test keeps firing it — once a week for
+    // four weeks, each under a different ISO week key, so the dedupe index
+    // cannot absorb them. "First own-URL citation on a prompt" is singular.
+    const stale = promptWindow({
+      runs: [runBand(RUN_ID, 3), runBand("r2", 3, 3, {}, 2), runBand("r3", 3), runBand("r4", 3)],
+      ownCitationsWindow: 2,
+      ownCitationsBefore: 0,
+    });
+    expect(typesOf(input({ prompts: [stale] }))).not.toContain("own_page_cited");
+  });
+
+  it("does not fire own_page_cited when an earlier run in the window was already cited", () => {
+    const notFirst = promptWindow({
+      runs: [runBand(RUN_ID, 3, 3, {}, 1), runBand("r2", 3, 3, {}, 2), runBand("r3", 3), runBand("r4", 3)],
+      ownCitationsWindow: 3,
+      ownCitationsBefore: 0,
+    });
+    expect(typesOf(input({ prompts: [notFirst] }))).not.toContain("own_page_cited");
   });
 
   it("fires recommended_not_cited when recommended two thirds of the time with no own citation", () => {
@@ -294,6 +352,7 @@ describe("new_cited_domain", () => {
     domain: "g2.com",
     domainClass: "review",
     rank: 3,
+    citedInCurrentRun: true,
     seenBefore: false,
     promptsTenantAbsent: 0,
     engines: ["openai" as const],
@@ -311,6 +370,12 @@ describe("new_cited_domain", () => {
     expect(typesOf(input({ domains: [domain({ rank: 40, promptsTenantAbsent: 3 })] }))).toEqual([
       "new_cited_domain",
     ]);
+  });
+
+  it("does not fire for a domain the current run did not cite", () => {
+    // Still on the four-run leaderboard, but nothing cited it this week: the
+    // news broke in an earlier run and was reported then.
+    expect(typesOf(input({ domains: [domain({ citedInCurrentRun: false })] }))).toEqual([]);
   });
 
   it("does not fire for a domain seen in an earlier run", () => {
@@ -456,6 +521,7 @@ describe("model-version-change suppression", () => {
             domain: "g2.com",
             domainClass: "review",
             rank: 1,
+            citedInCurrentRun: true,
             seenBefore: false,
             promptsTenantAbsent: 5,
             engines: ["openai"],
@@ -489,6 +555,7 @@ describe("dedupe key and materiality cap", () => {
             domain: "g2.com",
             domainClass: "review",
             rank: 1,
+            citedInCurrentRun: true,
             seenBefore: false,
             promptsTenantAbsent: 5,
             engines: ["openai"],
@@ -525,7 +592,7 @@ describe("dedupe key and materiality cap", () => {
         promptId: `p${i}`,
         promptText: `prompt ${i}`,
         // Both a gap (weight 100) and a first own citation (weight 55).
-        runs: [runBand(RUN_ID, 0, 3, { "c-1": 3 }), runBand("r2", 0, 3, { "c-1": 3 })],
+        runs: [runBand(RUN_ID, 0, 3, { "c-1": 3 }, 1), runBand("r2", 0, 3, { "c-1": 3 })],
         ownCitationsWindow: 1,
         ownCitationsBefore: 0,
       })
@@ -821,6 +888,128 @@ describe("emitSignals", () => {
     await emitSignals(latestRunId, { now: clock("2026-03-02T10:00:00Z") });
 
     expect(await emittedTypes(tenant.id)).not.toContain("lost_mention");
+  });
+
+  /**
+   * Six weekly runs on one prompt where the tenant is always named, so nothing
+   * but the finding under test can fire. `citedFrom` is the index of the first
+   * run whose answers cite g2.com; `ownCitedIn` is the index of the one run
+   * that cited a page of ours.
+   */
+  async function seedHistory(opts: { citedFrom?: number; ownCitedIn?: number } = {}) {
+    const tenant = await seedTenant(DB_TENANT);
+    const [source] = await db
+      .insert(sources)
+      .values({ tenantId: tenant.id, type: "ai_visibility", label: "AI visibility" })
+      .returning();
+    const [prompt] = await db
+      .insert(aiVisibilityPrompts)
+      .values({ tenantId: tenant.id, text: "best issue tracker for startups", intent: "discovery", origin: "generated", status: "active" })
+      .returning();
+
+    const startedAts = [
+      "2026-01-26T09:00:00Z",
+      "2026-02-02T09:00:00Z",
+      "2026-02-09T09:00:00Z",
+      "2026-02-16T09:00:00Z",
+      "2026-02-23T09:00:00Z",
+      "2026-03-02T09:00:00Z",
+    ];
+    const runIds: string[] = [];
+
+    for (const [index, startedAt] of startedAts.entries()) {
+      const [run] = await db
+        .insert(aiVisibilityRuns)
+        .values({
+          tenantId: tenant.id,
+          sourceId: source.id,
+          trigger: "scheduled",
+          engines: ["openai"],
+          samplesPerPrompt: 3,
+          status: "complete",
+          modelIds: { openai: "gpt-5.1" },
+          startedAt: new Date(startedAt),
+        })
+        .returning();
+      runIds.push(run.id);
+
+      const ownCitations = opts.ownCitedIn === index ? 3 : 0;
+      await db.insert(aiVisibilityAggregates).values({
+        runId: run.id,
+        tenantId: tenant.id,
+        engine: "openai",
+        promptId: prompt.id,
+        n: 3,
+        tenantMentions: 3,
+        competitorMentions: {},
+        ownCitations,
+        recommendations: 0,
+      });
+
+      const citesG2 = opts.citedFrom !== undefined && index >= opts.citedFrom;
+      for (let s = 0; s < 3; s++) {
+        const [sample] = await db
+          .insert(aiVisibilitySamples)
+          .values({
+            runId: run.id,
+            tenantId: tenant.id,
+            promptId: prompt.id,
+            engine: "openai",
+            sampleIndex: s,
+            status: "ok",
+            judged: true,
+            answerText: "We are among the options.",
+            modelId: "gpt-5.1",
+            askedAt: new Date(startedAt),
+            extraction: {
+              deterministic: { tenantMentioned: true, competitorIds: [], ownDomainCited: ownCitations > 0 },
+            },
+          })
+          .returning();
+        await db.insert(aiVisibilityCitations).values({
+          sampleId: sample.id,
+          tenantId: tenant.id,
+          runId: run.id,
+          url: citesG2 ? "https://g2.com/categories/issue-tracking" : "https://docs.example.com/guide",
+          domain: citesG2 ? "g2.com" : "docs.example.com",
+          position: 1,
+          domainClass: citesG2 ? "review" : "docs",
+        });
+      }
+    }
+
+    return { tenant, prompt, runIds };
+  }
+
+  async function typesWritten(tenantId: string) {
+    return (await emittedTypes(tenantId)).filter(Boolean);
+  }
+
+  it("emits own_page_cited once, not once per run the citation stays in the window", async () => {
+    // The citation lands in run index 4 and never repeats. Under a window-wide
+    // test it re-qualifies at 4, 5, 6 and 7 — four different ISO weeks, so the
+    // dedupe index absorbs none of them.
+    const { tenant, runIds } = await seedHistory({ ownCitedIn: 4 });
+
+    await emitSignals(runIds[4], { now: clock("2026-02-23T10:00:00Z") });
+    await emitSignals(runIds[5], { now: clock("2026-03-02T10:00:00Z") });
+
+    const own = (await typesWritten(tenant.id)).filter((type) => type === "own_page_cited");
+    expect(own).toHaveLength(1);
+  });
+
+  it("emits new_cited_domain once for a domain, not again while it stays in the window", async () => {
+    // g2.com is first cited in run index 4. It is genuinely new there and old
+    // everywhere after.
+    const { tenant, runIds } = await seedHistory({ citedFrom: 4 });
+
+    await emitSignals(runIds[4], { now: clock("2026-02-23T10:00:00Z") });
+    const afterFirst = (await typesWritten(tenant.id)).filter((t) => t === "new_cited_domain");
+    expect(afterFirst).toHaveLength(1);
+
+    await emitSignals(runIds[5], { now: clock("2026-03-02T10:00:00Z") });
+    const afterSecond = (await typesWritten(tenant.id)).filter((t) => t === "new_cited_domain");
+    expect(afterSecond).toHaveLength(1);
   });
 
   it("never writes more than the per-run cap", async () => {
