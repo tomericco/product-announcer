@@ -158,6 +158,32 @@ describe("citedDomains", () => {
     expect(rows.map((r) => r.domain)).toEqual(["a.com"]);
   });
 
+  it("picks one domainClass deterministically when the citation rows disagree", async () => {
+    const { tenant, rival, run, prompt } = await fixture();
+    // The same domain classified differently in different runs — which happens
+    // whenever a site is added to the competitor list mid-window.
+    await answer({ tenantId: tenant.id, runId: run.id, promptId: prompt.id, engine: "openai", sampleIndex: 0, tenantMentioned: true, domains: [{ domain: "shift.com", domainClass: "publisher" }] });
+    await answer({ tenantId: tenant.id, runId: run.id, promptId: prompt.id, engine: "openai", sampleIndex: 1, tenantMentioned: true, domains: [{ domain: "shift.com", domainClass: "publisher" }] });
+    await answer({ tenantId: tenant.id, runId: run.id, promptId: prompt.id, engine: "openai", sampleIndex: 2, tenantMentioned: true, domains: [{ domain: "shift.com", domainClass: "competitor", competitorId: rival.id }] });
+
+    const rows = await citedDomains(tenant.id, {});
+    // Most frequent wins, and the answer is the same on every call.
+    expect(rows[0].domainClass).toBe("publisher");
+    expect((await citedDomains(tenant.id, {}))[0].domainClass).toBe("publisher");
+    // The competitor id still carries through — a known id beats a null.
+    expect(rows[0].competitorId).toBe(rival.id);
+  });
+
+  it("breaks a domainClass tie the same way every time", async () => {
+    const { tenant, run, prompt } = await fixture();
+    await answer({ tenantId: tenant.id, runId: run.id, promptId: prompt.id, engine: "openai", sampleIndex: 0, tenantMentioned: true, domains: [{ domain: "tied.com", domainClass: "review" }] });
+    await answer({ tenantId: tenant.id, runId: run.id, promptId: prompt.id, engine: "openai", sampleIndex: 1, tenantMentioned: true, domains: [{ domain: "tied.com", domainClass: "docs" }] });
+
+    // One each; alphabetical decides, so it is stable rather than scan-ordered.
+    expect((await citedDomains(tenant.id, {}))[0].domainClass).toBe("docs");
+    expect((await citedDomains(tenant.id, {}))[0].domainClass).toBe("docs");
+  });
+
   it("is empty, not an error, when the tenant has never run", async () => {
     const tenant = await seedTenant(TENANT);
     expect(await citedDomains(tenant.id, {})).toEqual([]);

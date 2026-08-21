@@ -10,6 +10,8 @@ import {
 } from "../../../src/db/schema";
 import {
   wilsonPp,
+  clampBand,
+  brandMentionTotal,
   windowCounts,
   engineMetrics,
   promptMatrix,
@@ -320,7 +322,7 @@ describe("promptHistory", () => {
     await seedAggregate({ runId: a.id, tenantId: tenant.id, engine: "openai", promptId: prompt.id, n: 3, tenantMentions: 1 });
     await seedAggregate({ runId: b.id, tenantId: tenant.id, engine: "openai", promptId: prompt.id, n: 3, tenantMentions: 3 });
 
-    const points = await promptHistory(prompt.id, "openai");
+    const points = await promptHistory(tenant.id, prompt.id, "openai");
 
     expect(points).toHaveLength(2);
     expect(points[0]).toMatchObject({ runId: a.id, hits: 1, n: 3, modelId: "gpt-5.0" });
@@ -336,7 +338,7 @@ describe("promptHistory", () => {
     await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "openai", promptId: prompt.id, n: 3, tenantMentions: 2 });
     await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "perplexity", promptId: prompt.id, n: 3, tenantMentions: 1 });
 
-    const points = await promptHistory(prompt.id, "all");
+    const points = await promptHistory(tenant.id, prompt.id, "all");
     expect(points).toHaveLength(1);
     expect(points[0]).toMatchObject({ hits: 3, n: 6, modelId: null });
   });
@@ -395,7 +397,7 @@ describe("runEngineHealth", () => {
     await add(p2.id, "perplexity", 0, "error", "429 rate limited");
     await add(p2.id, "perplexity", 1, "refused", "no search results");
 
-    const health = await runEngineHealth(run.id);
+    const health = await runEngineHealth(tenant.id, run.id);
 
     const pplx = health.find((h) => h.engine === "perplexity")!;
     expect(pplx).toMatchObject({
@@ -412,7 +414,7 @@ describe("runEngineHealth", () => {
   it("returns nothing for a run with no samples", async () => {
     const tenant = await seedTenant(TENANT);
     const run = await seedRun(tenant.id, "2026-03-01T09:00:00Z");
-    expect(await runEngineHealth(run.id)).toEqual([]);
+    expect(await runEngineHealth(tenant.id, run.id)).toEqual([]);
   });
 });
 
@@ -503,5 +505,229 @@ describe("promptSamples", () => {
     expect(await promptSamples(tenant.id, prompt.id, { engine: "perplexity" })).toHaveLength(1);
     expect((await promptSamples(tenant.id, prompt.id, { engine: "perplexity" }))[0].error).toBe("no search results");
     expect(await promptSamples(tenant.id, prompt.id, { limit: 1 })).toHaveLength(2); // one per engine
+  });
+});
+
+/**
+ * Review fixes. Each block names the finding it pins so a later edit that
+ * reintroduces the behaviour fails with the reason attached.
+ */
+describe("wilson band responds to evidence, not to the competitor roster", () => {
+  const CLOCK = () => new Date("2026-03-30T00:00:00Z");
+
+  /** 84 answers, 26 of them naming the tenant, with a chosen competitor spread. */
+  async function withCompetitors(competitorMentions: Record<string, number>) {
+    const tenant = await seedTenant(TENANT);
+    const run = await seedRun(tenant.id, "2026-03-01T09:00:00Z");
+    await seedAggregate({
+      runId: run.id,
+      tenantId: tenant.id,
+      engine: "openai",
+      n: 84,
+      tenantMentions: 26,
+      competitorMentions,
+    });
+    return (await engineMetrics(tenant.id, db, CLOCK)).find((r) => r.engine === "openai")!;
+  }
+
+  it("anchors the interval to answers, not to total brand mentions", async () => {
+    // Two competitors, 60 mentions between them: 86 brand mentions over 84
+    // answers. Anchored to mentions this reads 9.53 pp; anchored to the 84
+    // independent answers it is 9.64.
+    const two = await withCompetitors({ a: 30, b: 30 });
+    expect(two.wilsonPp).toBeCloseTo(9.643, 2);
+  });
+
+  it("does not shrink the band when competitors are added to the roster", async () => {
+    await withCompetitors({ a: 30, b: 30 });
+    await dropTenant(TENANT);
+    // Same 84 answers, same 26 mentions, four more rivals tracked. Anchored to
+    // brand mentions this would report 4.54 pp — settings alone would appear to
+    // double the precision. Anchored to answers it WIDENS, which is correct:
+    // the tenant's share fell, so 26 hits say less about it than before.
+    const six = await withCompetitors({ a: 30, b: 30, c: 30, d: 30, e: 30, f: 30 });
+    expect(six.wilsonPp).toBeCloseTo(7.134, 2);
+    expect(six.wilsonPp!).toBeGreaterThan(4.6);
+  });
+
+  it("is unchanged when the same mentions are split across more competitors", async () => {
+    const lumped = await withCompetitors({ a: 60 });
+    await dropTenant(TENANT);
+    const split = await withCompetitors({ a: 20, b: 20, c: 20 });
+    // Identical evidence, differently attributed. The band is a property of the
+    // answers and the share, so nothing about it may move.
+    expect(split.shareOfVoice).toBeCloseTo(lumped.shareOfVoice!, 10);
+    expect(split.wilsonPp).toBeCloseTo(lumped.wilsonPp!, 10);
+  });
+
+  it("never claims more trials than there were brand mentions", async () => {
+    // 40 answers, 5 brand mentions in total: the band must be the wide one that
+    // 5 observations support, not the narrow one 40 answers would give.
+    const tenant = await seedTenant(TENANT);
+    const run = await seedRun(tenant.id, "2026-03-01T09:00:00Z");
+    await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "openai", n: 40, tenantMentions: 4, competitorMentions: { a: 1 } });
+    const openai = (await engineMetrics(tenant.id, db, CLOCK)).find((r) => r.engine === "openai")!;
+    expect(openai.wilsonPp).toBeCloseTo(wilsonPp(4, 5)!, 10);
+  });
+});
+
+describe("a null share of voice is discriminated by mentionRate", () => {
+  const CLOCK = () => new Date("2026-03-30T00:00:00Z");
+
+  it("reports known-zero (not unknown) when the window is fat and nobody was named", async () => {
+    const tenant = await seedTenant(TENANT);
+    const run = await seedRun(tenant.id, "2026-03-01T09:00:00Z");
+    await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "openai", n: 84, tenantMentions: 0 });
+
+    const openai = (await engineMetrics(tenant.id, db, CLOCK)).find((r) => r.engine === "openai")!;
+    // The discriminator: a measured zero, so mentionRate is a NUMBER.
+    expect(openai.mentionRate).toBe(0);
+    expect(openai.shareOfVoice).toBeNull();
+    expect(openai.n).toBe(84);
+    // No brand mentions at all, so there is no proportion to put a band on.
+    expect(openai.wilsonPp).toBeNull();
+  });
+
+  it("reports unknown when the window is thin, with mentionRate null", async () => {
+    const tenant = await seedTenant(TENANT);
+    const run = await seedRun(tenant.id, "2026-03-01T09:00:00Z");
+    await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "openai", n: 10, tenantMentions: 0 });
+
+    const openai = (await engineMetrics(tenant.id, db, CLOCK)).find((r) => r.engine === "openai")!;
+    expect(openai.mentionRate).toBeNull();
+    expect(openai.shareOfVoice).toBeNull();
+  });
+});
+
+describe("clampBand", () => {
+  it("keeps a range inside 0..100", () => {
+    expect(clampBand(0, 5.7)).toEqual({ lowPp: 0, highPp: 5.7 });
+    expect(clampBand(98, 5)).toEqual({ lowPp: 93, highPp: 100 });
+  });
+
+  it("leaves an interior range alone", () => {
+    const band = clampBand(30, 9.6);
+    expect(band.lowPp).toBeCloseTo(20.4, 6);
+    expect(band.highPp).toBeCloseTo(39.6, 6);
+  });
+});
+
+describe("brandMentionTotal", () => {
+  it("counts the tenant plus every tracked brand, including ids no longer in the roster", () => {
+    expect(
+      brandMentionTotal({ n: 84, tenantMentions: 26, ownCitations: 0, recommendations: 0, competitorMentions: { a: 30, deleted: 30 } })
+    ).toBe(86);
+  });
+});
+
+describe("promptMatrix ordering", () => {
+  it("breaks a createdAt tie on id so the matrix does not reshuffle", async () => {
+    const tenant = await seedTenant(TENANT);
+    // One batched insert: Postgres `now()` is the transaction timestamp, so all
+    // three rows carry an identical created_at — the generated-set case.
+    const stamp = new Date("2026-02-01T09:00:00Z");
+    await db.insert(aiVisibilityPrompts).values(
+      ["c prompt", "a prompt", "b prompt"].map((text) => ({
+        tenantId: tenant.id,
+        text,
+        intent: "discovery",
+        origin: "generated",
+        status: "active",
+        createdAt: stamp,
+      }))
+    );
+
+    const first = await promptMatrix(tenant.id);
+    const second = await promptMatrix(tenant.id);
+    expect(first.map((r) => r.promptId)).toEqual(second.map((r) => r.promptId));
+    expect(first.map((r) => r.promptId)).toEqual([...first.map((r) => r.promptId)].sort());
+  });
+});
+
+describe("promptHistory tenant scoping", () => {
+  it("returns nothing for another tenant's promptId", async () => {
+    const tenant = await seedTenant(TENANT);
+    const other = await seedTenant(TENANT);
+    const prompt = await seedPromptRow(tenant.id);
+    const run = await seedRun(tenant.id, "2026-01-05T09:00:00Z", "complete", { openai: "gpt-5.0" });
+    await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "openai", promptId: prompt.id, n: 3, tenantMentions: 2 });
+
+    expect(await promptHistory(tenant.id, prompt.id, "openai")).toHaveLength(1);
+    expect(await promptHistory(other.id, prompt.id, "openai")).toEqual([]);
+  });
+});
+
+describe("runEngineHealth pending rows and tenant scoping", () => {
+  it("ignores pending samples so an in-flight run does not read as a failure", async () => {
+    const tenant = await seedTenant(TENANT);
+    const prompt = await seedPromptRow(tenant.id);
+    const run = await seedRun(tenant.id, "2026-03-01T09:00:00Z", "running");
+
+    await db.insert(aiVisibilitySamples).values([
+      { runId: run.id, tenantId: tenant.id, promptId: prompt.id, engine: "openai", sampleIndex: 0, status: "ok", answerText: "text" },
+      { runId: run.id, tenantId: tenant.id, promptId: prompt.id, engine: "openai", sampleIndex: 1, status: "pending" },
+      { runId: run.id, tenantId: tenant.id, promptId: prompt.id, engine: "openai", sampleIndex: 2, status: "pending" },
+      // A whole engine not yet started drops out rather than reporting 0 of 3.
+      { runId: run.id, tenantId: tenant.id, promptId: prompt.id, engine: "gemini", sampleIndex: 0, status: "pending" },
+    ]);
+
+    const health = await runEngineHealth(tenant.id, run.id);
+    expect(health.map((h) => h.engine)).toEqual(["openai"]);
+    expect(health[0]).toMatchObject({ totalSamples: 1, okSamples: 1, erroredSamples: 0, refusedSamples: 0 });
+  });
+
+  it("returns nothing for another tenant's runId", async () => {
+    const tenant = await seedTenant(TENANT);
+    const other = await seedTenant(TENANT);
+    const prompt = await seedPromptRow(tenant.id);
+    const run = await seedRun(tenant.id, "2026-03-01T09:00:00Z", "complete");
+    await db.insert(aiVisibilitySamples).values({
+      runId: run.id, tenantId: tenant.id, promptId: prompt.id, engine: "openai", sampleIndex: 0, status: "ok", answerText: "text",
+    });
+
+    expect(await runEngineHealth(tenant.id, run.id)).toHaveLength(1);
+    expect(await runEngineHealth(other.id, run.id)).toEqual([]);
+  });
+});
+
+describe("promptSamples per-engine bounding", () => {
+  it("returns a full set for a quiet engine even when a loud one owns the newest rows", async () => {
+    const tenant = await seedTenant(TENANT);
+    const prompt = await seedPromptRow(tenant.id);
+    const run = await seedRun(tenant.id, "2026-03-01T09:00:00Z", "complete");
+
+    // Twelve recent openai answers and two older perplexity ones. Fetching
+    // `limit * 4 = 8` rows newest-first would return openai's eight and leave
+    // the perplexity tab empty.
+    await db.insert(aiVisibilitySamples).values(
+      Array.from({ length: 12 }, (_, i) => ({
+        runId: run.id,
+        tenantId: tenant.id,
+        promptId: prompt.id,
+        engine: "openai",
+        sampleIndex: i,
+        status: "ok",
+        answerText: `openai ${i}`,
+        askedAt: new Date(Date.UTC(2026, 2, 2, 9, i)),
+      }))
+    );
+    await db.insert(aiVisibilitySamples).values(
+      Array.from({ length: 2 }, (_, i) => ({
+        runId: run.id,
+        tenantId: tenant.id,
+        promptId: prompt.id,
+        engine: "perplexity",
+        sampleIndex: i,
+        status: "ok",
+        answerText: `perplexity ${i}`,
+        askedAt: new Date(Date.UTC(2026, 2, 1, 9, i)),
+      }))
+    );
+
+    const rows = await promptSamples(tenant.id, prompt.id, { limit: 2 });
+    expect(rows.filter((r) => r.engine === "openai")).toHaveLength(2);
+    expect(rows.filter((r) => r.engine === "perplexity")).toHaveLength(2);
+    // Newest first across the flattened list.
+    expect(rows[0].engine).toBe("openai");
   });
 });

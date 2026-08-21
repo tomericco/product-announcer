@@ -31,6 +31,26 @@ export const DELTA_DAYS = 30;
 const Z = 1.959963984540054;
 
 /**
+ * The 95% Wilson half-width for a proportion `p` observed over `n` independent
+ * trials, in percentage points.
+ *
+ * Split out from `wilsonPp` because share of voice is a ratio whose numerator
+ * and denominator are counted over DIFFERENT units: the numerator is mentions,
+ * the denominator is mentions of every tracked brand — but the independent
+ * observations are ANSWERS. See `toMetrics` for why that distinction is the
+ * difference between a band that responds to evidence and one that responds to
+ * how many competitors are typed into the settings page.
+ */
+function wilsonPpFromProportion(p: number, n: number): number | null {
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const clamped = Math.min(1, Math.max(0, p));
+  const denominator = 1 + (Z * Z) / n;
+  const half =
+    (Z * Math.sqrt((clamped * (1 - clamped)) / n + (Z * Z) / (4 * n * n))) / denominator;
+  return half * 100;
+}
+
+/**
  * The 95% Wilson interval's half-width, in percentage points.
  *
  * Wilson rather than the normal approximation because the normal one is
@@ -40,16 +60,40 @@ const Z = 1.959963984540054;
  * move is inside the noise.
  *
  * Returns the HALF-WIDTH, already multiplied by 100, so the caller renders
- * `±${value.toFixed(1)} pp` with no further arithmetic. Note the interval is
- * not symmetric about p — this is the half-width of the Wilson interval, which
- * is what "±" means on a tile and is what every vendor reports.
+ * `±${value.toFixed(1)} pp` with no further arithmetic.
+ *
+ * CAUTION — the printed range can leave [0, 100]. The Wilson interval is not
+ * symmetric about `p`: it is centred on the shrunk estimate
+ * `(x + z²/2) / (n + z²)`, and only the half-width is returned here. At 0/30
+ * this reports 5.7 pp against a rate of 0%, so a naive `p ± band` prints
+ * [-5.7, +5.7] where the true Wilson interval is [0, 11.4] — the same width,
+ * shifted. Anything rendering a RANGE rather than a `±` must pass through
+ * `clampBand`, which at least refuses to print impossible values.
  */
 export function wilsonPp(successes: number, n: number): number | null {
   if (!Number.isFinite(n) || n <= 0) return null;
-  const p = Math.min(1, Math.max(0, successes / n));
-  const denominator = 1 + (Z * Z) / n;
-  const half = (Z * Math.sqrt((p * (1 - p)) / n + (Z * Z) / (4 * n * n))) / denominator;
-  return half * 100;
+  return wilsonPpFromProportion(successes / n, n);
+}
+
+/**
+ * The endpoints of a `rate ± band` range, clamped into [0, 100].
+ *
+ * Exported so no caller re-derives `Math.max(0, ...)` — a range that starts at
+ * -5.7% is not a number anyone can read, and every surface that draws an error
+ * bar or a "between x% and y%" string needs the same two lines.
+ *
+ * Honest about what it cannot do: clamping is not the same as recovering the
+ * asymmetry described on `wilsonPp`. `clampBand(0, 5.7)` returns [0, 5.7],
+ * whereas the exact Wilson interval for 0/30 is [0, 11.4]. The clamp removes
+ * the impossible half of the range; it does not move the other half back out.
+ * Reproducing the exact interval needs the successes and n, not the summarised
+ * half-width, so a caller wanting that should build it from those directly.
+ */
+export function clampBand(sovPct: number, bandPp: number): { lowPp: number; highPp: number } {
+  return {
+    lowPp: Math.max(0, sovPct - bandPp),
+    highPp: Math.min(100, sovPct + bandPp),
+  };
 }
 
 const emptyCounts = (): WindowCounts => ({
@@ -137,8 +181,17 @@ export async function windowCounts(
   return total;
 }
 
-/** Total mentions of every tracked brand — the SOV denominator. */
-function brandMentionTotal(counts: WindowCounts): number {
+/**
+ * Total mentions of every tracked brand — the SOV denominator.
+ *
+ * Exported because the competitor bars are built from `listCompetitors`, and a
+ * competitor deleted mid-window still has mentions in this total (deliberately:
+ * a hard delete must not retroactively inflate the tenant's share). Without the
+ * total, the bars silently sum to less than the headline and the missing slice
+ * has no name. With it, the caller can draw the remainder as one "Other tracked
+ * brands" bar.
+ */
+export function brandMentionTotal(counts: WindowCounts): number {
   return (
     counts.tenantMentions +
     Object.values(counts.competitorMentions).reduce((sum, c) => sum + c, 0)
@@ -177,16 +230,39 @@ function toMetrics(engine: EngineId | "all", counts: WindowCounts, deltaPpValue:
     shareOfVoice: shareOfVoicePct(counts),
     citationRate: (counts.ownCitations / counts.n) * 100,
     recommendationRate: (counts.recommendations / counts.n) * 100,
-    // The interval is on the SOV proportion, so its denominator is total brand
-    // mentions, not n. Getting this wrong understates the band on exactly the
-    // engines where the tenant is rarely named.
-    wilsonPp: wilsonPp(counts.tenantMentions, brandMentionTotal(counts)),
+    // The estimand is the SOV proportion; the EVIDENCE is answers.
+    //
+    // Using total brand mentions as the trial count (the obvious reading of
+    // "successes out of the denominator") makes the band a function of the
+    // competitor roster rather than of the data: the same 84 answers and 26
+    // mentions report ±9.5 pp against two competitors and ±4.5 pp against six,
+    // so typing four names into settings appears to double the precision. It is
+    // also not a binomial: one answer can contribute up to 1 + |competitors|
+    // "trials", which are perfectly correlated within that answer, so the
+    // variance is understated on top of the inflation.
+    //
+    // Anchoring n to answers fixes both. `min` because the mention total is
+    // genuinely smaller than n whenever most answers name nobody, and the band
+    // must not claim more evidence than there were brand mentions to observe.
+    wilsonPp: wilsonPpFromProportion(
+      (shareOfVoicePct(counts) ?? 0) / 100,
+      Math.min(brandMentionTotal(counts), counts.n)
+    ),
     deltaPp: deltaPpValue,
   };
 }
 
 /**
  * 30-day share-of-voice movement, in percentage points.
+ *
+ * Read it as "versus what this tile said 30 days ago", NOT as "this period
+ * versus the previous period". The two windows are both the last four complete
+ * runs as of their own cut date, so they OVERLAP: at fortnightly cadence a
+ * 30-day-old window shares two of its four runs with the current one, and below
+ * eight lifetime runs it shares almost all of them. That makes the delta a
+ * damped, self-correlated figure — it moves later and smaller than a true
+ * period-over-period comparison would. Disjoint windows were not chosen because
+ * a tenant needs eight complete runs before either would be readable at all.
  *
  * Null unless BOTH windows clear the display threshold: a delta against a
  * window nobody was allowed to see is a number the reader cannot check, and
@@ -220,18 +296,23 @@ export async function engineMetrics(
 ): Promise<EngineMetrics[]> {
   const deltaBefore = new Date(now().getTime() - DELTA_DAYS * 24 * 60 * 60 * 1000);
 
-  const out: EngineMetrics[] = [];
-  for (const engine of ENGINE_IDS) {
-    const counts = await windowCounts(tenantId, { engine }, database);
-    const previous = await windowCounts(tenantId, { engine, before: deltaBefore }, database);
-    out.push(toMetrics(engine, counts, deltaPp(counts, previous)));
-  }
+  // Ten independent reads, issued together. Serially this is twenty round trips
+  // (each `windowCounts` is two queries) on the page's critical path, for
+  // numbers that share nothing and cannot disagree with each other.
+  const [current, previous] = await Promise.all([
+    Promise.all([
+      ...ENGINE_IDS.map((engine) => windowCounts(tenantId, { engine }, database)),
+      windowCounts(tenantId, {}, database),
+    ]),
+    Promise.all([
+      ...ENGINE_IDS.map((engine) => windowCounts(tenantId, { engine, before: deltaBefore }, database)),
+      windowCounts(tenantId, { before: deltaBefore }, database),
+    ]),
+  ]);
 
-  const pooled = await windowCounts(tenantId, {}, database);
-  const pooledPrevious = await windowCounts(tenantId, { before: deltaBefore }, database);
-  out.push(toMetrics("all", pooled, deltaPp(pooled, pooledPrevious)));
-
-  return out;
+  return [...ENGINE_IDS, "all" as const].map((engine, i) =>
+    toMetrics(engine, current[i], deltaPp(current[i], previous[i]))
+  );
 }
 
 export type PromptMatrixCell = { engine: EngineId; hits: number; n: number };
@@ -268,7 +349,11 @@ export async function promptMatrix(
     })
     .from(aiVisibilityPrompts)
     .where(and(eq(aiVisibilityPrompts.tenantId, tenantId), eq(aiVisibilityPrompts.status, "active")))
-    .orderBy(asc(aiVisibilityPrompts.createdAt));
+    // `id` breaks the tie, and the tie is the common case rather than the edge
+    // one: a generated set is a single batched INSERT, and Postgres `now()` is
+    // the TRANSACTION timestamp, so all ~30 rows carry the same `created_at`.
+    // Without the tiebreak the matrix reshuffles between page loads.
+    .orderBy(asc(aiVisibilityPrompts.createdAt), asc(aiVisibilityPrompts.id));
   if (prompts.length === 0) return [];
 
   const runIds = await windowRunIds(tenantId, WINDOW_RUNS, undefined, database);
@@ -346,8 +431,15 @@ export type PromptHistoryPoint = {
  *
  * `modelId` is null for `"all"`: four engines do not share a model, and
  * inventing one would put a false tick mark on the chart.
+ *
+ * `tenantId` is in the WHERE clause, not merely validated by the caller.
+ * `promptId` arrives from the URL, and reading the tenant OFF the prompt row —
+ * as this did — means any id that exists returns that owner's series to
+ * whoever asked. The page's own ownership guard is not a substitute: this
+ * function must be safe when called with an attacker-chosen id.
  */
 export async function promptHistory(
+  tenantId: string,
   promptId: string,
   engine: EngineId | "all",
   database: typeof defaultDb = defaultDb
@@ -355,7 +447,7 @@ export async function promptHistory(
   const [prompt] = await database
     .select({ tenantId: aiVisibilityPrompts.tenantId })
     .from(aiVisibilityPrompts)
-    .where(eq(aiVisibilityPrompts.id, promptId));
+    .where(and(eq(aiVisibilityPrompts.id, promptId), eq(aiVisibilityPrompts.tenantId, tenantId)));
   if (!prompt) return [];
 
   const runs = await historyRuns(prompt.tenantId, database);
@@ -480,8 +572,18 @@ export type RunEngineHealth = {
  * with the same consequence: an engine that rate-limited is broken, an engine
  * that declined to search answered honestly with nothing. Both are excluded
  * from rates; only one is worth telling the operator to go look at.
+ *
+ * `pending` rows are not counted at all — not as total, and not as a failure.
+ * `planRun` inserts the entire grid up front, so a run one slice in has
+ * hundreds of pending rows, and counting them would render an in-flight run as
+ * "3 of 360 answered": a catastrophe line for a healthy run. Coverage here
+ * means coverage of what has been ATTEMPTED.
+ *
+ * `tenantId` is in the WHERE clause for the same reason as `promptSamples`:
+ * `runId` reaches this from a URL.
  */
 export async function runEngineHealth(
+  tenantId: string,
   runId: string,
   database: typeof defaultDb = defaultDb
 ): Promise<RunEngineHealth[]> {
@@ -494,7 +596,7 @@ export async function runEngineHealth(
       askedAt: aiVisibilitySamples.askedAt,
     })
     .from(aiVisibilitySamples)
-    .where(eq(aiVisibilitySamples.runId, runId))
+    .where(and(eq(aiVisibilitySamples.runId, runId), eq(aiVisibilitySamples.tenantId, tenantId)))
     .orderBy(asc(aiVisibilitySamples.askedAt));
 
   const byEngine = new Map<
@@ -502,6 +604,8 @@ export async function runEngineHealth(
     { total: number; ok: number; errored: number; refused: number; prompts: Set<string>; lastError: string | null }
   >();
   for (const row of rows) {
+    // Not yet attempted, so it is neither coverage nor a gap in it.
+    if (row.status === "pending") continue;
     const entry =
       byEngine.get(row.engine) ??
       { total: 0, ok: 0, errored: 0, refused: 0, prompts: new Set<string>(), lastError: null };
@@ -564,7 +668,13 @@ const DEFAULT_PROMPT_SAMPLE_LIMIT = 12;
  * gets a full set for each tab rather than twelve rows that all belong to
  * whichever engine answered most recently.
  *
- * Two queries, never N+1: the samples, then their citations in one `inArray`.
+ * One bounded query PER ENGINE rather than one over-fetch of `limit × 4` rows
+ * partitioned in JS. The over-fetch silently under-returns whenever one engine
+ * owns more than its quarter of the newest rows — which is the normal case, not
+ * a pathological one: at `samplesPerPrompt: 5` over several runs, one engine's
+ * recent answers alone exceed the ceiling and the quieter engines come back
+ * empty even though their rows exist. Four small indexed reads issued together
+ * cost less than the one over-fetch did, and cannot lie.
  */
 export async function promptSamples(
   tenantId: string,
@@ -573,40 +683,47 @@ export async function promptSamples(
   database: typeof defaultDb = defaultDb
 ): Promise<PromptSample[]> {
   const limit = opts.limit ?? DEFAULT_PROMPT_SAMPLE_LIMIT;
+  const engines = opts.engine ? [opts.engine] : ENGINE_IDS;
 
-  const rows = await database
-    .select({
-      id: aiVisibilitySamples.id,
-      runId: aiVisibilitySamples.runId,
-      engine: aiVisibilitySamples.engine,
-      sampleIndex: aiVisibilitySamples.sampleIndex,
-      status: aiVisibilitySamples.status,
-      askedAt: aiVisibilitySamples.askedAt,
-      modelId: aiVisibilitySamples.modelId,
-      answerText: aiVisibilitySamples.answerText,
-      error: aiVisibilitySamples.error,
-      flagged: aiVisibilitySamples.flagged,
-      extraction: aiVisibilitySamples.extraction,
-    })
-    .from(aiVisibilitySamples)
-    .where(
-      and(
-        eq(aiVisibilitySamples.tenantId, tenantId),
-        eq(aiVisibilitySamples.promptId, promptId),
-        ...(opts.engine ? [eq(aiVisibilitySamples.engine, opts.engine)] : [])
-      )
+  const perEngineRows = await Promise.all(
+    engines.map((engine) =>
+      database
+        .select({
+          id: aiVisibilitySamples.id,
+          runId: aiVisibilitySamples.runId,
+          engine: aiVisibilitySamples.engine,
+          sampleIndex: aiVisibilitySamples.sampleIndex,
+          status: aiVisibilitySamples.status,
+          askedAt: aiVisibilitySamples.askedAt,
+          modelId: aiVisibilitySamples.modelId,
+          answerText: aiVisibilitySamples.answerText,
+          error: aiVisibilitySamples.error,
+          flagged: aiVisibilitySamples.flagged,
+          extraction: aiVisibilitySamples.extraction,
+        })
+        .from(aiVisibilitySamples)
+        .where(
+          and(
+            eq(aiVisibilitySamples.tenantId, tenantId),
+            eq(aiVisibilitySamples.promptId, promptId),
+            eq(aiVisibilitySamples.engine, engine)
+          )
+        )
+        // Newest first. NULLS LAST so a still-pending row does not head the list.
+        .orderBy(
+          sql`${aiVisibilitySamples.askedAt} DESC NULLS LAST`,
+          asc(aiVisibilitySamples.sampleIndex)
+        )
+        .limit(limit)
     )
-    // Newest first. NULLS LAST so a still-pending row does not head the list.
-    .orderBy(sql`${aiVisibilitySamples.askedAt} DESC NULLS LAST`, asc(aiVisibilitySamples.sampleIndex))
-    // Bounded generously, then cut per engine below — one query beats four.
-    .limit(limit * ENGINE_IDS.length);
+  );
 
-  const perEngine = new Map<string, number>();
-  const kept = rows.filter((row) => {
-    const seen = perEngine.get(row.engine) ?? 0;
-    if (seen >= limit) return false;
-    perEngine.set(row.engine, seen + 1);
-    return true;
+  // Flattened back into one newest-first list so a caller that does not split
+  // by engine still reads in a sensible order.
+  const kept = perEngineRows.flat().sort((a, b) => {
+    const at = a.askedAt?.getTime() ?? -Infinity;
+    const bt = b.askedAt?.getTime() ?? -Infinity;
+    return bt - at || a.sampleIndex - b.sampleIndex || a.engine.localeCompare(b.engine);
   });
   if (kept.length === 0) return [];
 

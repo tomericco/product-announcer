@@ -131,13 +131,44 @@ export type WindowCounts = {
 export type EngineMetrics = {
   engine: EngineId | "all";
   n: number;
-  /** null below the display threshold — "Collecting baseline", not zero. */
+  /**
+   * null below the display threshold — "Collecting baseline", not zero.
+   *
+   * This is the field that discriminates the whole row: it is null if and only
+   * if the window was too thin to show anything. Every other rate here is null
+   * in that case too, so `mentionRate === null` is the correct test for "we do
+   * not know yet".
+   */
   mentionRate: number | null;
-  /** 0..100. */
+  /**
+   * 0..100.
+   *
+   * NULL MEANS TWO DIFFERENT THINGS, and they must not be rendered the same
+   * way. Discriminate on `mentionRate`:
+   *
+   * - `mentionRate === null` — the window is below the display threshold.
+   *   Nothing is known. This is the "Collecting baseline" state.
+   * - `mentionRate === 0` (or any number) with `shareOfVoice === null` — the
+   *   window is fat enough to report, and NO tracked brand was named in any
+   *   answer. That is a known, measured fact, and on a discovery prompt set it
+   *   is usually the most actionable finding on the page: the engines are
+   *   answering these questions without naming anybody. Showing "Collecting
+   *   baseline" here tells a tenant with 84 collected answers that we have no
+   *   data, which is false.
+   *
+   * Share is null in the second case rather than 0 because 0% share implies a
+   * denominator — someone else won the mentions — and here there were none.
+   */
   shareOfVoice: number | null;
   citationRate: number | null;
   recommendationRate: number | null;
-  /** ± percentage points on SOV (Wilson 95%). */
+  /**
+   * ± percentage points on SOV (Wilson 95%).
+   *
+   * The proportion is share of voice; the trial count is ANSWERS, not brand
+   * mentions — see `toMetrics` in `metrics.ts`. Asymmetric: `sov ± wilsonPp`
+   * can leave [0, 100], so render ranges through `clampBand`.
+   */
   wilsonPp: number | null;
   /** 30-day delta in pp; null when the earlier window is unknown. */
   deltaPp: number | null;

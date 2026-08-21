@@ -32,6 +32,32 @@ export type CitedDomainRow = {
 const DEFAULT_LIMIT = 25;
 
 /**
+ * One class for a domain whose citation rows disagree, chosen deterministically.
+ *
+ * They do disagree in practice: `domainClass` is decided per citation against
+ * the competitor list as it stood at extraction time, so a domain classified
+ * `publisher` in March and `competitor` in April has both in one window. Taking
+ * whichever row the database handed back first made the leaderboard's class
+ * column depend on scan order — the same window could render "publisher" on one
+ * load and "competitor" on the next.
+ *
+ * Most-frequent wins, ties broken alphabetically. Frequency rather than
+ * most-recent because the row aggregates the whole window, and alphabetical
+ * rather than nothing because a tie must still resolve the same way every time.
+ */
+function dominantClass(counts: Map<string, number>): DomainClass {
+  let best: string | null = null;
+  let bestCount = 0;
+  for (const [name, count] of [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    if (count > bestCount) {
+      best = name;
+      bestCount = count;
+    }
+  }
+  return (best ?? "other") as DomainClass;
+}
+
+/**
  * Where the engines got their answers (design §UX row 3, and the evidence
  * behind `new_cited_domain`).
  *
@@ -45,9 +71,13 @@ const DEFAULT_LIMIT = 25;
  * a domain the engines lean on for questions where nobody names you is a page
  * you are missing from, not merely a popular site.
  *
- * Eligibility is `isEligible` from `aggregate.ts` — the same cut as every rate
- * on the page. A leaderboard built on a different denominator than the tiles
- * above it is how a dashboard loses its reader's trust in one sitting.
+ * Eligibility is `isEligible` from `aggregate.ts` — the same SAMPLE CUT as
+ * every rate on the page: errored, refused, flagged and brand-check rows are
+ * out of both. The WINDOW is a different matter: `runs` defaults to
+ * `WINDOW_RUNS` to match the tiles, but callers pass a longer one (the overview
+ * asks for 12 so a domain cited once a quarter still appears), and a table over
+ * 12 runs sitting under tiles over 4 is only honest if the surface says which
+ * span each covers. Callers overriding `runs` must label the table accordingly.
  */
 export async function citedDomains(
   tenantId: string,
@@ -105,7 +135,8 @@ export async function citedDomains(
 
   type Acc = {
     domain: string;
-    domainClass: string;
+    /** class -> how many citation rows carried it. See `dominantClass`. */
+    classCounts: Map<string, number>;
     competitorId: string | null;
     citations: number;
     answers: Set<string>;
@@ -119,13 +150,14 @@ export async function citedDomains(
     if (!sample) continue;
     const acc = byDomain.get(citation.domain) ?? {
       domain: citation.domain,
-      domainClass: citation.domainClass,
+      classCounts: new Map<string, number>(),
       competitorId: citation.competitorId,
       citations: 0,
       answers: new Set<string>(),
       engines: new Set<string>(),
       absent: new Set<string>(),
     };
+    acc.classCounts.set(citation.domainClass, (acc.classCounts.get(citation.domainClass) ?? 0) + 1);
     acc.citations += 1;
     acc.answers.add(citation.sampleId);
     acc.engines.add(sample.engine);
@@ -142,7 +174,7 @@ export async function citedDomains(
   return [...byDomain.values()]
     .map((acc) => ({
       domain: acc.domain,
-      domainClass: acc.domainClass as DomainClass,
+      domainClass: dominantClass(acc.classCounts),
       citations: acc.citations,
       answers: acc.answers.size,
       answerShare: (acc.answers.size / denominator) * 100,
