@@ -25,6 +25,15 @@ vi.mock("../../../../../src/lib/signals/sweep", () => ({ sweepCompetitorSources:
 // model calls. Its own isolation is covered by
 // `tests/lib/signals/news-sweep.test.ts`.
 vi.mock("../../../../../src/lib/signals/news-sweep", () => ({ sweepNewsSources: vi.fn() }));
+// Must be mocked for the same reasons as the news sweep, and one more: the real
+// `sweepAiVisibility` is an unscoped, cross-tenant sweep that WRITES — it
+// updates status/lastRunAt/lastError on every tenant's ai_visibility source and
+// inserts runs, samples, aggregates and signals, so it would clobber rows that
+// `sweep.test.ts`, `run.test.ts` and `signals.test.ts` create in parallel. It
+// also reaches four paid third-party APIs and the Anthropic judge: with any
+// engine key present in the environment, `npm test` would make real billed
+// calls. Its own isolation is covered by `tests/lib/ai-visibility/sweep.test.ts`.
+vi.mock("../../../../../src/lib/ai-visibility/sweep", () => ({ sweepAiVisibility: vi.fn() }));
 // Must be mocked for the same reason, and one more: the real `sweepIdeation`
 // is an unscoped, cross-tenant sweep against the shared test database, and it
 // makes a paid model call per tenant via `runIdeation`. Its own isolation is
@@ -40,6 +49,7 @@ import { sweepUnresolvedEvents } from "../../../../../src/lib/change-events/reso
 import { syncShippedWorkSignals } from "../../../../../src/lib/signals/shipped-work";
 import { sweepCompetitorSources } from "../../../../../src/lib/signals/sweep";
 import { sweepNewsSources } from "../../../../../src/lib/signals/news-sweep";
+import { sweepAiVisibility } from "../../../../../src/lib/ai-visibility/sweep";
 import { expireStaleBriefs, sweepIdeation } from "../../../../../src/lib/briefs/sweep";
 import { GET } from "../../../../../src/app/api/cron/scheduler/route";
 
@@ -62,6 +72,7 @@ describe("GET /api/cron/scheduler", () => {
     vi.mocked(syncShippedWorkSignals).mockReset().mockResolvedValue(undefined);
     vi.mocked(sweepCompetitorSources).mockReset().mockResolvedValue(undefined);
     vi.mocked(sweepNewsSources).mockReset().mockResolvedValue(undefined);
+    vi.mocked(sweepAiVisibility).mockReset().mockResolvedValue(undefined);
     vi.mocked(expireStaleBriefs).mockReset().mockResolvedValue(0);
     vi.mocked(sweepIdeation).mockReset().mockResolvedValue(undefined);
   });
@@ -78,6 +89,7 @@ describe("GET /api/cron/scheduler", () => {
     expect(syncShippedWorkSignals).not.toHaveBeenCalled();
     expect(sweepCompetitorSources).not.toHaveBeenCalled();
     expect(sweepNewsSources).not.toHaveBeenCalled();
+    expect(sweepAiVisibility).not.toHaveBeenCalled();
     expect(expireStaleBriefs).not.toHaveBeenCalled();
     expect(sweepIdeation).not.toHaveBeenCalled();
   });
@@ -90,11 +102,12 @@ describe("GET /api/cron/scheduler", () => {
     expect(syncShippedWorkSignals).not.toHaveBeenCalled();
     expect(sweepCompetitorSources).not.toHaveBeenCalled();
     expect(sweepNewsSources).not.toHaveBeenCalled();
+    expect(sweepAiVisibility).not.toHaveBeenCalled();
     expect(expireStaleBriefs).not.toHaveBeenCalled();
     expect(sweepIdeation).not.toHaveBeenCalled();
   });
 
-  it("returns 200 and runs the delivery retry, event sweep, shipped-work sync, competitor sweep, news sweep, brief expiry, and ideation sweep when the bearer token matches CRON_SECRET", async () => {
+  it("returns 200 and runs the delivery retry, event sweep, shipped-work sync, competitor sweep, news sweep, AI visibility sweep, brief expiry, and ideation sweep when the bearer token matches CRON_SECRET", async () => {
     const res = await GET(request("Bearer test-cron-secret") as never);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
@@ -103,6 +116,7 @@ describe("GET /api/cron/scheduler", () => {
     expect(syncShippedWorkSignals).toHaveBeenCalledTimes(1);
     expect(sweepCompetitorSources).toHaveBeenCalledTimes(1);
     expect(sweepNewsSources).toHaveBeenCalledTimes(1);
+    expect(sweepAiVisibility).toHaveBeenCalledTimes(1);
     expect(expireStaleBriefs).toHaveBeenCalledTimes(1);
     expect(sweepIdeation).toHaveBeenCalledTimes(1);
   });
@@ -121,6 +135,9 @@ describe("GET /api/cron/scheduler", () => {
     vi.mocked(sweepNewsSources).mockImplementation(async () => {
       order.push("sweepNewsSources");
     });
+    vi.mocked(sweepAiVisibility).mockImplementation(async () => {
+      order.push("sweepAiVisibility");
+    });
     vi.mocked(expireStaleBriefs).mockImplementation(async () => {
       order.push("expireStaleBriefs");
       return 0;
@@ -136,6 +153,7 @@ describe("GET /api/cron/scheduler", () => {
       "syncShippedWorkSignals",
       "sweepCompetitorSources",
       "sweepNewsSources",
+      "sweepAiVisibility",
       "expireStaleBriefs",
       "sweepIdeation",
     ]);
