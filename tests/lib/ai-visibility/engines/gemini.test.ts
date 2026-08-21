@@ -110,6 +110,7 @@ describe("askGemini", () => {
     expect(await askGemini("x", { fetchImpl: blocked as never })).toEqual({
       kind: "refused",
       message: expect.any(String),
+      costUsd: GEMINI_COST_PER_CALL_USD,
     });
 
     const ungrounded = vi.fn(async () =>
@@ -118,6 +119,7 @@ describe("askGemini", () => {
     expect(await askGemini("x", { fetchImpl: ungrounded as never })).toEqual({
       kind: "refused",
       message: expect.stringMatching(/search|ground/i),
+      costUsd: GEMINI_COST_PER_CALL_USD,
     });
   });
 
@@ -142,6 +144,7 @@ describe("askGemini", () => {
     expect(await askGemini("x", { fetchImpl: truncated as never })).toEqual({
       kind: "error",
       message: expect.stringContaining("MAX_TOKENS"),
+      costUsd: GEMINI_COST_PER_CALL_USD,
     });
   });
 
@@ -439,31 +442,31 @@ describe("askGemini, when the real response shape is not what we assumed", () =>
   });
 });
 
-/**
- * OPEN DEFECT, pinned rather than hidden — the Gemini twin of the Perplexity
- * one. `it.fails` asserts these still throw.
- *
- * `(candidate.content?.parts ?? []).map(...)` and `for (const chunk of
- * grounding?.groundingChunks ?? [])` both assume a list. A response that puts an
- * object there — a plausible way an unverified shape is wrong — throws a
- * TypeError straight out of `ask()` instead of returning an EngineError,
- * breaking the `EngineClient` contract.
- *
- * The fix is an `Array.isArray` guard at each site in
- * `src/lib/ai-visibility/engines/gemini.ts`. When it lands these start PASSING,
- * which makes `it.fails` report them as failing — delete this block then.
- */
-describe("askGemini, known unguarded shapes", () => {
-  it.fails("should not throw when content.parts is an object", async () => {
+describe("askGemini, shapes that are not what the docs describe", () => {
+  /**
+   * These were QA `it.fails` pins: an unverified shape guessed wrong threw a
+   * TypeError straight out of `ask()`, breaking the `EngineAnswer | EngineError`
+   * contract. Now guarded, so they are ordinary assertions — and they matter
+   * most here, since no Gemini call has ever been made against a real key.
+   */
+  it("does not throw when content.parts is an object", async () => {
     vi.stubEnv("GEMINI_API_KEY", "gem-test");
     const fetchImpl = vi.fn(async () =>
       json({ modelVersion: "m", candidates: [{ content: { parts: { text: "An answer." } } }] })
     );
 
-    expect("kind" in (await askGemini("x", { fetchImpl: fetchImpl as never }))).toBe(true);
+    const result = await askGemini("x", { fetchImpl: fetchImpl as never });
+
+    // No text could be read out of an object-shaped `parts`, so this is a
+    // reported non-answer rather than an exception.
+    expect(result).toEqual({
+      kind: "refused",
+      message: expect.any(String),
+      costUsd: GEMINI_COST_PER_CALL_USD,
+    });
   });
 
-  it.fails("should not throw when groundingChunks is an object", async () => {
+  it("does not throw when groundingChunks is an object", async () => {
     vi.stubEnv("GEMINI_API_KEY", "gem-test");
     const fetchImpl = vi.fn(async () =>
       json({
@@ -477,6 +480,99 @@ describe("askGemini, known unguarded shapes", () => {
       })
     );
 
-    expect("kind" in (await askGemini("x", { fetchImpl: fetchImpl as never }))).toBe(true);
+    const result = await askGemini("x", { fetchImpl: fetchImpl as never });
+
+    // The text read fine; nothing citable could be found, so it reads as
+    // ungrounded rather than blowing up the slice.
+    expect("kind" in result).toBe(true);
+    if (!("kind" in result)) return;
+    expect(["error", "refused"]).toContain(result.kind);
+  });
+
+  it("does not throw when candidates or the body itself is the wrong type", async () => {
+    vi.stubEnv("GEMINI_API_KEY", "gem-test");
+
+    for (const body of [null, "a string", 42, [], { candidates: "nope" }, { candidates: [null] }]) {
+      const fetchImpl = vi.fn(async () => json(body));
+      const result = await askGemini("x", { fetchImpl: fetchImpl as never });
+      expect("kind" in result).toBe(true);
+      if (!("kind" in result)) return;
+      expect(["error", "refused"]).toContain(result.kind);
+      expect(result.message.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("does not throw when webSearchQueries is not a list", async () => {
+    vi.stubEnv("GEMINI_API_KEY", "gem-test");
+    const fetchImpl = vi.fn(async () =>
+      json({
+        modelVersion: "m",
+        candidates: [
+          {
+            content: { parts: [{ text: "An answer." }] },
+            groundingMetadata: {
+              webSearchQueries: "best issue trackers",
+              groundingChunks: [{ web: { uri: "https://a.example/1" } }],
+            },
+          },
+        ],
+      })
+    );
+
+    const result = await askGemini("x", { fetchImpl: fetchImpl as never });
+
+    expect("kind" in result).toBe(false);
+    if ("kind" in result) return;
+    expect(result.searchQueries).toEqual([]);
+    expect(result.citations).toEqual([{ url: "https://a.example/1", position: 1 }]);
+  });
+});
+
+describe("askGemini, what gets stored as raw", () => {
+  it("drops the search-suggestions widget markup and the thought blobs", async () => {
+    vi.stubEnv("GEMINI_API_KEY", "gem-test");
+    const fetchImpl = vi.fn(async () =>
+      json({
+        modelVersion: "gemini-3.7-flash",
+        candidates: [
+          {
+            content: {
+              parts: [{ text: "An answer.", thoughtSignature: "Cs4BAcu-opaque-blob" }],
+            },
+            groundingMetadata: {
+              webSearchQueries: ["best issue trackers"],
+              groundingChunks: [{ web: { uri: REDIRECT_A, title: "g2.com" } }],
+              searchEntryPoint: {
+                renderedContent: "<style>.container{padding:8px}</style><div>chips</div>",
+              },
+            },
+          },
+        ],
+      })
+    );
+
+    const result = await askGemini("x", { fetchImpl: fetchImpl as never });
+
+    expect("kind" in result).toBe(false);
+    if ("kind" in result) return;
+    const stored = JSON.stringify(result.raw);
+    expect(stored).not.toContain("Cs4BAcu-opaque-blob");
+    expect(stored).not.toContain("renderedContent");
+    expect(stored).not.toContain("<style>");
+    // What the record is for is still in it.
+    expect(stored).toContain("An answer.");
+    expect(stored).toContain(REDIRECT_A);
+    expect(stored).toContain("best issue trackers");
+  });
+
+  it("does not invent keys on a response that had nothing to strip", async () => {
+    vi.stubEnv("GEMINI_API_KEY", "gem-test");
+    const fetchImpl = vi.fn(async () => json(ANSWER));
+
+    const result = await askGemini("x", { fetchImpl: fetchImpl as never });
+
+    expect("kind" in result).toBe(false);
+    if ("kind" in result) return;
+    expect(result.raw).toEqual(ANSWER);
   });
 });

@@ -1,3 +1,4 @@
+import { asArray, isRecord } from "@/lib/ai-visibility/engines/shape";
 import {
   NEUTRAL_SYSTEM_PROMPT,
   type EngineAnswer,
@@ -78,20 +79,26 @@ type AnthropicResponse = { model?: string; stop_reason?: string; content?: Anthr
  * in the UI comes from the judge, not from here.
  */
 function sanitizeRaw(raw: AnthropicResponse): AnthropicResponse {
+  // No `content` key in, no `content` key out — `raw` is the evidence record,
+  // and an invented empty array would misreport what the provider said.
+  if (!Array.isArray(raw.content)) return raw;
   return {
     ...raw,
-    content: (raw.content ?? []).map((block) => {
+    content: raw.content.map((block) => {
+      if (!isRecord(block)) return block;
       const copy = { ...block };
-      if (copy.content) {
+      if (Array.isArray(copy.content)) {
         copy.content = copy.content.map((result) => {
+          if (!isRecord(result)) return result;
           const trimmed = { ...result };
           delete trimmed.encrypted_content;
           delete trimmed.page_age;
           return trimmed;
         });
       }
-      if (copy.citations) {
+      if (Array.isArray(copy.citations)) {
         copy.citations = copy.citations.map((citation) => {
+          if (!isRecord(citation)) return citation;
           const trimmed = { ...citation };
           delete trimmed.cited_text;
           delete trimmed.encrypted_index;
@@ -153,16 +160,29 @@ export async function askAnthropic(
   } catch (error) {
     return { kind: "error", message: `anthropic returned unparseable JSON: ${String(error)}` };
   }
+  if (!isRecord(raw)) {
+    return { kind: "error", message: "anthropic returned a non-object body" };
+  }
 
+  // Every return below this point follows a complete, readable response, so the
+  // call was billed whatever its verdict — see `EngineError.costUsd`.
   if (raw.stop_reason === "refusal") {
-    return { kind: "refused", message: "anthropic refused the prompt" };
+    return {
+      kind: "refused",
+      message: "anthropic refused the prompt",
+      costUsd: ANTHROPIC_COST_PER_CALL_USD,
+    };
   }
   // A cut-off answer is not a measurement: a brand named in the tail that never
   // got written would score as absent, which is a false negative in the
   // headline number. `pause_turn` is the same story — the turn is unfinished.
   // Both become coverage gaps rather than quiet zeroes.
   if (raw.stop_reason === "max_tokens" || raw.stop_reason === "pause_turn") {
-    return { kind: "error", message: `anthropic answer incomplete: ${raw.stop_reason}` };
+    return {
+      kind: "error",
+      message: `anthropic answer incomplete: ${raw.stop_reason}`,
+      costUsd: ANTHROPIC_COST_PER_CALL_USD,
+    };
   }
 
   const searchQueries: string[] = [];
@@ -171,7 +191,8 @@ export async function askAnthropic(
   let searchUsed = false;
   let text = "";
 
-  for (const block of raw.content ?? []) {
+  for (const block of asArray<AnthropicBlock>(raw.content)) {
+    if (!isRecord(block)) continue;
     if (block.type === "server_tool_use" && block.name === "web_search") {
       searchUsed = true;
       const query = block.input?.query;
@@ -184,7 +205,8 @@ export async function askAnthropic(
     if (typeof block.text === "string") text += block.text;
     // Citations hang off the text block that used them, so this order is the
     // order the answer actually cited in.
-    for (const citation of block.citations ?? []) {
+    for (const citation of asArray<AnthropicCitation>(block.citations)) {
+      if (!isRecord(citation)) continue;
       const url = citation.url;
       if (typeof url !== "string" || url.length === 0 || seen.has(url)) continue;
       seen.add(url);
@@ -193,10 +215,18 @@ export async function askAnthropic(
   }
 
   if (text.trim().length === 0) {
-    return { kind: "refused", message: "anthropic returned no answer text" };
+    return {
+      kind: "refused",
+      message: "anthropic returned no answer text",
+      costUsd: ANTHROPIC_COST_PER_CALL_USD,
+    };
   }
   if (!searchUsed) {
-    return { kind: "refused", message: "anthropic answered without searching the web" };
+    return {
+      kind: "refused",
+      message: "anthropic answered without searching the web",
+      costUsd: ANTHROPIC_COST_PER_CALL_USD,
+    };
   }
 
   return {

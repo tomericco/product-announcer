@@ -174,6 +174,7 @@ describe("askPerplexity", () => {
     expect(await askPerplexity("x", { fetchImpl: failed as never })).toEqual({
       kind: "error",
       message: expect.stringContaining("upstream error"),
+      costUsd: PERPLEXITY_COST_PER_CALL_USD,
     });
 
     const truncated = vi.fn(async () =>
@@ -194,6 +195,7 @@ describe("askPerplexity", () => {
     expect(await askPerplexity("x", { fetchImpl: truncated as never })).toEqual({
       kind: "error",
       message: expect.stringContaining("max_output_tokens"),
+      costUsd: PERPLEXITY_COST_PER_CALL_USD,
     });
   });
 
@@ -210,6 +212,7 @@ describe("askPerplexity", () => {
     expect(await askPerplexity("x", { fetchImpl: empty as never })).toEqual({
       kind: "refused",
       message: expect.any(String),
+      costUsd: PERPLEXITY_COST_PER_CALL_USD,
     });
 
     // Documented as possible even with search forced, and it can arrive either
@@ -227,6 +230,7 @@ describe("askPerplexity", () => {
     expect(await askPerplexity("x", { fetchImpl: emptyResults as never })).toEqual({
       kind: "refused",
       message: expect.stringMatching(/search|source/i),
+      costUsd: PERPLEXITY_COST_PER_CALL_USD,
     });
 
     const noResultsItem = vi.fn(async () =>
@@ -239,6 +243,7 @@ describe("askPerplexity", () => {
     expect(await askPerplexity("x", { fetchImpl: noResultsItem as never })).toEqual({
       kind: "refused",
       message: expect.stringMatching(/search|source/i),
+      costUsd: PERPLEXITY_COST_PER_CALL_USD,
     });
   });
 
@@ -460,23 +465,15 @@ describe("askPerplexity, when the real response shape is not what we assumed", (
   });
 });
 
-/**
- * OPEN DEFECT, pinned rather than hidden.
- *
- * `it.fails` asserts that the body below still throws. It does: `for (const
- * item of raw.output ?? [])` assumes `output` is iterable, so a response that
- * nests the items one level deeper — the single most likely way an unverified
- * shape is wrong — throws a TypeError straight out of `ask()` instead of
- * returning `{kind:"error"}`. That breaks the `EngineClient` contract and, with
- * no try/catch in the caller, would take a whole run slice down.
- *
- * The fix is one guard (`Array.isArray(raw.output) ? raw.output : []`) in
- * `src/lib/ai-visibility/engines/perplexity.ts`. When it lands, this test starts
- * PASSING, which makes `it.fails` report it as failing — delete this block then
- * and fold the case back into the list above.
- */
-describe("askPerplexity, known unguarded shape", () => {
-  it.fails("should not throw when output items are nested one level deeper", async () => {
+describe("askPerplexity, shapes that are not what the docs describe", () => {
+  /**
+   * Was a QA `it.fails` pin. `output` nested one level deeper — the single most
+   * likely way a documentation-derived shape is wrong, and this client's shape
+   * has never been checked against a real key — threw a TypeError out of
+   * `ask()` instead of returning an EngineError, which would have taken the
+   * whole run slice down with it.
+   */
+  it("does not throw when output items are nested one level deeper", async () => {
     vi.stubEnv("PERPLEXITY_API_KEY", "pplx-test");
     const fetchImpl = vi.fn(async () =>
       json({
@@ -488,6 +485,90 @@ describe("askPerplexity, known unguarded shape", () => {
 
     const result = await askPerplexity("x", { fetchImpl: fetchImpl as never });
 
-    expect("kind" in result).toBe(true);
+    expect(result).toEqual({
+      kind: "refused",
+      message: expect.any(String),
+      costUsd: PERPLEXITY_COST_PER_CALL_USD,
+    });
+  });
+
+  it("does not throw when the body, or any list inside it, is the wrong type", async () => {
+    vi.stubEnv("PERPLEXITY_API_KEY", "pplx-test");
+
+    const bodies = [
+      null,
+      "a string",
+      42,
+      { status: "completed", output: "nope" },
+      { status: "completed", output: [null, 7] },
+      { status: "completed", output: [{ type: "message", content: { text: "a" } }] },
+      { status: "completed", output: [{ type: "search_results", results: "nope", queries: "no" }] },
+    ];
+
+    for (const body of bodies) {
+      const fetchImpl = vi.fn(async () => json(body));
+      const result = await askPerplexity("x", { fetchImpl: fetchImpl as never });
+      expect("kind" in result).toBe(true);
+      if (!("kind" in result)) return;
+      expect(["error", "refused"]).toContain(result.kind);
+      expect(result.message.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("reports an unfinished run as an error, not as the model refusing", async () => {
+    vi.stubEnv("PERPLEXITY_API_KEY", "pplx-test");
+
+    for (const status of ["in_progress", "queued"]) {
+      const fetchImpl = vi.fn(async () => json({ status, model: "perplexity/sonar" }));
+
+      // The distinction is the whole point: a refusal is a fact about the
+      // model's answer, an unfinished run is a fact about our own plumbing,
+      // and filing the second as the first misreports the engine.
+      expect(await askPerplexity("x", { fetchImpl: fetchImpl as never })).toEqual({
+        kind: "error",
+        message: expect.stringContaining(status),
+      });
+    }
+  });
+});
+
+describe("askPerplexity, what gets stored as raw", () => {
+  it("drops the per-result snippets and leaves everything else alone", async () => {
+    vi.stubEnv("PERPLEXITY_API_KEY", "pplx-test");
+    const fetchImpl = vi.fn(async () => json(ANSWER));
+
+    const result = await askPerplexity("x", { fetchImpl: fetchImpl as never });
+
+    expect("kind" in result).toBe(false);
+    if ("kind" in result) return;
+    const stored = JSON.stringify(result.raw);
+    expect(stored).not.toContain("A short snippet.");
+    expect(stored).not.toContain("snippet");
+    // The evidence worth keeping survives: URLs, titles, the answer, the model.
+    expect(stored).toContain("https://g2.com/categories/issue-tracking");
+    expect(stored).toContain("Issue tracking");
+    expect(stored).toContain("Linear and Acme are both strong.");
+    expect(stored).toContain("perplexity/sonar");
+  });
+
+  it("does not invent keys on a response that had nothing to strip", async () => {
+    vi.stubEnv("PERPLEXITY_API_KEY", "pplx-test");
+    const lean = {
+      status: "completed",
+      model: "perplexity/sonar",
+      output: [
+        { type: "search_results", queries: ["q"], results: [{ id: 1, url: "https://a.example/1" }] },
+        { type: "message", content: [{ type: "output_text", text: "An answer." }] },
+      ],
+    };
+    const fetchImpl = vi.fn(async () => json(lean));
+
+    const result = await askPerplexity("x", { fetchImpl: fetchImpl as never });
+
+    expect("kind" in result).toBe(false);
+    if ("kind" in result) return;
+    // `raw` is the evidence record: a response with nothing to remove must come
+    // back through sanitising byte-for-byte, not reshaped.
+    expect(result.raw).toEqual(lean);
   });
 });

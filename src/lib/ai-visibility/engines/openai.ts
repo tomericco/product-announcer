@@ -1,3 +1,4 @@
+import { asArray, isRecord } from "@/lib/ai-visibility/engines/shape";
 import {
   NEUTRAL_SYSTEM_PROMPT,
   type EngineAnswer,
@@ -65,10 +66,14 @@ type OpenAiResponse = {
  * few MB and a few hundred.
  */
 function sanitizeRaw(raw: OpenAiResponse): OpenAiResponse {
+  // A response with no `output` key keeps having no `output` key: `raw` is the
+  // evidence record, and inventing an empty array in it would misreport what
+  // the provider actually said.
+  if (!Array.isArray(raw.output)) return raw;
   return {
     ...raw,
-    output: (raw.output ?? []).map((item) => {
-      if (item.encrypted_content === undefined) return item;
+    output: raw.output.map((item) => {
+      if (!isRecord(item) || item.encrypted_content === undefined) return item;
       const copy = { ...item };
       delete copy.encrypted_content;
       return copy;
@@ -118,6 +123,9 @@ export async function askOpenAi(
   } catch (error) {
     return { kind: "error", message: `openai returned unparseable JSON: ${String(error)}` };
   }
+  if (!isRecord(raw)) {
+    return { kind: "error", message: "openai returned a non-object body" };
+  }
 
   const searchQueries: string[] = [];
   const citations: EngineCitation[] = [];
@@ -126,10 +134,11 @@ export async function askOpenAi(
   let refused = false;
   let text = "";
 
-  for (const item of raw.output ?? []) {
+  for (const item of asArray<OpenAiOutputItem>(raw.output)) {
+    if (!isRecord(item)) continue;
     if (item.type === "web_search_call") {
       searchUsed = true;
-      const queries = [...(item.action?.queries ?? []), item.action?.query];
+      const queries = [...asArray<string>(item.action?.queries), item.action?.query];
       for (const query of queries) {
         if (typeof query !== "string" || query.length === 0) continue;
         if (searchQueries.includes(query)) continue;
@@ -137,14 +146,15 @@ export async function askOpenAi(
       }
       continue;
     }
-    for (const part of item.content ?? []) {
+    for (const part of asArray<OpenAiContentPart>(item.content)) {
+      if (!isRecord(part)) continue;
       if (part.type === "refusal") {
         refused = true;
         continue;
       }
       if (typeof part.text === "string") text += part.text;
-      for (const annotation of part.annotations ?? []) {
-        if (annotation.type !== "url_citation") continue;
+      for (const annotation of asArray<OpenAiAnnotation>(part.annotations)) {
+        if (!isRecord(annotation) || annotation.type !== "url_citation") continue;
         const url = annotation.url;
         if (typeof url !== "string" || url.length === 0 || seen.has(url)) continue;
         // One source cited twice is one source. Position is where it FIRST
@@ -159,23 +169,47 @@ export async function askOpenAi(
   // the budget ran out, a brand named in the missing tail scores as absent —
   // a false negative in the one number this whole feature reports. An error
   // makes the sample a visible coverage gap instead.
+  // Every return below this point follows a complete, readable response, so the
+  // call was billed whatever its verdict — see `EngineError.costUsd`. A
+  // truncated answer is the priciest of the lot: it generated to the ceiling.
   if (raw.incomplete_details) {
     return {
       kind: "error",
       message: `openai answer incomplete: ${raw.incomplete_details.reason ?? "unknown reason"}`,
+      costUsd: OPENAI_COST_PER_CALL_USD,
     };
   }
   if (typeof raw.status === "string" && raw.status !== "completed") {
-    return { kind: "error", message: `openai response status ${raw.status}` };
+    return {
+      kind: "error",
+      message: `openai response status ${raw.status}`,
+      costUsd: OPENAI_COST_PER_CALL_USD,
+    };
   }
 
-  if (refused) return { kind: "refused", message: "openai refused the prompt" };
+  if (refused) {
+    return {
+      kind: "refused",
+      message: "openai refused the prompt",
+      costUsd: OPENAI_COST_PER_CALL_USD,
+    };
+  }
   if (text.trim().length === 0) {
-    return { kind: "refused", message: "openai returned no answer text" };
+    return {
+      kind: "refused",
+      message: "openai returned no answer text",
+      costUsd: OPENAI_COST_PER_CALL_USD,
+    };
   }
   // An answer written from the model's own memory measures training data, not
   // the live web. Stored, shown as a coverage gap, excluded from rates.
-  if (!searchUsed) return { kind: "refused", message: "openai answered without searching the web" };
+  if (!searchUsed) {
+    return {
+      kind: "refused",
+      message: "openai answered without searching the web",
+      costUsd: OPENAI_COST_PER_CALL_USD,
+    };
+  }
 
   return {
     text,

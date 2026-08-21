@@ -1,3 +1,4 @@
+import { asArray, isRecord } from "@/lib/ai-visibility/engines/shape";
 import {
   NEUTRAL_SYSTEM_PROMPT,
   type EngineAnswer,
@@ -45,6 +46,34 @@ type PerplexityOutputItem = {
   /** On a `message` item. */
   content?: { type?: string; text?: string }[];
 };
+/**
+ * A copy of the response with the per-result snippets dropped.
+ *
+ * Every search result carries a snippet of the source page. Useful to the model
+ * mid-answer, dead weight afterwards: what gets stored and read back is the URL
+ * and the title, and the quote shown in the UI comes from the judge. Modest per
+ * sample, but `raw` is jsonb on all ~360 samples of every weekly run.
+ */
+function sanitizeRaw(raw: PerplexityResponse): PerplexityResponse {
+  // No `output` key in, no `output` key out — `raw` is the evidence record.
+  if (!Array.isArray(raw.output)) return raw;
+  return {
+    ...raw,
+    output: raw.output.map((item) => {
+      if (!isRecord(item) || !Array.isArray(item.results)) return item;
+      return {
+        ...item,
+        results: item.results.map((result) => {
+          if (!isRecord(result) || result.snippet === undefined) return result;
+          const trimmed = { ...result };
+          delete trimmed.snippet;
+          return trimmed;
+        }),
+      };
+    }),
+  };
+}
+
 type PerplexityResponse = {
   model?: string;
   /** completed | failed | incomplete | in_progress | queued | cancelled */
@@ -54,6 +83,12 @@ type PerplexityResponse = {
   output?: PerplexityOutputItem[];
   usage?: { cost?: { total_cost?: number } };
 };
+
+/** What the call actually cost, if the response says; the flat estimate if not. */
+function meteredCost(raw: PerplexityResponse): number {
+  const metered = raw.usage?.cost?.total_cost;
+  return typeof metered === "number" ? metered : PERPLEXITY_COST_PER_CALL_USD;
+}
 
 export async function askPerplexity(
   prompt: string,
@@ -98,18 +133,33 @@ export async function askPerplexity(
   } catch (error) {
     return { kind: "error", message: `perplexity returned unparseable JSON: ${String(error)}` };
   }
+  if (!isRecord(raw)) {
+    return { kind: "error", message: "perplexity returned a non-object body" };
+  }
 
   // A failed or cancelled run comes back as HTTP 200 with a status field — so
   // branching on the HTTP code alone would file a failure as an empty answer.
   if (raw.status === "failed" || raw.status === "cancelled") {
     const detail = raw.error?.message ?? raw.status;
-    return { kind: "error", message: `perplexity run ${raw.status}: ${detail}` };
+    return {
+      kind: "error",
+      message: `perplexity run ${raw.status}: ${detail}`,
+      costUsd: meteredCost(raw),
+    };
   }
   if (raw.status === "incomplete") {
     return {
       kind: "error",
       message: `perplexity answer incomplete: ${raw.incomplete_details?.reason ?? "unknown reason"}`,
+      costUsd: meteredCost(raw),
     };
+  }
+  // An unfinished run is infrastructure, not the model declining to answer.
+  // Without this it falls through to "no answer text" and gets filed as a
+  // refusal — which would read on the dashboard as Perplexity choosing not to
+  // engage with the prompt, when in fact we simply asked too early.
+  if (raw.status === "in_progress" || raw.status === "queued") {
+    return { kind: "error", message: `perplexity run still ${raw.status}` };
   }
 
   let text = "";
@@ -117,22 +167,25 @@ export async function askPerplexity(
   const searchQueries: string[] = [];
   const seen = new Set<string>();
 
-  for (const item of raw.output ?? []) {
+  for (const item of asArray<PerplexityOutputItem>(raw.output)) {
+    if (!isRecord(item)) continue;
     if (item.type === "message") {
-      for (const part of item.content ?? []) {
+      for (const part of asArray<{ type?: string; text?: string }>(item.content)) {
+        if (!isRecord(part)) continue;
         if (part.type === "output_text" && typeof part.text === "string") text += part.text;
       }
       continue;
     }
     if (item.type !== "search_results") continue;
-    for (const query of item.queries ?? []) {
+    for (const query of asArray<string>(item.queries)) {
       if (typeof query === "string" && query.length > 0 && !searchQueries.includes(query)) {
         searchQueries.push(query);
       }
     }
     // `annotations` on the message is documented as often empty, so the
     // search_results item is the source of truth for what was cited.
-    for (const result of item.results ?? []) {
+    for (const result of asArray<PerplexitySearchResult>(item.results)) {
+      if (!isRecord(result)) continue;
       const url = result.url;
       if (typeof url !== "string" || url.length === 0 || seen.has(url)) continue;
       seen.add(url);
@@ -141,12 +194,20 @@ export async function askPerplexity(
   }
 
   if (text.trim().length === 0) {
-    return { kind: "refused", message: "perplexity returned no answer text" };
+    return {
+      kind: "refused",
+      message: "perplexity returned no answer text",
+      costUsd: meteredCost(raw),
+    };
   }
   // An answer with zero sources means the search came back with nothing, which
   // is a coverage gap rather than a real miss.
   if (citations.length === 0) {
-    return { kind: "refused", message: "perplexity answered with no search sources" };
+    return {
+      kind: "refused",
+      message: "perplexity answered with no search sources",
+      costUsd: meteredCost(raw),
+    };
   }
 
   return {
@@ -155,10 +216,10 @@ export async function askPerplexity(
     citations,
     searchUsed: true,
     searchQueries,
-    raw,
+    raw: sanitizeRaw(raw),
     // The response meters its own spend. Preferred over the flat estimate,
     // which exists for the pre-run cap check where no response exists yet.
-    costUsd: raw.usage?.cost?.total_cost ?? PERPLEXITY_COST_PER_CALL_USD,
+    costUsd: meteredCost(raw),
   };
 }
 

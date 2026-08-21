@@ -132,6 +132,7 @@ describe("askAnthropic", () => {
     expect(await askAnthropic("x", { fetchImpl: refusal as never })).toEqual({
       kind: "refused",
       message: expect.any(String),
+      costUsd: ANTHROPIC_COST_PER_CALL_USD,
     });
 
     const noSearch = vi.fn(async () =>
@@ -144,6 +145,7 @@ describe("askAnthropic", () => {
     expect(await askAnthropic("x", { fetchImpl: noSearch as never })).toEqual({
       kind: "refused",
       message: expect.stringMatching(/search/i),
+      costUsd: ANTHROPIC_COST_PER_CALL_USD,
     });
 
     const empty = vi.fn(async () =>
@@ -156,6 +158,7 @@ describe("askAnthropic", () => {
     expect(await askAnthropic("x", { fetchImpl: empty as never })).toEqual({
       kind: "refused",
       message: expect.any(String),
+      costUsd: ANTHROPIC_COST_PER_CALL_USD,
     });
   });
 
@@ -177,6 +180,7 @@ describe("askAnthropic", () => {
     expect(await askAnthropic("x", { fetchImpl: truncated as never })).toEqual({
       kind: "error",
       message: expect.stringContaining("max_tokens"),
+      costUsd: ANTHROPIC_COST_PER_CALL_USD,
     });
 
     const paused = vi.fn(async () =>
@@ -192,6 +196,7 @@ describe("askAnthropic", () => {
     expect(await askAnthropic("x", { fetchImpl: paused as never })).toEqual({
       kind: "error",
       message: expect.stringContaining("pause_turn"),
+      costUsd: ANTHROPIC_COST_PER_CALL_USD,
     });
   });
 
@@ -369,6 +374,7 @@ describe("askAnthropic, the remaining error paths and extraction edges", () => {
     expect(await askAnthropic("x", { fetchImpl: fetchImpl as never })).toEqual({
       kind: "refused",
       message: expect.stringMatching(/search/i),
+      costUsd: ANTHROPIC_COST_PER_CALL_USD,
     });
   });
 
@@ -402,5 +408,49 @@ describe("askAnthropic, the remaining error paths and extraction edges", () => {
     const toolUse = blocks.find((block) => block.type === "server_tool_use");
     expect(Object.keys(toolUse ?? {})).not.toContain("citations");
     expect(toolUse?.input).toEqual({ query: "best issue trackers" });
+  });
+});
+
+describe("askAnthropic, shapes that are not what the docs describe", () => {
+  /** Same contract check as the other three: `ask()` must never throw. */
+  it("does not throw when the body, or any list inside it, is the wrong type", async () => {
+    vi.stubEnv("ANTHROPIC_API_KEY", "sk-ant-test");
+
+    const bodies = [
+      null,
+      "a string",
+      42,
+      { model: "m", stop_reason: "end_turn", content: "nope" },
+      { model: "m", stop_reason: "end_turn", content: [null, 7] },
+      {
+        model: "m",
+        stop_reason: "end_turn",
+        content: [
+          { type: "server_tool_use", name: "web_search", input: { query: "q" } },
+          { type: "text", text: "An answer.", citations: "not a list" },
+        ],
+      },
+    ];
+
+    for (const body of bodies) {
+      const fetchImpl = vi.fn(async () => json(body));
+      const result = await askAnthropic("x", { fetchImpl: fetchImpl as never });
+      if ("kind" in result) {
+        expect(["error", "refused"]).toContain(result.kind);
+        expect(result.message.length).toBeGreaterThan(0);
+      } else {
+        expect(result.citations).toEqual([]);
+      }
+    }
+  });
+
+  it("keeps raw faithful when the response carried no content key", async () => {
+    vi.stubEnv("ANTHROPIC_API_KEY", "sk-ant-test");
+    const fetchImpl = vi.fn(async () => json({ model: "m", stop_reason: "end_turn" }));
+
+    const result = await askAnthropic("x", { fetchImpl: fetchImpl as never });
+
+    // No text, so a non-answer — and crucially not a crash.
+    expect("kind" in result).toBe(true);
   });
 });

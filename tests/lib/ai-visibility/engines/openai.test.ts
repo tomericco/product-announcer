@@ -145,6 +145,9 @@ describe("askOpenAi", () => {
     expect(await askOpenAi("x", { fetchImpl: truncated as never })).toEqual({
       kind: "error",
       message: expect.stringContaining("max_output_tokens"),
+      // Generated all the way to the ceiling: the most expensive kind of call
+      // there is, and it must not be recorded against the cap as free.
+      costUsd: OPENAI_COST_PER_CALL_USD,
     });
 
     const failed = vi.fn(async () =>
@@ -160,6 +163,7 @@ describe("askOpenAi", () => {
     expect(await askOpenAi("x", { fetchImpl: failed as never })).toEqual({
       kind: "error",
       message: expect.stringContaining("failed"),
+      costUsd: OPENAI_COST_PER_CALL_USD,
     });
   });
 
@@ -208,6 +212,8 @@ describe("askOpenAi", () => {
     expect(await askOpenAi("x", { fetchImpl: refusal as never })).toEqual({
       kind: "refused",
       message: expect.any(String),
+      // A refusal ran the model. Billed like any other call.
+      costUsd: OPENAI_COST_PER_CALL_USD,
     });
 
     const noSearch = vi.fn(async () =>
@@ -217,12 +223,17 @@ describe("askOpenAi", () => {
       })
     );
     const result = await askOpenAi("x", { fetchImpl: noSearch as never });
-    expect(result).toEqual({ kind: "refused", message: expect.stringMatching(/search/i) });
+    expect(result).toEqual({
+      kind: "refused",
+      message: expect.stringMatching(/search/i),
+      costUsd: OPENAI_COST_PER_CALL_USD,
+    });
 
     const empty = vi.fn(async () => json({ model: "m", output: [{ type: "web_search_call" }] }));
     expect(await askOpenAi("x", { fetchImpl: empty as never })).toEqual({
       kind: "refused",
       message: expect.any(String),
+      costUsd: OPENAI_COST_PER_CALL_USD,
     });
   });
 
@@ -399,5 +410,61 @@ describe("askOpenAi, the remaining error paths and extraction edges", () => {
     expect(result.searchUsed).toBe(true);
     expect(result.searchQueries).toEqual([]);
     expect(result.citations).toEqual([]);
+  });
+});
+
+describe("askOpenAi, shapes that are not what the docs describe", () => {
+  /**
+   * `ask()` promises `EngineAnswer | EngineError` and must never throw: a
+   * TypeError out of here has no catch above it and would end the run slice.
+   * Verified live, unlike Gemini and Perplexity — but a provider is free to
+   * change a shape between releases, and the contract has to hold regardless.
+   */
+  it("does not throw when the body, or any list inside it, is the wrong type", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "sk-test");
+
+    const bodies = [
+      null,
+      "a string",
+      42,
+      { model: "m", status: "completed", output: "nope" },
+      { model: "m", status: "completed", output: [null, 7] },
+      { model: "m", status: "completed", output: [{ type: "message", content: { text: "a" } }] },
+      {
+        model: "m",
+        status: "completed",
+        output: [{ type: "web_search_call", action: { queries: "not a list" } }],
+      },
+      {
+        model: "m",
+        status: "completed",
+        output: [
+          { type: "web_search_call", action: { queries: ["q"] } },
+          { type: "message", content: [{ type: "output_text", text: "a", annotations: "nope" }] },
+        ],
+      },
+    ];
+
+    for (const body of bodies) {
+      const fetchImpl = vi.fn(async () => json(body));
+      const result = await askOpenAi("x", { fetchImpl: fetchImpl as never });
+      if ("kind" in result) {
+        expect(["error", "refused"]).toContain(result.kind);
+        expect(result.message.length).toBeGreaterThan(0);
+      } else {
+        // The last body is readable enough to answer; it just has nothing to cite.
+        expect(result.citations).toEqual([]);
+      }
+    }
+  });
+
+  it("leaves raw untouched when there was no output key to sanitise", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "sk-test");
+    const fetchImpl = vi.fn(async () => json({ model: "m", status: "completed" }));
+
+    const result = await askOpenAi("x", { fetchImpl: fetchImpl as never });
+
+    // Refused for want of text — the point here is simply that it did not throw.
+    expect("kind" in result).toBe(true);
   });
 });
