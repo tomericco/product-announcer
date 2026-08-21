@@ -1037,11 +1037,11 @@ describe("planRun guards not covered above", () => {
     const result = await planRun(tenant.id, { trigger: "manual", now: frozen("2026-03-02T09:00:00Z") });
 
     // `getAiVisibilitySettings` substitutes the full engine list for an empty
-    // or entirely-unrecognised one, so `planRun`'s `no_engines` refusal cannot
-    // fire through the normal read path. Pinned here because it is the reason
-    // an enabled feature never plans zero calls behind a green badge — and so
-    // that a change to that substitution shows up as a failure here rather
-    // than as a tenant whose weekly run quietly does nothing.
+    // or entirely-unrecognised one, which is why `planRun` has no zero-engine
+    // refusal to reach. Pinned here because that substitution is the reason an
+    // enabled feature never plans zero calls behind a green badge — a change to
+    // it should show up as a failure here rather than as a tenant whose weekly
+    // run quietly does nothing.
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("unreachable");
     const samples = await db.select().from(aiVisibilitySamples).where(eq(aiVisibilitySamples.runId, result.runId));

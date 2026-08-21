@@ -35,7 +35,6 @@ export type PlanRunRefusal =
   | { ok: false; reason: "disabled" }
   | { ok: false; reason: "no_prompts" }
   | { ok: false; reason: "run_in_flight"; runId: string }
-  | { ok: false; reason: "no_engines" }
   | { ok: false; reason: "cap_reached"; spentUsd: number; estimateUsd: number; capUsd: number };
 
 export type PlanRunResult =
@@ -182,12 +181,14 @@ export async function planRun(
   const settings = await getAiVisibilitySettings(tenantId, database);
   if (!settings.enabled) return { ok: false, reason: "disabled" };
 
-  // `getAiVisibilitySettings` already coerces `engines` to `EngineId[]`, so this
-  // is a length check, not a validation pass. The guard exists because a tenant
-  // CAN turn every engine off in settings, and a run with no engines would plan
-  // zero samples and then "finish" instantly with an empty dashboard.
+  // Never empty, and deliberately not guarded here. `getAiVisibilitySettings`
+  // substitutes the full engine list for one that filters down to nothing, and
+  // `saveAiVisibilitySettings` refuses to write an empty list in the first
+  // place — so the only way to reach this line with zero engines is a
+  // hand-written row, and Phase A's ruling is that measuring all four beats
+  // measuring none. A refusal arm for it would be a state the UI must branch
+  // on and can never see.
   const engines = settings.engines;
-  if (engines.length === 0) return { ok: false, reason: "no_engines" };
 
   const prompts = await database
     .select({
