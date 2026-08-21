@@ -61,6 +61,23 @@ intact as the record of what was originally planned.
 - **Gemini and Perplexity request/response shapes are documentation-derived only** —
   no API key was available to verify them. Their tests prove safe degradation, not
   contract correctness.
+- **Phase E signatures gained a leading `tenantId`:** `promptHistory(tenantId,
+  promptId, engine, db?)` and `runEngineHealth(tenantId, runId, db?)`, mirroring
+  `promptSamples`. Task E1's Interfaces block still shows the old arity. Without the
+  tenant in the WHERE clause, only a caller's own guard stood between a URL-supplied
+  id and another tenant's series.
+- **`EngineMetrics.shareOfVoice === null` is ambiguous by itself** — it means both
+  "below the n ≥ 30 threshold" and "n ≥ 30 but nobody was named at all". Discriminate
+  with `mentionRate`: `null` = unknown, `0` = measured zero. `wilsonPp` is likewise
+  null in the measured-zero case. Any "Collecting baseline" branch must test
+  `mentionRate === null`, **not** `shareOfVoice === null`, or a tenant with 84
+  collected answers and zero mentions is told their data is still coming in.
+- **The Wilson band is anchored to `min(brandMentionTotal, n)`**, not to brand
+  mentions, so it responds to evidence rather than to how many competitors are
+  configured. `clampBand(sovPct, bandPp)` only removes the impossible half of a range
+  — it **cannot** recover Wilson's asymmetry from a half-width (at 0/30 it yields
+  [0, 5.7] where the true interval is [0, 11.4]). Anything drawing a range must build
+  it from successes and n.
 
 ---
 
