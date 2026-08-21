@@ -7,6 +7,21 @@ import { sweepNewsSources } from "@/lib/signals/news-sweep";
 import { sweepAiVisibility } from "@/lib/ai-visibility/sweep";
 import { expireStaleBriefs, sweepIdeation } from "@/lib/briefs/sweep";
 
+/**
+ * Declared rather than inherited, because one of the steps below now budgets
+ * itself against a number.
+ *
+ * `sweepAiVisibility` divides `SWEEP_BUDGET_MS` (120 s by default) across the
+ * tenants due this tick and stops at that deadline. That is only a safe
+ * fraction of the invocation if the invocation's length is a stated fact —
+ * `expireStaleBriefs` and `sweepIdeation` run AFTER the sweep, so an
+ * invocation killed mid-sweep costs a day of brief expiry and ideation, not
+ * just some engine calls. 300 s is the platform default this repo has assumed
+ * elsewhere (see the note in publishing/destinations/linkedin.ts); writing it
+ * down means changing the default cannot silently invalidate the budget.
+ */
+export const maxDuration = 300;
+
 export async function GET(request: NextRequest) {
   const authHeader = request.headers.get("authorization");
   if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {

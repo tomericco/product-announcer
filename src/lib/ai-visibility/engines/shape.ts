@@ -16,6 +16,18 @@
  * `engines/index.ts`, on pain of a cycle.
  */
 
+/**
+ * How long any one engine request may take before it is aborted.
+ *
+ * Generous, because every client here asks the provider to run a live web
+ * search first and answer afterwards — a slow grounded answer is normal and
+ * aborting one costs a real sample. Finite, because `runSlice`'s budget only
+ * governs when it stops HANDING OUT work: a request that hangs holds its
+ * concurrency slot open indefinitely, and with no ceiling the thing that
+ * eventually ends the wave is the platform killing the whole cron invocation.
+ */
+export const ENGINE_REQUEST_TIMEOUT_MS = 60_000;
+
 /** The value when it really is an array, otherwise an empty one. */
 export function asArray<T>(value: T[] | undefined | null | unknown): T[] {
   return Array.isArray(value) ? (value as T[]) : [];

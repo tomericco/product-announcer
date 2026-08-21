@@ -78,6 +78,27 @@ export async function monthToDateSpendUsd(
   return roundUsd(Number(row?.total ?? 0));
 }
 
+/**
+ * The one sentence a cap pause is written with, and the test for recognising it
+ * later.
+ *
+ * `runSlice` writes it on the run and the source when it pauses, the cron sweep
+ * writes it when `planRun` refuses, and `saveAiVisibilitySettings` has to be
+ * able to tell that failure apart from an engine outage when it decides whether
+ * raising the cap should clear the red badge. Three call sites composing the
+ * same string by hand is how that last one silently stops matching.
+ */
+export const CAP_PAUSED_PREFIX = "Paused — monthly cap reached";
+
+export function capPausedMessage(spentUsd: number, capUsd: number): string {
+  return `${CAP_PAUSED_PREFIX} ($${spentUsd.toFixed(2)} of $${capUsd.toFixed(2)}).`;
+}
+
+/** Whether a source's `lastError` is the cap pause rather than a real failure. */
+export function isCapPausedError(lastError: string | null): boolean {
+  return typeof lastError === "string" && lastError.startsWith(CAP_PAUSED_PREFIX);
+}
+
 export type CapState = {
   spentUsd: number;
   estimateUsd: number;

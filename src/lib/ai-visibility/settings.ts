@@ -1,7 +1,8 @@
-import { eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
 import { aiVisibilitySettings, sources, type Source } from "@/db/schema";
 import { ENGINE_IDS, type EngineId } from "@/lib/ai-visibility/types";
+import { isCapPausedError, monthToDateSpendUsd } from "@/lib/ai-visibility/cost";
 import { roundUsd } from "@/lib/ai-visibility/money";
 
 export const CADENCES = ["weekly", "fortnightly", "off"] as const;
@@ -67,6 +68,17 @@ export async function getAiVisibilitySettings(
     .where(eq(aiVisibilitySettings.tenantId, tenantId))
     .limit(1);
 
+  return normalizeSettingsRow(row);
+}
+
+/**
+ * One row's worth of coercion, shared by the single-tenant read above and the
+ * batch read below, so the sweep cannot end up gating on a different reading of
+ * the same row than the settings card renders.
+ */
+function normalizeSettingsRow(
+  row: typeof aiVisibilitySettings.$inferSelect | undefined
+): AiVisibilitySettingsValues {
   // Fresh arrays every call: the defaults object is module-scoped, and a
   // caller who sorted or spliced the engines list would corrupt every later
   // read in the same process.
@@ -110,6 +122,39 @@ export async function getAiVisibilitySettings(
   };
 }
 
+/**
+ * The same read, for many tenants in one round trip.
+ *
+ * The cron sweep needs every candidate tenant's cadence BEFORE it can divide
+ * the tick's budget — it has to know how many sources will actually do work,
+ * not how many rows exist. Doing that with `getAiVisibilitySettings` per tenant
+ * is one round trip per tenant spent before any work starts, on the one path
+ * where the whole point is that time is scarce.
+ *
+ * A tenant with no row is present in the map with the defaults, which have
+ * `enabled: false` — absence of a row is a real state, not a missing key the
+ * caller has to remember to handle.
+ */
+export async function getAiVisibilitySettingsForTenants(
+  tenantIds: string[],
+  database: typeof defaultDb = defaultDb
+): Promise<Map<string, AiVisibilitySettingsValues>> {
+  const unique = [...new Set(tenantIds)];
+  const byTenant = new Map<string, AiVisibilitySettingsValues>();
+  if (unique.length === 0) return byTenant;
+
+  const rows = await database
+    .select()
+    .from(aiVisibilitySettings)
+    .where(inArray(aiVisibilitySettings.tenantId, unique));
+
+  const found = new Map(rows.map((row) => [row.tenantId, row]));
+  for (const tenantId of unique) {
+    byTenant.set(tenantId, normalizeSettingsRow(found.get(tenantId)));
+  }
+  return byTenant;
+}
+
 /** Accepts a number or the numeric string a form field submits. */
 function toNumber(value: unknown): number | null {
   if (typeof value === "number") return Number.isFinite(value) ? value : null;
@@ -139,7 +184,10 @@ function toNumber(value: unknown): number | null {
 export async function saveAiVisibilitySettings(
   tenantId: string,
   input: unknown,
-  database: typeof defaultDb = defaultDb
+  database: typeof defaultDb = defaultDb,
+  // Injected so the cap-pause recovery below can be tested against a fixed
+  // month rather than whatever month the suite happens to run in.
+  now: () => Date = () => new Date()
 ): Promise<SaveSettingsResult> {
   const raw = (input ?? {}) as Record<string, unknown>;
 
@@ -193,6 +241,13 @@ export async function saveAiVisibilitySettings(
     })
     .returning();
 
+  // Raising the cap is the documented way out of a cap pause, so it has to be
+  // the thing that clears the red badge. Without this the source keeps reading
+  // "Paused — monthly cap reached" until the next run finishes or the /company
+  // switch is toggled off and on — i.e. the user does the one action the error
+  // asks for and nothing on screen changes.
+  await clearCapPauseIfResolved(tenantId, values.monthlyCapUsd, now(), database);
+
   return {
     ok: true,
     settings: {
@@ -204,6 +259,42 @@ export async function saveAiVisibilitySettings(
       monthlyCapUsd: values.monthlyCapUsd,
     },
   };
+}
+
+/**
+ * Un-reds the source when the new cap is above what the month has already
+ * spent.
+ *
+ * Deliberately narrow on two axes. It only touches a source whose `lastError`
+ * IS the cap pause — an engine outage or a judge failure is a real failure and
+ * must survive a settings save. And it only clears when the new cap actually
+ * leaves headroom: raising $20 to $21 after spending $24 changes nothing, so
+ * the badge should keep saying so.
+ *
+ * The `paused_by_cap` run itself is left alone. It is finished history, it does
+ * not block a new run (only `pending`/`running` do), and the next run is what
+ * writes the next chapter of the health block.
+ */
+async function clearCapPauseIfResolved(
+  tenantId: string,
+  capUsd: number,
+  now: Date,
+  database: typeof defaultDb
+): Promise<void> {
+  const [source] = await database
+    .select()
+    .from(sources)
+    .where(and(eq(sources.tenantId, tenantId), eq(sources.type, "ai_visibility")))
+    .limit(1);
+  if (!source || source.status !== "failing" || !isCapPausedError(source.lastError)) return;
+
+  const spentUsd = await monthToDateSpendUsd(tenantId, now, database);
+  if (spentUsd >= capUsd) return;
+
+  await database
+    .update(sources)
+    .set({ status: "active", lastError: null })
+    .where(eq(sources.id, source.id));
 }
 
 export const AI_VISIBILITY_SOURCE_LABEL = "AI visibility";

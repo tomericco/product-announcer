@@ -63,6 +63,67 @@ describe("cadenceDue", () => {
   it("fortnightly still respects the weekday", () => {
     expect(cadenceDue({ cadence: "fortnightly", dayOfWeek: 2 }, null, monday)).toBe(false);
   });
+
+  // The catch-up arm. Without it the feature promises "a run a week" and
+  // delivers "an attempt a week": one cron tick that dies, times out, or is
+  // never fired costs the tenant a whole week, and every tenant defaults to
+  // dayOfWeek 1, so a truncated Monday is the likeliest tick to lose.
+  it("weekly catches up on a later day when the scheduled one was missed", () => {
+    const tuesday = new Date(TUESDAY);
+    // Ran a week last Monday, then Monday's tick never happened.
+    expect(cadenceDue({ cadence: "weekly", dayOfWeek: 1 }, new Date("2026-02-23T09:00:00Z"), tuesday)).toBe(
+      true
+    );
+  });
+
+  it("weekly does not catch up before a whole period, so the schedule cannot drift earlier", () => {
+    // Six days after a Monday run is Sunday. A `period - 1` catch-up would fire
+    // here, and then five days later, walking the run backwards through the
+    // week until it had no relationship to the day the tenant chose.
+    const sunday = new Date("2026-03-08T09:05:00Z");
+    expect(cadenceDue({ cadence: "weekly", dayOfWeek: 1 }, new Date("2026-03-02T09:00:00Z"), sunday)).toBe(
+      false
+    );
+  });
+
+  it("weekly does not catch up the day after a run it just did", () => {
+    const tuesday = new Date(TUESDAY);
+    expect(cadenceDue({ cadence: "weekly", dayOfWeek: 1 }, new Date("2026-03-02T09:00:00Z"), tuesday)).toBe(
+      false
+    );
+  });
+
+  it("fortnightly catches up only after a whole fortnight off-weekday", () => {
+    const tuesday = new Date(TUESDAY);
+    // 15 days: the Monday two weeks on was missed.
+    expect(
+      cadenceDue({ cadence: "fortnightly", dayOfWeek: 1 }, new Date("2026-02-16T09:00:00Z"), tuesday)
+    ).toBe(true);
+    // 13 days, off-weekday: the scheduled Monday has not come round yet, and
+    // the weekday tolerance is for an early tick ON the day, not for any day.
+    expect(
+      cadenceDue({ cadence: "fortnightly", dayOfWeek: 1 }, new Date("2026-02-18T09:00:00Z"), tuesday)
+    ).toBe(false);
+  });
+
+  it("never fires twice in one UTC day, catch-up included", () => {
+    // A month overdue, but it already ran at 04:00 today.
+    expect(
+      cadenceDue(
+        { cadence: "weekly", dayOfWeek: 1 },
+        new Date("2026-03-03T04:00:00Z"),
+        new Date(TUESDAY)
+      )
+    ).toBe(false);
+  });
+
+  it("is false for a cadence nobody can save, rather than firing every day", () => {
+    // A hand-written row. `getAiVisibilitySettings` coerces it before the sweep
+    // ever sees it; this is the belt to that braces.
+    expect(cadenceDue({ cadence: "off", dayOfWeek: 2 }, new Date("2026-01-01T00:00:00Z"), monday)).toBe(
+      false
+    );
+  });
 });
 
 // NOTE: this sweep reads the whole shared test database, and other test files
@@ -354,5 +415,196 @@ describe("sweepAiVisibility", () => {
     // Relative order, not absolute position: a tenant another file seeded a
     // moment ago has a null `lastRunAt` too and sorts in among ours.
     expect(seen.filter((id) => id === never.id || id === recent.id)).toEqual([never.id, recent.id]);
+  });
+
+  it("leaves a source that is not due out of the work list entirely", async () => {
+    // Not due (Tuesday's tenant on a Monday) and not in flight, so it is not a
+    // worker — which is also what keeps it out of the budget divisor, since the
+    // divisor IS this list.
+    const { tenant } = await seedSource({ dayOfWeek: 2 });
+    const due = await seedTenant(TENANT);
+    await db.insert(sources).values({ tenantId: due.id, type: "ai_visibility", label: "AI visibility" });
+    await db.insert(aiVisibilitySettings).values({
+      tenantId: due.id,
+      enabled: true,
+      cadence: "weekly",
+      dayOfWeek: 1,
+      engines: ["openai"],
+      samplesPerPrompt: 3,
+      monthlyCapUsd: 20,
+    });
+    const plan = vi.fn(async (id: string): Promise<PlanRunResult> => ({
+      ok: true,
+      runId: `run-${id}`,
+      plannedCalls: 3,
+      estimateUsd: 0.03,
+    }));
+    const slice = vi.fn().mockResolvedValue({ processed: 3, remaining: 0, budgetSpent: false, pausedByCap: false });
+
+    await sweepAiVisibility({
+      now: clock(MONDAY),
+      plan,
+      slice,
+      finalize: vi.fn().mockResolvedValue({ status: "complete", judged: 0, signals: 0 }),
+    });
+
+    expect(mine(plan.mock.calls, tenant.id)).toHaveLength(0);
+    expect(mine(slice.mock.calls, `run-${tenant.id}`)).toHaveLength(0);
+    expect(mine(plan.mock.calls, due.id)).toHaveLength(1);
+  });
+
+  it("skips a source whose settings row is missing rather than treating it as enabled", async () => {
+    const tenant = await seedTenant(TENANT);
+    await db.insert(sources).values({ tenantId: tenant.id, type: "ai_visibility", label: "AI visibility" });
+    const plan = planOnly(tenant.id, { ok: true, runId: "run-1", plannedCalls: 3, estimateUsd: 0.03 });
+
+    await sweepAiVisibility({ now: clock(MONDAY), plan, slice: idleSlice(), finalize: vi.fn() });
+
+    expect(mine(plan.mock.calls, tenant.id)).toHaveLength(0);
+  });
+
+  it("stops at its deadline instead of running until the platform kills it", async () => {
+    await seedSource();
+    await seedSource();
+    // Every slice burns a minute of a ten-second tick, so whoever goes first is
+    // the only one who goes at all. A global count is safe to assert here for
+    // once: however many tenants another file seeded, exactly one slice fits.
+    let elapsedMs = 0;
+    const now = () => new Date(new Date(MONDAY).getTime() + elapsedMs);
+    const slice = vi.fn(async () => {
+      elapsedMs += 60_000;
+      return { processed: 3, remaining: 0, budgetSpent: false, pausedByCap: false };
+    });
+
+    await sweepAiVisibility({
+      now,
+      budgetMs: 10_000,
+      plan: vi.fn(async (id: string): Promise<PlanRunResult> => ({
+        ok: true,
+        runId: `run-${id}`,
+        plannedCalls: 3,
+        estimateUsd: 0.03,
+      })),
+      slice,
+      finalize: vi.fn().mockResolvedValue({ status: "complete", judged: 0, signals: 0 }),
+    });
+
+    expect(slice).toHaveBeenCalledTimes(1);
+  });
+
+  it("never hands a source more time than the tick has left", async () => {
+    const { tenant } = await seedSource();
+    const slice = vi.fn().mockResolvedValue({ processed: 3, remaining: 0, budgetSpent: false, pausedByCap: false });
+
+    await sweepAiVisibility({
+      now: clock(MONDAY),
+      // Below MIN_SOURCE_BUDGET_MS, so the floor and the deadline disagree and
+      // the deadline has to win.
+      budgetMs: 1_000,
+      plan: planOnly(tenant.id, { ok: true, runId: "run-1", plannedCalls: 3, estimateUsd: 0.03 }),
+      slice,
+      finalize: vi.fn().mockResolvedValue({ status: "complete", judged: 0, signals: 0 }),
+    });
+
+    const [call] = mine(slice.mock.calls, "run-1");
+    expect((call[1] as { budgetMs: number }).budgetMs).toBeLessThanOrEqual(1_000);
+  });
+
+  it("resumes the run a plan-time race refuses, instead of painting the source red", async () => {
+    const { tenant, source } = await seedSource();
+    let raced: string | null = null;
+    // The race this covers: classification found no in-flight run (there was
+    // none), and a manual "Run now" started one before `planRun` was reached.
+    // The refusal carries the run id, and the slice lease makes driving it
+    // safe — so it is resumed, not written into the health block as an error a
+    // user would find there a week later.
+    const plan = vi.fn(async (id: string): Promise<PlanRunResult> => {
+      if (id !== tenant.id) return FOREIGN_PLAN;
+      const [run] = await db
+        .insert(aiVisibilityRuns)
+        .values({
+          tenantId: tenant.id,
+          sourceId: source.id,
+          trigger: "manual",
+          engines: ["openai"],
+          samplesPerPrompt: 3,
+          status: "running",
+        })
+        .returning();
+      raced = run.id;
+      return { ok: false, reason: "run_in_flight", runId: run.id };
+    });
+    const slice = vi.fn().mockResolvedValue({ processed: 1, remaining: 3, budgetSpent: true, pausedByCap: false });
+
+    await sweepAiVisibility({ now: clock(MONDAY), plan, slice, finalize: vi.fn() });
+
+    expect(raced).not.toBeNull();
+    expect(mine(slice.mock.calls, raced as unknown as string)).toHaveLength(1);
+    const [row] = await db
+      .select()
+      .from(sources)
+      .where(and(eq(sources.tenantId, tenant.id), eq(sources.type, "ai_visibility")));
+    expect(row.lastError).toBeNull();
+    expect(row.status).toBe("active");
+  });
+
+  it("does not resurrect a source a human disabled while the sweep was running", async () => {
+    const { tenant } = await seedSource();
+    const plan = vi.fn(async (id: string): Promise<PlanRunResult> => {
+      if (id !== tenant.id) return FOREIGN_PLAN;
+      // The window this guards: classification read `status: "active"`, and a
+      // human turns the feature off before the refusal is recorded. Echoing the
+      // status read earlier would flip it back to active.
+      await db.update(sources).set({ status: "disabled" }).where(eq(sources.tenantId, tenant.id));
+      return { ok: false, reason: "no_prompts" };
+    });
+
+    await sweepAiVisibility({ now: clock(MONDAY), plan, slice: idleSlice(), finalize: vi.fn() });
+
+    const [row] = await db
+      .select()
+      .from(sources)
+      .where(and(eq(sources.tenantId, tenant.id), eq(sources.type, "ai_visibility")));
+    expect(row.status).toBe("disabled");
+    expect(row.lastError).toContain("prompt");
+  });
+});
+
+describe("the budget knobs", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  async function reload() {
+    vi.resetModules();
+    return import("../../../src/lib/ai-visibility/sweep");
+  }
+
+  it("falls back to the default when a knob is malformed", async () => {
+    // `Number("12s")` is NaN, `Math.max(5_000, NaN)` is NaN, and
+    // `elapsed >= NaN` is false forever — the budget would silently stop
+    // existing and one slice would run the whole work list in one invocation.
+    vi.stubEnv("AI_VISIBILITY_SWEEP_BUDGET_MS", "12s");
+    vi.stubEnv("AI_VISIBILITY_CONCURRENCY", "");
+    const mod = await reload();
+    expect(mod.SWEEP_BUDGET_MS).toBe(120_000);
+    expect(mod.SWEEP_CONCURRENCY).toBe(12);
+  });
+
+  it("falls back when a knob is zero or negative", async () => {
+    vi.stubEnv("AI_VISIBILITY_SWEEP_BUDGET_MS", "0");
+    vi.stubEnv("AI_VISIBILITY_CONCURRENCY", "-4");
+    const mod = await reload();
+    expect(mod.SWEEP_BUDGET_MS).toBe(120_000);
+    expect(mod.SWEEP_CONCURRENCY).toBe(12);
+  });
+
+  it("uses a value that parses", async () => {
+    vi.stubEnv("AI_VISIBILITY_SWEEP_BUDGET_MS", "45000");
+    vi.stubEnv("AI_VISIBILITY_CONCURRENCY", "20");
+    const mod = await reload();
+    expect(mod.SWEEP_BUDGET_MS).toBe(45_000);
+    expect(mod.SWEEP_CONCURRENCY).toBe(20);
   });
 });

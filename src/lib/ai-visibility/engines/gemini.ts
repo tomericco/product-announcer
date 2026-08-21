@@ -1,4 +1,8 @@
-import { asArray, isRecord } from "@/lib/ai-visibility/engines/shape";
+import {
+  asArray,
+  isRecord,
+  ENGINE_REQUEST_TIMEOUT_MS,
+} from "@/lib/ai-visibility/engines/shape";
 import {
   NEUTRAL_SYSTEM_PROMPT,
   type EngineAnswer,
@@ -111,6 +115,13 @@ export async function askGemini(
   let response: Response;
   try {
     response = await fetchImpl(`${GEMINI_MODELS_ENDPOINT}/${model}:generateContent`, {
+      // Bounded, because the run slice's wall-clock budget is otherwise
+      // advisory: a provider that accepts the connection and then never
+      // answers holds a whole concurrency wave open past the budget, past the
+      // sweep's deadline, and into the platform's own timeout — which kills
+      // the invocation instead of recording an error. A timeout here becomes an
+      // ordinary EngineError on one sample.
+      signal: AbortSignal.timeout(ENGINE_REQUEST_TIMEOUT_MS),
       method: "POST",
       // Header rather than `?key=`: the key must not end up in a URL, in a
       // log line or in an error message.

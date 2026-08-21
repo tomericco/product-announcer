@@ -10,7 +10,7 @@ import {
 } from "@/db/schema";
 import { getAiVisibilitySettings, ensureAiVisibilitySource } from "@/lib/ai-visibility/settings";
 import { computeAggregates } from "@/lib/ai-visibility/aggregate";
-import { capExceeded } from "@/lib/ai-visibility/cost";
+import { capExceeded, capPausedMessage } from "@/lib/ai-visibility/cost";
 import { roundUsd } from "@/lib/ai-visibility/money";
 import { ENGINE_CLIENTS } from "@/lib/ai-visibility/engines";
 import { extractSample, loadBrandTargets, type ExtractSampleDeps } from "@/lib/ai-visibility/extract";
@@ -508,7 +508,7 @@ export async function runSlice(
 
   if (pausedByCap) {
     const cap = await capExceeded(run.tenantId, settings, opts.now(), database);
-    const message = `Paused — monthly cap reached ($${cap.spentUsd.toFixed(2)} of $${cap.capUsd.toFixed(2)}).`;
+    const message = capPausedMessage(cap.spentUsd, cap.capUsd);
     await database
       .update(aiVisibilityRuns)
       .set({ status: "paused_by_cap", error: message, finishedAt: opts.now() })

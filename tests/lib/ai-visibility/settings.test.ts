@@ -1,9 +1,10 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { aiVisibilitySettings, sources } from "../../../src/db/schema";
+import { aiVisibilityRuns, aiVisibilitySettings, sources } from "../../../src/db/schema";
 import {
   getAiVisibilitySettings,
+  getAiVisibilitySettingsForTenants,
   saveAiVisibilitySettings,
   ensureAiVisibilitySource,
   setAiVisibilityEnabled,
@@ -11,6 +12,7 @@ import {
   MIN_MONTHLY_CAP_USD,
   MAX_MONTHLY_CAP_USD,
 } from "../../../src/lib/ai-visibility/settings";
+import { capPausedMessage } from "../../../src/lib/ai-visibility/cost";
 import { seedTenant, dropTenant } from "../../helpers/fixtures";
 
 const TENANT = "AI Visibility Settings Test Tenant";
@@ -674,5 +676,128 @@ describe("setAiVisibilityEnabled", () => {
     expect((await aiVisibilitySource(tenant.id))[0].status).toBe("disabled");
     expect((await getAiVisibilitySettings(other.id)).enabled).toBe(true);
     expect((await aiVisibilitySource(other.id))[0].status).toBe("active");
+  });
+});
+
+describe("getAiVisibilitySettingsForTenants", () => {
+  it("reads many tenants in one query, and gives a tenant with no row the defaults", async () => {
+    const withRow = await seedTenant(TENANT);
+    const withoutRow = await seedTenant(OTHER_TENANT);
+    await saveAiVisibilitySettings(withRow.id, VALID);
+
+    const byTenant = await getAiVisibilitySettingsForTenants([withRow.id, withoutRow.id, withRow.id]);
+
+    // Present, not absent: "no row" is a real state (the feature is off), and a
+    // caller that had to distinguish a missing key from it would get it wrong.
+    expect(byTenant.get(withoutRow.id)).toEqual(DEFAULT_AI_VISIBILITY_SETTINGS);
+    expect(byTenant.get(withRow.id)).toEqual({
+      enabled: false,
+      cadence: "fortnightly",
+      dayOfWeek: 3,
+      engines: ["openai", "gemini"],
+      samplesPerPrompt: 5,
+      monthlyCapUsd: 45,
+    });
+  });
+
+  it("agrees with the single-tenant read, coercions included", async () => {
+    const tenant = await seedTenant(TENANT);
+    // A hand-written row: an engine this build does not know, and a cadence
+    // nobody can save. The batch read must coerce them exactly as the
+    // single-tenant read does, or the sweep gates on a different reading of the
+    // row than the settings card renders.
+    await db.insert(aiVisibilitySettings).values({
+      tenantId: tenant.id,
+      enabled: true,
+      cadence: "hourly",
+      dayOfWeek: 9,
+      engines: ["bing"],
+      samplesPerPrompt: 4,
+      monthlyCapUsd: 20,
+    });
+
+    const byTenant = await getAiVisibilitySettingsForTenants([tenant.id]);
+
+    expect(byTenant.get(tenant.id)).toEqual(await getAiVisibilitySettings(tenant.id));
+  });
+
+  it("does not query at all for an empty list", async () => {
+    expect(await getAiVisibilitySettingsForTenants([])).toEqual(new Map());
+  });
+});
+
+describe("saveAiVisibilitySettings and the cap pause", () => {
+  const NOW = new Date("2026-03-10T09:00:00Z");
+  const clock = () => NOW;
+
+  async function seedCapPausedSource(tenantId: string, lastError: string) {
+    const [source] = await db
+      .insert(sources)
+      .values({
+        tenantId,
+        type: "ai_visibility",
+        label: "AI visibility",
+        status: "failing",
+        lastError,
+      })
+      .returning();
+    return source;
+  }
+
+  /** A finished run of a given cost, inside the month `NOW` falls in. */
+  async function seedSpend(tenantId: string, sourceId: string, costUsd: number) {
+    await db.insert(aiVisibilityRuns).values({
+      tenantId,
+      sourceId,
+      trigger: "scheduled",
+      engines: ["openai"],
+      samplesPerPrompt: 3,
+      status: "complete",
+      startedAt: new Date("2026-03-04T09:00:00Z"),
+      costUsd,
+    });
+  }
+
+  it("clears the red badge when the new cap is above what the month has spent", async () => {
+    const tenant = await seedTenant(TENANT);
+    const source = await seedCapPausedSource(tenant.id, capPausedMessage(20, 20));
+    await seedSpend(tenant.id, source.id, 20);
+
+    await saveAiVisibilitySettings(tenant.id, { ...VALID, monthlyCapUsd: 50 }, db, clock);
+
+    const [row] = await aiVisibilitySource(tenant.id);
+    expect(row.status).toBe("active");
+    expect(row.lastError).toBeNull();
+  });
+
+  it("leaves the badge red when the new cap is still under the month's spend", async () => {
+    const tenant = await seedTenant(TENANT);
+    const source = await seedCapPausedSource(tenant.id, capPausedMessage(24, 20));
+    await seedSpend(tenant.id, source.id, 24);
+
+    await saveAiVisibilitySettings(tenant.id, { ...VALID, monthlyCapUsd: 21 }, db, clock);
+
+    const [row] = await aiVisibilitySource(tenant.id);
+    expect(row.status).toBe("failing");
+    expect(row.lastError).toContain("monthly cap");
+  });
+
+  it("never clears a failure that was not the cap", async () => {
+    const tenant = await seedTenant(TENANT);
+    await seedCapPausedSource(tenant.id, "openai 429: rate limited");
+
+    await saveAiVisibilitySettings(tenant.id, { ...VALID, monthlyCapUsd: 500 }, db, clock);
+
+    const [row] = await aiVisibilitySource(tenant.id);
+    expect(row.status).toBe("failing");
+    expect(row.lastError).toBe("openai 429: rate limited");
+  });
+
+  it("does not create a source row for a tenant that has none", async () => {
+    const tenant = await seedTenant(TENANT);
+
+    await saveAiVisibilitySettings(tenant.id, VALID, db, clock);
+
+    expect(await aiVisibilitySource(tenant.id)).toHaveLength(0);
   });
 });
