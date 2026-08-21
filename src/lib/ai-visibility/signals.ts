@@ -688,10 +688,16 @@ export async function emitSignals(
         // window, every band reads one run short, and the evidence quoted from
         // this run gets attached to last run's numbers.
         //
-        // The status test on the left arm stops that admitting a `failed` or
-        // `paused_by_cap` run: those have partial sample sets by definition,
-        // and a caller passing one by id must not get signals computed off
-        // half a run.
+        // The status test on the left arm stops that admitting a `failed` run,
+        // whose sample set is partial AND whose aggregates were never written.
+        // `paused_by_cap` IS admitted now: `runSlice` aggregates what it bought
+        // before the cap tripped, those counts are final, and the counts are
+        // the whole input here. A short window is what the n >= 30 thresholds
+        // exist for.
+        //
+        // The right arm is still `complete` only, so a cap-paused run is
+        // evidence for its OWN signals but does not silently shorten the
+        // history a later run compares itself against.
         or(
           and(eq(aiVisibilityRuns.id, runId), inArray(aiVisibilityRuns.status, EMITTABLE_STATUSES)),
           eq(aiVisibilityRuns.status, "complete")
