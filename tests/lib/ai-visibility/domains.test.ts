@@ -48,6 +48,20 @@ describe("toRegistrableDomain", () => {
     expect(toRegistrableDomain("https://93.184.216.34/x")).toBe("93.184.216.34");
     expect(toRegistrableDomain("http://localhost:3000/x")).toBe("localhost");
   });
+
+  it("refuses any scheme that is not http(s), so a cited URL cannot become an href", () => {
+    // A citation URL is third-party text that ends up in `href` on the prompt
+    // detail page and in the signals evidence dialog. `tavily.ts` already makes
+    // this exact call for the same data class, naming stored XSS; React 19
+    // happening to neutralise `javascript:` today is a framework internal, not
+    // a decision this repo made.
+    expect(toRegistrableDomain("javascript://evil.com/%0aalert(1)")).toBeNull();
+    expect(toRegistrableDomain("JavaScript://evil.com/%0aalert(1)")).toBeNull();
+    expect(toRegistrableDomain("data://evil.com/x")).toBeNull();
+    expect(toRegistrableDomain("data:text/html;base64,PHNjcmlwdD4=")).toBeNull();
+    expect(toRegistrableDomain("vbscript://evil.com/x")).toBeNull();
+    expect(toRegistrableDomain("file:///etc/passwd")).toBeNull();
+  });
 });
 
 describe("resolveRedirect", () => {
@@ -228,8 +242,12 @@ describe("toRegistrableDomain, across the whole suffix table and the odd hosts",
     expect(toRegistrableDomain("https://[2001:db8::1]/x")).toBe("[2001:db8::1]");
   });
 
-  it("accepts a non-http scheme and a single-label host", () => {
-    expect(toRegistrableDomain("ftp://files.acme.com/x")).toBe("acme.com");
+  it("rejects a non-http scheme, and accepts a single-label host", () => {
+    // Superseded on purpose: this used to read "accepts a non-http scheme" and
+    // returned `acme.com` for the ftp URL. Everything that survives this
+    // function is stored and later rendered as an `href`, so the scheme is now
+    // part of what makes a citation acceptable — see the scheme test above.
+    expect(toRegistrableDomain("ftp://files.acme.com/x")).toBeNull();
     expect(toRegistrableDomain("localhost")).toBe("localhost");
   });
 

@@ -131,6 +131,18 @@ export function toRegistrableDomain(url: string): string | null {
   if (raw.length === 0) return null;
 
   const candidate = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `https://${raw}`;
+  // Only the two schemes a citation can honestly have. Every URL that survives
+  // this function is stored and later rendered as an `href` — on the prompt
+  // detail page's engine tabs and in the signals evidence dialog — and the URLs
+  // themselves are whatever four third-party engines returned.
+  //
+  // `javascript://evil.com/%0aalert(1)` parses as a perfectly ordinary URL with
+  // hostname `evil.com`, so without this the scheme is dropped on the floor and
+  // the payload is kept. React 19 refuses to render such an href today, but
+  // that is an undocumented framework internal, not a decision this codebase
+  // made — and `signals/tavily.ts` already makes the opposite call explicitly,
+  // naming stored XSS, for the same class of data.
+  if (!/^https?:/i.test(candidate)) return null;
   let host: string;
   try {
     host = new URL(candidate).hostname.toLowerCase().replace(/\.$/, "");
