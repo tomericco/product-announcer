@@ -429,4 +429,42 @@ describe("runSlice", () => {
     expect(outcome).toEqual({ processed: 0, remaining: 0, budgetSpent: false, pausedByCap: false });
     expect(openai.calls).toHaveLength(0);
   });
+
+  it("extracts each successful sample as it is written", async () => {
+    const { runId } = await planned();
+    const openai = fakeEngine("openai", () => answer());
+    const extracted: string[] = [];
+
+    await runSlice(
+      runId,
+      { budgetMs: 60_000, concurrency: 1, now: advancingClock("2026-03-02T09:00:00Z", 10) },
+      {
+        engines: { openai },
+        extract: async (sampleId) => {
+          extracted.push(sampleId);
+        },
+      }
+    );
+
+    expect(extracted).toHaveLength(3);
+    const samples = await db.select().from(aiVisibilitySamples).where(eq(aiVisibilitySamples.runId, runId));
+    expect(new Set(extracted)).toEqual(new Set(samples.map((s) => s.id)));
+    // The citation list is stored beside the engine's own payload so extraction
+    // can be replayed from the row alone.
+    expect((samples[0].raw as { citations: { url: string }[] }).citations[0].url).toBe("https://acme.com/pricing");
+  });
+
+  it("does not extract errored or refused samples", async () => {
+    const { runId } = await planned();
+    const openai = fakeEngine("openai", () => ({ kind: "error", message: "boom" }) as const);
+    const extracted: string[] = [];
+
+    await runSlice(
+      runId,
+      { budgetMs: 60_000, concurrency: 1, now: advancingClock("2026-03-02T09:00:00Z", 10) },
+      { engines: { openai }, extract: async (id) => void extracted.push(id) }
+    );
+
+    expect(extracted).toEqual([]);
+  });
 });

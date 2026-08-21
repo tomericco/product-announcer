@@ -4,6 +4,7 @@ import { aiVisibilityPrompts, aiVisibilityRuns, aiVisibilitySamples, sources } f
 import { getAiVisibilitySettings, ensureAiVisibilitySource } from "@/lib/ai-visibility/settings";
 import { capExceeded } from "@/lib/ai-visibility/cost";
 import { ENGINE_CLIENTS } from "@/lib/ai-visibility/engines";
+import { extractSample, loadBrandTargets, type ExtractSampleDeps } from "@/lib/ai-visibility/extract";
 import { mapWithConcurrency } from "@/lib/concurrency";
 import type { EngineClient, EngineId } from "@/lib/ai-visibility/types";
 
@@ -14,6 +15,10 @@ export type RunDeps = {
   database?: typeof defaultDb;
   /** Overrides for `ENGINE_CLIENTS`. Tests always inject; nothing here reaches the network otherwise. */
   engines?: Partial<Record<EngineId, EngineClient>>;
+  /** Redirect resolution's network seam, passed through to extraction. */
+  fetchImpl?: typeof fetch;
+  /** Injected only by tests that assert the slice does not extract; production always uses the real one. */
+  extract?: (sampleId: string, deps?: ExtractSampleDeps) => Promise<void>;
 };
 
 export type PlanRunRefusal =
@@ -177,6 +182,15 @@ export async function runSlice(
   }
 
   const settings = await getAiVisibilitySettings(run.tenantId, database);
+  const extract = deps.extract ?? extractSample;
+  // Loaded ONCE per slice: extraction needs the same brand aliases for every
+  // row, and re-reading three tables per sample would be ~1,400 identical
+  // queries on a 360-call run. `extractSample`'s standalone default still
+  // re-reads, for the operator "re-extract after an alias fix" path.
+  const brandContext = await loadBrandTargets(run.tenantId, database);
+  // Shared across the slice: a Gemini grounding handle cited by many samples
+  // resolves over the network once, not once per citation.
+  const redirectCache = new Map<string, string>();
   const modelIds: Record<string, string> = { ...(run.modelIds ?? {}) };
   let processed = 0;
   let budgetSpent = false;
@@ -256,12 +270,17 @@ export async function runSlice(
             modelId: result.modelId,
             searchUsed: result.searchUsed,
             searchQueries: result.searchQueries,
-            raw: result.raw as Record<string, unknown>,
+            raw: { engine: result.raw, citations: result.citations } as Record<string, unknown>,
             costUsd: result.costUsd,
             error: null,
             askedAt: opts.now(),
           })
           .where(eq(aiVisibilitySamples.id, row.id));
+
+        // Extraction is part of answering, not of finalizing: a run that never
+        // reaches finalizeRun (budget, cap, a dead cron) still has usable
+        // mention data, and the answer text is already in hand exactly once.
+        await extract(row.id, { database, brandContext, redirectCache, fetchImpl: deps.fetchImpl });
 
         return { costUsd: result.costUsd, engine: row.engine, modelId: result.modelId };
       } catch (error) {
