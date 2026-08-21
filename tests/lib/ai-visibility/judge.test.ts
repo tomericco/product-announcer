@@ -410,3 +410,41 @@ describe("judgeRun", () => {
     expect(out.remaining).toBe(10);
   });
 });
+
+describe("judgeChunk normalisation", () => {
+  it("rounds a float index rather than dropping the label", async () => {
+    // `JudgeSchema.index` is a loose `number` on purpose: a model that answers
+    // 1.0 as 1.4 must not cost the whole chunk its labels, and rejecting it in
+    // the schema would throw inside `generateObject` and do exactly that.
+    const generate = generateReturning([label(1.4, { level: "recommended" })]);
+    const out = await judgeChunk(items, CTX, "tenant-1", { generate });
+
+    if ("error" in out) throw new Error(out.error);
+    expect(out.labels.get("s2")?.level).toBe("recommended");
+  });
+
+  it("truncates an over-long quote to 400 characters", async () => {
+    const generate = generateReturning([label(0, { quote: "x".repeat(500) })]);
+    const out = await judgeChunk(items, CTX, "tenant-1", { generate });
+
+    if ("error" in out) throw new Error(out.error);
+    // The column is free text, but a model that pastes the whole answer back
+    // is not quoting it, and the spot-check UI renders this inline.
+    expect(out.labels.get("s1")?.quote).toHaveLength(400);
+  });
+});
+
+describe("judgeRun on a run that is not there", () => {
+  it("reports no work and never calls the model", async () => {
+    const generate = vi.fn();
+
+    const out = await judgeRun(
+      crypto.randomUUID(),
+      { budgetMs: 60_000, now: frozen("2026-03-02T10:00:00Z") },
+      { generate }
+    );
+
+    expect(out).toEqual({ judged: 0, flagged: 0, remaining: 0, budgetSpent: false, errors: [] });
+    expect(generate).not.toHaveBeenCalled();
+  });
+});

@@ -218,3 +218,13 @@ describe("computeAggregates", () => {
     expect(engineRow.n).toBe(0);
   });
 });
+
+describe("computeAggregates on a run that is not there", () => {
+  it("writes nothing and reports zero rows rather than throwing", async () => {
+    // `finalizeRun` catches and records a throw here as a FAILED run. A run id
+    // that has been deleted out from under a cron tick is not a failure worth
+    // a red badge.
+    const out = await computeAggregates(crypto.randomUUID());
+    expect(out).toEqual({ engineRows: 0, promptRows: 0 });
+  });
+});

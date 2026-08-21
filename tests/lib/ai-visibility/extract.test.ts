@@ -286,3 +286,119 @@ describe("extractSample", () => {
     expect(updated.extraction).toBeNull();
   });
 });
+
+describe("extractSample re-entry and injected context", () => {
+  async function seedSample(answerText: string, citations: unknown[]) {
+    const tenant = await seedTenant(TENANT);
+    await seedCompanyProfile(tenant.id, { websiteUrl: "https://acme.com" });
+    await db
+      .insert(competitors)
+      .values({ tenantId: tenant.id, name: "Rival", websiteUrl: "https://rival.com" });
+    const [prompt] = await db
+      .insert(aiVisibilityPrompts)
+      .values({ tenantId: tenant.id, text: "best issue tracker", intent: "discovery", origin: "generated", status: "active" })
+      .returning();
+    const [run] = await db
+      .insert(aiVisibilityRuns)
+      .values({ tenantId: tenant.id, trigger: "manual", engines: ["openai"], samplesPerPrompt: 3 })
+      .returning();
+    const [sample] = await db
+      .insert(aiVisibilitySamples)
+      .values({
+        runId: run.id,
+        tenantId: tenant.id,
+        promptId: prompt.id,
+        engine: "openai",
+        sampleIndex: 0,
+        status: "ok",
+        answerText,
+        raw: { citations },
+      })
+      .returning();
+    return { tenant, sample };
+  }
+
+  it("keeps a judge label already paid for when the sample is re-extracted", async () => {
+    const { sample } = await seedSample(`${TENANT} and Rival are the usual picks.`, [
+      { url: "https://rival.com/compare", position: 1 },
+    ]);
+    await extractSample(sample.id);
+
+    // What the row looks like after the judge has run: a `judged` block and an
+    // agreement flag alongside the deterministic one.
+    const [afterFirst] = await db.select().from(aiVisibilitySamples).where(eq(aiVisibilitySamples.id, sample.id));
+    await db
+      .update(aiVisibilitySamples)
+      .set({
+        judged: true,
+        extraction: {
+          ...afterFirst.extraction!,
+          judged: {
+            orderedBrands: ["Rival"],
+            level: "described",
+            framing: "listed second",
+            quote: "Rival are the usual picks",
+            positioningClaims: [],
+            hallucinations: [],
+            answerType: "list",
+          },
+          agreementFlag: "d_only",
+        },
+      })
+      .where(eq(aiVisibilitySamples.id, sample.id));
+
+    // The operator "re-extract after an alias fix" path.
+    await extractSample(sample.id);
+
+    const [updated] = await db.select().from(aiVisibilitySamples).where(eq(aiVisibilitySamples.id, sample.id));
+    // Re-extraction rewrites the deterministic half only. Clobbering the whole
+    // object would throw away a judge call that has already been billed, and
+    // nothing re-runs the judge for a run that has finished.
+    expect(updated.extraction?.judged?.level).toBe("described");
+    expect(updated.extraction?.agreementFlag).toBe("d_only");
+    expect(updated.extraction?.deterministic.tenantMentioned).toBe(true);
+  });
+
+  it("uses the brand context it is handed instead of re-reading the tenant's rows", async () => {
+    const { sample } = await seedSample("Nobody here is called Rival. Zephyr is the pick.", []);
+
+    await extractSample(sample.id, {
+      brandContext: {
+        brands: [{ brandId: "c-zephyr", name: "Zephyr", aliases: ["Zephyr"], isTenant: false }],
+        ownDomain: null,
+        competitorByDomain: {},
+      },
+    });
+
+    // `runSlice` loads this once per slice rather than three tables per sample.
+    // If the injection were ignored the row would name Rival, which is in the
+    // database, and not Zephyr, which is only in the context.
+    const [updated] = await db.select().from(aiVisibilitySamples).where(eq(aiVisibilitySamples.id, sample.id));
+    expect(updated.extraction?.deterministic).toEqual({
+      tenantMentioned: false,
+      competitorIds: ["c-zephyr"],
+      ownDomainCited: false,
+    });
+  });
+
+  it("falls back to list order when a citation carries no usable position", async () => {
+    const { sample } = await seedSample("Rival is popular.", [
+      { url: "https://rival.com/a" },
+      { url: "https://g2.com/b", position: "second" },
+      { url: "https://acme.com/c", position: 9 },
+    ]);
+
+    await extractSample(sample.id);
+
+    // Position is a signal — the leaderboard reads order off it — and the
+    // column is a NOT NULL smallint, so a missing or non-numeric value has to
+    // become something rather than blow up the whole sample's extraction.
+    const rows = await db
+      .select()
+      .from(aiVisibilityCitations)
+      .where(eq(aiVisibilityCitations.sampleId, sample.id));
+    expect(rows.find((r) => r.domain === "rival.com")?.position).toBe(1);
+    expect(rows.find((r) => r.domain === "g2.com")?.position).toBe(2);
+    expect(rows.find((r) => r.domain === "acme.com")?.position).toBe(9);
+  });
+});

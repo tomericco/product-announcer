@@ -215,3 +215,102 @@ describe("capExceeded", () => {
     expect(state.exceeded).toBe(true);
   });
 });
+
+/**
+ * The suite pins `process.env.TZ` to Asia/Jerusalem (see vitest.setup.ts), which
+ * is what makes these assertions mean anything: on a UTC machine a
+ * `getMonth()`/`getFullYear()` implementation would pass every test above just
+ * as well as the `getUTCMonth()` one we actually have. The cap is a calendar
+ * month in UTC — the same window for every tenant, whatever timezone they are
+ * in — so an instant that is already next month locally must still count
+ * against this month's budget, and vice versa.
+ */
+describe("month boundaries are UTC, not the server's local zone", () => {
+  // The premises, asserted rather than assumed: if the pinned zone ever moves,
+  // these fail here instead of silently turning the tests below into no-ops.
+  const lastInstantOfUtcFebruary = new Date("2026-02-28T23:00:00.000Z");
+  const lastInstantOfUtcMarch = new Date("2026-03-31T23:00:00.000Z");
+
+  it("is a different month locally than it is in UTC at these instants", () => {
+    expect(lastInstantOfUtcFebruary.getUTCMonth()).toBe(1); // February, UTC
+    expect(lastInstantOfUtcFebruary.getMonth()).toBe(2); // March, Asia/Jerusalem
+    expect(lastInstantOfUtcMarch.getUTCMonth()).toBe(2); // March, UTC
+    expect(lastInstantOfUtcMarch.getMonth()).toBe(3); // April, Asia/Jerusalem
+  });
+
+  it("snaps to the UTC month even when the local date says otherwise", () => {
+    expect(monthStartUtc(lastInstantOfUtcFebruary).toISOString()).toBe("2026-02-01T00:00:00.000Z");
+    expect(monthStartUtc(lastInstantOfUtcMarch).toISOString()).toBe("2026-03-01T00:00:00.000Z");
+    expect(nextMonthStartUtc(lastInstantOfUtcFebruary).toISOString()).toBe("2026-03-01T00:00:00.000Z");
+  });
+
+  it("puts a run on the UTC side of the boundary it straddles", async () => {
+    const tenant = await seedTenant(TENANT);
+    await db.insert(aiVisibilityRuns).values([
+      {
+        tenantId: tenant.id,
+        trigger: "scheduled",
+        engines: ["openai"],
+        samplesPerPrompt: 3,
+        status: "complete",
+        // Locally this is 1 March. In UTC it is still February, so it belongs
+        // to February's budget — counting it against March would charge a
+        // tenant twice for the same dollar in the two-hour overlap.
+        costUsd: 5,
+        startedAt: lastInstantOfUtcFebruary,
+      },
+      {
+        tenantId: tenant.id,
+        trigger: "scheduled",
+        engines: ["openai"],
+        samplesPerPrompt: 3,
+        status: "complete",
+        // Locally this is 1 April; in UTC it is the last hour of March, and
+        // March is what the cap has to charge it to.
+        costUsd: 7,
+        startedAt: lastInstantOfUtcMarch,
+      },
+      {
+        tenantId: tenant.id,
+        trigger: "scheduled",
+        engines: ["openai"],
+        samplesPerPrompt: 3,
+        status: "complete",
+        // The inclusive lower bound, exactly.
+        costUsd: 1,
+        startedAt: new Date("2026-03-01T00:00:00.000Z"),
+      },
+    ]);
+
+    const march = await monthToDateSpendUsd(tenant.id, new Date("2026-03-15T12:00:00.000Z"));
+    expect(march).toBeCloseTo(8, 6);
+
+    const february = await monthToDateSpendUsd(tenant.id, new Date("2026-02-15T12:00:00.000Z"));
+    expect(february).toBeCloseTo(5, 6);
+  });
+});
+
+describe("estimate edge cases the cap depends on", () => {
+  it("clamps a negative count to zero rather than issuing a credit", () => {
+    // A negative estimate would make `spent + estimate > cap` false for any
+    // spend — the cap silently switching itself off, which is the one failure
+    // this module must not have.
+    expect(estimateRunCost({ promptCount: -5, engines: ["openai"], samplesPerPrompt: 3 })).toBe(0);
+    expect(estimateRunCost({ promptCount: 5, engines: ["openai"], samplesPerPrompt: -3 })).toBe(0);
+  });
+
+  it("estimates zero, and stays under the cap, for a tenant with no active prompts", async () => {
+    const tenant = await seedTenant(TENANT);
+    await seedPrompts(tenant.id, [{ intent: "discovery", status: "proposed" }]);
+
+    const state = await capExceeded(
+      tenant.id,
+      { engines: ["openai"], samplesPerPrompt: 3, monthlyCapUsd: 20 },
+      new Date("2026-03-10T00:00:00.000Z")
+    );
+
+    expect(state.estimateUsd).toBe(0);
+    expect(state.exceeded).toBe(false);
+    expect(state.reached).toBe(false);
+  });
+});

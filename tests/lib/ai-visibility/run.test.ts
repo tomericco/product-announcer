@@ -6,7 +6,9 @@ import {
   aiVisibilityRuns,
   aiVisibilitySamples,
   aiVisibilityAggregates,
+  aiVisibilityCitations,
   aiVisibilitySettings,
+  competitors,
   sources,
 } from "../../../src/db/schema";
 import type { EngineAnswer, EngineClient, EngineError } from "../../../src/lib/ai-visibility/types";
@@ -995,5 +997,445 @@ describe("latestRun", () => {
     const run = await latestRun(tenant.id);
     expect(run?.status).toBe("paused_by_cap");
     expect(run?.trigger).toBe("manual");
+  });
+});
+
+describe("planRun guards not covered above", () => {
+  it("treats a run still `pending` as in flight, not only a `running` one", async () => {
+    const tenant = await seedTenant(TENANT);
+    await seedSettings(tenant.id);
+    await seedPrompt(tenant.id);
+    // A run planned by an earlier tick that no slice has picked up yet. It owns
+    // this tenant's work list just as much as a running one does — planning a
+    // second would double the month's bill for the same prompt set.
+    const [pending] = await db
+      .insert(aiVisibilityRuns)
+      .values({ tenantId: tenant.id, trigger: "scheduled", engines: ["openai"], samplesPerPrompt: 3, status: "pending" })
+      .returning();
+
+    const result = await planRun(tenant.id, { trigger: "manual", now: frozen("2026-03-02T09:00:00Z") });
+
+    expect(result).toEqual({ ok: false, reason: "run_in_flight", runId: pending.id });
+    // And the partial unique index agrees with the read-then-write guard about
+    // which statuses count: `pending` is in the index predicate too.
+    await expect(
+      db.insert(aiVisibilityRuns).values({
+        tenantId: tenant.id,
+        trigger: "scheduled",
+        engines: ["openai"],
+        samplesPerPrompt: 3,
+        status: "pending",
+      })
+    ).rejects.toThrow();
+  });
+
+  it("plans every engine when the settings row holds an empty engine list", async () => {
+    const tenant = await seedTenant(TENANT);
+    await seedSettings(tenant.id, { engines: [] });
+    await seedPrompt(tenant.id);
+
+    const result = await planRun(tenant.id, { trigger: "manual", now: frozen("2026-03-02T09:00:00Z") });
+
+    // `getAiVisibilitySettings` substitutes the full engine list for an empty
+    // or entirely-unrecognised one, so `planRun`'s `no_engines` refusal cannot
+    // fire through the normal read path. Pinned here because it is the reason
+    // an enabled feature never plans zero calls behind a green badge — and so
+    // that a change to that substitution shows up as a failure here rather
+    // than as a tenant whose weekly run quietly does nothing.
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    const samples = await db.select().from(aiVisibilitySamples).where(eq(aiVisibilitySamples.runId, result.runId));
+    expect(new Set(samples.map((s) => s.engine))).toEqual(
+      new Set(["openai", "perplexity", "gemini", "anthropic"])
+    );
+  });
+});
+
+describe("runSlice edge cases", () => {
+  async function planned(overrides: Partial<typeof aiVisibilitySettings.$inferInsert> = {}) {
+    const tenant = await seedTenant(TENANT);
+    await seedSettings(tenant.id, { engines: ["openai"], samplesPerPrompt: 3, ...overrides });
+    await seedPrompt(tenant.id, { text: "best issue tracker for startups" });
+    const result = await planRun(tenant.id, { trigger: "manual", now: frozen("2026-03-02T09:00:00Z") });
+    if (!result.ok) throw new Error(`planRun refused: ${result.reason}`);
+    return { tenant, runId: result.runId };
+  }
+
+  it("is a no-op for a run id that does not exist", async () => {
+    const outcome = await runSlice(
+      crypto.randomUUID(),
+      { budgetMs: 60_000, concurrency: 2, now: advancingClock("2026-03-02T09:00:00Z", 10) },
+      { engines: { openai: fakeEngine("openai", () => answer()) } }
+    );
+
+    expect(outcome).toEqual({ processed: 0, remaining: 0, budgetSpent: false, pausedByCap: false });
+  });
+
+  it("does not restart a run the cap already paused", async () => {
+    const { runId } = await planned();
+    await db.update(aiVisibilityRuns).set({ status: "paused_by_cap" }).where(eq(aiVisibilityRuns.id, runId));
+    const openai = fakeEngine("openai", () => answer());
+
+    const outcome = await runSlice(
+      runId,
+      { budgetMs: 60_000, concurrency: 2, now: advancingClock("2026-03-02T09:00:00Z", 10) },
+      { engines: { openai } }
+    );
+
+    // Only `pending` and `running` are drivable. Resuming a cap-paused run here
+    // would spend past a cap the tenant set on purpose, and un-say the message
+    // the settings card is showing them.
+    expect(outcome).toEqual({ processed: 0, remaining: 0, budgetSpent: false, pausedByCap: false });
+    expect(openai.calls).toHaveLength(0);
+  });
+
+  it("pauses before the first batch, and spends nothing, when the cap is already reached", async () => {
+    const { tenant, runId } = await planned();
+    await db
+      .update(aiVisibilitySettings)
+      .set({ monthlyCapUsd: 1 })
+      .where(eq(aiVisibilitySettings.tenantId, tenant.id));
+    await db.insert(aiVisibilityRuns).values({
+      tenantId: tenant.id,
+      trigger: "scheduled",
+      status: "complete",
+      engines: ["openai"],
+      samplesPerPrompt: 3,
+      costUsd: 1.5,
+      startedAt: new Date("2026-03-01T09:00:00Z"),
+    });
+    const openai = fakeEngine("openai", () => answer());
+
+    const outcome = await runSlice(
+      runId,
+      { budgetMs: 60_000, concurrency: 2, now: advancingClock("2026-03-02T09:00:00Z", 10) },
+      { engines: { openai } }
+    );
+
+    // The cap check runs at the top of the loop, before any rows are claimed —
+    // a run planned under the cap and sliced after the month has already blown
+    // through it must not buy a single answer.
+    expect(openai.calls).toHaveLength(0);
+    expect(outcome.processed).toBe(0);
+    expect(outcome.pausedByCap).toBe(true);
+    expect(outcome.remaining).toBe(3);
+    const [run] = await db.select().from(aiVisibilityRuns).where(eq(aiVisibilityRuns.id, runId));
+    expect(run.status).toBe("paused_by_cap");
+  });
+
+  it("records a sample whose engine has no client as an error, not as a crash", async () => {
+    const { runId } = await planned();
+    // What a retired engine id left in an already-planned work list looks like.
+    const [orphan] = await db
+      .select()
+      .from(aiVisibilitySamples)
+      .where(eq(aiVisibilitySamples.runId, runId))
+      .orderBy(asc(aiVisibilitySamples.id))
+      .limit(1);
+    await db
+      .update(aiVisibilitySamples)
+      .set({ engine: "retired-engine" })
+      .where(eq(aiVisibilitySamples.id, orphan.id));
+    const openai = fakeEngine("openai", () => answer());
+
+    const outcome = await runSlice(
+      runId,
+      { budgetMs: 60_000, concurrency: 1, now: advancingClock("2026-03-02T09:00:00Z", 10) },
+      { engines: { openai } }
+    );
+
+    expect(outcome.processed).toBe(3);
+    expect(outcome.remaining).toBe(0);
+    const [updated] = await db.select().from(aiVisibilitySamples).where(eq(aiVisibilitySamples.id, orphan.id));
+    expect(updated.status).toBe("error");
+    expect(updated.error).toContain('no client for engine "retired-engine"');
+    expect(updated.askedAt).not.toBeNull();
+    // Billed as nothing, because nothing was asked — and the other two samples
+    // still got their turn.
+    expect(updated.costUsd).toBe(0);
+    const [run] = await db.select().from(aiVisibilityRuns).where(eq(aiVisibilityRuns.id, runId));
+    expect(run.costUsd).toBeCloseTo(0.02, 5);
+  });
+
+  it("takes a lease that outlives its own budget by minutes, not milliseconds", async () => {
+    const { runId } = await planned();
+    const start = new Date("2026-03-02T09:00:00Z").getTime();
+    const budgetMs = 60_000;
+    let leaseSeenMidSlice: Date | null = null;
+    const openai: EngineClient = {
+      id: "openai",
+      label: "openai (fake)",
+      async ask() {
+        if (leaseSeenMidSlice === null) {
+          const [run] = await db.select().from(aiVisibilityRuns).where(eq(aiVisibilityRuns.id, runId));
+          leaseSeenMidSlice = run.sliceLeaseUntil;
+        }
+        return answer();
+      },
+    };
+
+    await runSlice(
+      runId,
+      { budgetMs, concurrency: 1, now: advancingClock("2026-03-02T09:00:00Z", 10) },
+      { engines: { openai } }
+    );
+
+    // The budget bounds when the slice stops HANDING OUT work; the engine calls
+    // already in flight still have to land. A lease that expired the instant
+    // the budget did would be free for a second driver to take while the first
+    // was still writing sample rows — the exact double-spend it exists to stop.
+    expect(leaseSeenMidSlice).not.toBeNull();
+    expect(leaseSeenMidSlice!.getTime() - (start + budgetMs)).toBeGreaterThanOrEqual(60_000);
+  });
+
+  it("remembers each engine's model id across slices instead of overwriting the map", async () => {
+    const tenant = await seedTenant(TENANT);
+    await seedSettings(tenant.id, { engines: ["openai", "perplexity"], samplesPerPrompt: 1 });
+    await seedPrompt(tenant.id, { text: "best issue tracker for startups" });
+    const plan = await planRun(tenant.id, { trigger: "manual", now: frozen("2026-03-02T09:00:00Z") });
+    if (!plan.ok) throw new Error(`planRun refused: ${plan.reason}`);
+
+    // A clock that stands still until the first answer lands and then jumps
+    // past the budget. Counting clock READS instead would be a hostage to how
+    // many times `runSlice` happens to consult it per batch — this pins the
+    // thing the test is actually about: exactly one batch, then a stop.
+    const start = new Date("2026-03-02T09:00:00Z").getTime();
+    let elapsedMs = 0;
+    const burnTheBudget = () => {
+      elapsedMs = 120_000;
+    };
+    const openai = fakeEngine("openai", () => {
+      burnTheBudget();
+      return answer({ modelId: "gpt-5.1-2026-01-01" });
+    });
+    const perplexity = fakeEngine("perplexity", () => {
+      burnTheBudget();
+      return answer({ modelId: "sonar-pro-2026-02-01" });
+    });
+
+    const first = await runSlice(
+      plan.runId,
+      { budgetMs: 60_000, concurrency: 1, now: () => new Date(start + elapsedMs) },
+      { engines: { openai, perplexity } }
+    );
+    expect(first.processed).toBe(1);
+    expect(first.budgetSpent).toBe(true);
+
+    await runSlice(
+      plan.runId,
+      { budgetMs: 60_000, concurrency: 1, now: advancingClock("2026-03-02T09:05:00Z", 10) },
+      { engines: { openai, perplexity } }
+    );
+
+    const [run] = await db.select().from(aiVisibilityRuns).where(eq(aiVisibilityRuns.id, plan.runId));
+    // The second slice seeds its map from the row rather than starting empty —
+    // otherwise the model-version annotation loses whichever engine answered
+    // first, and a model jump looks like a change in visibility.
+    expect(run.modelIds).toEqual({
+      openai: "gpt-5.1-2026-01-01",
+      perplexity: "sonar-pro-2026-02-01",
+    });
+  });
+
+  it("keeps the paid-for answers when a competitor is deleted out from under extraction", async () => {
+    const tenant = await seedTenant(TENANT);
+    await seedSettings(tenant.id, { engines: ["openai"], samplesPerPrompt: 3 });
+    await seedPrompt(tenant.id, { text: "best issue tracker for startups" });
+    const [rival] = await db
+      .insert(competitors)
+      .values({ tenantId: tenant.id, name: "Rival", websiteUrl: "https://rival.com" })
+      .returning();
+    const plan = await planRun(tenant.id, { trigger: "manual", now: frozen("2026-03-02T09:00:00Z") });
+    if (!plan.ok) throw new Error(`planRun refused: ${plan.reason}`);
+
+    // The real mechanism, not a thrown stub: brand context is loaded ONCE at
+    // slice start, so a competitor removed while the slice is running leaves
+    // extraction inserting a citation row whose competitorId no longer has a
+    // parent — a foreign-key violation, mid-batch, on answers already bought.
+    let deleted = false;
+    const openai: EngineClient = {
+      id: "openai",
+      label: "openai (fake)",
+      async ask() {
+        if (!deleted) {
+          await db.delete(competitors).where(eq(competitors.id, rival.id));
+          deleted = true;
+        }
+        return answer({ citations: [{ url: "https://rival.com/compare", position: 1 }] });
+      },
+    };
+
+    const outcome = await runSlice(
+      plan.runId,
+      { budgetMs: 60_000, concurrency: 1, now: advancingClock("2026-03-02T09:00:00Z", 10) },
+      { engines: { openai } }
+    );
+
+    expect(outcome.processed).toBe(3);
+    const samples = await db.select().from(aiVisibilitySamples).where(eq(aiVisibilitySamples.runId, plan.runId));
+    expect(samples.every((s) => s.status === "ok")).toBe(true);
+    expect(samples.every((s) => s.answerText === "Acme and Rival are the usual picks.")).toBe(true);
+    const [run] = await db.select().from(aiVisibilityRuns).where(eq(aiVisibilityRuns.id, plan.runId));
+    // The spend is recorded whatever extraction did — the money left the
+    // building the moment the engine answered.
+    expect(run.costUsd).toBeCloseTo(0.03, 5);
+    // Nothing half-written: the citation rows this sample would have had are
+    // simply absent, and `extractSample` is idempotent so they can be replayed.
+    const citations = await db
+      .select()
+      .from(aiVisibilityCitations)
+      .where(eq(aiVisibilityCitations.runId, plan.runId));
+    expect(citations.every((c) => c.competitorId !== rival.id)).toBe(true);
+  });
+});
+
+describe("finalizeRun preconditions and lease handling", () => {
+  async function ran(sampleStatuses: string[]) {
+    const tenant = await seedTenant(TENANT);
+    await seedSettings(tenant.id, { engines: ["openai"], samplesPerPrompt: sampleStatuses.length });
+    await seedPrompt(tenant.id, { text: "best issue tracker" });
+    const planned = await planRun(tenant.id, { trigger: "manual", now: frozen("2026-03-02T09:00:00Z") });
+    if (!planned.ok) throw new Error(`planRun refused: ${planned.reason}`);
+
+    const rows = await db
+      .select()
+      .from(aiVisibilitySamples)
+      .where(eq(aiVisibilitySamples.runId, planned.runId))
+      .orderBy(asc(aiVisibilitySamples.sampleIndex));
+    for (const [i, status] of sampleStatuses.entries()) {
+      await db
+        .update(aiVisibilitySamples)
+        .set({
+          status,
+          answerText: status === "ok" ? "Rival is strongest." : null,
+          error: status === "ok" ? null : "429 rate limited",
+          extraction:
+            status === "ok"
+              ? { deterministic: { tenantMentioned: false, competitorIds: [], ownDomainCited: false } }
+              : null,
+        })
+        .where(eq(aiVisibilitySamples.id, rows[i].id));
+    }
+    await db
+      .update(aiVisibilityRuns)
+      .set({ status: "running", completedCalls: sampleStatuses.length, costUsd: 0.05 })
+      .where(eq(aiVisibilityRuns.id, planned.runId));
+    return { tenant, runId: planned.runId };
+  }
+
+  const noopJudge = async () => ({ judged: 0, flagged: 0, remaining: 0, budgetSpent: false, errors: [] });
+
+  it("reports a run that does not exist as failed rather than throwing", async () => {
+    let judged = 0;
+
+    const out = await finalizeRun(
+      crypto.randomUUID(),
+      { budgetMs: 60_000, now: frozen("2026-03-02T09:10:00Z") },
+      {
+        judge: async () => {
+          judged++;
+          return { judged: 0, flagged: 0, remaining: 0, budgetSpent: false, errors: [] };
+        },
+      }
+    );
+
+    expect(out).toEqual({ status: "failed", judged: 0, signals: 0 });
+    expect(judged).toBe(0);
+  });
+
+  it("does not resurrect a run already recorded as failed", async () => {
+    const { runId } = await ran(["ok", "ok", "ok"]);
+    await db.update(aiVisibilityRuns).set({ status: "failed", error: "aggregate exploded" }).where(eq(aiVisibilityRuns.id, runId));
+    let judged = 0;
+
+    const out = await finalizeRun(
+      runId,
+      { budgetMs: 60_000, now: frozen("2026-03-02T09:10:00Z") },
+      {
+        judge: async () => {
+          judged++;
+          return { judged: 0, flagged: 0, remaining: 0, budgetSpent: false, errors: [] };
+        },
+        emit: async () => ({ written: 0, considered: 0 }),
+      }
+    );
+
+    // Reported as itself. Quietly re-driving a failed run would spend judge
+    // tokens on it and overwrite the error a human still has to read.
+    expect(out).toEqual({ status: "failed", judged: 0, signals: 0 });
+    expect(judged).toBe(0);
+    const [run] = await db.select().from(aiVisibilityRuns).where(eq(aiVisibilityRuns.id, runId));
+    expect(run.status).toBe("failed");
+    expect(run.error).toBe("aggregate exploded");
+  });
+
+  it("hands the lease back when it completes, so nothing waits out a claim nobody holds", async () => {
+    const { runId } = await ran(["ok", "ok", "ok"]);
+
+    await finalizeRun(
+      runId,
+      { budgetMs: 60_000, now: frozen("2026-03-02T09:10:00Z") },
+      { judge: noopJudge, emit: async () => ({ written: 0, considered: 0 }) }
+    );
+
+    const [run] = await db.select().from(aiVisibilityRuns).where(eq(aiVisibilityRuns.id, runId));
+    expect(run.status).toBe("complete");
+    expect(run.sliceLeaseUntil).toBeNull();
+    expect(run.sliceLeaseOwner).toBeNull();
+  });
+
+  it("hands the lease back when it fails too", async () => {
+    const { runId } = await ran(["ok", "ok", "ok"]);
+
+    await finalizeRun(
+      runId,
+      { budgetMs: 60_000, now: frozen("2026-03-02T09:10:00Z") },
+      {
+        judge: noopJudge,
+        aggregate: async () => {
+          throw new Error("aggregate exploded");
+        },
+      }
+    );
+
+    // A failed finalize that kept its lease would block the retry for the whole
+    // grace window, on the one run that most needs another look.
+    const [run] = await db.select().from(aiVisibilityRuns).where(eq(aiVisibilityRuns.id, runId));
+    expect(run.status).toBe("failed");
+    expect(run.sliceLeaseUntil).toBeNull();
+    expect(run.sliceLeaseOwner).toBeNull();
+  });
+
+  it("keeps the judge's errors on a run it does complete, beside the engine summary", async () => {
+    const { tenant, runId } = await ran(["ok", "error", "error"]);
+
+    const out = await finalizeRun(
+      runId,
+      { budgetMs: 60_000, now: frozen("2026-03-02T09:10:00Z") },
+      {
+        judge: async () => ({
+          judged: 1,
+          flagged: 0,
+          remaining: 0,
+          budgetSpent: false,
+          errors: ["gave up judging 2 sample(s) after 3 attempts"],
+        }),
+        emit: async () => ({ written: 0, considered: 0 }),
+      }
+    );
+
+    expect(out.status).toBe("complete");
+    const [run] = await db.select().from(aiVisibilityRuns).where(eq(aiVisibilityRuns.id, runId));
+    // Both halves of the story, on the row and on the source. A run that gave
+    // up on two labels finished, but not cleanly, and the only place that fact
+    // can be read is here.
+    expect(run.error).toContain("openai failed on 2 of 3");
+    expect(run.error).toContain("gave up judging");
+    const [source] = await db
+      .select()
+      .from(sources)
+      .where(and(eq(sources.tenantId, tenant.id), eq(sources.type, "ai_visibility")));
+    expect(source.status).toBe("active");
+    expect(source.lastError).toContain("gave up judging");
   });
 });
