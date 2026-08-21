@@ -144,6 +144,45 @@ describe("citedDomains", () => {
     expect(g2.sampleUrl).toBe("https://g2.com/p0");
   });
 
+  it("picks the lowest-positioned cited url, and breaks a tie alphabetically", async () => {
+    const { tenant, run, prompt } = await fixture();
+    // Cited second in one answer, first in another. Whichever row the scan
+    // happens to reach first, the url reported has to be the same one.
+    await answer({ tenantId: tenant.id, runId: run.id, promptId: prompt.id, engine: "openai", sampleIndex: 0, tenantMentioned: true, domains: [{ domain: "docs.example.com", domainClass: "docs" }, { domain: "g2.com", domainClass: "review" }] });
+    const deeper = await answer({ tenantId: tenant.id, runId: run.id, promptId: prompt.id, engine: "openai", sampleIndex: 1, tenantMentioned: true, domains: [{ domain: "g2.com", domainClass: "review" }] });
+    // A second citation at the SAME position, sorting before the other.
+    await db.insert(aiVisibilityCitations).values({
+      sampleId: deeper.id,
+      tenantId: tenant.id,
+      runId: run.id,
+      url: "https://g2.com/a-first-alphabetically",
+      domain: "g2.com",
+      position: 1,
+      domainClass: "review",
+    });
+
+    const g2 = (await citedDomains(tenant.id, {})).find((r) => r.domain === "g2.com")!;
+    expect(g2.sampleUrl).toBe("https://g2.com/a-first-alphabetically");
+  });
+
+  it("admits only the named in-flight run, not every unfinished one", async () => {
+    const { tenant, prompt } = await fixture();
+    const runs = [];
+    for (const [i, domain] of ["g2.com", "reddit.com"].entries()) {
+      const [row] = await db
+        .insert(aiVisibilityRuns)
+        .values({ tenantId: tenant.id, trigger: "manual", engines: ["openai"], samplesPerPrompt: 3, status: "failed", startedAt: new Date(`2026-03-0${8 + i}T09:00:00Z`) })
+        .returning();
+      await answer({ tenantId: tenant.id, runId: row.id, promptId: prompt.id, engine: "openai", sampleIndex: 0, tenantMentioned: false, domains: [{ domain, domainClass: "review" }] });
+      runs.push(row);
+    }
+
+    // A failed run alongside the one being finalized must stay invisible: its
+    // sample set is partial by definition.
+    const rows = await citedDomains(tenant.id, { includeRunId: runs[0].id });
+    expect(rows.map((r) => r.domain)).toEqual(["g2.com"]);
+  });
+
   it("includes a named in-flight run so a run can be read while it is being finalized", async () => {
     const { tenant, prompt } = await fixture();
     const [running] = await db
