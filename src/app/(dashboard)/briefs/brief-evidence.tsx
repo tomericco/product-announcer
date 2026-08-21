@@ -1,6 +1,7 @@
 import { Badge } from "@/components/ui/badge";
 import type { Signal } from "@/db/schema";
 import type { CitedSignal } from "@/lib/briefs/query";
+import { AiVisibilityEvidenceChip } from "./ai-visibility-evidence-chip";
 
 const SIGNAL_KIND_LABEL: Record<Signal["kind"], string> = {
   shipped_work: "Shipped work",
@@ -32,26 +33,32 @@ export function BriefEvidence({ signals }: { signals: CitedSignal[] }) {
   return (
     <div className="flex flex-wrap items-center gap-2">
       <span className="text-xs text-muted-foreground">Evidence:</span>
-      {signals.map((signal) => (
-        <Badge key={signal.id} variant="outline" className="max-w-64">
-          {signal.url ? (
-            <a
-              href={signal.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="truncate hover:underline"
-              title={signal.title}
-            >
-              {signal.title}
-            </a>
-          ) : (
-            <span className="truncate" title={signal.title}>
-              {signal.title}
-            </span>
-          )}
-          <span className="text-muted-foreground">· {SIGNAL_KIND_LABEL[signal.kind]}</span>
-        </Badge>
-      ))}
+      {signals.map((signal) =>
+        // A payload-less `ai_visibility` signal falls through to the plain
+        // badge on purpose: an empty popover is worse than no popover.
+        signal.kind === "ai_visibility" && signal.payload ? (
+          <AiVisibilityEvidenceChip key={signal.id} title={signal.title} payload={signal.payload} />
+        ) : (
+          <Badge key={signal.id} variant="outline" className="max-w-64">
+            {signal.url ? (
+              <a
+                href={signal.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="truncate hover:underline"
+                title={signal.title}
+              >
+                {signal.title}
+              </a>
+            ) : (
+              <span className="truncate" title={signal.title}>
+                {signal.title}
+              </span>
+            )}
+            <span className="text-muted-foreground">· {SIGNAL_KIND_LABEL[signal.kind]}</span>
+          </Badge>
+        )
+      )}
     </div>
   );
 }

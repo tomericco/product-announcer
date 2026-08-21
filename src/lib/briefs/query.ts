@@ -1,8 +1,20 @@
 import { and, eq, isNotNull, sql } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
 import { briefSignals, briefs, contentPieces, signals, type Signal } from "@/db/schema";
+import type { AiVisibilityPayload } from "@/lib/ai-visibility/types";
 
-export type CitedSignal = { id: string; title: string; url: string | null; kind: Signal["kind"] };
+export type CitedSignal = {
+  id: string;
+  title: string;
+  url: string | null;
+  kind: Signal["kind"];
+  /**
+   * An `ai_visibility` signal's evidence travels with the row: an engine's
+   * answer has no URL to link to, so the chip in the brief's evidence row can
+   * only show what this column carries. Null for every other kind.
+   */
+  payload: AiVisibilityPayload | null;
+};
 
 /**
  * The evidence cited by one brief — the editor's read, not the list's.
@@ -25,6 +37,7 @@ export async function listBriefSignals(
       title: signals.title,
       url: signals.url,
       kind: signals.kind,
+      payload: signals.payload,
     })
     .from(briefSignals)
     .innerJoin(signals, eq(signals.id, briefSignals.signalId))

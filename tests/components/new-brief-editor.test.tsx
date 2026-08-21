@@ -74,8 +74,14 @@ import { contentTypeEnum } from "../../src/db/schema";
 import type { CitedSignal } from "../../src/lib/briefs/query";
 
 const EVIDENCE: CitedSignal[] = [
-  { id: "sig-1", title: "Shipped the export flow", url: null, kind: "shipped_work" },
-  { id: "sig-2", title: "Competitor shipped exports", url: "https://example.com/x", kind: "competitor_move" },
+  { id: "sig-1", title: "Shipped the export flow", url: null, kind: "shipped_work", payload: null },
+  {
+    id: "sig-2",
+    title: "Competitor shipped exports",
+    url: "https://example.com/x",
+    kind: "competitor_move",
+    payload: null,
+  },
 ];
 
 const WRITTEN = ["## Angle", "Ship the export flow as the headline.", "", "## Why now", "They just shipped theirs."].join(
