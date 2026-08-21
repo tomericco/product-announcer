@@ -11,6 +11,7 @@ import {
 } from "../../../src/db/schema";
 import {
   MAX_ACTIVE_PROMPTS,
+  MAX_PROMPT_CHARS,
   listPrompts,
   getPrompt,
   countActivePrompts,
@@ -588,5 +589,500 @@ describe("deletePrompt", () => {
     } finally {
       await dropTenant(`${TENANT} Two`);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Coverage added in QA review of Phase B. Everything below tests a rule the
+// plan or the spec states but the first pass asserted only obliquely — the
+// exact cap boundaries, the partial-unique index's rejected-row semantics,
+// tenant isolation on the functions that did not have it, and the one
+// transaction whose atomicity needed a fault-injection seam.
+// ---------------------------------------------------------------------------
+
+/**
+ * A `db` whose transactions run for real but whose `tx.update` throws, so the
+ * failure lands BETWEEN `editPrompt`'s insert and its pause of the
+ * predecessor — the one interleaving the transaction exists to prevent.
+ *
+ * Same proxy shape as `dbWithFailingInsert` in
+ * `tests/lib/signals/competitor-agent.test.ts`. `Reflect.get(target, prop,
+ * target)` plus `.bind(target)` keeps every un-intercepted call running
+ * against the real transaction object rather than through the proxy, which
+ * matters because drizzle's builders close over the session.
+ */
+function dbWithFailingTransactionUpdate(): typeof db {
+  const proxyDb = Object.assign(Object.create(Object.getPrototypeOf(db)), db) as typeof db;
+  const failingTransaction = (fn: (tx: unknown) => unknown) =>
+    db.transaction((tx) =>
+      Promise.resolve(
+        fn(
+          new Proxy(tx as unknown as object, {
+            get(target, prop) {
+              if (prop === "update") {
+                return () => {
+                  throw new Error("simulated pause failure");
+                };
+              }
+              const value = Reflect.get(target, prop, target);
+              return typeof value === "function"
+                ? (value as (...args: unknown[]) => unknown).bind(target)
+                : value;
+            },
+          })
+        )
+      )
+    );
+  proxyDb.transaction = failingTransaction as unknown as typeof db.transaction;
+  return proxyDb;
+}
+
+describe("normalizePromptText — the edges of the length window", () => {
+  it("accepts exactly the boundary lengths and rejects one past each", () => {
+    expect(normalizePromptText("abc")).toBe("abc");
+    expect(normalizePromptText("ab")).toBeNull();
+    expect(normalizePromptText("x".repeat(MAX_PROMPT_CHARS))).toHaveLength(MAX_PROMPT_CHARS);
+    expect(normalizePromptText("x".repeat(MAX_PROMPT_CHARS + 1))).toBeNull();
+  });
+
+  it("collapses first and measures second, so whitespace cannot push a prompt over the limit", () => {
+    const words = Array.from({ length: 100 }, () => "ab");
+    words[99] = "abc";
+    const collapsed = words.join(" ");
+    const spaced = words.join("   ");
+    expect(collapsed).toHaveLength(MAX_PROMPT_CHARS);
+    expect(spaced.length).toBeGreaterThan(MAX_PROMPT_CHARS);
+
+    // Exactly at the limit once collapsed, well over it before — the order of
+    // the two operations is the whole test.
+    expect(normalizePromptText(spaced)).toBe(collapsed);
+  });
+
+  it("collapses every kind of whitespace, not just the space bar", () => {
+    expect(normalizePromptText("best\tissue\r\n\ntrackers")).toBe("best issue trackers");
+    expect(normalizePromptText(" best issue trackers ")).toBe("best issue trackers");
+  });
+
+  it("leaves casing alone — two spellings are two prompts", () => {
+    // Documenting the rule, not endorsing it: the unique index is on the
+    // stored text, so "Best issue trackers" and "best issue trackers" are two
+    // separate rows with two separate histories.
+    expect(normalizePromptText("Best Issue Trackers")).toBe("Best Issue Trackers");
+  });
+
+  it("rejects what is not a string at all", () => {
+    expect(normalizePromptText(null)).toBeNull();
+    expect(normalizePromptText(undefined)).toBeNull();
+    expect(normalizePromptText({ text: "best issue trackers" })).toBeNull();
+    expect(normalizePromptText(["best issue trackers"])).toBeNull();
+  });
+});
+
+describe("the 30-active cap, at the boundary on every path", () => {
+  it("lets createPrompt fill the last slot and refuses only the one after it", async () => {
+    const tenant = await seedTenant(TENANT);
+    await fillActive(tenant.id, MAX_ACTIVE_PROMPTS - 1);
+    expect(await countActivePrompts(tenant.id)).toBe(MAX_ACTIVE_PROMPTS - 1);
+
+    const thirtieth = await createPrompt(tenant.id, { text: "the thirtieth prompt", intent: "discovery" });
+    expect(thirtieth.ok).toBe(true);
+    expect(await countActivePrompts(tenant.id)).toBe(MAX_ACTIVE_PROMPTS);
+
+    expect(await createPrompt(tenant.id, { text: "the thirty-first prompt", intent: "discovery" })).toEqual({
+      ok: false,
+      error: "cap",
+    });
+    expect(await countActivePrompts(tenant.id)).toBe(MAX_ACTIVE_PROMPTS);
+  });
+
+  it("lets approveProposals fill the set exactly, and refuses the batch one over", async () => {
+    const tenant = await seedTenant(TENANT);
+    await fillActive(tenant.id, MAX_ACTIVE_PROMPTS - 2);
+    const exact = await seedProposals(tenant.id, ["prompt a", "prompt b"]);
+
+    expect(await approveProposals(tenant.id, { approveIds: exact, rejectIds: [] })).toEqual({
+      ok: true,
+      approved: 2,
+      rejected: 0,
+    });
+    expect(await countActivePrompts(tenant.id)).toBe(MAX_ACTIVE_PROMPTS);
+
+    const overflow = await seedProposals(tenant.id, ["prompt c"]);
+    expect(await approveProposals(tenant.id, { approveIds: overflow, rejectIds: [] })).toEqual({
+      ok: false,
+      error: "cap",
+      available: 0,
+      requested: 1,
+    });
+    expect(await countActivePrompts(tenant.id)).toBe(MAX_ACTIVE_PROMPTS);
+  });
+
+  it("lets resumePrompt take the last slot and refuses the next one", async () => {
+    const tenant = await seedTenant(TENANT);
+    const first = await createPrompt(tenant.id, { text: "the first paused one", intent: "discovery" });
+    const second = await createPrompt(tenant.id, { text: "the second paused one", intent: "discovery" });
+    expect(first.ok && second.ok).toBe(true);
+    if (!first.ok || !second.ok) return;
+    await pausePrompt(tenant.id, first.prompt.id);
+    await pausePrompt(tenant.id, second.prompt.id);
+    await fillActive(tenant.id, MAX_ACTIVE_PROMPTS - 1);
+
+    expect(await resumePrompt(tenant.id, first.prompt.id)).toEqual({ ok: true });
+    expect(await countActivePrompts(tenant.id)).toBe(MAX_ACTIVE_PROMPTS);
+    expect(await resumePrompt(tenant.id, second.prompt.id)).toEqual({ ok: false, error: "cap" });
+    expect(await countActivePrompts(tenant.id)).toBe(MAX_ACTIVE_PROMPTS);
+  });
+
+  it("lets editPrompt through at a full cap — a supersede is net zero, not a 31st prompt", async () => {
+    const tenant = await seedTenant(TENANT);
+    await fillActive(tenant.id, MAX_ACTIVE_PROMPTS);
+    const [victim] = await db
+      .select()
+      .from(aiVisibilityPrompts)
+      .where(and(eq(aiVisibilityPrompts.tenantId, tenant.id), eq(aiVisibilityPrompts.status, "active")))
+      .limit(1);
+
+    const edited = await editPrompt(tenant.id, victim.id, "a reworded prompt at a full cap");
+
+    // Refusing here would leave a tenant at the cap unable to fix a typo, and
+    // the new row replaces the old one rather than joining it.
+    expect(edited.ok).toBe(true);
+    expect(await countActivePrompts(tenant.id)).toBe(MAX_ACTIVE_PROMPTS);
+  });
+
+  it("counts only this tenant's active prompts", async () => {
+    const tenant = await seedTenant(TENANT);
+    await fillActive(tenant.id, 3);
+
+    const other = await seedTenant(`${TENANT} Two`);
+    try {
+      await createPrompt(other.id, { text: "best issue trackers for team 0", intent: "discovery" });
+      expect(await countActivePrompts(other.id)).toBe(1);
+      expect(await countActivePrompts(tenant.id)).toBe(3);
+    } finally {
+      await dropTenant(`${TENANT} Two`);
+    }
+  });
+});
+
+describe("the partial unique index", () => {
+  it("lets a rejected wording be written again — negatives must not block the prompt set", async () => {
+    const tenant = await seedTenant(TENANT);
+    await db.insert(aiVisibilityPrompts).values({
+      tenantId: tenant.id,
+      text: "best issue trackers",
+      intent: "discovery",
+      origin: "generated",
+      status: "rejected",
+    });
+
+    const again = await createPrompt(tenant.id, { text: "best issue trackers", intent: "discovery" });
+
+    expect(again.ok).toBe(true);
+    if (!again.ok) return;
+    expect(again.prompt.status).toBe("active");
+    // Both rows survive: the rejection is still a negative for the next
+    // generation, and the active prompt is the one that runs.
+    expect(
+      await db.select().from(aiVisibilityPrompts).where(eq(aiVisibilityPrompts.tenantId, tenant.id))
+    ).toHaveLength(2);
+  });
+
+  it("lets the same wording be turned down more than once", async () => {
+    const tenant = await seedTenant(TENANT);
+    const twice = Array.from({ length: 2 }, () => ({
+      tenantId: tenant.id,
+      text: "a wording they keep turning down",
+      intent: "discovery",
+      origin: "generated" as const,
+      status: "rejected" as const,
+    }));
+
+    // Two rejections of the same suggestion must not collide with each other,
+    // or the second review of a regenerated set would throw.
+    await db.insert(aiVisibilityPrompts).values(twice);
+
+    expect(
+      await db.select().from(aiVisibilityPrompts).where(eq(aiVisibilityPrompts.tenantId, tenant.id))
+    ).toHaveLength(2);
+  });
+
+  it("is scoped to one tenant — two workspaces may ask the same question", async () => {
+    const tenant = await seedTenant(TENANT);
+    await createPrompt(tenant.id, { text: "best issue trackers", intent: "discovery" });
+
+    const other = await seedTenant(`${TENANT} Two`);
+    try {
+      const mine = await createPrompt(other.id, { text: "best issue trackers", intent: "discovery" });
+      expect(mine.ok).toBe(true);
+    } finally {
+      await dropTenant(`${TENANT} Two`);
+    }
+  });
+});
+
+describe("approveProposals — the rest of the batch contract", () => {
+  it("approves an id that arrives in both lists, rather than rejecting it", async () => {
+    const tenant = await seedTenant(TENANT);
+    const [a] = await seedProposals(tenant.id, ["prompt a"]);
+
+    const result = await approveProposals(tenant.id, { approveIds: [a], rejectIds: [a] });
+
+    expect(result).toEqual({ ok: true, approved: 1, rejected: 0 });
+    const [row] = await db.select().from(aiVisibilityPrompts).where(eq(aiVisibilityPrompts.id, a));
+    expect(row.status).toBe("active");
+  });
+
+  it("counts a repeated id once against the cap", async () => {
+    const tenant = await seedTenant(TENANT);
+    await fillActive(tenant.id, MAX_ACTIVE_PROMPTS - 1);
+    const [a] = await seedProposals(tenant.id, ["prompt a"]);
+
+    // Three copies of the same id are one prompt, not three: de-duplicating
+    // after the cap check would bounce a batch that fits.
+    const result = await approveProposals(tenant.id, { approveIds: [a, a, a], rejectIds: [] });
+
+    expect(result).toEqual({ ok: true, approved: 1, rejected: 0 });
+    expect(await countActivePrompts(tenant.id)).toBe(MAX_ACTIVE_PROMPTS);
+  });
+
+  it("charges the cap only for the rows still awaiting review in a half-stale batch", async () => {
+    const tenant = await seedTenant(TENANT);
+    await fillActive(tenant.id, MAX_ACTIVE_PROMPTS - 1);
+    const [alreadyActive] = await db
+      .select({ id: aiVisibilityPrompts.id })
+      .from(aiVisibilityPrompts)
+      .where(and(eq(aiVisibilityPrompts.tenantId, tenant.id), eq(aiVisibilityPrompts.status, "active")))
+      .limit(1);
+    const [fresh] = await seedProposals(tenant.id, ["prompt a"]);
+
+    // Two ids, one free slot. Counting the whole batch would report a cap
+    // error for a review that fits perfectly well.
+    const result = await approveProposals(tenant.id, {
+      approveIds: [alreadyActive.id, fresh],
+      rejectIds: [],
+    });
+
+    expect(result).toEqual({ ok: true, approved: 1, rejected: 0 });
+    expect(await countActivePrompts(tenant.id)).toBe(MAX_ACTIVE_PROMPTS);
+  });
+
+  it("stores the exclusions as rejected negatives with their wording intact", async () => {
+    const tenant = await seedTenant(TENANT);
+    const [a, b] = await seedProposals(tenant.id, ["prompt a", "prompt b"]);
+
+    await approveProposals(tenant.id, { approveIds: [a], rejectIds: [b] });
+
+    const [negative] = await db.select().from(aiVisibilityPrompts).where(eq(aiVisibilityPrompts.id, b));
+    // Kept, not deleted: `generatePromptSet` reads these back as negatives.
+    expect(negative.status).toBe("rejected");
+    expect(negative.text).toBe("prompt b");
+    expect(negative.approvedAt).toBeNull();
+    expect(await countActivePrompts(tenant.id)).toBe(1);
+  });
+
+  it("refuses an edit onto the wording of a row being rejected in the SAME batch", async () => {
+    const tenant = await seedTenant(TENANT);
+    const [a, b] = await seedProposals(tenant.id, ["prompt a", "prompt b"]);
+
+    // The reviewer's move: two near-duplicate suggestions, uncheck one, retype
+    // the better wording onto the one they are keeping.
+    const result = await approveProposals(tenant.id, {
+      approveIds: [a],
+      rejectIds: [b],
+      edits: [{ promptId: a, text: "prompt b" }],
+    });
+
+    // Pinning today's behaviour, which is arguably wrong: the edits run before
+    // the rejections inside the transaction, so `b` is still `proposed` — and
+    // so still covered by the partial unique index — when the edit lands.
+    // After the batch commits it would have been `rejected` and out of the
+    // index. Rejecting first inside the transaction would let this through.
+    // Reported, not fixed: this file does not touch production code.
+    expect(result).toEqual({ ok: false, error: "duplicate" });
+    const rows = await db
+      .select()
+      .from(aiVisibilityPrompts)
+      .where(eq(aiVisibilityPrompts.tenantId, tenant.id));
+    expect(rows.every((row) => row.status === "proposed")).toBe(true);
+  });
+
+  it("cannot reach another tenant's proposals", async () => {
+    const tenant = await seedTenant(TENANT);
+    const [a, b] = await seedProposals(tenant.id, ["prompt a", "prompt b"]);
+
+    const other = await seedTenant(`${TENANT} Two`);
+    try {
+      const result = await approveProposals(other.id, { approveIds: [a], rejectIds: [b] });
+      expect(result).toEqual({ ok: true, approved: 0, rejected: 0 });
+    } finally {
+      await dropTenant(`${TENANT} Two`);
+    }
+
+    const rows = await db
+      .select()
+      .from(aiVisibilityPrompts)
+      .where(eq(aiVisibilityPrompts.tenantId, tenant.id));
+    expect(rows.every((row) => row.status === "proposed")).toBe(true);
+  });
+});
+
+describe("pausePrompt / resumePrompt — the statuses that must not move", () => {
+  it("refuses to pause anything that is not active", async () => {
+    const tenant = await seedTenant(TENANT);
+    const proposal = await createPrompt(tenant.id, {
+      text: "a proposal",
+      intent: "discovery",
+      status: "proposed",
+    });
+    expect(proposal.ok).toBe(true);
+    if (!proposal.ok) return;
+    const [rejected] = await db
+      .insert(aiVisibilityPrompts)
+      .values({
+        tenantId: tenant.id,
+        text: "a rejected one",
+        intent: "discovery",
+        origin: "generated",
+        status: "rejected",
+      })
+      .returning();
+
+    expect(await pausePrompt(tenant.id, proposal.prompt.id)).toEqual({ ok: false, error: "not_found" });
+    expect(await pausePrompt(tenant.id, rejected.id)).toEqual({ ok: false, error: "not_found" });
+  });
+
+  it("refuses to resume anything that is not paused", async () => {
+    const tenant = await seedTenant(TENANT);
+    const active = await createPrompt(tenant.id, { text: "an active one", intent: "discovery" });
+    expect(active.ok).toBe(true);
+    if (!active.ok) return;
+    const [rejected] = await db
+      .insert(aiVisibilityPrompts)
+      .values({
+        tenantId: tenant.id,
+        text: "a rejected one",
+        intent: "discovery",
+        origin: "generated",
+        status: "rejected",
+      })
+      .returning();
+
+    // A stale toggle must not resurrect a turned-down suggestion into the run
+    // set, and must not re-stamp an already-active prompt.
+    expect(await resumePrompt(tenant.id, active.prompt.id)).toEqual({ ok: false, error: "not_found" });
+    expect(await resumePrompt(tenant.id, rejected.id)).toEqual({ ok: false, error: "not_found" });
+
+    const other = await seedTenant(`${TENANT} Two`);
+    try {
+      await pausePrompt(tenant.id, active.prompt.id);
+      expect(await resumePrompt(other.id, active.prompt.id)).toEqual({ ok: false, error: "not_found" });
+    } finally {
+      await dropTenant(`${TENANT} Two`);
+    }
+  });
+});
+
+describe("editPrompt — the rest of the supersede contract", () => {
+  it("supersedes a paused prompt without putting either wording back in the run set", async () => {
+    const tenant = await seedTenant(TENANT);
+    const created = await createPrompt(tenant.id, { text: "the old wording", intent: "discovery" });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    await pausePrompt(tenant.id, created.prompt.id);
+
+    const edited = await editPrompt(tenant.id, created.prompt.id, "the new wording");
+
+    expect(edited.ok).toBe(true);
+    if (!edited.ok) return;
+    expect(edited.prompt.status).toBe("paused");
+    expect(edited.prompt.pausedAt).not.toBeNull();
+    expect(edited.prompt.supersedesId).toBe(created.prompt.id);
+    // Editing a paused prompt must not quietly re-activate it past the cap.
+    expect(await countActivePrompts(tenant.id)).toBe(0);
+  });
+
+  it("links both directions through getPrompt after a real edit", async () => {
+    const tenant = await seedTenant(TENANT);
+    const created = await createPrompt(tenant.id, { text: "the old wording", intent: "discovery" });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const edited = await editPrompt(tenant.id, created.prompt.id, "the new wording");
+    expect(edited.ok).toBe(true);
+    if (!edited.ok) return;
+
+    const predecessor = await getPrompt(tenant.id, created.prompt.id);
+    expect(predecessor?.supersedesId).toBeNull();
+    expect(predecessor?.supersededById).toBe(edited.prompt.id);
+
+    const successor = await getPrompt(tenant.id, edited.prompt.id);
+    expect(successor?.supersedesId).toBe(created.prompt.id);
+    expect(successor?.supersededById).toBeNull();
+  });
+
+  it("may reuse a wording that exists only as a rejected negative", async () => {
+    const tenant = await seedTenant(TENANT);
+    await db.insert(aiVisibilityPrompts).values({
+      tenantId: tenant.id,
+      text: "a wording they turned down",
+      intent: "discovery",
+      origin: "generated",
+      status: "rejected",
+    });
+    const created = await createPrompt(tenant.id, { text: "the old wording", intent: "discovery" });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const edited = await editPrompt(tenant.id, created.prompt.id, "a wording they turned down");
+
+    expect(edited.ok).toBe(true);
+  });
+
+  it("cannot edit another tenant's prompt", async () => {
+    const tenant = await seedTenant(TENANT);
+    const created = await createPrompt(tenant.id, { text: "the old wording", intent: "discovery" });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const other = await seedTenant(`${TENANT} Two`);
+    try {
+      expect(await editPrompt(other.id, created.prompt.id, "the new wording")).toEqual({
+        ok: false,
+        error: "not_found",
+      });
+    } finally {
+      await dropTenant(`${TENANT} Two`);
+    }
+
+    const rows = await db
+      .select()
+      .from(aiVisibilityPrompts)
+      .where(eq(aiVisibilityPrompts.tenantId, tenant.id));
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe("active");
+  });
+
+  it("leaves nothing behind when the pause fails after the successor is inserted", async () => {
+    const tenant = await seedTenant(TENANT);
+    const created = await createPrompt(tenant.id, { text: "the old wording", intent: "discovery" });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await expect(
+      editPrompt(tenant.id, created.prompt.id, "the new wording", dbWithFailingTransactionUpdate())
+    ).rejects.toThrow(/simulated pause failure/);
+
+    // The state the transaction exists to prevent: successor inserted, old row
+    // never paused, both wordings active and the tenant one over the cap.
+    const rows = await db
+      .select()
+      .from(aiVisibilityPrompts)
+      .where(eq(aiVisibilityPrompts.tenantId, tenant.id));
+    expect(rows).toHaveLength(1);
+    expect(rows[0].id).toBe(created.prompt.id);
+    expect(rows[0].text).toBe("the old wording");
+    expect(rows[0].status).toBe("active");
+    expect(await countActivePrompts(tenant.id)).toBe(1);
   });
 });
