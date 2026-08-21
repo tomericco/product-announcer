@@ -50,6 +50,12 @@ export type CreatePromptResult =
  * Whitespace is collapsed before storage because "best  trackers" and "best
  * trackers" are the same question to every engine, and storing both would
  * split one prompt's history in two while passing the unique index.
+ *
+ * Case is deliberately NOT folded here. "Best issue trackers" is the same
+ * question as "best issue trackers" and must not become a second prompt, but
+ * that is enforced by the unique index on `textNormalized`, not by rewriting
+ * what the human typed — a prompt list that silently lowercases the tenant's
+ * own capitalisation looks broken.
  */
 export function normalizePromptText(raw: unknown): string | null {
   if (typeof raw !== "string") return null;
@@ -182,7 +188,7 @@ export async function createPrompt(
     // The partial unique needs its own predicate repeated here, or Postgres
     // cannot tell which index the ON CONFLICT refers to.
     .onConflictDoNothing({
-      target: [aiVisibilityPrompts.tenantId, aiVisibilityPrompts.text],
+      target: [aiVisibilityPrompts.tenantId, aiVisibilityPrompts.textNormalized],
       where: sql`${aiVisibilityPrompts.status} <> 'rejected'`,
     })
     .returning();
@@ -275,6 +281,28 @@ export async function approveProposals(
     // One transaction for the whole review: every edit, approval and
     // rejection lands, or none of them do.
     return await database.transaction(async (tx) => {
+      // Rejections run FIRST, before the edits. A rejected row leaves the
+      // partial unique index, so retyping an approved proposal into the
+      // wording of one being turned down in the same batch is a legitimate
+      // review — two near-duplicate suggestions, keep the better wording, drop
+      // the other. Editing first would collide with a row this very batch is
+      // about to take out of the index, and bounce the whole review.
+      let rejected = 0;
+      if (rejectIds.length > 0) {
+        const rows = await tx
+          .update(aiVisibilityPrompts)
+          .set({ status: "rejected" })
+          .where(
+            and(
+              eq(aiVisibilityPrompts.tenantId, tenantId),
+              inArray(aiVisibilityPrompts.id, rejectIds),
+              eq(aiVisibilityPrompts.status, "proposed")
+            )
+          )
+          .returning({ id: aiVisibilityPrompts.id });
+        rejected = rows.length;
+      }
+
       for (const edit of edits) {
         await tx
           .update(aiVisibilityPrompts)
@@ -305,22 +333,6 @@ export async function approveProposals(
           )
           .returning({ id: aiVisibilityPrompts.id });
         approved = rows.length;
-      }
-
-      let rejected = 0;
-      if (rejectIds.length > 0) {
-        const rows = await tx
-          .update(aiVisibilityPrompts)
-          .set({ status: "rejected" })
-          .where(
-            and(
-              eq(aiVisibilityPrompts.tenantId, tenantId),
-              inArray(aiVisibilityPrompts.id, rejectIds),
-              eq(aiVisibilityPrompts.status, "proposed")
-            )
-          )
-          .returning({ id: aiVisibilityPrompts.id });
-        rejected = rows.length;
       }
 
       return { ok: true as const, approved, rejected };
@@ -436,6 +448,20 @@ export async function editPrompt(
   // paused ghost and a fresh, empty sparkline for the same question.
   if (existing.text === text) return { ok: true, prompt: existing };
 
+  // Neither is a change of capitalisation. Engines are asked the same question
+  // either way, so the history behind it stays valid — and superseding would
+  // collide with the case-insensitive unique index anyway, reporting the
+  // tenant's own prompt back to them as a duplicate. Fix the display text in
+  // place and keep the row.
+  if (existing.text.toLowerCase() === text.toLowerCase()) {
+    const [renamed] = await database
+      .update(aiVisibilityPrompts)
+      .set({ text })
+      .where(and(eq(aiVisibilityPrompts.tenantId, tenantId), eq(aiVisibilityPrompts.id, existing.id)))
+      .returning();
+    return { ok: true, prompt: renamed };
+  }
+
   return database.transaction(async (tx) => {
     const [row] = await tx
       .insert(aiVisibilityPrompts)
@@ -457,7 +483,7 @@ export async function editPrompt(
         flagReason: existing.flagReason,
       })
       .onConflictDoNothing({
-        target: [aiVisibilityPrompts.tenantId, aiVisibilityPrompts.text],
+        target: [aiVisibilityPrompts.tenantId, aiVisibilityPrompts.textNormalized],
         where: sql`${aiVisibilityPrompts.status} <> 'rejected'`,
       })
       .returning();

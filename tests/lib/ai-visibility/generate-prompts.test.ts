@@ -357,14 +357,21 @@ async function fillActiveTo(tenantId: string, howMany: number) {
  * this is what tells them apart. Proxy shape borrowed from
  * `dbWithFailingInsert` in `tests/lib/signals/competitor-agent.test.ts`.
  */
-function dbCountingPromptInserts(): { database: typeof db; calls: () => number } {
+function dbCountingPromptInserts(): {
+  database: typeof db;
+  calls: () => number;
+  /** Every table inserted into THROUGH THIS SEAM, in order. */
+  tables: () => unknown[];
+} {
   let calls = 0;
+  const tables: unknown[] = [];
   const proxyDb = Object.assign(Object.create(Object.getPrototypeOf(db)), db) as typeof db;
   proxyDb.insert = ((table: unknown) => {
+    tables.push(table);
     if (table === aiVisibilityPrompts) calls++;
     return db.insert(table as Parameters<typeof db.insert>[0]);
   }) as typeof db.insert;
-  return { database: proxyDb, calls: () => calls };
+  return { database: proxyDb, calls: () => calls, tables: () => [...tables] };
 }
 
 /** The same seam, wired to fail: the batch write throws instead of landing. */
@@ -720,16 +727,59 @@ describe("generatePromptSet — the batch write", () => {
     expect(calls()).toBe(1);
   });
 
-  it("leaves no rows at all when that statement fails", async () => {
+  it("reports a failed statement as write_failed rather than throwing", async () => {
     const tenant = await seedProfile();
 
-    await expect(
-      generatePromptSet(tenant.id, { generate: generateAll() as never, database: dbWithFailingPromptInsert() })
-    ).rejects.toThrow(/simulated batch insert failure/);
+    const result = await generatePromptSet(tenant.id, {
+      generate: generateAll() as never,
+      database: dbWithFailingPromptInsert(),
+    });
+
+    // The caller is a Server Action behind a button: a thrown error there is a
+    // 500 page over a blip that costs nothing to retry. The result union has an
+    // arm for this so H3 can say "nothing was saved" and offer the button again.
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe("write_failed");
+    expect(result.message).toMatch(/simulated batch insert failure/);
 
     // Nothing half-written, and the failure is not disguised as a successful
     // generation with a short set.
     expect(await listPrompts(tenant.id)).toHaveLength(0);
+  });
+
+  it("records its token usage against the database it was handed", async () => {
+    const tenant = await seedProfile();
+    const { database, tables } = dbCountingPromptInserts();
+
+    await generatePromptSet(tenant.id, { generate: generateAll() as never, database });
+
+    // Billing that quietly bypasses the injected database is billing no test
+    // can see and no transaction can roll back — and it writes to the real
+    // database from a caller that thought it had handed over a seam.
+    expect(tables().filter((table) => table === llmUsage)).toHaveLength(1);
+  });
+
+  it("counts two wordings that differ only in case as one proposal", async () => {
+    const tenant = await seedProfile();
+    const generate = vi.fn(async () => ({
+      object: {
+        prompts: [
+          { index: 0, text: "best issue trackers for startups", cluster: "c" },
+          { index: 1, text: "Best Issue Trackers For Startups", cluster: "c" },
+        ],
+      },
+      usage: undefined,
+    }));
+
+    const result = await generatePromptSet(tenant.id, { generate: generate as never });
+
+    // One question, one proposal — the partial unique index folds case, and it
+    // does so within a single multi-row statement too.
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.proposals).toHaveLength(1);
+    expect(result.proposals[0].text).toBe("best issue trackers for startups");
   });
 
   it("returns an empty set without touching the database when nothing was usable", async () => {

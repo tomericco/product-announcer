@@ -1,0 +1,3 @@
+DROP INDEX "ai_visibility_prompts_tenant_text_unique";--> statement-breakpoint
+ALTER TABLE "ai_visibility_prompts" ADD COLUMN "text_normalized" text GENERATED ALWAYS AS (lower("text")) STORED NOT NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX "ai_visibility_prompts_tenant_text_unique" ON "ai_visibility_prompts" USING btree ("tenant_id","text_normalized") WHERE "ai_visibility_prompts"."status" <> 'rejected';

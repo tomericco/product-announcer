@@ -233,7 +233,7 @@ export type GeneratePromptsDeps = { generate?: PromptSetGenerate; database?: typ
 
 export type GeneratePromptSetResult =
   | { ok: true; proposals: AiVisibilityPrompt[] }
-  | { ok: false; error: "disabled" | "cap" | "generation_failed"; message?: string };
+  | { ok: false; error: "disabled" | "cap" | "generation_failed" | "write_failed"; message?: string };
 
 type Slot = {
   index: number;
@@ -373,6 +373,11 @@ function buildPrompt(
  *
  * Fails closed: an error from the model writes nothing at all. A half-written
  * set would be reviewed as if complete.
+ *
+ * NEVER throws for a database failure either — it returns `write_failed`. The
+ * caller is a Server Action behind a button, and an exception there is a 500
+ * page over a transient blip that costs nothing to retry. Handle all four
+ * `error` arms.
  */
 export async function generatePromptSet(
   tenantId: string,
@@ -444,7 +449,10 @@ export async function generatePromptSet(
     });
     object = result.object;
     usage = result.usage;
-    await recordLlmUsage({ tenantId, operation: "ai_visibility_prompts", model: modelId(spec), usage });
+    await recordLlmUsage(
+      { tenantId, operation: "ai_visibility_prompts", model: modelId(spec), usage },
+      database
+    );
   } catch (error) {
     return { ok: false, error: "generation_failed", message: String(error) };
   }
@@ -492,14 +500,21 @@ export async function generatePromptSet(
   // exist as an active prompt. `DO NOTHING` drops the later one either way —
   // including duplicates within this same statement — rather than failing the
   // batch.
-  const proposals: AiVisibilityPrompt[] = await database
-    .insert(aiVisibilityPrompts)
-    .values(rows)
-    .onConflictDoNothing({
-      target: [aiVisibilityPrompts.tenantId, aiVisibilityPrompts.text],
-      where: sql`${aiVisibilityPrompts.status} <> 'rejected'`,
-    })
-    .returning();
+  try {
+    const proposals: AiVisibilityPrompt[] = await database
+      .insert(aiVisibilityPrompts)
+      .values(rows)
+      .onConflictDoNothing({
+        target: [aiVisibilityPrompts.tenantId, aiVisibilityPrompts.textNormalized],
+        where: sql`${aiVisibilityPrompts.status} <> 'rejected'`,
+      })
+      .returning();
 
-  return { ok: true, proposals };
+    return { ok: true, proposals };
+  } catch (error) {
+    // The model call already succeeded and was already billed, so this is the
+    // expensive failure to swallow — but a thrown error here is a 500 in the
+    // Server Action, and the honest answer is "nothing was saved, try again".
+    return { ok: false, error: "write_failed", message: String(error) };
+  }
 }

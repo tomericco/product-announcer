@@ -94,6 +94,49 @@ describe("createPrompt", () => {
     expect(again).toEqual({ ok: false, error: "duplicate" });
   });
 
+  it("treats a difference of capitalisation as the same prompt", async () => {
+    const tenant = await seedTenant(TENANT);
+    const first = await createPrompt(tenant.id, { text: "Best Issue Trackers", intent: "discovery" });
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+
+    // Same question to every engine. Two rows would mean two histories, two
+    // sparklines and twice the engine bill for one question.
+    expect(await createPrompt(tenant.id, { text: "best issue trackers", intent: "discovery" })).toEqual({
+      ok: false,
+      error: "duplicate",
+    });
+    expect(await createPrompt(tenant.id, { text: "  BEST   issue trackers ", intent: "comparison" })).toEqual({
+      ok: false,
+      error: "duplicate",
+    });
+
+    // The folding is the index's business, not the stored text's: the prompt
+    // list shows the tenant back the capitalisation they typed.
+    expect(first.prompt.text).toBe("Best Issue Trackers");
+    const [stored] = await db
+      .select()
+      .from(aiVisibilityPrompts)
+      .where(eq(aiVisibilityPrompts.id, first.prompt.id));
+    expect(stored.text).toBe("Best Issue Trackers");
+  });
+
+  it("still lets a rejected wording be re-proposed in any casing", async () => {
+    const tenant = await seedTenant(TENANT);
+    await db.insert(aiVisibilityPrompts).values({
+      tenantId: tenant.id,
+      text: "Best Issue Trackers",
+      intent: "discovery",
+      origin: "generated",
+      status: "rejected",
+    });
+
+    // The index stays partial on `status <> 'rejected'`, so folding case must
+    // not start blocking a later hand-written prompt.
+    const created = await createPrompt(tenant.id, { text: "best issue trackers", intent: "discovery" });
+    expect(created.ok).toBe(true);
+  });
+
   it("refuses an unusable text or an intent we do not have", async () => {
     const tenant = await seedTenant(TENANT);
 
@@ -517,7 +560,44 @@ describe("editPrompt", () => {
     expect(edited.prompt.flagReason).toBe(created.prompt.flagReason);
   });
 
-  it("is a no-op when the wording did not actually change", async () => {
+  it("renames in place when only the capitalisation changed", async () => {
+    const tenant = await seedTenant(TENANT);
+    const created = await createPrompt(tenant.id, { text: "best issue trackers", intent: "discovery" });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const edited = await editPrompt(tenant.id, created.prompt.id, "Best Issue Trackers");
+
+    // Same question, so the history behind it is still true — and superseding
+    // would collide with the case-insensitive index and report the tenant's
+    // own prompt back to them as a duplicate.
+    expect(edited.ok).toBe(true);
+    if (!edited.ok) return;
+    expect(edited.prompt.id).toBe(created.prompt.id);
+    expect(edited.prompt.text).toBe("Best Issue Trackers");
+    expect(edited.prompt.supersedesId).toBeNull();
+    expect(
+      await db.select().from(aiVisibilityPrompts).where(eq(aiVisibilityPrompts.tenantId, tenant.id))
+    ).toHaveLength(1);
+  });
+
+  it("refuses an edit onto another prompt's wording however it is capitalised", async () => {
+    const tenant = await seedTenant(TENANT);
+    const a = await createPrompt(tenant.id, { text: "prompt a", intent: "discovery" });
+    const b = await createPrompt(tenant.id, { text: "prompt b", intent: "discovery" });
+    expect(a.ok && b.ok).toBe(true);
+    if (!a.ok || !b.ok) return;
+
+    expect(await editPrompt(tenant.id, a.prompt.id, "PROMPT B")).toEqual({ ok: false, error: "duplicate" });
+    const [untouched] = await db
+      .select()
+      .from(aiVisibilityPrompts)
+      .where(eq(aiVisibilityPrompts.id, a.prompt.id));
+    expect(untouched.text).toBe("prompt a");
+    expect(untouched.status).toBe("active");
+  });
+
+  it("is a no-op when the wording did not actually change", async () =>{
     const tenant = await seedTenant(TENANT);
     const created = await createPrompt(tenant.id, { text: "best issue trackers", intent: "discovery" });
     expect(created.ok).toBe(true);
@@ -881,7 +961,7 @@ describe("approveProposals — the rest of the batch contract", () => {
     expect(await countActivePrompts(tenant.id)).toBe(1);
   });
 
-  it("refuses an edit onto the wording of a row being rejected in the SAME batch", async () => {
+  it("allows an edit onto the wording of a row being rejected in the SAME batch", async () => {
     const tenant = await seedTenant(TENANT);
     const [a, b] = await seedProposals(tenant.id, ["prompt a", "prompt b"]);
 
@@ -893,18 +973,17 @@ describe("approveProposals — the rest of the batch contract", () => {
       edits: [{ promptId: a, text: "prompt b" }],
     });
 
-    // Pinning today's behaviour, which is arguably wrong: the edits run before
-    // the rejections inside the transaction, so `b` is still `proposed` — and
-    // so still covered by the partial unique index — when the edit lands.
-    // After the batch commits it would have been `rejected` and out of the
-    // index. Rejecting first inside the transaction would let this through.
-    // Reported, not fixed: this file does not touch production code.
-    expect(result).toEqual({ ok: false, error: "duplicate" });
-    const rows = await db
-      .select()
-      .from(aiVisibilityPrompts)
-      .where(eq(aiVisibilityPrompts.tenantId, tenant.id));
-    expect(rows.every((row) => row.status === "proposed")).toBe(true);
+    // The rejections run first inside the transaction, so `b` has already left
+    // the partial unique index by the time the edit lands. Editing first would
+    // collide with a row this very batch is about to remove, and bounce a
+    // perfectly ordinary review.
+    expect(result).toEqual({ ok: true, approved: 1, rejected: 1 });
+    const [kept] = await db.select().from(aiVisibilityPrompts).where(eq(aiVisibilityPrompts.id, a));
+    expect(kept.text).toBe("prompt b");
+    expect(kept.status).toBe("active");
+    const [dropped] = await db.select().from(aiVisibilityPrompts).where(eq(aiVisibilityPrompts.id, b));
+    expect(dropped.text).toBe("prompt b");
+    expect(dropped.status).toBe("rejected");
   });
 
   it("cannot reach another tenant's proposals", async () => {
