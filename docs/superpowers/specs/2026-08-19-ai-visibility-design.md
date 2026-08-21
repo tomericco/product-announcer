@@ -164,7 +164,7 @@ v2 metrics are listed under Scope.
 | ChatGPT | Responses API, `web_search` tool, `search_context_size: medium` | "GPT-5.x API + web search" | $10/1k searches + tokens (https://developers.openai.com/api/docs/pricing) |
 | Perplexity | Sonar chat completions | "Perplexity Sonar API" | $1/M tokens + $5–14/1k requests (https://docs.perplexity.ai/docs/getting-started/pricing) |
 | Gemini | Gemini 3.x, `google_search` grounding; resolve redirect URIs | "Gemini API, grounded" | 5k grounded prompts/month free, then $14/1k (https://ai.google.dev/gemini-api/docs/pricing) |
-| Claude | `web_search` tool, Batches API | "Claude API + web search" | $10/1k searches + tokens |
+| Claude | `web_search` tool, Messages API | "Claude API + web search" | $10/1k searches + tokens |
 
 - Neutral fixed system prompt; default temperature (we want the natural
   distribution); no `user_location` in v1 (locale is v2); English.
