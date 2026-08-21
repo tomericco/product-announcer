@@ -1,6 +1,6 @@
 import { and, asc, count, eq, inArray, sql } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
-import { aiVisibilityPrompts, type AiVisibilityPrompt } from "@/db/schema";
+import { aiVisibilityPrompts, aiVisibilitySamples, type AiVisibilityPrompt } from "@/db/schema";
 import { PROMPT_INTENTS, type PromptIntent } from "@/lib/ai-visibility/types";
 
 /**
@@ -331,4 +331,160 @@ export async function approveProposals(
     // the batch — was written.
     return { ok: false, error: "duplicate" };
   }
+}
+
+/**
+ * Takes a prompt out of the run set without losing anything.
+ *
+ * Only an `active` prompt can be paused, so a stale toggle cannot resurrect a
+ * rejected proposal into a paused one.
+ */
+export async function pausePrompt(
+  tenantId: string,
+  promptId: string,
+  database: typeof defaultDb = defaultDb
+): Promise<{ ok: true } | { ok: false; error: "not_found" }> {
+  const rows = await database
+    .update(aiVisibilityPrompts)
+    .set({ status: "paused", pausedAt: new Date() })
+    .where(
+      and(
+        eq(aiVisibilityPrompts.tenantId, tenantId),
+        eq(aiVisibilityPrompts.id, promptId),
+        eq(aiVisibilityPrompts.status, "active")
+      )
+    )
+    .returning({ id: aiVisibilityPrompts.id });
+  return rows.length > 0 ? { ok: true } : { ok: false, error: "not_found" };
+}
+
+/** The cap applies on the way back in, or pausing would be a way around it. */
+export async function resumePrompt(
+  tenantId: string,
+  promptId: string,
+  database: typeof defaultDb = defaultDb
+): Promise<{ ok: true } | { ok: false; error: "not_found" | "cap" }> {
+  const [prompt] = await database
+    .select({ id: aiVisibilityPrompts.id })
+    .from(aiVisibilityPrompts)
+    .where(
+      and(
+        eq(aiVisibilityPrompts.tenantId, tenantId),
+        eq(aiVisibilityPrompts.id, promptId),
+        eq(aiVisibilityPrompts.status, "paused")
+      )
+    )
+    .limit(1);
+  if (!prompt) return { ok: false, error: "not_found" };
+
+  const active = await countActivePrompts(tenantId, database);
+  if (active >= MAX_ACTIVE_PROMPTS) return { ok: false, error: "cap" };
+
+  await database
+    .update(aiVisibilityPrompts)
+    .set({ status: "active", pausedAt: null })
+    .where(eq(aiVisibilityPrompts.id, prompt.id));
+  return { ok: true };
+}
+
+/**
+ * Rewording a prompt creates a NEW prompt and pauses the old one.
+ *
+ * Never a text update: twelve weeks of samples sit behind the old wording, and
+ * a sparkline that silently changes what question it charts is a lie. The two
+ * rows link through `supersedesId` and the detail page walks it both ways.
+ *
+ * Only `active` and `paused` prompts get here. A `proposed` row is edited in
+ * place by `approveProposals` — it has nothing behind it to protect — and a
+ * `rejected` row is a negative, not a prompt.
+ *
+ * The new row is inserted BEFORE the old one is paused. That is briefly one
+ * over the cap; the alternative is a window where a failed insert has already
+ * paused a prompt the tenant is still running.
+ */
+export async function editPrompt(
+  tenantId: string,
+  promptId: string,
+  rawText: string,
+  database: typeof defaultDb = defaultDb
+): Promise<{ ok: true; prompt: AiVisibilityPrompt } | { ok: false; error: "not_found" | "duplicate" | "invalid" }> {
+  const text = normalizePromptText(rawText);
+  if (text === null) return { ok: false, error: "invalid" };
+
+  const [existing] = await database
+    .select()
+    .from(aiVisibilityPrompts)
+    .where(and(eq(aiVisibilityPrompts.tenantId, tenantId), eq(aiVisibilityPrompts.id, promptId)))
+    .limit(1);
+  if (!existing) return { ok: false, error: "not_found" };
+  if (existing.status !== "active" && existing.status !== "paused") return { ok: false, error: "not_found" };
+
+  // Whitespace-only changes are not edits. Superseding here would leave a
+  // paused ghost and a fresh, empty sparkline for the same question.
+  if (existing.text === text) return { ok: true, prompt: existing };
+
+  const [row] = await database
+    .insert(aiVisibilityPrompts)
+    .values({
+      tenantId,
+      text,
+      intent: existing.intent,
+      persona: existing.persona,
+      competitorId: existing.competitorId,
+      branded: existing.branded,
+      // A human typed this wording, whatever produced the original.
+      origin: "user",
+      status: existing.status,
+      cluster: existing.cluster,
+      supersedesId: existing.id,
+      approvedAt: existing.approvedAt,
+      approvedBy: existing.approvedBy,
+      pausedAt: existing.status === "paused" ? new Date() : null,
+    })
+    .onConflictDoNothing({
+      target: [aiVisibilityPrompts.tenantId, aiVisibilityPrompts.text],
+      where: sql`${aiVisibilityPrompts.status} <> 'rejected'`,
+    })
+    .returning();
+  if (!row) return { ok: false, error: "duplicate" };
+
+  await database
+    .update(aiVisibilityPrompts)
+    .set({ status: "paused", pausedAt: new Date() })
+    .where(eq(aiVisibilityPrompts.id, existing.id));
+
+  return { ok: true, prompt: row };
+}
+
+/**
+ * Deletes a prompt only while it has no history.
+ *
+ * Once one sample exists the prompt is the label on twelve weeks of numbers,
+ * and pausing is the honest operation. The UI hides Delete and says why rather
+ * than offering it and failing.
+ */
+export async function deletePrompt(
+  tenantId: string,
+  promptId: string,
+  database: typeof defaultDb = defaultDb
+): Promise<{ ok: true } | { ok: false; error: "not_found" | "has_samples" }> {
+  const [prompt] = await database
+    .select({ id: aiVisibilityPrompts.id })
+    .from(aiVisibilityPrompts)
+    .where(and(eq(aiVisibilityPrompts.tenantId, tenantId), eq(aiVisibilityPrompts.id, promptId)))
+    .limit(1);
+  if (!prompt) return { ok: false, error: "not_found" };
+
+  const [samples] = await database
+    .select({ value: count() })
+    .from(aiVisibilitySamples)
+    .where(
+      and(eq(aiVisibilitySamples.tenantId, tenantId), eq(aiVisibilitySamples.promptId, promptId))
+    );
+  if ((samples?.value ?? 0) > 0) return { ok: false, error: "has_samples" };
+
+  await database
+    .delete(aiVisibilityPrompts)
+    .where(and(eq(aiVisibilityPrompts.tenantId, tenantId), eq(aiVisibilityPrompts.id, promptId)));
+  return { ok: true };
 }

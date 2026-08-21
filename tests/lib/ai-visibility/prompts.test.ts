@@ -1,7 +1,14 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { competitors, aiVisibilityPrompts, users } from "../../../src/db/schema";
+import {
+  competitors,
+  aiVisibilityPrompts,
+  aiVisibilityRuns,
+  aiVisibilitySamples,
+  sources,
+  users,
+} from "../../../src/db/schema";
 import {
   MAX_ACTIVE_PROMPTS,
   listPrompts,
@@ -9,6 +16,10 @@ import {
   countActivePrompts,
   createPrompt,
   approveProposals,
+  pausePrompt,
+  resumePrompt,
+  editPrompt,
+  deletePrompt,
   normalizePromptText,
 } from "../../../src/lib/ai-visibility/prompts";
 import { seedTenant, dropTenant } from "../../helpers/fixtures";
@@ -374,5 +385,172 @@ describe("approveProposals", () => {
     // Re-running the same batch is a no-op, not a second approval.
     const second = await approveProposals(tenant.id, { approveIds: [a], rejectIds: [] });
     expect(second).toEqual({ ok: true, approved: 0, rejected: 0 });
+  });
+});
+
+async function seedSample(tenantId: string, promptId: string) {
+  const [source] = await db
+    .insert(sources)
+    .values({ tenantId, type: "ai_visibility", url: null, label: "AI visibility" })
+    .returning();
+  const [run] = await db
+    .insert(aiVisibilityRuns)
+    .values({ tenantId, sourceId: source.id, trigger: "manual", engines: ["openai"], samplesPerPrompt: 3 })
+    .returning();
+  await db
+    .insert(aiVisibilitySamples)
+    .values({ runId: run.id, tenantId, promptId, engine: "openai", sampleIndex: 0 });
+}
+
+describe("pausePrompt / resumePrompt", () => {
+  it("pauses an active prompt and frees a cap slot, then resumes it", async () => {
+    const tenant = await seedTenant(TENANT);
+    const created = await createPrompt(tenant.id, { text: "best issue trackers", intent: "discovery" });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    expect(await pausePrompt(tenant.id, created.prompt.id)).toEqual({ ok: true });
+    expect(await countActivePrompts(tenant.id)).toBe(0);
+    const [paused] = await db
+      .select()
+      .from(aiVisibilityPrompts)
+      .where(eq(aiVisibilityPrompts.id, created.prompt.id));
+    expect(paused.status).toBe("paused");
+    expect(paused.pausedAt).not.toBeNull();
+
+    expect(await resumePrompt(tenant.id, created.prompt.id)).toEqual({ ok: true });
+    const [resumed] = await db
+      .select()
+      .from(aiVisibilityPrompts)
+      .where(eq(aiVisibilityPrompts.id, created.prompt.id));
+    expect(resumed.status).toBe("active");
+    expect(resumed.pausedAt).toBeNull();
+  });
+
+  it("refuses to resume past the cap, and refuses an id from another tenant", async () => {
+    const tenant = await seedTenant(TENANT);
+    const created = await createPrompt(tenant.id, { text: "the paused one", intent: "discovery" });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    await pausePrompt(tenant.id, created.prompt.id);
+    await fillActive(tenant.id, MAX_ACTIVE_PROMPTS);
+
+    expect(await resumePrompt(tenant.id, created.prompt.id)).toEqual({ ok: false, error: "cap" });
+
+    const other = await seedTenant(`${TENANT} Two`);
+    try {
+      expect(await pausePrompt(other.id, created.prompt.id)).toEqual({ ok: false, error: "not_found" });
+    } finally {
+      await dropTenant(`${TENANT} Two`);
+    }
+  });
+});
+
+describe("editPrompt", () => {
+  it("creates a new prompt pointing at the old one and pauses the old one", async () => {
+    const tenant = await seedTenant(TENANT);
+    const created = await createPrompt(tenant.id, {
+      text: "best issue trackers",
+      intent: "comparison",
+      persona: "Head of Engineering",
+      cluster: "us_vs_them",
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const edited = await editPrompt(tenant.id, created.prompt.id, "best issue trackers for seed-stage teams");
+
+    expect(edited.ok).toBe(true);
+    if (!edited.ok) return;
+    expect(edited.prompt.id).not.toBe(created.prompt.id);
+    expect(edited.prompt.supersedesId).toBe(created.prompt.id);
+    expect(edited.prompt.status).toBe("active");
+    // Everything but the wording carries over.
+    expect(edited.prompt.intent).toBe("comparison");
+    expect(edited.prompt.persona).toBe("Head of Engineering");
+    expect(edited.prompt.cluster).toBe("us_vs_them");
+    expect(edited.prompt.origin).toBe("user");
+
+    const [old] = await db
+      .select()
+      .from(aiVisibilityPrompts)
+      .where(eq(aiVisibilityPrompts.id, created.prompt.id));
+    expect(old.status).toBe("paused");
+    expect(old.text).toBe("best issue trackers");
+    expect(await countActivePrompts(tenant.id)).toBe(1);
+  });
+
+  it("is a no-op when the wording did not actually change", async () => {
+    const tenant = await seedTenant(TENANT);
+    const created = await createPrompt(tenant.id, { text: "best issue trackers", intent: "discovery" });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const edited = await editPrompt(tenant.id, created.prompt.id, "  best issue   trackers ");
+
+    expect(edited.ok).toBe(true);
+    if (!edited.ok) return;
+    expect(edited.prompt.id).toBe(created.prompt.id);
+    expect(
+      await db.select().from(aiVisibilityPrompts).where(eq(aiVisibilityPrompts.tenantId, tenant.id))
+    ).toHaveLength(1);
+  });
+
+  it("refuses unusable text, a wording already in use, and a proposal", async () => {
+    const tenant = await seedTenant(TENANT);
+    const a = await createPrompt(tenant.id, { text: "prompt a", intent: "discovery" });
+    const b = await createPrompt(tenant.id, { text: "prompt b", intent: "discovery" });
+    const proposal = await createPrompt(tenant.id, {
+      text: "a proposal",
+      intent: "discovery",
+      status: "proposed",
+    });
+    expect(a.ok && b.ok && proposal.ok).toBe(true);
+    if (!a.ok || !b.ok || !proposal.ok) return;
+
+    expect(await editPrompt(tenant.id, a.prompt.id, "no")).toEqual({ ok: false, error: "invalid" });
+    expect(await editPrompt(tenant.id, a.prompt.id, "prompt b")).toEqual({ ok: false, error: "duplicate" });
+    // Proposals are edited in place by approveProposals, never superseded.
+    expect(await editPrompt(tenant.id, proposal.prompt.id, "a better proposal")).toEqual({
+      ok: false,
+      error: "not_found",
+    });
+
+    const [untouched] = await db
+      .select()
+      .from(aiVisibilityPrompts)
+      .where(eq(aiVisibilityPrompts.id, a.prompt.id));
+    expect(untouched.status).toBe("active");
+  });
+});
+
+describe("deletePrompt", () => {
+  it("deletes a prompt nothing has ever run against", async () => {
+    const tenant = await seedTenant(TENANT);
+    const created = await createPrompt(tenant.id, { text: "never run", intent: "discovery" });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    expect(await deletePrompt(tenant.id, created.prompt.id)).toEqual({ ok: true });
+    expect(
+      await db.select().from(aiVisibilityPrompts).where(eq(aiVisibilityPrompts.id, created.prompt.id))
+    ).toHaveLength(0);
+  });
+
+  it("refuses once a sample exists, and refuses an id from another tenant", async () => {
+    const tenant = await seedTenant(TENANT);
+    const created = await createPrompt(tenant.id, { text: "has history", intent: "discovery" });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    await seedSample(tenant.id, created.prompt.id);
+
+    expect(await deletePrompt(tenant.id, created.prompt.id)).toEqual({ ok: false, error: "has_samples" });
+
+    const other = await seedTenant(`${TENANT} Two`);
+    try {
+      expect(await deletePrompt(other.id, created.prompt.id)).toEqual({ ok: false, error: "not_found" });
+    } finally {
+      await dropTenant(`${TENANT} Two`);
+    }
   });
 });
