@@ -35,6 +35,14 @@ describe("stripUrls", () => {
     expect(stripUrls("See https://acme.com/pricing for more").replace(/\s+/g, " ").trim()).toBe(
       "See for more"
     );
+    // ...and that anti-join property is the point of replacing with a space,
+    // so prove it directly rather than trusting the normalised form above.
+    expect(stripUrls("a https://x.com b")).not.toMatch(/\bab\b/);
+    expect(stripUrls("a https://x.com b")).toMatch(/\ba\s+b\b/);
+    // The same property where it actually bites: a stray tag between two words
+    // must not fuse them into one, which would invent a word that was never
+    // written — and could invent a brand name.
+    expect(stripUrls("Acme<br>graph")).not.toMatch(/Acmegraph/);
     expect(stripUrls("[Acme](https://acme.com)")).not.toContain("https://acme.com");
     expect(stripUrls("visit www.acme.com today")).not.toContain("www.acme.com");
   });
@@ -62,6 +70,18 @@ describe("mentionsBrand", () => {
     expect(mentionsBrand("Sources: www.acme.com", ALIASES)).toBe(false);
     // But a real sentence alongside a link still counts.
     expect(mentionsBrand("Acme is worth a look: https://acme.com", ALIASES)).toBe(true);
+  });
+
+  it("does not match a scheme-less link, but keeps a dotted brand name in prose", () => {
+    expect(mentionsBrand("Sources: acme.com/pricing", ALIASES)).toBe(false);
+    expect(mentionsBrand("See acme.com/docs/start for setup.", ALIASES)).toBe(false);
+    expect(mentionsBrand("Read more at docs.acme.com/guide.", ALIASES)).toBe(false);
+
+    // The deliberate limit of the rule above: a company that brands itself as a
+    // domain still gets counted when it appears as a NAME, with no path.
+    const dotted = buildAliases("Acme.io");
+    expect(mentionsBrand("Acme.io is a strong choice for small teams.", dotted)).toBe(true);
+    expect(mentionsBrand("Sources: acme.io/pricing", dotted)).toBe(false);
   });
 
   it("does not match inside the echoed prompt", () => {

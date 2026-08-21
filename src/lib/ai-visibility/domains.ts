@@ -82,6 +82,16 @@ const MULTI_PART_SUFFIXES = new Set([
   "substack.com",
   "gitbook.io",
   "readthedocs.io",
+  // Hosted content. Each customer gets a subdomain, so without these every
+  // help centre on Zendesk — or every blog on WordPress — would collapse into
+  // a single row that dwarfs the rest of the leaderboard.
+  "zendesk.com",
+  "atlassian.net",
+  "wordpress.com",
+  "blogspot.com",
+  "webflow.io",
+  "myshopify.com",
+  "ghost.io",
 ]);
 
 /**
@@ -96,6 +106,9 @@ export const REDIRECTOR_HOSTS = new Set(["vertexaisearch.cloud.google.com"]);
 
 /** More than this and something is looping; the caller keeps what it has. */
 const MAX_REDIRECT_HOPS = 3;
+
+/** Per-hop ceiling. See the comment at the call site for why this is not optional. */
+const REDIRECT_TIMEOUT_MS = 5_000;
 
 export type DomainClass =
   | "own"
@@ -169,7 +182,15 @@ export async function resolveRedirect(
   for (let hop = 0; hop < MAX_REDIRECT_HOPS; hop++) {
     let response: Response;
     try {
-      response = await fetchImpl(current, { method: "GET", redirect: "manual" });
+      response = await fetchImpl(current, {
+        method: "GET",
+        redirect: "manual",
+        // A run resolves hundreds of these. Without a timeout each one inherits
+        // the runtime's default headers timeout (~300s), so a handful of hung
+        // redirectors would stall the whole slice past its budget. A redirect
+        // hop that has not answered in five seconds is not going to.
+        signal: AbortSignal.timeout(REDIRECT_TIMEOUT_MS),
+      });
     } catch {
       return current;
     }
@@ -308,10 +329,21 @@ export function classifyDomain(
     if (competitor && value === competitor.trim().toLowerCase()) return "competitor";
   }
 
-  if (REVIEW_DOMAINS.has(value)) return "review";
-  if (COMMUNITY_DOMAINS.has(value)) return "community";
-  if (DOCS_DOMAINS.has(value)) return "docs";
-  if (WIKI_DOMAINS.has(value)) return "wiki";
-  if (PUBLISHER_DOMAINS.has(value)) return "publisher";
+  // Two forms get looked up, not one. A host under a multi-part suffix keeps
+  // its own label — `toRegistrableDomain` returns `someone.substack.com`, which
+  // is right for identity — but the FAMILY it belongs to is named by the
+  // suffix, so `substack.com`, `readthedocs.io` and `gitbook.io` would never
+  // match a bare-form set and every such citation would land in `other`.
+  // Checking the last two labels as well is what makes those entries live.
+  const labels = value.split(".");
+  const suffix = labels.length > 2 ? labels.slice(-2).join(".") : null;
+  const inFamily = (family: Set<string>) =>
+    family.has(value) || (suffix !== null && family.has(suffix));
+
+  if (inFamily(REVIEW_DOMAINS)) return "review";
+  if (inFamily(COMMUNITY_DOMAINS)) return "community";
+  if (inFamily(DOCS_DOMAINS)) return "docs";
+  if (inFamily(WIKI_DOMAINS)) return "wiki";
+  if (inFamily(PUBLISHER_DOMAINS)) return "publisher";
   return "other";
 }

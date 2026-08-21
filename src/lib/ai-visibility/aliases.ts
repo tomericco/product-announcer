@@ -73,6 +73,12 @@ const URL_PATTERNS: RegExp[] = [
   /\bwww\.\S+/gi,
   /\]\([^)]*\)/g, // markdown link targets
   /<[^>\s]+>/g, // autolinks and stray tags
+  // A scheme-less link, e.g. "Sources: acme.com/pricing". A PATH is required,
+  // which is the whole subtlety: a bare "Acme.io" with nothing after it is how
+  // plenty of companies write their own NAME in prose, and stripping that would
+  // erase the very mention this function exists to find. A slash after the TLD
+  // is the signal that we are looking at a link rather than a brand.
+  /\b[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)*\.[a-z]{2,24}\/\S*/gi,
 ];
 
 function escapeRegExp(value: string): string {
