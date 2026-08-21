@@ -26,7 +26,7 @@ beforeEach(() => usePathname.mockReturnValue("/signals"));
 
 // Every route in the sidebar, so "no other entry shows the count" is checked
 // against all of them rather than a hand-picked neighbour.
-const HREFS = ["/signals", "/board", "/calendar", "/images", "/history", "/integrations", "/company"];
+const HREFS = ["/signals", "/ai-visibility", "/board", "/calendar", "/images", "/history", "/integrations", "/company"];
 
 function linkFor(container: HTMLElement, href: string) {
   const link = container.querySelector(`a[href="${href}"]`);

@@ -11,6 +11,7 @@ import {
   Images,
   Plug,
   Radar,
+  ScanSearch,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -34,6 +35,9 @@ const COMPANY_SECTIONS = [
 
 const NAV = [
   { href: "/signals", label: "Signals", icon: Radar },
+  // Directly after Signals: the two are read in the same weekly pass, and the
+  // AI-visibility signals land in that browser.
+  { href: "/ai-visibility", label: "AI visibility", icon: ScanSearch },
   { href: "/board", label: "Board", icon: Columns3 },
   { href: "/calendar", label: "Calendar", icon: CalendarDays },
   { href: "/history", label: "Release history", icon: History },

@@ -8,13 +8,16 @@ import { cn } from "@/lib/utils";
  * a measure that keeps prose and forms readable. Wide routes opt out: the
  * board is five side-by-side columns and the calendar is a seven-day grid,
  * and squeezing either into 56rem forces horizontal scrolling that hides
- * the very columns those pages exist to show.
+ * the very columns those pages exist to show; AI visibility is five metric
+ * cards abreast and a prompt × engine matrix five columns wide, and at
+ * max-w-4xl that matrix scrolls sideways, hiding the per-engine comparison
+ * the row exists to make.
  *
  * A client component because the parent layout is a Server Component and
  * cannot read the current route; a nested route layout would not help,
  * since it renders *inside* this element's max-width.
  */
-const WIDE_ROUTES = ["/board", "/calendar"];
+const WIDE_ROUTES = ["/board", "/calendar", "/ai-visibility"];
 
 export function MainContainer({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
