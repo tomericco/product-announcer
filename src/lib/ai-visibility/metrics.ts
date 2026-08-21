@@ -1,10 +1,18 @@
-import { and, desc, eq, inArray, isNull, lt } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, lt, sql } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
-import { aiVisibilityAggregates, aiVisibilityRuns } from "@/db/schema";
+import {
+  aiVisibilityAggregates,
+  aiVisibilityCitations,
+  aiVisibilityPrompts,
+  aiVisibilityRuns,
+  aiVisibilitySamples,
+} from "@/db/schema";
+import type { DomainClass } from "@/lib/ai-visibility/domains";
 import {
   ENGINE_IDS,
   type EngineId,
   type EngineMetrics,
+  type PromptIntent,
   type WindowCounts,
 } from "@/lib/ai-visibility/types";
 
@@ -224,4 +232,427 @@ export async function engineMetrics(
   out.push(toMetrics("all", pooled, deltaPp(pooled, pooledPrevious)));
 
   return out;
+}
+
+export type PromptMatrixCell = { engine: EngineId; hits: number; n: number };
+export type PromptMatrixRow = {
+  promptId: string;
+  text: string;
+  intent: PromptIntent;
+  branded: boolean;
+  cells: PromptMatrixCell[];
+};
+
+/**
+ * One row per active prompt, one cell per engine, over the rolling window.
+ *
+ * Returns raw `{ hits, n }` and applies NO threshold. The display rule ("2 of
+ * 3 samples", hidden below MIN_N_PROMPT) belongs to the cell component, which
+ * also has to distinguish a thin cut from an engine that failed — a decision
+ * that needs `runEngineHealth`, not this. Returning null here would collapse
+ * those two states into one.
+ *
+ * Every engine gets a cell whether or not it has data, so the matrix is
+ * rectangular and the header never has to be derived from the rows.
+ */
+export async function promptMatrix(
+  tenantId: string,
+  database: typeof defaultDb = defaultDb
+): Promise<PromptMatrixRow[]> {
+  const prompts = await database
+    .select({
+      id: aiVisibilityPrompts.id,
+      text: aiVisibilityPrompts.text,
+      intent: aiVisibilityPrompts.intent,
+      branded: aiVisibilityPrompts.branded,
+    })
+    .from(aiVisibilityPrompts)
+    .where(and(eq(aiVisibilityPrompts.tenantId, tenantId), eq(aiVisibilityPrompts.status, "active")))
+    .orderBy(asc(aiVisibilityPrompts.createdAt));
+  if (prompts.length === 0) return [];
+
+  const runIds = await windowRunIds(tenantId, WINDOW_RUNS, undefined, database);
+  const byKey = new Map<string, { hits: number; n: number }>();
+  if (runIds.length > 0) {
+    const rows = await database
+      .select({
+        promptId: aiVisibilityAggregates.promptId,
+        engine: aiVisibilityAggregates.engine,
+        n: aiVisibilityAggregates.n,
+        tenantMentions: aiVisibilityAggregates.tenantMentions,
+      })
+      .from(aiVisibilityAggregates)
+      .where(
+        and(
+          inArray(aiVisibilityAggregates.runId, runIds),
+          inArray(
+            aiVisibilityAggregates.promptId,
+            prompts.map((p) => p.id)
+          )
+        )
+      );
+    for (const row of rows) {
+      if (!row.promptId) continue;
+      const key = `${row.promptId} ${row.engine}`;
+      const cell = byKey.get(key) ?? { hits: 0, n: 0 };
+      cell.hits += row.tenantMentions;
+      cell.n += row.n;
+      byKey.set(key, cell);
+    }
+  }
+
+  return prompts.map((prompt) => ({
+    promptId: prompt.id,
+    text: prompt.text,
+    intent: prompt.intent as PromptIntent,
+    branded: prompt.branded,
+    cells: ENGINE_IDS.map((engine) => {
+      const cell = byKey.get(`${prompt.id} ${engine}`);
+      return { engine, hits: cell?.hits ?? 0, n: cell?.n ?? 0 };
+    }),
+  }));
+}
+
+/** Complete runs for a tenant, oldest first, most recent `HISTORY_RUNS` of them. */
+async function historyRuns(
+  tenantId: string,
+  database: typeof defaultDb
+): Promise<{ id: string; startedAt: Date; modelIds: Record<string, string> }[]> {
+  const rows = await database
+    .select({
+      id: aiVisibilityRuns.id,
+      startedAt: aiVisibilityRuns.startedAt,
+      modelIds: aiVisibilityRuns.modelIds,
+    })
+    .from(aiVisibilityRuns)
+    .where(and(eq(aiVisibilityRuns.tenantId, tenantId), eq(aiVisibilityRuns.status, "complete")))
+    .orderBy(desc(aiVisibilityRuns.startedAt))
+    .limit(HISTORY_RUNS);
+  // Newest-first for the LIMIT, oldest-first for the chart. Reversing here is
+  // what keeps every caller from having to remember which way round it is.
+  return rows.reverse().map((r) => ({ ...r, modelIds: r.modelIds ?? {} }));
+}
+
+export type PromptHistoryPoint = {
+  runId: string;
+  runDate: string;
+  hits: number;
+  n: number;
+  modelId: string | null;
+};
+
+/**
+ * One prompt's last 12 runs — the sparkline on the prompt detail page.
+ *
+ * `modelId` is null for `"all"`: four engines do not share a model, and
+ * inventing one would put a false tick mark on the chart.
+ */
+export async function promptHistory(
+  promptId: string,
+  engine: EngineId | "all",
+  database: typeof defaultDb = defaultDb
+): Promise<PromptHistoryPoint[]> {
+  const [prompt] = await database
+    .select({ tenantId: aiVisibilityPrompts.tenantId })
+    .from(aiVisibilityPrompts)
+    .where(eq(aiVisibilityPrompts.id, promptId));
+  if (!prompt) return [];
+
+  const runs = await historyRuns(prompt.tenantId, database);
+  if (runs.length === 0) return [];
+
+  const rows = await database
+    .select({
+      runId: aiVisibilityAggregates.runId,
+      n: aiVisibilityAggregates.n,
+      tenantMentions: aiVisibilityAggregates.tenantMentions,
+    })
+    .from(aiVisibilityAggregates)
+    .where(
+      and(
+        inArray(
+          aiVisibilityAggregates.runId,
+          runs.map((r) => r.id)
+        ),
+        eq(aiVisibilityAggregates.promptId, promptId),
+        ...(engine === "all" ? [] : [eq(aiVisibilityAggregates.engine, engine)])
+      )
+    );
+
+  const byRun = new Map<string, { hits: number; n: number }>();
+  for (const row of rows) {
+    const point = byRun.get(row.runId) ?? { hits: 0, n: 0 };
+    point.hits += row.tenantMentions;
+    point.n += row.n;
+    byRun.set(row.runId, point);
+  }
+
+  return runs.map((run) => {
+    const point = byRun.get(run.id) ?? { hits: 0, n: 0 };
+    return {
+      runId: run.id,
+      runDate: run.startedAt.toISOString(),
+      hits: point.hits,
+      n: point.n,
+      modelId: engine === "all" ? null : (run.modelIds[engine] ?? null),
+    };
+  });
+}
+
+export type EngineHistoryPoint = {
+  runId: string;
+  runDate: string;
+  sovPct: number | null;
+  modelId: string | null;
+};
+
+/**
+ * One engine's last 12 runs of share of voice — the tile sparkline.
+ *
+ * `sovPct` is null below MIN_N_AGGREGATE so the line BREAKS rather than
+ * dropping to zero. A thin run rendered as 0% is the single most misleading
+ * thing this chart could do: it looks exactly like losing every mention.
+ */
+export async function engineHistory(
+  tenantId: string,
+  engine: EngineId | "all",
+  database: typeof defaultDb = defaultDb
+): Promise<EngineHistoryPoint[]> {
+  const runs = await historyRuns(tenantId, database);
+  if (runs.length === 0) return [];
+
+  const rows = await database
+    .select({
+      runId: aiVisibilityAggregates.runId,
+      n: aiVisibilityAggregates.n,
+      tenantMentions: aiVisibilityAggregates.tenantMentions,
+      competitorMentions: aiVisibilityAggregates.competitorMentions,
+    })
+    .from(aiVisibilityAggregates)
+    .where(
+      and(
+        inArray(
+          aiVisibilityAggregates.runId,
+          runs.map((r) => r.id)
+        ),
+        isNull(aiVisibilityAggregates.promptId),
+        ...(engine === "all" ? [] : [eq(aiVisibilityAggregates.engine, engine)])
+      )
+    );
+
+  const byRun = new Map<string, WindowCounts>();
+  for (const row of rows) {
+    const counts = byRun.get(row.runId) ?? emptyCounts();
+    counts.n += row.n;
+    counts.tenantMentions += row.tenantMentions;
+    for (const [id, count] of Object.entries(row.competitorMentions ?? {})) {
+      counts.competitorMentions[id] = (counts.competitorMentions[id] ?? 0) + count;
+    }
+    byRun.set(row.runId, counts);
+  }
+
+  return runs.map((run) => {
+    const counts = byRun.get(run.id);
+    return {
+      runId: run.id,
+      runDate: run.startedAt.toISOString(),
+      sovPct: counts && counts.n >= MIN_N_AGGREGATE ? shareOfVoicePct(counts) : null,
+      modelId: engine === "all" ? null : (run.modelIds[engine] ?? null),
+    };
+  });
+}
+
+export type RunEngineHealth = {
+  engine: EngineId;
+  totalSamples: number;
+  okSamples: number;
+  erroredSamples: number;
+  refusedSamples: number;
+  /** Distinct prompts with at least one errored sample — the number in "failed on 9 prompts". */
+  erroredPrompts: number;
+  lastError: string | null;
+};
+
+/**
+ * Per-engine coverage for one run (design §States: "Partial failure").
+ *
+ * Errored and refused are counted separately because they are different facts
+ * with the same consequence: an engine that rate-limited is broken, an engine
+ * that declined to search answered honestly with nothing. Both are excluded
+ * from rates; only one is worth telling the operator to go look at.
+ */
+export async function runEngineHealth(
+  runId: string,
+  database: typeof defaultDb = defaultDb
+): Promise<RunEngineHealth[]> {
+  const rows = await database
+    .select({
+      engine: aiVisibilitySamples.engine,
+      promptId: aiVisibilitySamples.promptId,
+      status: aiVisibilitySamples.status,
+      error: aiVisibilitySamples.error,
+      askedAt: aiVisibilitySamples.askedAt,
+    })
+    .from(aiVisibilitySamples)
+    .where(eq(aiVisibilitySamples.runId, runId))
+    .orderBy(asc(aiVisibilitySamples.askedAt));
+
+  const byEngine = new Map<
+    string,
+    { total: number; ok: number; errored: number; refused: number; prompts: Set<string>; lastError: string | null }
+  >();
+  for (const row of rows) {
+    const entry =
+      byEngine.get(row.engine) ??
+      { total: 0, ok: 0, errored: 0, refused: 0, prompts: new Set<string>(), lastError: null };
+    entry.total += 1;
+    if (row.status === "ok") entry.ok += 1;
+    if (row.status === "refused") entry.refused += 1;
+    if (row.status === "error") {
+      entry.errored += 1;
+      entry.prompts.add(row.promptId);
+      // Ordered by askedAt above, so the last one assigned is the most recent.
+      if (row.error) entry.lastError = row.error;
+    }
+    byEngine.set(row.engine, entry);
+  }
+
+  return ENGINE_IDS.filter((engine) => byEngine.has(engine)).map((engine) => {
+    const entry = byEngine.get(engine)!;
+    return {
+      engine,
+      totalSamples: entry.total,
+      okSamples: entry.ok,
+      erroredSamples: entry.errored,
+      refusedSamples: entry.refused,
+      erroredPrompts: entry.prompts.size,
+      lastError: entry.lastError,
+    };
+  });
+}
+
+export type PromptSampleCitation = { url: string; domain: string; domainClass: DomainClass; position: number };
+
+export type PromptSample = {
+  id: string;
+  runId: string;
+  engine: EngineId;
+  sampleIndex: number;
+  status: string;
+  askedAt: Date | null;
+  modelId: string | null;
+  answerText: string | null;
+  error: string | null;
+  flagged: boolean;
+  framing: string | null;
+  quote: string | null;
+  level: "absent" | "mentioned" | "described" | "recommended" | null;
+  citations: PromptSampleCitation[];
+};
+
+/** How many samples per engine the prompt detail page stacks by default. */
+const DEFAULT_PROMPT_SAMPLE_LIMIT = 12;
+
+/**
+ * The raw answers behind one prompt — section 2 of the prompt detail page.
+ *
+ * `tenantId` is the security boundary and is in the WHERE clause, not merely
+ * validated: `promptId` arrives from the URL, and a tenant-less query would
+ * hand any logged-in user any other tenant's raw answers.
+ *
+ * The limit applies PER ENGINE when no engine is given, so a four-tab strip
+ * gets a full set for each tab rather than twelve rows that all belong to
+ * whichever engine answered most recently.
+ *
+ * Two queries, never N+1: the samples, then their citations in one `inArray`.
+ */
+export async function promptSamples(
+  tenantId: string,
+  promptId: string,
+  opts: { engine?: EngineId; limit?: number },
+  database: typeof defaultDb = defaultDb
+): Promise<PromptSample[]> {
+  const limit = opts.limit ?? DEFAULT_PROMPT_SAMPLE_LIMIT;
+
+  const rows = await database
+    .select({
+      id: aiVisibilitySamples.id,
+      runId: aiVisibilitySamples.runId,
+      engine: aiVisibilitySamples.engine,
+      sampleIndex: aiVisibilitySamples.sampleIndex,
+      status: aiVisibilitySamples.status,
+      askedAt: aiVisibilitySamples.askedAt,
+      modelId: aiVisibilitySamples.modelId,
+      answerText: aiVisibilitySamples.answerText,
+      error: aiVisibilitySamples.error,
+      flagged: aiVisibilitySamples.flagged,
+      extraction: aiVisibilitySamples.extraction,
+    })
+    .from(aiVisibilitySamples)
+    .where(
+      and(
+        eq(aiVisibilitySamples.tenantId, tenantId),
+        eq(aiVisibilitySamples.promptId, promptId),
+        ...(opts.engine ? [eq(aiVisibilitySamples.engine, opts.engine)] : [])
+      )
+    )
+    // Newest first. NULLS LAST so a still-pending row does not head the list.
+    .orderBy(sql`${aiVisibilitySamples.askedAt} DESC NULLS LAST`, asc(aiVisibilitySamples.sampleIndex))
+    // Bounded generously, then cut per engine below — one query beats four.
+    .limit(limit * ENGINE_IDS.length);
+
+  const perEngine = new Map<string, number>();
+  const kept = rows.filter((row) => {
+    const seen = perEngine.get(row.engine) ?? 0;
+    if (seen >= limit) return false;
+    perEngine.set(row.engine, seen + 1);
+    return true;
+  });
+  if (kept.length === 0) return [];
+
+  const citations = await database
+    .select({
+      sampleId: aiVisibilityCitations.sampleId,
+      url: aiVisibilityCitations.url,
+      domain: aiVisibilityCitations.domain,
+      domainClass: aiVisibilityCitations.domainClass,
+      position: aiVisibilityCitations.position,
+    })
+    .from(aiVisibilityCitations)
+    .where(
+      inArray(
+        aiVisibilityCitations.sampleId,
+        kept.map((r) => r.id)
+      )
+    )
+    .orderBy(asc(aiVisibilityCitations.position));
+
+  const bySample = new Map<string, PromptSampleCitation[]>();
+  for (const citation of citations) {
+    const list = bySample.get(citation.sampleId) ?? [];
+    list.push({
+      url: citation.url,
+      domain: citation.domain,
+      domainClass: citation.domainClass as DomainClass,
+      position: citation.position,
+    });
+    bySample.set(citation.sampleId, list);
+  }
+
+  return kept.map((row) => ({
+    id: row.id,
+    runId: row.runId,
+    engine: row.engine as EngineId,
+    sampleIndex: row.sampleIndex,
+    status: row.status,
+    askedAt: row.askedAt,
+    modelId: row.modelId,
+    answerText: row.answerText,
+    error: row.error,
+    flagged: row.flagged,
+    framing: row.extraction?.judged?.framing ?? null,
+    quote: row.extraction?.judged?.quote ?? null,
+    level: row.extraction?.judged?.level ?? null,
+    citations: bySample.get(row.id) ?? [],
+  }));
 }

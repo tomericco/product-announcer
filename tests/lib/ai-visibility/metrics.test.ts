@@ -3,13 +3,21 @@ import { db } from "../../../src/db";
 import {
   competitors,
   aiVisibilityAggregates,
+  aiVisibilityCitations,
   aiVisibilityPrompts,
   aiVisibilityRuns,
+  aiVisibilitySamples,
 } from "../../../src/db/schema";
 import {
   wilsonPp,
   windowCounts,
   engineMetrics,
+  promptMatrix,
+  promptHistory,
+  engineHistory,
+  runEngineHealth,
+  promptSamples,
+  HISTORY_RUNS,
   MIN_N_AGGREGATE,
   WINDOW_RUNS,
 } from "../../../src/lib/ai-visibility/metrics";
@@ -255,5 +263,245 @@ describe("engineMetrics", () => {
 
     const openai = (await engineMetrics(tenant.id, db, CLOCK)).find((r) => r.engine === "openai")!;
     expect(openai.deltaPp).toBeNull();
+  });
+});
+
+async function seedPromptRow(tenantId: string, overrides: Record<string, unknown> = {}) {
+  const [prompt] = await db
+    .insert(aiVisibilityPrompts)
+    .values({
+      tenantId,
+      text: "best issue tracker for startups",
+      intent: "discovery",
+      origin: "generated",
+      status: "active",
+      ...overrides,
+    })
+    .returning();
+  return prompt;
+}
+
+describe("promptMatrix", () => {
+  it("returns one row per active prompt with a cell per engine, un-thresholded", async () => {
+    const tenant = await seedTenant(TENANT);
+    const prompt = await seedPromptRow(tenant.id);
+    const run = await seedRun(tenant.id, "2026-03-01T09:00:00Z");
+    await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "openai", promptId: prompt.id, n: 3, tenantMentions: 2 });
+    await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "perplexity", promptId: prompt.id, n: 1, tenantMentions: 0 });
+
+    const rows = await promptMatrix(tenant.id);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ promptId: prompt.id, text: "best issue tracker for startups", intent: "discovery", branded: false });
+    expect(rows[0].cells.map((c) => c.engine)).toEqual(["openai", "perplexity", "gemini", "anthropic"]);
+    expect(rows[0].cells.find((c) => c.engine === "openai")).toEqual({ engine: "openai", hits: 2, n: 3 });
+    // Below MIN_N_PROMPT, but still returned raw — the UI decides what to render.
+    expect(rows[0].cells.find((c) => c.engine === "perplexity")).toEqual({ engine: "perplexity", hits: 0, n: 1 });
+    expect(rows[0].cells.find((c) => c.engine === "gemini")).toEqual({ engine: "gemini", hits: 0, n: 0 });
+  });
+
+  it("omits paused, proposed and rejected prompts", async () => {
+    const tenant = await seedTenant(TENANT);
+    await seedPromptRow(tenant.id, { text: "active one" });
+    await seedPromptRow(tenant.id, { text: "paused one", status: "paused" });
+    await seedPromptRow(tenant.id, { text: "proposed one", status: "proposed" });
+
+    const rows = await promptMatrix(tenant.id);
+    expect(rows.map((r) => r.text)).toEqual(["active one"]);
+  });
+});
+
+describe("promptHistory", () => {
+  it("returns up to HISTORY_RUNS complete runs oldest first, with the engine's model id", async () => {
+    const tenant = await seedTenant(TENANT);
+    const prompt = await seedPromptRow(tenant.id);
+    const a = await seedRun(tenant.id, "2026-01-05T09:00:00Z", "complete", { openai: "gpt-5.0" });
+    const b = await seedRun(tenant.id, "2026-01-12T09:00:00Z", "complete", { openai: "gpt-5.1" });
+    await seedAggregate({ runId: a.id, tenantId: tenant.id, engine: "openai", promptId: prompt.id, n: 3, tenantMentions: 1 });
+    await seedAggregate({ runId: b.id, tenantId: tenant.id, engine: "openai", promptId: prompt.id, n: 3, tenantMentions: 3 });
+
+    const points = await promptHistory(prompt.id, "openai");
+
+    expect(points).toHaveLength(2);
+    expect(points[0]).toMatchObject({ runId: a.id, hits: 1, n: 3, modelId: "gpt-5.0" });
+    expect(points[1]).toMatchObject({ runId: b.id, hits: 3, n: 3, modelId: "gpt-5.1" });
+    expect(points[0].runDate).toBe("2026-01-05T09:00:00.000Z");
+    expect(HISTORY_RUNS).toBe(12);
+  });
+
+  it("pools engines and reports a null model id for \"all\"", async () => {
+    const tenant = await seedTenant(TENANT);
+    const prompt = await seedPromptRow(tenant.id);
+    const run = await seedRun(tenant.id, "2026-01-05T09:00:00Z", "complete", { openai: "gpt-5.0" });
+    await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "openai", promptId: prompt.id, n: 3, tenantMentions: 2 });
+    await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "perplexity", promptId: prompt.id, n: 3, tenantMentions: 1 });
+
+    const points = await promptHistory(prompt.id, "all");
+    expect(points).toHaveLength(1);
+    expect(points[0]).toMatchObject({ hits: 3, n: 6, modelId: null });
+  });
+});
+
+describe("engineHistory", () => {
+  it("plots share of voice per run and breaks the line below the threshold", async () => {
+    const tenant = await seedTenant(TENANT);
+    const thin = await seedRun(tenant.id, "2026-01-05T09:00:00Z", "complete", { openai: "gpt-5.0" });
+    const fat = await seedRun(tenant.id, "2026-01-12T09:00:00Z", "complete", { openai: "gpt-5.1" });
+    await seedAggregate({ runId: thin.id, tenantId: tenant.id, engine: "openai", n: 10, tenantMentions: 5, competitorMentions: { r: 5 } });
+    await seedAggregate({ runId: fat.id, tenantId: tenant.id, engine: "openai", n: MIN_N_AGGREGATE, tenantMentions: 20, competitorMentions: { r: 60 } });
+
+    const points = await engineHistory(tenant.id, "openai");
+
+    expect(points).toHaveLength(2);
+    expect(points[0].sovPct).toBeNull();
+    expect(points[0].modelId).toBe("gpt-5.0");
+    expect(points[1].sovPct).toBeCloseTo(25, 4);
+    expect(points[1].modelId).toBe("gpt-5.1");
+  });
+
+  it("pools every engine for \"all\" and carries no model id", async () => {
+    const tenant = await seedTenant(TENANT);
+    const run = await seedRun(tenant.id, "2026-01-05T09:00:00Z", "complete", { openai: "gpt-5.0" });
+    await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "openai", n: 20, tenantMentions: 10, competitorMentions: { r: 10 } });
+    await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "perplexity", n: 20, tenantMentions: 10, competitorMentions: { r: 30 } });
+
+    const points = await engineHistory(tenant.id, "all");
+    expect(points[0].sovPct).toBeCloseTo((20 / 60) * 100, 4);
+    expect(points[0].modelId).toBeNull();
+  });
+});
+
+describe("runEngineHealth", () => {
+  it("counts ok, errored and refused samples per engine and names the failing prompts", async () => {
+    const tenant = await seedTenant(TENANT);
+    const p1 = await seedPromptRow(tenant.id, { text: "one" });
+    const p2 = await seedPromptRow(tenant.id, { text: "two" });
+    const run = await seedRun(tenant.id, "2026-03-01T09:00:00Z", "complete");
+
+    const add = (promptId: string, engine: string, sampleIndex: number, status: string, error: string | null) =>
+      db.insert(aiVisibilitySamples).values({
+        runId: run.id,
+        tenantId: tenant.id,
+        promptId,
+        engine,
+        sampleIndex,
+        status,
+        error,
+        answerText: status === "ok" ? "text" : null,
+      });
+
+    await add(p1.id, "openai", 0, "ok", null);
+    await add(p1.id, "perplexity", 0, "error", "429 rate limited");
+    await add(p2.id, "perplexity", 0, "error", "429 rate limited");
+    await add(p2.id, "perplexity", 1, "refused", "no search results");
+
+    const health = await runEngineHealth(run.id);
+
+    const pplx = health.find((h) => h.engine === "perplexity")!;
+    expect(pplx).toMatchObject({
+      totalSamples: 3,
+      okSamples: 0,
+      erroredSamples: 2,
+      refusedSamples: 1,
+      erroredPrompts: 2,
+    });
+    expect(pplx.lastError).toContain("429");
+    expect(health.find((h) => h.engine === "openai")).toMatchObject({ okSamples: 1, erroredSamples: 0, erroredPrompts: 0 });
+  });
+
+  it("returns nothing for a run with no samples", async () => {
+    const tenant = await seedTenant(TENANT);
+    const run = await seedRun(tenant.id, "2026-03-01T09:00:00Z");
+    expect(await runEngineHealth(run.id)).toEqual([]);
+  });
+});
+
+describe("promptSamples", () => {
+  async function seedAnswered() {
+    const tenant = await seedTenant(TENANT);
+    const other = await seedTenant(TENANT);
+    const prompt = await seedPromptRow(tenant.id);
+    const run = await seedRun(tenant.id, "2026-03-01T09:00:00Z", "complete");
+
+    const [sample] = await db
+      .insert(aiVisibilitySamples)
+      .values({
+        runId: run.id,
+        tenantId: tenant.id,
+        promptId: prompt.id,
+        engine: "openai",
+        sampleIndex: 0,
+        status: "ok",
+        answerText: "Rival is strongest.",
+        modelId: "gpt-5.1",
+        askedAt: new Date("2026-03-01T09:01:00Z"),
+        judged: true,
+        extraction: {
+          deterministic: { tenantMentioned: false, competitorIds: [], ownDomainCited: false },
+          judged: {
+            orderedBrands: ["Rival"],
+            level: "absent",
+            framing: "not named",
+            quote: "Rival is strongest",
+            positioningClaims: [],
+            hallucinations: [],
+            answerType: "list",
+          },
+        },
+      })
+      .returning();
+
+    await db.insert(aiVisibilityCitations).values([
+      { sampleId: sample.id, tenantId: tenant.id, runId: run.id, url: "https://rival.com/b", domain: "rival.com", position: 2, domainClass: "competitor" },
+      { sampleId: sample.id, tenantId: tenant.id, runId: run.id, url: "https://g2.com/a", domain: "g2.com", position: 1, domainClass: "review" },
+    ]);
+
+    return { tenant, other, prompt, run, sample };
+  }
+
+  it("returns the answer with its judge labels and ordered citations", async () => {
+    const { tenant, prompt, sample } = await seedAnswered();
+
+    const rows = await promptSamples(tenant.id, prompt.id, {});
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      id: sample.id,
+      engine: "openai",
+      sampleIndex: 0,
+      status: "ok",
+      modelId: "gpt-5.1",
+      answerText: "Rival is strongest.",
+      framing: "not named",
+      quote: "Rival is strongest",
+      level: "absent",
+      flagged: false,
+      error: null,
+    });
+    expect(rows[0].citations.map((c) => c.domain)).toEqual(["g2.com", "rival.com"]);
+    expect(rows[0].citations[0].position).toBe(1);
+  });
+
+  it("refuses to cross tenants even when handed a real promptId", async () => {
+    const { other, prompt } = await seedAnswered();
+    expect(await promptSamples(other.id, prompt.id, {})).toEqual([]);
+  });
+
+  it("filters by engine and honours the limit", async () => {
+    const { tenant, prompt, run } = await seedAnswered();
+    await db.insert(aiVisibilitySamples).values({
+      runId: run.id,
+      tenantId: tenant.id,
+      promptId: prompt.id,
+      engine: "perplexity",
+      sampleIndex: 0,
+      status: "refused",
+      error: "no search results",
+      askedAt: new Date("2026-03-01T09:02:00Z"),
+    });
+
+    expect(await promptSamples(tenant.id, prompt.id, { engine: "perplexity" })).toHaveLength(1);
+    expect((await promptSamples(tenant.id, prompt.id, { engine: "perplexity" }))[0].error).toBe("no search results");
+    expect(await promptSamples(tenant.id, prompt.id, { limit: 1 })).toHaveLength(2); // one per engine
   });
 });
