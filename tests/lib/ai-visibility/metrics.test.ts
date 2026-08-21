@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
+import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
 import {
   competitors,
@@ -21,6 +22,7 @@ import {
   promptSamples,
   HISTORY_RUNS,
   MIN_N_AGGREGATE,
+  MIN_N_PROMPT,
   WINDOW_RUNS,
 } from "../../../src/lib/ai-visibility/metrics";
 import { seedTenant, dropTenant } from "../../helpers/fixtures";
@@ -729,5 +731,481 @@ describe("promptSamples per-engine bounding", () => {
     expect(rows.filter((r) => r.engine === "perplexity")).toHaveLength(2);
     // Newest first across the flattened list.
     expect(rows[0].engine).toBe("openai");
+  });
+});
+
+/**
+ * QA additions. The Wilson numbers below were derived independently of the
+ * implementation: each is `(upper − lower) / 2` of the interval obtained by
+ * solving the score equation `(p̂ − p)² = z²·p(1 − p)/n` as a quadratic in `p`,
+ * with z = 1.959963984540054. `metrics.ts` computes the algebraically
+ * equivalent closed form, so agreement to six decimal places is a genuine
+ * cross-check rather than a restatement of the code.
+ */
+describe("wilsonPp against independently derived Wilson intervals", () => {
+  it("has no half-width to report without evidence", () => {
+    expect(wilsonPp(0, 0)).toBeNull();
+    expect(wilsonPp(0, -3)).toBeNull();
+    expect(wilsonPp(1, Number.NaN)).toBeNull();
+  });
+
+  it("is wide at p = 0 and p = 1, where the normal approximation reports zero width", () => {
+    // 0/30: exact Wilson [0, 11.351339] %, half-width 5.675670 pp. The Wald
+    // interval is ±0.0 pp here, which is the whole reason this is Wilson.
+    expect(wilsonPp(0, 30)!).toBeCloseTo(5.675670, 5);
+    expect(wilsonPp(30, 30)!).toBeCloseTo(5.675670, 5);
+  });
+
+  it("says almost nothing at n = 1", () => {
+    // [0, 79.345069] and [20.654931, 100]: same width, opposite ends.
+    expect(wilsonPp(0, 1)!).toBeCloseTo(39.672534, 5);
+    expect(wilsonPp(1, 1)!).toBeCloseTo(39.672534, 5);
+  });
+
+  it("matches the mid cases to six decimal places", () => {
+    expect(wilsonPp(1, 30)!).toBeCloseTo(8.039766, 5);
+    expect(wilsonPp(15, 30)!).toBeCloseTo(16.845874, 5);
+    // The worked example from the review: 26 tenant mentions over 84 answers.
+    expect(wilsonPp(26, 84)!).toBeCloseTo(9.703443, 5);
+    // The existing test pins this only to one decimal.
+    expect(wilsonPp(50, 100)!).toBeCloseTo(9.616847, 5);
+  });
+
+  it("is symmetric in successes and failures", () => {
+    expect(wilsonPp(1, 30)!).toBeCloseTo(wilsonPp(29, 30)!, 10);
+    expect(wilsonPp(26, 84)!).toBeCloseTo(wilsonPp(58, 84)!, 10);
+  });
+
+  it("cannot be un-shifted by clampBand, and does not pretend otherwise", () => {
+    const band = wilsonPp(0, 30)!;
+    // The exact interval for 0/30 is [0, 11.351339]: the clamp removes the
+    // impossible lower half and leaves the upper half where it was.
+    expect(clampBand(0, band)).toEqual({ lowPp: 0, highPp: band });
+    expect(clampBand(0, band).highPp).toBeLessThan(11.351339);
+  });
+});
+
+describe("the aggregate display threshold, at the boundary", () => {
+  const CLOCK = () => new Date("2026-03-30T00:00:00Z");
+
+  /** One engine-level row of size `n`, read back as its metrics row. */
+  async function rowAt(n: number) {
+    const tenant = await seedTenant(TENANT);
+    const run = await seedRun(tenant.id, "2026-03-01T09:00:00Z");
+    await seedAggregate({
+      runId: run.id,
+      tenantId: tenant.id,
+      engine: "openai",
+      n,
+      tenantMentions: 10,
+      competitorMentions: { r: 10 },
+      ownCitations: 4,
+      recommendations: 2,
+    });
+    const row = (await engineMetrics(tenant.id, db, CLOCK)).find((r) => r.engine === "openai")!;
+    await dropTenant(TENANT);
+    return row;
+  }
+
+  it("hides every rate at 29 and shows them at 30 and 31", async () => {
+    expect(MIN_N_AGGREGATE).toBe(30);
+
+    const below = await rowAt(MIN_N_AGGREGATE - 1);
+    expect(below.n).toBe(29);
+    expect(below.mentionRate).toBeNull();
+    expect(below.shareOfVoice).toBeNull();
+    expect(below.citationRate).toBeNull();
+    expect(below.recommendationRate).toBeNull();
+    expect(below.wilsonPp).toBeNull();
+    expect(below.deltaPp).toBeNull();
+
+    // The threshold is `>= MIN_N_AGGREGATE`, so 30 itself is shown.
+    const at = await rowAt(MIN_N_AGGREGATE);
+    expect(at.n).toBe(30);
+    expect(at.mentionRate).toBeCloseTo((10 / 30) * 100, 6);
+    expect(at.shareOfVoice).toBeCloseTo(50, 6);
+    expect(at.citationRate).toBeCloseTo((4 / 30) * 100, 6);
+    expect(at.recommendationRate).toBeCloseTo((2 / 30) * 100, 6);
+    expect(at.wilsonPp).not.toBeNull();
+
+    const above = await rowAt(MIN_N_AGGREGATE + 1);
+    expect(above.n).toBe(31);
+    expect(above.mentionRate).toBeCloseTo((10 / 31) * 100, 6);
+    expect(above.shareOfVoice).toBeCloseTo(50, 6);
+  });
+});
+
+describe("the per-prompt threshold belongs to the caller, not to promptMatrix", () => {
+  it("returns raw hits and n on both sides of MIN_N_PROMPT", async () => {
+    expect(MIN_N_PROMPT).toBe(3);
+    const tenant = await seedTenant(TENANT);
+    const run = await seedRun(tenant.id, "2026-03-01T09:00:00Z");
+    const thin = await seedPromptRow(tenant.id, { text: "two samples" });
+    const exact = await seedPromptRow(tenant.id, { text: "three samples" });
+    const fat = await seedPromptRow(tenant.id, { text: "four samples" });
+    await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "openai", promptId: thin.id, n: 2, tenantMentions: 1 });
+    await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "openai", promptId: exact.id, n: 3, tenantMentions: 2 });
+    await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "openai", promptId: fat.id, n: 4, tenantMentions: 3 });
+
+    const rows = await promptMatrix(tenant.id);
+    const cell = (text: string) =>
+      rows.find((r) => r.text === text)!.cells.find((c) => c.engine === "openai")!;
+
+    // Below, at and above the cell threshold — all three come back raw, so the
+    // cell component can tell "2 of 3 samples" from "the engine failed".
+    expect(cell("two samples")).toEqual({ engine: "openai", hits: 1, n: 2 });
+    expect(cell("three samples")).toEqual({ engine: "openai", hits: 2, n: 3 });
+    expect(cell("four samples")).toEqual({ engine: "openai", hits: 3, n: 4 });
+  });
+});
+
+describe("the known-zero row and the unknown row are different shapes", () => {
+  const CLOCK = () => new Date("2026-03-30T00:00:00Z");
+
+  it("known zero: every rate is a measured number, and only the share is null", async () => {
+    const tenant = await seedTenant(TENANT);
+    const run = await seedRun(tenant.id, "2026-03-01T09:00:00Z");
+    // 84 answers, nobody named, nothing cited, nothing recommended.
+    await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "openai", n: 84, tenantMentions: 0 });
+
+    const openai = (await engineMetrics(tenant.id, db, CLOCK)).find((r) => r.engine === "openai")!;
+    expect(openai.n).toBe(84);
+    // `mentionRate` is the discriminator, and it is a number: we measured this.
+    expect(openai.mentionRate).toBe(0);
+    expect(openai.citationRate).toBe(0);
+    expect(openai.recommendationRate).toBe(0);
+    // No brand mentions at all, so there is no proportion and no band.
+    expect(openai.shareOfVoice).toBeNull();
+    expect(openai.wilsonPp).toBeNull();
+    expect(openai.deltaPp).toBeNull();
+  });
+
+  it("unknown: every rate is null, including the one that discriminates", async () => {
+    const tenant = await seedTenant(TENANT);
+    const run = await seedRun(tenant.id, "2026-03-01T09:00:00Z");
+    await seedAggregate({
+      runId: run.id,
+      tenantId: tenant.id,
+      engine: "openai",
+      n: 29,
+      tenantMentions: 20,
+      competitorMentions: { r: 5 },
+      ownCitations: 10,
+      recommendations: 5,
+    });
+
+    const openai = (await engineMetrics(tenant.id, db, CLOCK)).find((r) => r.engine === "openai")!;
+    expect(openai.n).toBe(29);
+    expect(openai.mentionRate).toBeNull();
+    expect(openai.shareOfVoice).toBeNull();
+    expect(openai.citationRate).toBeNull();
+    expect(openai.recommendationRate).toBeNull();
+    expect(openai.wilsonPp).toBeNull();
+    expect(openai.deltaPp).toBeNull();
+  });
+
+  it("reports every rate on a 0..100 scale, not as a proportion", async () => {
+    const tenant = await seedTenant(TENANT);
+    const run = await seedRun(tenant.id, "2026-03-01T09:00:00Z");
+    // Every answer named us, cited us and recommended us; no rival was named.
+    await seedAggregate({
+      runId: run.id,
+      tenantId: tenant.id,
+      engine: "openai",
+      n: 30,
+      tenantMentions: 30,
+      ownCitations: 30,
+      recommendations: 30,
+    });
+
+    const openai = (await engineMetrics(tenant.id, db, CLOCK)).find((r) => r.engine === "openai")!;
+    expect(openai.mentionRate).toBe(100);
+    expect(openai.citationRate).toBe(100);
+    expect(openai.recommendationRate).toBe(100);
+    expect(openai.shareOfVoice).toBe(100);
+    // p = 1 over 30 trials: the band is the one-sided Wilson width, not zero.
+    expect(openai.wilsonPp!).toBeCloseTo(5.675670, 5);
+  });
+});
+
+describe("deltaPp needs both windows to be readable", () => {
+  const CLOCK = () => new Date("2026-03-30T00:00:00Z");
+
+  /**
+   * A run 30+ days before the frozen clock and one inside the last 30 days.
+   * The current window covers both; the 30-day-ago window covers only the
+   * older one, which is exactly the overlap the doc comment warns about.
+   */
+  async function twoWindows(then: { n: number; tenantMentions: number; competitorMentions?: Record<string, number> },
+                            now: { n: number; tenantMentions: number; competitorMentions?: Record<string, number> }) {
+    const tenant = await seedTenant(TENANT);
+    const older = await seedRun(tenant.id, "2026-01-05T09:00:00Z");
+    const newer = await seedRun(tenant.id, "2026-03-05T09:00:00Z");
+    await seedAggregate({ runId: older.id, tenantId: tenant.id, engine: "openai", ...then });
+    await seedAggregate({ runId: newer.id, tenantId: tenant.id, engine: "openai", ...now });
+    const row = (await engineMetrics(tenant.id, db, CLOCK)).find((r) => r.engine === "openai")!;
+    await dropTenant(TENANT);
+    return row;
+  }
+
+  it("is null when the earlier window is below the threshold, even though the current one is not", async () => {
+    const row = await twoWindows(
+      { n: 29, tenantMentions: 10, competitorMentions: { r: 90 } },
+      { n: 30, tenantMentions: 30, competitorMentions: { r: 70 } }
+    );
+    // The current window (59 samples) is readable...
+    expect(row.n).toBe(59);
+    expect(row.shareOfVoice).not.toBeNull();
+    // ...but the window as it stood 30 days ago was 29 samples, and a delta
+    // against a number nobody was allowed to see is not printable.
+    expect(row.deltaPp).toBeNull();
+  });
+
+  it("is null when the current window is below the threshold", async () => {
+    const row = await twoWindows(
+      { n: 20, tenantMentions: 10, competitorMentions: { r: 90 } },
+      { n: 5, tenantMentions: 3, competitorMentions: { r: 7 } }
+    );
+    expect(row.n).toBe(25);
+    expect(row.deltaPp).toBeNull();
+  });
+
+  it("is null when a window has a share nobody can have", async () => {
+    // The earlier window is fat but names no brand at all, so its share is
+    // null rather than 0 — there is nothing to subtract from.
+    const row = await twoWindows(
+      { n: 40, tenantMentions: 0 },
+      { n: 40, tenantMentions: 20, competitorMentions: { r: 20 } }
+    );
+    expect(row.n).toBe(80);
+    expect(row.shareOfVoice).toBeCloseTo(50, 6);
+    expect(row.deltaPp).toBeNull();
+  });
+
+  it("is the pp difference between the two overlapping windows when both clear", async () => {
+    const row = await twoWindows(
+      { n: 30, tenantMentions: 20, competitorMentions: { r: 80 } },
+      { n: 30, tenantMentions: 60, competitorMentions: { r: 40 } }
+    );
+    // Then: 20 / 100 = 20%. Now: the window includes BOTH runs, so
+    // 80 / 200 = 40%. The delta is damped by the overlap by design.
+    expect(row.shareOfVoice).toBeCloseTo(40, 6);
+    expect(row.deltaPp).toBeCloseTo(20, 6);
+  });
+});
+
+describe("the window is the last four COMPLETE runs, summed", () => {
+  it("sums every run there is when there are fewer than four", async () => {
+    const tenant = await seedTenant(TENANT);
+    for (const day of ["01", "08", "15"]) {
+      const run = await seedRun(tenant.id, `2026-03-${day}T09:00:00Z`);
+      await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "openai", n: 10, tenantMentions: 3 });
+    }
+    const counts = await windowCounts(tenant.id, { engine: "openai" });
+    expect(counts.n).toBe(30);
+    expect(counts.tenantMentions).toBe(9);
+  });
+
+  it("sums exactly four when there are exactly four", async () => {
+    const tenant = await seedTenant(TENANT);
+    for (const day of ["01", "08", "15", "22"]) {
+      const run = await seedRun(tenant.id, `2026-03-${day}T09:00:00Z`);
+      await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "openai", n: 10, tenantMentions: 3 });
+    }
+    const counts = await windowCounts(tenant.id, { engine: "openai" });
+    expect(counts.n).toBe(WINDOW_RUNS * 10);
+    expect(counts.tenantMentions).toBe(WINDOW_RUNS * 3);
+  });
+
+  it("drops the fifth-oldest run rather than averaging it in", async () => {
+    const tenant = await seedTenant(TENANT);
+    const oldest = await seedRun(tenant.id, "2026-02-01T09:00:00Z");
+    // Distinctive counts, so a leak shows up as a number rather than a wobble.
+    await seedAggregate({ runId: oldest.id, tenantId: tenant.id, engine: "openai", n: 1000, tenantMentions: 1000 });
+    for (const day of ["01", "08", "15", "22"]) {
+      const run = await seedRun(tenant.id, `2026-03-${day}T09:00:00Z`);
+      await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "openai", n: 10, tenantMentions: 3 });
+    }
+    const counts = await windowCounts(tenant.id, { engine: "openai" });
+    expect(counts.n).toBe(40);
+    expect(counts.tenantMentions).toBe(12);
+  });
+
+  it("excludes runs that never completed without letting them consume a window slot", async () => {
+    const tenant = await seedTenant(TENANT);
+    for (const day of ["01", "08", "15", "22"]) {
+      const run = await seedRun(tenant.id, `2026-03-${day}T09:00:00Z`);
+      await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "openai", n: 10, tenantMentions: 3 });
+    }
+    // Three newer runs that are not complete. Filtering AFTER the limit would
+    // leave one complete run in the window and report n = 10.
+    for (const [day, status] of [["24", "failed"], ["25", "paused_by_cap"], ["26", "running"]] as const) {
+      const run = await seedRun(tenant.id, `2026-03-${day}T09:00:00Z`, status);
+      await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "openai", n: 500, tenantMentions: 500 });
+    }
+    const counts = await windowCounts(tenant.id, { engine: "openai" });
+    expect(counts.n).toBe(40);
+    expect(counts.tenantMentions).toBe(12);
+  });
+});
+
+describe("a deleted competitor keeps its place in the denominator", () => {
+  const CLOCK = () => new Date("2026-03-30T00:00:00Z");
+
+  it("still counts a hard-deleted competitor's mentions in share of voice", async () => {
+    const tenant = await seedTenant(TENANT);
+    const [rival] = await db.insert(competitors).values({ tenantId: tenant.id, name: "Rival" }).returning();
+    const run = await seedRun(tenant.id, "2026-03-01T09:00:00Z");
+    await seedAggregate({
+      runId: run.id,
+      tenantId: tenant.id,
+      engine: "openai",
+      n: 40,
+      tenantMentions: 10,
+      competitorMentions: { [rival.id]: 30 },
+    });
+
+    // The roster row goes; the mentions it earned in this window stay, or
+    // deleting a competitor would retroactively quadruple the tenant's share.
+    await db.delete(competitors).where(eq(competitors.id, rival.id));
+
+    const counts = await windowCounts(tenant.id, { engine: "openai" });
+    expect(counts.competitorMentions[rival.id]).toBe(30);
+    expect(brandMentionTotal(counts)).toBe(40);
+
+    const openai = (await engineMetrics(tenant.id, db, CLOCK)).find((r) => r.engine === "openai")!;
+    expect(openai.shareOfVoice).toBeCloseTo(25, 6);
+  });
+});
+
+describe("history is capped at HISTORY_RUNS", () => {
+  it("plots the newest twelve runs, oldest first, and drops the thirteenth", async () => {
+    const tenant = await seedTenant(TENANT);
+    const prompt = await seedPromptRow(tenant.id);
+    const runs = [];
+    for (let i = 1; i <= HISTORY_RUNS + 1; i++) {
+      const run = await seedRun(tenant.id, `2026-01-${String(i).padStart(2, "0")}T09:00:00Z`);
+      await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "openai", n: 30, tenantMentions: 15, competitorMentions: { r: 15 } });
+      await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "openai", promptId: prompt.id, n: 3, tenantMentions: 1 });
+      runs.push(run);
+    }
+
+    const engine = await engineHistory(tenant.id, "openai");
+    expect(engine).toHaveLength(HISTORY_RUNS);
+    // The oldest run fell off the front; the series still reads oldest-first.
+    expect(engine[0].runId).toBe(runs[1].id);
+    expect(engine.at(-1)!.runId).toBe(runs.at(-1)!.id);
+    expect(engine.map((p) => p.runDate)).toEqual([...engine.map((p) => p.runDate)].sort());
+
+    const history = await promptHistory(tenant.id, prompt.id, "openai");
+    expect(history).toHaveLength(HISTORY_RUNS);
+    expect(history[0].runId).toBe(runs[1].id);
+  });
+});
+
+describe("runEngineHealth reporting", () => {
+  it("names the most recent error and lists engines in engine order", async () => {
+    const tenant = await seedTenant(TENANT);
+    const prompt = await seedPromptRow(tenant.id);
+    const run = await seedRun(tenant.id, "2026-03-01T09:00:00Z", "complete");
+
+    // Inserted newest-first, so a reader that trusts insertion order rather
+    // than `askedAt` reports the older message.
+    await db.insert(aiVisibilitySamples).values([
+      { runId: run.id, tenantId: tenant.id, promptId: prompt.id, engine: "gemini", sampleIndex: 1, status: "error", error: "later: 503 unavailable", askedAt: new Date("2026-03-01T10:00:00Z") },
+      { runId: run.id, tenantId: tenant.id, promptId: prompt.id, engine: "gemini", sampleIndex: 0, status: "error", error: "earlier: 429 rate limited", askedAt: new Date("2026-03-01T09:00:00Z") },
+      { runId: run.id, tenantId: tenant.id, promptId: prompt.id, engine: "openai", sampleIndex: 0, status: "ok", answerText: "text", askedAt: new Date("2026-03-01T09:30:00Z") },
+    ]);
+
+    const health = await runEngineHealth(tenant.id, run.id);
+    // ENGINE_IDS order (openai, perplexity, gemini, anthropic), not the order
+    // the rows came back in, and engines with no attempts are absent.
+    expect(health.map((h) => h.engine)).toEqual(["openai", "gemini"]);
+    expect(health.find((h) => h.engine === "gemini")!.lastError).toBe("later: 503 unavailable");
+  });
+});
+
+describe("promptSamples at samplesPerPrompt: 5", () => {
+  it("returns a full five for every engine rather than five in total", async () => {
+    const tenant = await seedTenant(TENANT);
+    const prompt = await seedPromptRow(tenant.id);
+    const run = await seedRun(tenant.id, "2026-03-01T09:00:00Z", "complete");
+
+    // Four engines, six answers each. openai's are the newest, so an
+    // over-fetch of `limit * 4 = 20` newest rows would return openai's six and
+    // starve the other three tabs.
+    const engines = ["anthropic", "gemini", "perplexity", "openai"] as const;
+    for (const [engineIndex, engine] of engines.entries()) {
+      await db.insert(aiVisibilitySamples).values(
+        Array.from({ length: 6 }, (_, i) => ({
+          runId: run.id,
+          tenantId: tenant.id,
+          promptId: prompt.id,
+          engine,
+          sampleIndex: i,
+          status: "ok",
+          answerText: `${engine} ${i}`,
+          askedAt: new Date(Date.UTC(2026, 2, 1, 9 + engineIndex, i)),
+        }))
+      );
+    }
+
+    const rows = await promptSamples(tenant.id, prompt.id, { limit: 5 });
+    expect(rows).toHaveLength(20);
+    for (const engine of engines) {
+      const forEngine = rows.filter((r) => r.engine === engine);
+      expect(forEngine).toHaveLength(5);
+      // The newest five of that engine's six, not an arbitrary five.
+      expect(forEngine.map((r) => r.answerText)).toEqual([
+        `${engine} 5`,
+        `${engine} 4`,
+        `${engine} 3`,
+        `${engine} 2`,
+        `${engine} 1`,
+      ]);
+    }
+    expect(rows[0].engine).toBe("openai");
+  });
+});
+
+describe("every read is scoped to the tenant it was asked for", () => {
+  const CLOCK = () => new Date("2026-03-30T00:00:00Z");
+
+  it("returns a foreign tenant nothing, never the owner's numbers", async () => {
+    const tenant = await seedTenant(TENANT);
+    const other = await seedTenant(TENANT);
+    const prompt = await seedPromptRow(tenant.id);
+    const run = await seedRun(tenant.id, "2026-03-01T09:00:00Z", "complete", { openai: "gpt-5.1" });
+    await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "openai", n: 40, tenantMentions: 20, competitorMentions: { r: 20 } });
+    await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "openai", promptId: prompt.id, n: 3, tenantMentions: 2 });
+    await db.insert(aiVisibilitySamples).values({
+      runId: run.id, tenantId: tenant.id, promptId: prompt.id, engine: "openai", sampleIndex: 0,
+      status: "ok", answerText: "text", askedAt: new Date("2026-03-01T09:05:00Z"),
+    });
+
+    // The fixture is real for its owner...
+    expect((await windowCounts(tenant.id, {})).n).toBe(40);
+    expect((await engineMetrics(tenant.id, db, CLOCK)).find((r) => r.engine === "openai")!.shareOfVoice).toBeCloseTo(50, 6);
+    expect(await promptMatrix(tenant.id)).toHaveLength(1);
+    expect(await engineHistory(tenant.id, "openai")).toHaveLength(1);
+    expect(await promptHistory(tenant.id, prompt.id, "openai")).toHaveLength(1);
+    expect(await runEngineHealth(tenant.id, run.id)).toHaveLength(1);
+    expect(await promptSamples(tenant.id, prompt.id, {})).toHaveLength(1);
+
+    // ...and invisible to anybody else, including when they hand over a real
+    // promptId or runId lifted from a URL.
+    expect(await windowCounts(other.id, {})).toEqual({
+      n: 0, tenantMentions: 0, ownCitations: 0, recommendations: 0, competitorMentions: {},
+    });
+    const foreign = await engineMetrics(other.id, db, CLOCK);
+    expect(foreign.map((r) => r.n)).toEqual([0, 0, 0, 0, 0]);
+    expect(foreign.every((r) => r.mentionRate === null && r.shareOfVoice === null)).toBe(true);
+    expect(await promptMatrix(other.id)).toEqual([]);
+    expect(await engineHistory(other.id, "openai")).toEqual([]);
+    expect(await promptHistory(other.id, prompt.id, "openai")).toEqual([]);
+    expect(await promptHistory(other.id, prompt.id, "all")).toEqual([]);
+    expect(await runEngineHealth(other.id, run.id)).toEqual([]);
+    expect(await promptSamples(other.id, prompt.id, {})).toEqual([]);
+    expect(await promptSamples(other.id, prompt.id, { engine: "openai" })).toEqual([]);
   });
 });
