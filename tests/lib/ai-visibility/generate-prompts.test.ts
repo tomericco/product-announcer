@@ -81,6 +81,28 @@ describe("allocateMix", () => {
     });
   });
 
+  it("keeps every intent alive from six slots up, and stays exact below that", () => {
+    // Largest-remainder alone leaves pricing on zero at exactly six — and six
+    // slots is an ordinary "Suggest more" top-up for a tenant near the cap.
+    const six = allocateMix(6);
+    expect(Object.values(six).reduce((a, b) => a + b, 0)).toBe(6);
+    expect(Object.values(six).every((n) => n >= 1)).toBe(true);
+
+    // Below six there are more intents than prompts, so some intent must miss
+    // out; what is still guaranteed is that the total is exactly right.
+    for (const slots of [1, 2, 3, 4, 5]) {
+      expect(Object.values(allocateMix(slots)).reduce((a, b) => a + b, 0)).toBe(slots);
+    }
+
+    // And the guarantee holds for every total in between, not just the ones
+    // with a test named after them.
+    for (let slots = 6; slots < INTENT_MIX_TOTAL; slots++) {
+      const mix = allocateMix(slots);
+      expect(Object.values(mix).reduce((a, b) => a + b, 0)).toBe(slots);
+      expect(Object.values(mix).every((n) => n >= 1)).toBe(true);
+    }
+  });
+
   it("is deterministic and never negative", () => {
     expect(allocateMix(30)).toEqual(allocateMix(30));
     expect(Object.values(allocateMix(7)).reduce((a, b) => a + b, 0)).toBe(7);
@@ -177,6 +199,33 @@ describe("generatePromptSet", () => {
     const call = generate.mock.calls[0][0] as unknown as { prompt: string };
     expect(call.prompt).toContain("--- BEGIN REJECTED PROMPTS ---");
     expect(call.prompt).toContain("a wording the human turned down");
+  });
+
+  it("shows the newest rejections when there are more than it can fit", async () => {
+    const tenant = await seedProfile();
+    // One more than MAX_NEGATIVES, with explicit timestamps: a bare `limit`
+    // with no `orderBy` would leave which 30 of these 31 reach the model up to
+    // Postgres, so the same tenant could get a different set every time.
+    const base = new Date("2026-01-01T00:00:00Z").getTime();
+    await db.insert(aiVisibilityPrompts).values(
+      Array.from({ length: 31 }, (_, i) => ({
+        tenantId: tenant.id,
+        text: `rejection number ${String(i).padStart(2, "0")}`,
+        intent: "discovery",
+        origin: "generated" as const,
+        status: "rejected" as const,
+        createdAt: new Date(base + i * 60_000),
+      }))
+    );
+    const generate = generateAll();
+
+    await generatePromptSet(tenant.id, { generate: generate as never });
+
+    const call = generate.mock.calls[0][0] as unknown as { prompt: string };
+    expect(call.prompt).toContain("rejection number 30");
+    expect(call.prompt).toContain("rejection number 01");
+    // The oldest one is the one that falls off the end.
+    expect(call.prompt).not.toContain("rejection number 00");
   });
 
   it("drops an index the model invented and a duplicate wording", async () => {

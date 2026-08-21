@@ -346,6 +346,25 @@ describe("approveProposals", () => {
     expect(await countActivePrompts(tenant.id)).toBe(1);
   });
 
+  it("rethrows a failure that is not a duplicate, rather than blaming the wording", async () => {
+    const tenant = await seedTenant(TENANT);
+    const [a] = await seedProposals(tenant.id, ["prompt a"]);
+
+    // A foreign-key violation (23503), not a unique one: `approvedBy` names a
+    // user that does not exist. Reporting this as "duplicate" would send the
+    // reviewer off to edit wording that was never the problem.
+    await expect(
+      approveProposals(tenant.id, {
+        approveIds: [a],
+        rejectIds: [],
+        approvedBy: "00000000-0000-4000-8000-000000000000",
+      })
+    ).rejects.toThrow();
+
+    const [untouched] = await db.select().from(aiVisibilityPrompts).where(eq(aiVisibilityPrompts.id, a));
+    expect(untouched.status).toBe("proposed");
+  });
+
   it("no-ops a replayed approve form even at the cap, instead of a spurious cap error", async () => {
     const tenant = await seedTenant(TENANT);
     await fillActive(tenant.id, MAX_ACTIVE_PROMPTS);
@@ -478,6 +497,23 @@ describe("editPrompt", () => {
     expect(old.status).toBe("paused");
     expect(old.text).toBe("best issue trackers");
     expect(await countActivePrompts(tenant.id)).toBe(1);
+  });
+
+  it("carries the flag over — a rewrite is not a re-judgement", async () => {
+    const tenant = await seedTenant(TENANT);
+    const created = await createPrompt(tenant.id, {
+      text: "issue trackers for teams",
+      intent: "discovery",
+      flagReason: "Reads like a search keyword, not something a buyer would type into a chatbot.",
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const edited = await editPrompt(tenant.id, created.prompt.id, "issue trackers for engineering teams");
+
+    expect(edited.ok).toBe(true);
+    if (!edited.ok) return;
+    expect(edited.prompt.flagReason).toBe(created.prompt.flagReason);
   });
 
   it("is a no-op when the wording did not actually change", async () => {

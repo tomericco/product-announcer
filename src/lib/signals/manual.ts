@@ -1,5 +1,8 @@
 import { db as defaultDb } from "@/db";
 import { signals } from "@/db/schema";
+// The unique constraint here is signals_tenant_kind_external_unique — the same
+// link entered twice for this tenant.
+import { isUniqueViolation } from "@/db/errors";
 import { normalizeArticleUrl } from "./news-agent";
 
 export type ManualSignalInput = {
@@ -10,21 +13,6 @@ export type ManualSignalInput = {
 };
 
 export type ManualSignalResult = { ok: true; id: string } | { ok: false; error: string };
-
-// A unique-violation on signals_tenant_kind_external_unique (Postgres code
-// 23505) — the same link entered twice for this tenant. Drizzle wraps the
-// driver error in a DrizzleQueryError and puts the original pg error on
-// `.cause`, so walk the cause chain rather than assuming exactly one level
-// of wrapping.
-function isUniqueViolation(error: unknown): boolean {
-  let current: unknown = error;
-  while (current !== null && typeof current === "object") {
-    const code = (current as { code?: unknown }).code;
-    if (code === "23505") return true;
-    current = (current as { cause?: unknown }).cause;
-  }
-  return false;
-}
 
 /**
  * Records a signal a human found — a competitor post, webinar, or talk the

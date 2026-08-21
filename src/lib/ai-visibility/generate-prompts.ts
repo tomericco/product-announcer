@@ -1,6 +1,6 @@
 import { generateObject } from "ai";
 import { z } from "zod";
-import { and, eq, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
 import {
   aiVisibilityPrompts,
@@ -34,14 +34,21 @@ export const INTENT_MIX: Record<PromptIntent, number> = {
 export const INTENT_MIX_TOTAL = 40;
 
 /**
- * Scales `INTENT_MIX` down to `slots` while keeping every intent represented.
+ * Scales `INTENT_MIX` down to `slots`, and always sums to exactly `slots`.
  *
  * Largest-remainder rather than "take the first N": truncating the list would
  * drop pricing and brand-check entirely at 30 slots, and those four prompts
  * are the ones that tell you whether an engine knows what you sell at all.
  *
- * Deterministic — `Array#sort` is stable, so ties fall back to `PROMPT_INTENTS`
- * order and the same slot count always yields the same mix.
+ * From six slots up every intent gets at least one. Largest-remainder alone
+ * does not guarantee that — at exactly six it leaves pricing on zero — and six
+ * is squarely in range for the "Suggest more" top-up, where a tenant near the
+ * cap would silently stop being offered whole intents. Below six there are
+ * more intents than prompts, so some intent MUST go unrepresented; which ones
+ * survive is left to largest-remainder.
+ *
+ * Deterministic — `Array#sort` is stable, ties fall back to `PROMPT_INTENTS`
+ * order, and the same slot count always yields the same mix.
  */
 export function allocateMix(slots: number): Record<PromptIntent, number> {
   const out: Record<PromptIntent, number> = {
@@ -69,6 +76,25 @@ export function allocateMix(slots: number): Record<PromptIntent, number> {
   for (let i = 0; assigned < slots; i++, assigned++) {
     out[order[i % order.length].intent] += 1;
   }
+
+  if (slots >= PROMPT_INTENTS.length) {
+    for (const starved of PROMPT_INTENTS) {
+      if (out[starved] > 0) continue;
+      // Take the slot from whichever intent has most to spare, so the shape of
+      // the mix moves as little as possible. Strictly `>` keeps the first such
+      // intent in `PROMPT_INTENTS` order on a tie, which keeps this
+      // deterministic; the total is unchanged either way.
+      let donor: PromptIntent | null = null;
+      for (const candidate of PROMPT_INTENTS) {
+        if (out[candidate] < 2) continue;
+        if (donor === null || out[candidate] > out[donor]) donor = candidate;
+      }
+      if (donor === null) break;
+      out[donor] -= 1;
+      out[starved] = 1;
+    }
+  }
+
   return out;
 }
 
@@ -383,6 +409,11 @@ export async function generatePromptSet(
       .select({ text: aiVisibilityPrompts.text })
       .from(aiVisibilityPrompts)
       .where(and(eq(aiVisibilityPrompts.tenantId, tenantId), eq(aiVisibilityPrompts.status, "rejected")))
+      // Newest first, and ordered at all: a bare `limit` leaves the 31st
+      // rejection onwards up to whatever order Postgres happens to return,
+      // so the same tenant would get a different prompt every regeneration.
+      // Recent turn-downs are also the ones still worth learning from.
+      .orderBy(desc(aiVisibilityPrompts.createdAt), desc(aiVisibilityPrompts.id))
       .limit(MAX_NEGATIVES)
   ).map((row) => row.text);
 
@@ -429,37 +460,46 @@ export async function generatePromptSet(
     bySlot.set(index, entry);
   }
 
-  const proposals: AiVisibilityPrompt[] = [];
+  const rows: (typeof aiVisibilityPrompts.$inferInsert)[] = [];
   for (const slot of slots) {
     const entry = bySlot.get(slot.index);
     if (!entry) continue;
     const text = normalizePromptText(entry.text);
     if (text === null) continue;
 
-    const [row] = await database
-      .insert(aiVisibilityPrompts)
-      .values({
-        tenantId,
-        text,
-        intent: slot.intent,
-        persona: slot.persona,
-        competitorId: slot.competitorIndex === null ? null : competitorRows[slot.competitorIndex].id,
-        branded: slot.branded,
-        origin: "generated",
-        status: "proposed",
-        cluster: entry.cluster.trim().slice(0, 120) || null,
-        flagReason: checkPromptQuality({ text, branded: slot.branded }, { tenantName }),
-      })
-      // Two slots can come back with the same wording, and a wording may
-      // already exist as an active prompt. Either way the second one is
-      // silently dropped rather than failing the batch.
-      .onConflictDoNothing({
-        target: [aiVisibilityPrompts.tenantId, aiVisibilityPrompts.text],
-        where: sql`${aiVisibilityPrompts.status} <> 'rejected'`,
-      })
-      .returning();
-    if (row) proposals.push(row);
+    rows.push({
+      tenantId,
+      text,
+      intent: slot.intent,
+      persona: slot.persona,
+      competitorId: slot.competitorIndex === null ? null : competitorRows[slot.competitorIndex].id,
+      branded: slot.branded,
+      origin: "generated",
+      status: "proposed",
+      cluster: entry.cluster.trim().slice(0, 120) || null,
+      flagReason: checkPromptQuality({ text, branded: slot.branded }, { tenantName }),
+    });
   }
+  // A model that answered nothing usable. `insert().values([])` is not valid
+  // SQL, and an empty batch is a legitimate (if useless) outcome, not an error.
+  if (rows.length === 0) return { ok: true, proposals: [] };
+
+  // ONE statement for the whole batch, not a loop of inserts: a failure partway
+  // through a loop would leave a half-written set that the suggestions section
+  // then presents as if it were everything the model proposed.
+  //
+  // Two slots can come back with the same wording, and a wording may already
+  // exist as an active prompt. `DO NOTHING` drops the later one either way —
+  // including duplicates within this same statement — rather than failing the
+  // batch.
+  const proposals: AiVisibilityPrompt[] = await database
+    .insert(aiVisibilityPrompts)
+    .values(rows)
+    .onConflictDoNothing({
+      target: [aiVisibilityPrompts.tenantId, aiVisibilityPrompts.text],
+      where: sql`${aiVisibilityPrompts.status} <> 'rejected'`,
+    })
+    .returning();
 
   return { ok: true, proposals };
 }

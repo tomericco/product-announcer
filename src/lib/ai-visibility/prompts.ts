@@ -1,6 +1,7 @@
 import { and, asc, count, eq, inArray, sql } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
 import { aiVisibilityPrompts, aiVisibilitySamples, type AiVisibilityPrompt } from "@/db/schema";
+import { isUniqueViolation } from "@/db/errors";
 import { PROMPT_INTENTS, type PromptIntent } from "@/lib/ai-visibility/types";
 
 /**
@@ -324,12 +325,18 @@ export async function approveProposals(
 
       return { ok: true as const, approved, rejected };
     });
-  } catch {
-    // The partial unique index fired on an edit: the reviewer retyped a
-    // suggestion into the exact wording of a prompt they already have. The
-    // transaction rolled back, so nothing — not even the earlier edits in
-    // the batch — was written.
-    return { ok: false, error: "duplicate" };
+  } catch (error) {
+    // Only a unique violation means what the user-facing "duplicate" says: the
+    // partial unique index fired on an edit, because the reviewer retyped a
+    // suggestion into the exact wording of a prompt they already have. Either
+    // way the transaction rolled back, so nothing — not even the earlier edits
+    // in the batch — was written.
+    //
+    // Everything else rethrows. A connection loss, a deadlock, a statement
+    // timeout or a bug in here is not the reviewer's wording, and telling them
+    // it is sends them to edit text that was never the problem.
+    if (isUniqueViolation(error)) return { ok: false, error: "duplicate" };
+    throw error;
   }
 }
 
@@ -383,7 +390,7 @@ export async function resumePrompt(
   await database
     .update(aiVisibilityPrompts)
     .set({ status: "active", pausedAt: null })
-    .where(eq(aiVisibilityPrompts.id, prompt.id));
+    .where(and(eq(aiVisibilityPrompts.tenantId, tenantId), eq(aiVisibilityPrompts.id, prompt.id)));
   return { ok: true };
 }
 
@@ -398,9 +405,15 @@ export async function resumePrompt(
  * place by `approveProposals` — it has nothing behind it to protect — and a
  * `rejected` row is a negative, not a prompt.
  *
- * The new row is inserted BEFORE the old one is paused. That is briefly one
- * over the cap; the alternative is a window where a failed insert has already
- * paused a prompt the tenant is still running.
+ * Both writes run in ONE transaction. The insert has to come first — the old
+ * row is what the new one points at — and a tenant left with the successor
+ * inserted but the predecessor never paused would be one over the cap with
+ * both wordings running, which is the exact state the supersede rule exists to
+ * prevent.
+ *
+ * `flagReason` carries over unchanged. Re-judging the wording belongs to
+ * whatever recomputes quality, not to the edit: silently clearing the badge
+ * here would tell the tenant their rewrite fixed a problem nothing checked.
  */
 export async function editPrompt(
   tenantId: string,
@@ -423,37 +436,42 @@ export async function editPrompt(
   // paused ghost and a fresh, empty sparkline for the same question.
   if (existing.text === text) return { ok: true, prompt: existing };
 
-  const [row] = await database
-    .insert(aiVisibilityPrompts)
-    .values({
-      tenantId,
-      text,
-      intent: existing.intent,
-      persona: existing.persona,
-      competitorId: existing.competitorId,
-      branded: existing.branded,
-      // A human typed this wording, whatever produced the original.
-      origin: "user",
-      status: existing.status,
-      cluster: existing.cluster,
-      supersedesId: existing.id,
-      approvedAt: existing.approvedAt,
-      approvedBy: existing.approvedBy,
-      pausedAt: existing.status === "paused" ? new Date() : null,
-    })
-    .onConflictDoNothing({
-      target: [aiVisibilityPrompts.tenantId, aiVisibilityPrompts.text],
-      where: sql`${aiVisibilityPrompts.status} <> 'rejected'`,
-    })
-    .returning();
-  if (!row) return { ok: false, error: "duplicate" };
+  return database.transaction(async (tx) => {
+    const [row] = await tx
+      .insert(aiVisibilityPrompts)
+      .values({
+        tenantId,
+        text,
+        intent: existing.intent,
+        persona: existing.persona,
+        competitorId: existing.competitorId,
+        branded: existing.branded,
+        // A human typed this wording, whatever produced the original.
+        origin: "user",
+        status: existing.status,
+        cluster: existing.cluster,
+        supersedesId: existing.id,
+        approvedAt: existing.approvedAt,
+        approvedBy: existing.approvedBy,
+        pausedAt: existing.status === "paused" ? new Date() : null,
+        flagReason: existing.flagReason,
+      })
+      .onConflictDoNothing({
+        target: [aiVisibilityPrompts.tenantId, aiVisibilityPrompts.text],
+        where: sql`${aiVisibilityPrompts.status} <> 'rejected'`,
+      })
+      .returning();
+    // Nothing has been written yet, so returning here commits an empty
+    // transaction rather than needing a rollback.
+    if (!row) return { ok: false as const, error: "duplicate" as const };
 
-  await database
-    .update(aiVisibilityPrompts)
-    .set({ status: "paused", pausedAt: new Date() })
-    .where(eq(aiVisibilityPrompts.id, existing.id));
+    await tx
+      .update(aiVisibilityPrompts)
+      .set({ status: "paused", pausedAt: new Date() })
+      .where(and(eq(aiVisibilityPrompts.tenantId, tenantId), eq(aiVisibilityPrompts.id, existing.id)));
 
-  return { ok: true, prompt: row };
+    return { ok: true as const, prompt: row };
+  });
 }
 
 /**
