@@ -612,10 +612,28 @@ export const aiVisibilityRuns = pgTable(
     // change-signals for that engine and puts a tick on the sparkline.
     modelIds: jsonb("model_ids").$type<Record<string, string>>().notNull().default({}),
     error: text("error"),
+    // The slice lease. One driver at a time may spend this run's work list:
+    // whoever compare-and-swaps this column into the future owns the run until
+    // it expires or is released. NOT `FOR UPDATE SKIP LOCKED` — a row lock dies
+    // with its transaction, and a slice holds its claim across minutes of
+    // engine HTTP calls that cannot run inside an open transaction.
+    //
+    // Expiry rather than a boolean so a driver that dies mid-slice cannot
+    // strand the run: the next tick takes the lease once the old one lapses.
+    sliceLeaseUntil: timestamp("slice_lease_until", { withTimezone: true }),
     startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
   },
-  (table) => [index("ai_visibility_runs_tenant_started_idx").on(table.tenantId, table.startedAt)]
+  (table) => [
+    index("ai_visibility_runs_tenant_started_idx").on(table.tenantId, table.startedAt),
+    // One run in flight per tenant, enforced by Postgres rather than by
+    // `planRun` reading before it writes. Two drivers planning at the same
+    // moment both see no in-flight run and both insert; the second insert has
+    // to bounce, or the tenant pays for two full runs of the same prompt set.
+    uniqueIndex("ai_visibility_runs_tenant_in_flight_unique")
+      .on(table.tenantId)
+      .where(sql`${table.status} IN ('pending', 'running')`),
+  ]
 );
 
 export type AiVisibilityRun = typeof aiVisibilityRuns.$inferSelect;
@@ -647,6 +665,11 @@ export const aiVisibilitySamples = pgTable(
     costUsd: real("cost_usd").notNull().default(0),
     error: text("error"),
     judged: boolean("judged").notNull().default(false),
+    // How many judge calls this row has been part of that came back an error.
+    // A chunk that fails is retried on the next tick, and without a ceiling a
+    // permanently un-judgeable answer keeps the run `running` forever — which
+    // blocks every future run for that tenant and re-pays for the chunk daily.
+    judgeAttempts: smallint("judge_attempts").notNull().default(0),
     /** Deterministic and judged extraction disagreed. Excluded from rates. */
     flagged: boolean("flagged").notNull().default(false),
     extraction: jsonb("extraction").$type<SampleExtraction>(),

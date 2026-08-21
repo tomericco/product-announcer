@@ -2,6 +2,7 @@ import { and, eq, gte, lt, sql } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
 import { aiVisibilityPrompts, aiVisibilityRuns } from "@/db/schema";
 import { engineCost } from "@/lib/ai-visibility/engines";
+import { roundUsd } from "@/lib/ai-visibility/money";
 import { ENGINE_IDS, type EngineId } from "@/lib/ai-visibility/types";
 
 /**
@@ -51,6 +52,13 @@ export function nextMonthStartUtc(now: Date): Date {
  *
  * `sum` over a `real` column comes back as `double precision`; the cast and the
  * `coalesce` keep an empty month at `0` instead of `null`.
+ *
+ * Rounded to cents on the way out. Summing float4 sample costs produces values
+ * like 0.036000000312924385, and this number is both compared against a cap
+ * that IS rounded (`getAiVisibilitySettings` rounds it) and rendered verbatim
+ * on the settings card as "Spent this month $X of $Y". Rounding one side and
+ * not the other is how a tenant ends up a fraction of a cent the wrong side of
+ * their own cap, with fifteen decimal places on screen explaining it.
  */
 export async function monthToDateSpendUsd(
   tenantId: string,
@@ -67,7 +75,7 @@ export async function monthToDateSpendUsd(
         lt(aiVisibilityRuns.startedAt, nextMonthStartUtc(now))
       )
     );
-  return Number(row?.total ?? 0);
+  return roundUsd(Number(row?.total ?? 0));
 }
 
 export type CapState = {

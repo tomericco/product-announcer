@@ -57,7 +57,14 @@ async function seedPrompt(tenantId: string, text: string, status = "active") {
   return prompt;
 }
 
-async function seedRun(tenantId: string, sourceId: string) {
+async function seedRun(
+  tenantId: string,
+  sourceId: string,
+  // `ai_visibility_runs_tenant_in_flight_unique` allows one pending-or-running
+  // run per tenant, so a test that needs two runs for the SAME tenant has to
+  // say which of them is finished. Identity fixtures do not care either way.
+  overrides: Partial<typeof aiVisibilityRuns.$inferInsert> = {}
+) {
   const [run] = await db
     .insert(aiVisibilityRuns)
     .values({
@@ -67,6 +74,7 @@ async function seedRun(tenantId: string, sourceId: string) {
       engines: ["openai", "perplexity"],
       samplesPerPrompt: 3,
       plannedCalls: 6,
+      ...overrides,
     })
     .returning();
   return run;
@@ -409,7 +417,7 @@ describe("ai_visibility schema", () => {
     const { tenant, source } = await seed();
     const prompt = await seedPrompt(tenant.id, "best issue trackers for startups");
     const run = await seedRun(tenant.id, source.id);
-    const otherRun = await seedRun(tenant.id, source.id);
+    const otherRun = await seedRun(tenant.id, source.id, { status: "complete" });
     const identity = {
       runId: run.id,
       tenantId: tenant.id,

@@ -1,4 +1,4 @@
-import { and, asc, eq, ne, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { generateObject } from "ai";
 import { z } from "zod";
 import { db as defaultDb } from "@/db";
@@ -30,6 +30,18 @@ export const JUDGE_CHUNK_SIZE = 20;
 
 /** Chunks in flight at once. Matches the repo's other model fan-outs; no retry helper exists. */
 export const JUDGE_CONCURRENCY = 4;
+
+/**
+ * How many failed judge calls a sample is retried through before the run gives
+ * up on labelling it.
+ *
+ * Three because a transient overload clears in a tick or two and anything that
+ * survives three days of retries is not transient. Without a ceiling an
+ * un-judgeable answer is unbounded: the run never leaves `running`, `planRun`
+ * refuses every future run with `run_in_flight`, and the daily sweep pays for
+ * the same chunk forever.
+ */
+export const MAX_JUDGE_ATTEMPTS = 3;
 
 /**
  * Set explicitly because the default truncates a long structured array mid-way,
@@ -235,6 +247,15 @@ export function agreementFlag(
   return deterministicMentioned ? "d_only" : "j_only";
 }
 
+/** Rows of this run still waiting for a label — the resume signal for `finalizeRun`. */
+async function countUnjudged(database: typeof defaultDb, runId: string): Promise<number> {
+  const [left] = await database
+    .select({ count: sql<number>`count(*)::int` })
+    .from(aiVisibilitySamples)
+    .where(and(eq(aiVisibilitySamples.runId, runId), eq(aiVisibilitySamples.judged, false)));
+  return left?.count ?? 0;
+}
+
 /** Positioning claims, one per line or per sentence, out of the free-text profile field. */
 function splitClaims(positioning: string | null): string[] {
   if (!positioning) return [];
@@ -272,6 +293,10 @@ export async function judgeRun(
   // Errored and refused samples have no answer to judge. Marked judged here so
   // they can never block finalization, and never flagged — a rate-limited
   // engine is a coverage gap, not a disagreement.
+  //
+  // The status list is explicit, NOT `<> 'ok'`: a still-`pending` sample has
+  // not been asked yet, and marking it judged would mean it never gets a label
+  // once its answer arrives. Only the two terminal no-answer statuses qualify.
   await database
     .update(aiVisibilitySamples)
     .set({ judged: true })
@@ -279,7 +304,7 @@ export async function judgeRun(
       and(
         eq(aiVisibilitySamples.runId, runId),
         eq(aiVisibilitySamples.judged, false),
-        ne(aiVisibilitySamples.status, "ok")
+        inArray(aiVisibilitySamples.status, ["error", "refused"])
       )
     );
 
@@ -311,7 +336,11 @@ export async function judgeRun(
     );
 
   if (pending.length === 0) {
-    return { judged: 0, flagged: 0, remaining: 0, budgetSpent: false, errors };
+    // NOT a hardcoded 0. A sample still `pending` — never asked, so never
+    // judgeable — is unjudged work this pass could not do, and reporting it as
+    // zero remaining is what lets `finalizeRun` aggregate a half-answered run
+    // and freeze a small `n` into the permanent record.
+    return { judged: 0, flagged: 0, remaining: await countUnjudged(database, runId), budgetSpent: false, errors };
   }
 
   const [tenant] = await database.select({ name: tenants.name }).from(tenants).where(eq(tenants.id, run.tenantId));
@@ -359,10 +388,33 @@ export async function judgeRun(
       judgeChunk(chunk, ctx, run.tenantId, deps)
     );
 
-    for (const outcome of outcomes) {
+    for (const [waveIndex, outcome] of outcomes.entries()) {
+      const chunk = wave[waveIndex];
       if ("error" in outcome) {
-        // The chunk's rows stay judged:false and are retried on the next tick.
+        // The chunk's rows stay judged:false and are retried on the next tick —
+        // but only MAX_JUDGE_ATTEMPTS times. A chunk that can never succeed
+        // (an answer the model refuses to grade, a permanently oversized
+        // payload) would otherwise keep the run `running` forever: the tenant's
+        // every future run refuses with `run_in_flight`, and the sweep pays for
+        // the same failing chunk again every single day.
         errors.push(outcome.error);
+        const abandoned = await database
+          .update(aiVisibilitySamples)
+          .set({
+            judgeAttempts: sql`${aiVisibilitySamples.judgeAttempts} + 1`,
+            // Give-up is the same state as "chunk succeeded but returned no
+            // label for this row": judged, unlabelled, NOT flagged. The row
+            // keeps its deterministic mention and counts toward every rate;
+            // it just has no level, framing or quote.
+            judged: sql`${aiVisibilitySamples.judgeAttempts} + 1 >= ${MAX_JUDGE_ATTEMPTS}`,
+          })
+          .where(inArray(aiVisibilitySamples.id, chunk.map((item) => item.sampleId)))
+          .returning({ judged: aiVisibilitySamples.judged });
+        const gaveUp = abandoned.filter((row) => row.judged).length;
+        if (gaveUp > 0) {
+          judged += gaveUp;
+          errors.push(`gave up judging ${gaveUp} sample(s) after ${MAX_JUDGE_ATTEMPTS} attempts`);
+        }
         continue;
       }
       for (const [sampleId, label] of outcome.labels) {
@@ -399,13 +451,30 @@ export async function judgeRun(
           errors.push(`could not store judgement for ${sampleId}: ${String(error)}`);
         }
       }
+
+      // The chunk SUCCEEDED, so every row in it has had its turn — including
+      // the ones the model silently skipped. Leaving those `judged: false`
+      // means the run never finalizes (nothing will ever produce a label the
+      // model already chose not to write), which strands the run `running`,
+      // blocks every future run for the tenant behind `run_in_flight`, and
+      // re-bills the whole chunk on the next tick. They lose their level,
+      // framing and quote; they keep their deterministic mention.
+      const unlabelled = chunk
+        .filter((item) => !outcome.labels.has(item.sampleId))
+        .map((item) => item.sampleId);
+      if (unlabelled.length > 0) {
+        try {
+          await database
+            .update(aiVisibilitySamples)
+            .set({ judged: true })
+            .where(inArray(aiVisibilitySamples.id, unlabelled));
+          judged += unlabelled.length;
+        } catch (error) {
+          errors.push(`could not close out ${unlabelled.length} unlabelled sample(s): ${String(error)}`);
+        }
+      }
     }
   }
 
-  const [left] = await database
-    .select({ count: sql<number>`count(*)::int` })
-    .from(aiVisibilitySamples)
-    .where(and(eq(aiVisibilitySamples.runId, runId), eq(aiVisibilitySamples.judged, false)));
-
-  return { judged, flagged, remaining: left?.count ?? 0, budgetSpent, errors };
+  return { judged, flagged, remaining: await countUnjudged(database, runId), budgetSpent, errors };
 }

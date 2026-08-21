@@ -1,5 +1,6 @@
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
+import { isUniqueViolation } from "@/db/errors";
 import {
   aiVisibilityPrompts,
   aiVisibilityRuns,
@@ -10,6 +11,7 @@ import {
 import { getAiVisibilitySettings, ensureAiVisibilitySource } from "@/lib/ai-visibility/settings";
 import { computeAggregates } from "@/lib/ai-visibility/aggregate";
 import { capExceeded } from "@/lib/ai-visibility/cost";
+import { roundUsd } from "@/lib/ai-visibility/money";
 import { ENGINE_CLIENTS } from "@/lib/ai-visibility/engines";
 import { extractSample, loadBrandTargets, type ExtractSampleDeps } from "@/lib/ai-visibility/extract";
 import { judgeRun } from "@/lib/ai-visibility/judge";
@@ -52,6 +54,87 @@ const SAMPLE_INSERT_CHUNK = 200;
 const IN_FLIGHT: string[] = ["pending", "running"];
 
 /**
+ * Slack added to a driver's wall-clock budget when it takes the slice lease.
+ *
+ * The budget bounds when a slice STOPS handing out new work; the engine calls
+ * already in flight when it stops still have to land, and an engine client
+ * waits up to its own timeout. A lease that expired the instant the budget did
+ * would be free for a second driver to take while the first was still writing
+ * sample rows — which is the exact double-spend the lease exists to stop.
+ */
+const LEASE_GRACE_MS = 5 * 60_000;
+
+/**
+ * Claims exclusive right to drive this run, or reports that someone else has it.
+ *
+ * One compare-and-swap: the lease is taken only if it is unset or has lapsed.
+ * Deliberately NOT `SELECT ... FOR UPDATE SKIP LOCKED` — a row lock lives and
+ * dies with its transaction, and a slice holds its claim across minutes of
+ * engine HTTP calls that cannot be made inside an open transaction. An expiry
+ * timestamp survives the process that set it, so a driver killed mid-slice
+ * releases the run by lapsing rather than stranding it forever.
+ */
+async function acquireSliceLease(
+  database: typeof defaultDb,
+  runId: string,
+  now: Date,
+  budgetMs: number
+): Promise<boolean> {
+  const until = new Date(now.getTime() + Math.max(0, budgetMs) + LEASE_GRACE_MS);
+  const claimed = await database
+    .update(aiVisibilityRuns)
+    .set({ sliceLeaseUntil: until })
+    .where(
+      and(
+        eq(aiVisibilityRuns.id, runId),
+        or(
+          isNull(aiVisibilityRuns.sliceLeaseUntil),
+          lt(aiVisibilityRuns.sliceLeaseUntil, now)
+        )
+      )
+    )
+    .returning({ id: aiVisibilityRuns.id });
+  return claimed.length > 0;
+}
+
+/** Pushes the lease out for another batch. Only the holder should be calling this. */
+async function renewSliceLease(
+  database: typeof defaultDb,
+  runId: string,
+  now: Date,
+  budgetMs: number
+): Promise<void> {
+  await database
+    .update(aiVisibilityRuns)
+    .set({ sliceLeaseUntil: new Date(now.getTime() + Math.max(0, budgetMs) + LEASE_GRACE_MS) })
+    .where(eq(aiVisibilityRuns.id, runId));
+}
+
+/**
+ * Hands the run back, so the next tick can pick it up immediately instead of
+ * waiting out a lease nobody is using.
+ */
+async function releaseSliceLease(database: typeof defaultDb, runId: string): Promise<void> {
+  await database
+    .update(aiVisibilityRuns)
+    .set({ sliceLeaseUntil: null })
+    .where(eq(aiVisibilityRuns.id, runId));
+}
+
+/** The tenant's in-flight run, if any. Takes a `tx` so the plan can re-check inside its transaction. */
+async function findInFlightRun(
+  database: typeof defaultDb | Parameters<Parameters<typeof defaultDb.transaction>[0]>[0],
+  tenantId: string
+): Promise<string | null> {
+  const [row] = await database
+    .select({ id: aiVisibilityRuns.id })
+    .from(aiVisibilityRuns)
+    .where(and(eq(aiVisibilityRuns.tenantId, tenantId), inArray(aiVisibilityRuns.status, IN_FLIGHT)))
+    .limit(1);
+  return row?.id ?? null;
+}
+
+/**
  * Plans one run: every guard, then the run row and every `pending` sample row.
  *
  * Nothing here calls an engine. Planning is cheap and synchronous so the "Run
@@ -90,12 +173,8 @@ export async function planRun(
     .where(and(eq(aiVisibilityPrompts.tenantId, tenantId), eq(aiVisibilityPrompts.status, "active")));
   if (prompts.length === 0) return { ok: false, reason: "no_prompts" };
 
-  const [inFlight] = await database
-    .select({ id: aiVisibilityRuns.id })
-    .from(aiVisibilityRuns)
-    .where(and(eq(aiVisibilityRuns.tenantId, tenantId), inArray(aiVisibilityRuns.status, IN_FLIGHT)))
-    .limit(1);
-  if (inFlight) return { ok: false, reason: "run_in_flight", runId: inFlight.id };
+  const inFlightBefore = await findInFlightRun(database, tenantId);
+  if (inFlightBefore) return { ok: false, reason: "run_in_flight", runId: inFlightBefore };
 
   const cap = await capExceeded(tenantId, settings, now, database);
   if (cap.exceeded) {
@@ -125,27 +204,54 @@ export async function planRun(
 
   const source = await ensureAiVisibilitySource(tenantId, database);
 
-  const [run] = await database
-    .insert(aiVisibilityRuns)
-    .values({
-      tenantId,
-      sourceId: source.id,
-      status: "pending",
-      trigger: opts.trigger,
-      engines,
-      samplesPerPrompt: settings.samplesPerPrompt,
-      plannedCalls: rows.length,
-      startedAt: now,
-    })
-    .returning();
+  try {
+    // One transaction for the run row AND its whole work list. A plan is not
+    // useful in halves: a run row whose sample grid was only partly inserted
+    // reports `plannedCalls: 360`, is driven to "completion" against however
+    // many rows landed, and freezes that short count into the permanent
+    // aggregates. The in-flight re-check joins the transaction so the read and
+    // the insert cannot be separated by another driver's insert.
+    type Planned = { planned: true; id: string } | { planned: false; conflictId: string };
+    const outcome: Planned = await database.transaction(async (tx): Promise<Planned> => {
+      const contender = await findInFlightRun(tx, tenantId);
+      if (contender) return { planned: false, conflictId: contender };
 
-  for (let i = 0; i < rows.length; i += SAMPLE_INSERT_CHUNK) {
-    await database
-      .insert(aiVisibilitySamples)
-      .values(rows.slice(i, i + SAMPLE_INSERT_CHUNK).map((r) => ({ ...r, runId: run.id })));
+      const [run] = await tx
+        .insert(aiVisibilityRuns)
+        .values({
+          tenantId,
+          sourceId: source.id,
+          status: "pending",
+          trigger: opts.trigger,
+          engines,
+          samplesPerPrompt: settings.samplesPerPrompt,
+          plannedCalls: rows.length,
+          startedAt: now,
+        })
+        .returning();
+
+      for (let i = 0; i < rows.length; i += SAMPLE_INSERT_CHUNK) {
+        await tx
+          .insert(aiVisibilitySamples)
+          .values(rows.slice(i, i + SAMPLE_INSERT_CHUNK).map((r) => ({ ...r, runId: run.id })));
+      }
+      return { planned: true, id: run.id };
+    });
+
+    if (!outcome.planned) return { ok: false, reason: "run_in_flight", runId: outcome.conflictId };
+    return { ok: true, runId: outcome.id, plannedCalls: rows.length, estimateUsd: cap.estimateUsd };
+  } catch (error) {
+    // `ai_visibility_runs_tenant_in_flight_unique`. Two drivers reaching the
+    // insert at the same instant is exactly what that index is for: the check
+    // above is the readable path, this is the one that actually holds. Narrowed
+    // with `isUniqueViolation` so a deadlock or a lost connection is not
+    // reported to the user as "a run is already going".
+    if (isUniqueViolation(error)) {
+      const contender = await findInFlightRun(database, tenantId);
+      if (contender) return { ok: false, reason: "run_in_flight", runId: contender };
+    }
+    throw error;
   }
-
-  return { ok: true, runId: run.id, plannedCalls: rows.length, estimateUsd: cap.estimateUsd };
 }
 
 export type RunSliceResult = {
@@ -185,6 +291,19 @@ export async function runSlice(
   if (!run || !IN_FLIGHT.includes(run.status)) {
     return { processed: 0, remaining: 0, budgetSpent: false, pausedByCap: false };
   }
+
+  // Two drivers reach this run in production: the daily cron sweep, and a
+  // manual "Run now" that finds a run already in flight and drives it forward.
+  // Without the lease they both select the same `pending` rows and both pay for
+  // them — the tenant is billed twice, `completedCalls` over-counts, extraction
+  // doubles every citation row into the leaderboard, and two `computeAggregates`
+  // collide on the partial unique index so a perfectly good run is recorded as
+  // `failed`. Losing the race is a no-op, not an error: the holder is already
+  // doing this work.
+  if (!(await acquireSliceLease(database, runId, opts.now(), opts.budgetMs))) {
+    return { processed: 0, remaining: 0, budgetSpent: false, pausedByCap: false };
+  }
+
   if (run.status === "pending") {
     await database.update(aiVisibilityRuns).set({ status: "running" }).where(eq(aiVisibilityRuns.id, runId));
   }
@@ -234,6 +353,10 @@ export async function runSlice(
       .limit(batchSize(opts.concurrency));
 
     if (batch.length === 0) break;
+
+    // Pushed out per batch rather than held for the whole slice, so a slice
+    // that outlives its budget keeps its claim while it finishes.
+    await renewSliceLease(database, runId, opts.now(), opts.budgetMs);
 
     const results = await mapWithConcurrency(batch, batchSize(opts.concurrency), async (row) => {
       const failed = { costUsd: 0, engine: row.engine, modelId: null as string | null };
@@ -288,7 +411,21 @@ export async function runSlice(
         // Extraction is part of answering, not of finalizing: a run that never
         // reaches finalizeRun (budget, cap, a dead cron) still has usable
         // mention data, and the answer text is already in hand exactly once.
-        await extract(row.id, { database, brandContext, redirectCache, fetchImpl: deps.fetchImpl });
+        //
+        // Its OWN try/catch, deliberately outside the per-row one: the answer
+        // above is already bought and already stored, and letting an extraction
+        // failure fall through would rewrite this `ok` row as `error` — a
+        // fabricated coverage gap whose real cost never reaches the run total.
+        // Extraction reads three tables and can fail for reasons that have
+        // nothing to do with the answer: a DB blip, a competitor deleted
+        // mid-slice (brandContext is loaded once, at slice start), a citation
+        // position outside smallint. `extractSample` is idempotent, so the row
+        // can simply be re-extracted later.
+        try {
+          await extract(row.id, { database, brandContext, redirectCache, fetchImpl: deps.fetchImpl });
+        } catch (error) {
+          console.error(`[ai-visibility] extraction failed for sample ${row.id}:`, error);
+        }
 
         return { costUsd: result.costUsd, engine: row.engine, modelId: result.modelId };
       } catch (error) {
@@ -322,6 +459,10 @@ export async function runSlice(
       })
       .where(eq(aiVisibilityRuns.id, runId));
   }
+
+  // Handed back the moment this driver stops, so the next tick starts
+  // immediately rather than waiting out a lease nobody is holding.
+  await releaseSliceLease(database, runId);
 
   const [pending] = await database
     .select({ count: sql<number>`count(*)::int` })
@@ -436,6 +577,35 @@ async function finish(
 }
 
 /**
+ * Re-derives a run's spend and call count from its own sample rows.
+ *
+ * `runSlice` posts both as per-batch increments, which is right for a live
+ * progress header and wrong as a final record: a tick killed between a sample
+ * write and its batch total loses that batch's spend forever, and a batch
+ * driven twice counts it twice. The sample rows are what actually happened.
+ *
+ * Rounded to cents like every other USD value that gets compared or displayed
+ * — this number is what the monthly cap is summed from.
+ */
+async function reconcileRunCounters(database: typeof defaultDb, runId: string): Promise<void> {
+  const [totals] = await database
+    .select({
+      cost: sql<number>`coalesce(sum(${aiVisibilitySamples.costUsd}), 0)::float8`,
+      completed: sql<number>`count(*) filter (where ${aiVisibilitySamples.status} <> 'pending')::int`,
+    })
+    .from(aiVisibilitySamples)
+    .where(eq(aiVisibilitySamples.runId, runId));
+
+  await database
+    .update(aiVisibilityRuns)
+    .set({
+      costUsd: roundUsd(Number(totals?.cost ?? 0)),
+      completedCalls: totals?.completed ?? 0,
+    })
+    .where(eq(aiVisibilityRuns.id, runId));
+}
+
+/**
  * Closes out a run whose samples are all answered.
  *
  * Order is load-bearing and asserted by the tests: judge, then aggregate, then
@@ -469,6 +639,23 @@ export async function finalizeRun(
   // externalId dedupe would absorb most of them, but "most" is not a guarantee
   // worth relying on when the check is one comparison.
   if (run.status === "complete") return { status: "complete", judged: 0, signals: 0 };
+  // Every OTHER non-in-flight status is equally not-finalizable, and `complete`
+  // alone was too narrow a guard: a `paused_by_cap` run would be un-paused
+  // here, its remaining samples judged, and judge tokens spent for a run the
+  // cap stopped on purpose; a `failed` one would be quietly resurrected.
+  // Reported as `running`/`failed` rather than thrown — both are states a
+  // caller polls, and neither is this function's failure.
+  if (!IN_FLIGHT.includes(run.status)) {
+    return { status: run.status === "failed" ? "failed" : "running", judged: 0, signals: 0 };
+  }
+
+  // The same lease `runSlice` takes, for the same reason: a cron tick and a
+  // manual Run-now finalizing the same run concurrently run `computeAggregates`
+  // twice, and the second collides with the partial unique index — which the
+  // catch below would record as a FAILED run that in fact succeeded.
+  if (!(await acquireSliceLease(database, runId, opts.now(), opts.budgetMs))) {
+    return { status: "running", judged: 0, signals: 0 };
+  }
 
   try {
     const judged = await judge(runId, { budgetMs: opts.budgetMs, now: opts.now }, { database });
@@ -476,8 +663,39 @@ export async function finalizeRun(
       // Deliberately leaves the run `running`: the next cron tick — or an
       // earlier manual "Run now", which also drives in-flight runs — resumes
       // here.
+      //
+      // The judge's errors are written to the run row rather than dropped. A
+      // run that cannot finish is the one state where the reason has to be
+      // readable: without this the header says "Running…" beside a green badge
+      // for as long as the chunk keeps failing, and the only symptom anybody
+      // sees is that next week's run never starts.
+      if (judged.errors.length > 0) {
+        await database
+          .update(aiVisibilityRuns)
+          .set({ error: judged.errors.join("; ") })
+          .where(eq(aiVisibilityRuns.id, runId));
+      }
       return { status: "running", judged: judged.judged, signals: 0 };
     }
+
+    // Aggregates are the permanent record for this run — nothing recomputes
+    // them later — so they must not be written off a work list that is still
+    // being filled. A sample still `pending` means an engine has not answered
+    // yet; aggregating now freezes a small `n` and a rate computed from it.
+    const [stillPending] = await database
+      .select({ count: sql<number>`count(*)::int` })
+      .from(aiVisibilitySamples)
+      .where(and(eq(aiVisibilitySamples.runId, runId), eq(aiVisibilitySamples.status, "pending")));
+    if ((stillPending?.count ?? 0) > 0) {
+      return { status: "running", judged: judged.judged, signals: 0 };
+    }
+
+    // Finding 8: the counters are re-derived from the sample rows before they
+    // are frozen. `completedCalls` and `costUsd` are incremented per batch, so
+    // a driver that dies between writing a sample and posting its batch total
+    // under-reports spend permanently — and a double-driven batch over-reports
+    // it. The sample rows are the source of truth for both.
+    await reconcileRunCounters(database, runId);
 
     await aggregate(runId, database);
     const emitted = await emit(runId, { now: opts.now }, { database });
@@ -494,6 +712,7 @@ export async function finalizeRun(
     // engine failed is genuinely `failing`; one where three of four answered is
     // not, however loud its lastError.
     await finish(database, run.sourceId, opts.now(), errorText, summary.okSamples > 0);
+    await releaseSliceLease(database, runId);
 
     return { status: "complete", judged: judged.judged, signals: emitted.written };
   } catch (error) {
@@ -504,6 +723,7 @@ export async function finalizeRun(
         .set({ status: "failed", error: message, finishedAt: opts.now() })
         .where(eq(aiVisibilityRuns.id, runId));
       await finish(database, run.sourceId, opts.now(), message, false);
+      await releaseSliceLease(database, runId);
     } catch (secondary) {
       console.error(`[ai-visibility] could not record finalize failure for run ${runId}:`, secondary);
     }

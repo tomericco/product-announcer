@@ -71,6 +71,7 @@ describe("monthToDateSpendUsd", () => {
         trigger: "scheduled",
         engines: ["openai"],
         samplesPerPrompt: 3,
+        status: "complete",
         costUsd: 2.5,
         startedAt: new Date("2026-03-02T00:00:00.000Z"),
       },
@@ -79,6 +80,7 @@ describe("monthToDateSpendUsd", () => {
         trigger: "manual",
         engines: ["openai"],
         samplesPerPrompt: 3,
+        status: "complete",
         costUsd: 1.25,
         startedAt: new Date("2026-03-28T00:00:00.000Z"),
       },
@@ -87,6 +89,7 @@ describe("monthToDateSpendUsd", () => {
         trigger: "scheduled",
         engines: ["openai"],
         samplesPerPrompt: 3,
+        status: "complete",
         costUsd: 99,
         startedAt: new Date("2026-02-27T00:00:00.000Z"),
       },
@@ -95,6 +98,7 @@ describe("monthToDateSpendUsd", () => {
         trigger: "scheduled",
         engines: ["openai"],
         samplesPerPrompt: 3,
+        status: "complete",
         costUsd: 99,
         startedAt: new Date("2026-04-01T00:00:00.000Z"),
       },
@@ -102,6 +106,24 @@ describe("monthToDateSpendUsd", () => {
 
     const spend = await monthToDateSpendUsd(tenant.id, new Date("2026-03-30T12:00:00.000Z"));
     expect(spend).toBeCloseTo(3.75, 6);
+  });
+
+  it("rounds to cents, so a float4 sum never reaches the settings card raw", async () => {
+    const tenant = await seedTenant(TENANT);
+    await db.insert(aiVisibilityRuns).values(
+      [0.012, 0.012, 0.012].map((costUsd, i) => ({
+        tenantId: tenant.id,
+        trigger: "scheduled" as const,
+        engines: ["openai"],
+        samplesPerPrompt: 3,
+        status: "complete",
+        costUsd,
+        startedAt: new Date(`2026-03-0${i + 2}T00:00:00.000Z`),
+      }))
+    );
+
+    // The unrounded sum of three float4 0.012s is 0.036000000312924385.
+    expect(await monthToDateSpendUsd(tenant.id, new Date("2026-03-30T12:00:00.000Z"))).toBe(0.04);
   });
 
   it("is zero, never NaN, for a tenant with no runs", async () => {
@@ -143,6 +165,7 @@ describe("capExceeded", () => {
       trigger: "scheduled",
       engines: ["openai"],
       samplesPerPrompt: 3,
+      status: "complete",
       costUsd: 1,
       startedAt: new Date("2026-03-05T00:00:00.000Z"),
     });
@@ -162,7 +185,10 @@ describe("capExceeded", () => {
       trigger: "scheduled",
       engines: ["openai"],
       samplesPerPrompt: 3,
-      costUsd: 19.999,
+      status: "complete",
+      // 19.99, not 19.999: spend is rounded to cents on the way out, so a
+      // tenth of a cent below the cap rounds UP to $20 and is `reached`.
+      costUsd: 19.99,
       startedAt: new Date("2026-03-05T00:00:00.000Z"),
     });
 
@@ -179,6 +205,7 @@ describe("capExceeded", () => {
       trigger: "scheduled",
       engines: ["openai"],
       samplesPerPrompt: 3,
+      status: "complete",
       costUsd: 20,
       startedAt: new Date("2026-03-05T00:00:00.000Z"),
     });

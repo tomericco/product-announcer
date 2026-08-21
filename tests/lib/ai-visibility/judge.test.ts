@@ -131,7 +131,12 @@ import {
   aiVisibilityRuns,
   aiVisibilitySamples,
 } from "../../../src/db/schema";
-import { judgeRun, quoteIsVerbatim, agreementFlag } from "../../../src/lib/ai-visibility/judge";
+import {
+  judgeRun,
+  quoteIsVerbatim,
+  agreementFlag,
+  MAX_JUDGE_ATTEMPTS,
+} from "../../../src/lib/ai-visibility/judge";
 import { seedTenant, dropTenant, seedCompanyProfile } from "../../helpers/fixtures";
 
 const TENANT = "AI Visibility Judge Test Tenant";
@@ -308,7 +313,7 @@ describe("judgeRun", () => {
     expect(updated.judged).toBe(false);
   });
 
-  it("leaves a sample the model returned no label for unjudged, not flagged", async () => {
+  it("closes out a sample the model returned no label for, unlabelled and unflagged", async () => {
     const { run, rows } = await seedRun([
       { answerText: `${TENANT} is newer.` },
       { answerText: `Rival is strongest.` },
@@ -320,11 +325,55 @@ describe("judgeRun", () => {
 
     const out = await judgeRun(run.id, { budgetMs: 60_000, now: frozen("2026-03-02T10:00:00Z") }, { generate });
 
-    expect(out.judged).toBe(1);
-    expect(out.remaining).toBe(1);
+    // The CHUNK succeeded, so every row in it has had its turn. Leaving the
+    // skipped row unjudged would strand the run `running` forever — nothing
+    // will ever produce a label the model already declined to write — which
+    // blocks every future run for the tenant and re-bills the chunk daily.
+    expect(out.judged).toBe(2);
+    expect(out.remaining).toBe(0);
     const [second] = await db.select().from(aiVisibilitySamples).where(eq(aiVisibilitySamples.id, rows[1].id));
-    expect(second.judged).toBe(false);
+    expect(second.judged).toBe(true);
     expect(second.flagged).toBe(false);
+    // It loses its level, framing and quote; it keeps its deterministic mention.
+    expect(second.extraction?.judged).toBeUndefined();
+    expect(second.extraction?.deterministic.tenantMentioned).toBe(true);
+  });
+
+  it("gives up on a chunk that keeps failing, rather than stranding the run", async () => {
+    const { run, rows } = await seedRun([{ answerText: "Rival is strongest." }]);
+    const generate = vi.fn().mockRejectedValue(new Error("overloaded"));
+    const at = { budgetMs: 60_000, now: frozen("2026-03-02T10:00:00Z") };
+
+    // Two ticks short of the ceiling: still retryable, still blocking.
+    for (let attempt = 1; attempt < MAX_JUDGE_ATTEMPTS; attempt++) {
+      const out = await judgeRun(run.id, at, { generate });
+      expect(out.remaining).toBe(1);
+      const [row] = await db.select().from(aiVisibilitySamples).where(eq(aiVisibilitySamples.id, rows[0].id));
+      expect(row.judged).toBe(false);
+      expect(row.judgeAttempts).toBe(attempt);
+    }
+
+    const out = await judgeRun(run.id, at, { generate });
+
+    expect(out.remaining).toBe(0);
+    expect(out.errors.join(" ")).toContain("gave up judging");
+    const [row] = await db.select().from(aiVisibilitySamples).where(eq(aiVisibilitySamples.id, rows[0].id));
+    expect(row.judged).toBe(true);
+    expect(row.flagged).toBe(false);
+  });
+
+  it("does not mark a still-pending sample judged", async () => {
+    const { run, rows } = await seedRun([{ answerText: null, status: "pending" }]);
+    const generate = vi.fn();
+
+    const out = await judgeRun(run.id, { budgetMs: 60_000, now: frozen("2026-03-02T10:00:00Z") }, { generate });
+
+    // A pending sample has not been asked yet. Marking it judged here means it
+    // never gets a label once its answer arrives.
+    expect(generate).not.toHaveBeenCalled();
+    expect(out.remaining).toBe(1);
+    const [row] = await db.select().from(aiVisibilitySamples).where(eq(aiVisibilitySamples.id, rows[0].id));
+    expect(row.judged).toBe(false);
   });
 
   it("completes a wave, then stops when the budget is spent, leaving the rest for the next tick", async () => {
