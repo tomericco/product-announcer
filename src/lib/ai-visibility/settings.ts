@@ -1,6 +1,6 @@
-import { eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
-import { aiVisibilitySettings } from "@/db/schema";
+import { aiVisibilitySettings, sources, type Source } from "@/db/schema";
 import { ENGINE_IDS, type EngineId } from "@/lib/ai-visibility/types";
 
 export const CADENCES = ["weekly", "fortnightly", "off"] as const;
@@ -183,4 +183,71 @@ export async function saveAiVisibilitySettings(
       monthlyCapUsd: values.monthlyCapUsd,
     },
   };
+}
+
+export const AI_VISIBILITY_SOURCE_LABEL = "AI visibility";
+
+/**
+ * The one `sources` row this feature reports its health on, so
+ * `SourceStatusBadge`, `lastRunAt` and `lastError` work on /company exactly as
+ * they do for news and competitor pages.
+ *
+ * It has no URL — there is no page to poll — which puts it on the null-url
+ * half of the `sources` table. Identity therefore comes from
+ * `sources_tenant_type_null_url_unique` (tenant + type, where url IS NULL),
+ * the same partial index `setNewsWatching` conflicts on. `onConflictDoUpdate`
+ * rather than `onConflictDoNothing` so a row always comes back to return.
+ */
+export async function ensureAiVisibilitySource(
+  tenantId: string,
+  database: typeof defaultDb = defaultDb
+): Promise<Source> {
+  const [row] = await database
+    .insert(sources)
+    .values({ tenantId, type: "ai_visibility", url: null, label: AI_VISIBILITY_SOURCE_LABEL })
+    .onConflictDoUpdate({
+      target: [sources.tenantId, sources.type],
+      targetWhere: sql`${sources.url} IS NULL`,
+      // A no-op update whose only job is to make the statement RETURNING-able.
+      set: { label: AI_VISIBILITY_SOURCE_LABEL },
+    })
+    .returning();
+  return row;
+}
+
+/**
+ * The /company switch. Writes both halves of "is this feature on": the
+ * settings row the sweep gates on, and the source row the badge reads.
+ *
+ * Disabling never deletes: history, `lastRunAt` and `lastError` all survive so
+ * a tenant who turns it back on has their prompts and their sparklines intact.
+ */
+export async function setAiVisibilityEnabled(
+  tenantId: string,
+  enabled: boolean,
+  database: typeof defaultDb = defaultDb
+): Promise<void> {
+  await database
+    .insert(aiVisibilitySettings)
+    .values({ tenantId, enabled })
+    .onConflictDoUpdate({
+      target: aiVisibilitySettings.tenantId,
+      // Only `enabled`. Everything else on this row belongs to the settings
+      // card, and toggling the feature must not reset a tenant's cadence.
+      set: { enabled, updatedAt: new Date() },
+    });
+
+  await ensureAiVisibilitySource(tenantId, database);
+
+  await database
+    .update(sources)
+    .set({
+      status: enabled ? "active" : "disabled",
+      // Enabling clears the stale complaint — the common path is reading
+      // "Paused — monthly cap reached", raising the cap, and re-toggling.
+      // Disabling leaves it: that is exactly when an operator needs to see
+      // the last failure.
+      ...(enabled ? { lastError: null } : {}),
+    })
+    .where(and(eq(sources.tenantId, tenantId), eq(sources.type, "ai_visibility")));
 }

@@ -1,10 +1,12 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { aiVisibilitySettings } from "../../../src/db/schema";
+import { aiVisibilitySettings, sources } from "../../../src/db/schema";
 import {
   getAiVisibilitySettings,
   saveAiVisibilitySettings,
+  ensureAiVisibilitySource,
+  setAiVisibilityEnabled,
   DEFAULT_AI_VISIBILITY_SETTINGS,
 } from "../../../src/lib/ai-visibility/settings";
 import { seedTenant, dropTenant } from "../../helpers/fixtures";
@@ -156,5 +158,94 @@ describe("saveAiVisibilitySettings", () => {
         monthlyCapUsd: 45,
       },
     });
+  });
+});
+
+describe("ensureAiVisibilitySource", () => {
+  it("creates exactly one url-less source per tenant, however often it is called", async () => {
+    const tenant = await seedTenant(TENANT);
+
+    const first = await ensureAiVisibilitySource(tenant.id);
+    const second = await ensureAiVisibilitySource(tenant.id);
+
+    expect(second.id).toBe(first.id);
+    expect(first.type).toBe("ai_visibility");
+    expect(first.url).toBeNull();
+    expect(first.label).toBe("AI visibility");
+
+    const rows = await db
+      .select()
+      .from(sources)
+      .where(and(eq(sources.tenantId, tenant.id), eq(sources.type, "ai_visibility")));
+    expect(rows).toHaveLength(1);
+  });
+
+  it("does not collide with the tenant's url-less news source", async () => {
+    const tenant = await seedTenant(TENANT);
+    await db
+      .insert(sources)
+      .values({ tenantId: tenant.id, type: "news", url: null, label: "Industry news" });
+
+    const source = await ensureAiVisibilitySource(tenant.id);
+
+    expect(source.type).toBe("ai_visibility");
+    const rows = await db.select().from(sources).where(eq(sources.tenantId, tenant.id));
+    expect(rows).toHaveLength(2);
+  });
+});
+
+describe("setAiVisibilityEnabled", () => {
+  it("turning it on creates the settings row and an active source", async () => {
+    const tenant = await seedTenant(TENANT);
+
+    await setAiVisibilityEnabled(tenant.id, true);
+
+    expect((await getAiVisibilitySettings(tenant.id)).enabled).toBe(true);
+    const [source] = await db
+      .select()
+      .from(sources)
+      .where(and(eq(sources.tenantId, tenant.id), eq(sources.type, "ai_visibility")));
+    expect(source.status).toBe("active");
+  });
+
+  it("turning it off disables the source but keeps it, and keeps the settings", async () => {
+    const tenant = await seedTenant(TENANT);
+    await saveAiVisibilitySettings(tenant.id, VALID);
+    await setAiVisibilityEnabled(tenant.id, true);
+
+    await setAiVisibilityEnabled(tenant.id, false);
+
+    const settings = await getAiVisibilitySettings(tenant.id);
+    expect(settings.enabled).toBe(false);
+    expect(settings.engines).toEqual(["openai", "gemini"]);
+    const [source] = await db
+      .select()
+      .from(sources)
+      .where(and(eq(sources.tenantId, tenant.id), eq(sources.type, "ai_visibility")));
+    expect(source.status).toBe("disabled");
+  });
+
+  it("re-enabling clears a stale error, disabling leaves it on screen", async () => {
+    const tenant = await seedTenant(TENANT);
+    await setAiVisibilityEnabled(tenant.id, true);
+    await db
+      .update(sources)
+      .set({ status: "failing", lastError: "Paused — monthly cap reached" })
+      .where(and(eq(sources.tenantId, tenant.id), eq(sources.type, "ai_visibility")));
+
+    await setAiVisibilityEnabled(tenant.id, false);
+    const [afterOff] = await db
+      .select()
+      .from(sources)
+      .where(and(eq(sources.tenantId, tenant.id), eq(sources.type, "ai_visibility")));
+    expect(afterOff.lastError).toBe("Paused — monthly cap reached");
+
+    await setAiVisibilityEnabled(tenant.id, true);
+    const [afterOn] = await db
+      .select()
+      .from(sources)
+      .where(and(eq(sources.tenantId, tenant.id), eq(sources.type, "ai_visibility")));
+    expect(afterOn.lastError).toBeNull();
+    expect(afterOn.status).toBe("active");
   });
 });
