@@ -7,7 +7,24 @@ import {
 } from "@/lib/ai-visibility/types";
 
 export const GEMINI_LABEL = "Gemini API, grounded";
-export const GEMINI_DEFAULT_MODEL = "gemini-3-pro";
+
+/**
+ * NOT VERIFIED LIVE — there is no GEMINI_API_KEY in this deployment, so this
+ * comes from Google's published catalogue rather than from a call that worked.
+ *
+ * What it replaces was worse than stale: `gemini-3-pro` was never a catalogue
+ * id at all, so every Gemini call would have 404'd and the engine would have
+ * reported a permanent coverage gap. `gemini-3-pro-preview` did exist and was
+ * shut down on 2026-03-09.
+ *
+ * `gemini-3.7-flash` is GA rather than preview, is listed as grounding-capable,
+ * and is the model in Google's own `generateContent` grounding example. GA
+ * matters more than tier here: a preview id can be withdrawn on ~3 months'
+ * notice, which is exactly what killed the last one, and a weekly run that
+ * quietly 404s for a fortnight is indistinguishable from an engine that stopped
+ * mentioning the tenant.
+ */
+export const GEMINI_DEFAULT_MODEL = "gemini-3.7-flash";
 
 /**
  * $14 per 1,000 grounded prompts at list price.
@@ -71,6 +88,14 @@ export async function askGemini(
 
   const candidate = raw.candidates?.[0];
   if (!candidate) return { kind: "refused", message: "gemini returned no candidate" };
+
+  // Same rule as the other engines: an answer that stopped because it ran out
+  // of room is not a measurement, because a brand named in the tail it never
+  // wrote would score as absent. `STOP` is the clean finish; an absent
+  // finishReason is treated as fine, since the text check below still applies.
+  if (candidate.finishReason === "MAX_TOKENS") {
+    return { kind: "error", message: "gemini answer incomplete: MAX_TOKENS" };
+  }
 
   const text = (candidate.content?.parts ?? []).map((part) => part.text ?? "").join("");
   if (text.trim().length === 0) {

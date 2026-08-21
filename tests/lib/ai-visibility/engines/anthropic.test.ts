@@ -16,20 +16,36 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
+// Shaped after a real claude-sonnet-5 call made while writing this: search
+// results carry `encrypted_content` and `page_age`, citations carry
+// `cited_text` and `encrypted_index`.
 const ANSWER = {
-  model: "claude-sonnet-4-5-20260101",
+  model: "claude-sonnet-5",
   stop_reason: "end_turn",
   content: [
     { type: "server_tool_use", name: "web_search", input: { query: "best issue trackers" } },
     {
       type: "web_search_tool_result",
-      content: [{ type: "web_search_result", url: "https://g2.com/categories/issue-tracking" }],
+      content: [
+        {
+          type: "web_search_result",
+          url: "https://g2.com/categories/issue-tracking",
+          title: "Issue tracking",
+          page_age: "2026-05-01",
+          encrypted_content: "EqoBCioIA-opaque-blob",
+        },
+      ],
     },
     {
       type: "text",
       text: "Linear and Acme are both strong.",
       citations: [
-        { type: "web_search_result_location", url: "https://g2.com/categories/issue-tracking" },
+        {
+          type: "web_search_result_location",
+          url: "https://g2.com/categories/issue-tracking",
+          cited_text: "a long verbatim quote from the source page",
+          encrypted_index: "eyJ-opaque-index",
+        },
         { type: "web_search_result_location", url: "https://acme.com/pricing" },
         { type: "web_search_result_location", url: "https://g2.com/categories/issue-tracking" },
       ],
@@ -54,6 +70,9 @@ describe("askAnthropic", () => {
     expect(body.messages).toEqual([{ role: "user", content: "best issue trackers for startups" }]);
     expect(typeof body.system).toBe("string");
     expect(body.max_tokens).toBeGreaterThan(0);
+    // Thinking shares the answer's token budget, and a live check showed it
+    // eating enough of it to truncate the answer itself.
+    expect(body.thinking).toEqual({ type: "disabled" });
   });
 
   it("extracts text, citations in order, the queries and the dated model id", async () => {
@@ -65,7 +84,7 @@ describe("askAnthropic", () => {
     expect("kind" in result).toBe(false);
     if ("kind" in result) return;
     expect(result.text).toBe("Linear and Acme are both strong.");
-    expect(result.modelId).toBe("claude-sonnet-4-5-20260101");
+    expect(result.modelId).toBe("claude-sonnet-5");
     expect(result.searchUsed).toBe(true);
     expect(result.searchQueries).toEqual(["best issue trackers"]);
     expect(result.citations).toEqual([
@@ -138,6 +157,61 @@ describe("askAnthropic", () => {
       kind: "refused",
       message: expect.any(String),
     });
+  });
+
+  it("treats a truncated or paused answer as an error, not as an answer", async () => {
+    vi.stubEnv("ANTHROPIC_API_KEY", "sk-ant-test");
+
+    // Grounded, plausible, and cut off mid-sentence — the shape that would
+    // silently score a brand named in the missing tail as absent.
+    const truncated = vi.fn(async () =>
+      json({
+        model: "claude-sonnet-5",
+        stop_reason: "max_tokens",
+        content: [
+          { type: "server_tool_use", name: "web_search", input: { query: "q" } },
+          { type: "text", text: "The strongest options are Linear, Jira and" },
+        ],
+      })
+    );
+    expect(await askAnthropic("x", { fetchImpl: truncated as never })).toEqual({
+      kind: "error",
+      message: expect.stringContaining("max_tokens"),
+    });
+
+    const paused = vi.fn(async () =>
+      json({
+        model: "claude-sonnet-5",
+        stop_reason: "pause_turn",
+        content: [
+          { type: "server_tool_use", name: "web_search", input: { query: "q" } },
+          { type: "text", text: "Still working on it" },
+        ],
+      })
+    );
+    expect(await askAnthropic("x", { fetchImpl: paused as never })).toEqual({
+      kind: "error",
+      message: expect.stringContaining("pause_turn"),
+    });
+  });
+
+  it("drops the opaque blobs before storing raw", async () => {
+    vi.stubEnv("ANTHROPIC_API_KEY", "sk-ant-test");
+    const fetchImpl = vi.fn(async () => json(ANSWER));
+
+    const result = await askAnthropic("x", { fetchImpl: fetchImpl as never });
+
+    expect("kind" in result).toBe(false);
+    if ("kind" in result) return;
+    const stored = JSON.stringify(result.raw);
+    expect(stored).not.toContain("EqoBCioIA-opaque-blob");
+    expect(stored).not.toContain("eyJ-opaque-index");
+    expect(stored).not.toContain("a long verbatim quote");
+    expect(stored).not.toContain("page_age");
+    // What is worth keeping is still there: the answer and every cited URL.
+    expect(stored).toContain("Linear and Acme are both strong.");
+    expect(stored).toContain("https://g2.com/categories/issue-tracking");
+    expect(stored).toContain("Issue tracking");
   });
 
   it("exposes itself as an EngineClient", () => {

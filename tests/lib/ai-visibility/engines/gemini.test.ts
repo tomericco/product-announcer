@@ -47,7 +47,7 @@ describe("askGemini", () => {
 
     const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro:generateContent"
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.7-flash:generateContent"
     );
     expect((init.headers as Record<string, string>)["x-goog-api-key"]).toBe("gem-test");
     const body = JSON.parse(init.body as string);
@@ -118,6 +118,30 @@ describe("askGemini", () => {
     expect(await askGemini("x", { fetchImpl: ungrounded as never })).toEqual({
       kind: "refused",
       message: expect.stringMatching(/search|ground/i),
+    });
+  });
+
+  it("treats a truncated answer as an error, not as an answer", async () => {
+    vi.stubEnv("GEMINI_API_KEY", "gem-test");
+    const truncated = vi.fn(async () =>
+      json({
+        modelVersion: "gemini-3.7-flash",
+        candidates: [
+          {
+            content: { parts: [{ text: "The strongest options are Linear, Jira and" }] },
+            finishReason: "MAX_TOKENS",
+            groundingMetadata: {
+              webSearchQueries: ["best issue trackers"],
+              groundingChunks: [{ web: { uri: REDIRECT_A, title: "g2.com" } }],
+            },
+          },
+        ],
+      })
+    );
+
+    expect(await askGemini("x", { fetchImpl: truncated as never })).toEqual({
+      kind: "error",
+      message: expect.stringContaining("MAX_TOKENS"),
     });
   });
 

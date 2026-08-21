@@ -15,25 +15,93 @@ export const ANTHROPIC_LABEL = "Claude API + web search";
  * `@ai-sdk/anthropic`, so `resolveModel`/`modelId` are not involved and an
  * "anthropic/" prefix would be sent to the API verbatim and rejected.
  */
-export const ANTHROPIC_DEFAULT_MODEL = "claude-sonnet-4-5";
+/**
+ * Verified live on 2026-08-21, both by `GET /v1/models` and by real calls.
+ *
+ * To be precise about why this moved, since the obvious guess is wrong: the
+ * previous `claude-sonnet-4-5` DOES still resolve — it aliases to the dated
+ * `claude-sonnet-4-5-20250929`, and a call on it returns 200. It was changed
+ * because 4.5 is legacy and carries the earliest retirement date of any active
+ * model, and this feature's whole value is a metric that stays comparable week
+ * over week. A retirement mid-series would break the sparkline exactly like a
+ * silent model swap does.
+ */
+export const ANTHROPIC_DEFAULT_MODEL = "claude-sonnet-5";
 export const ANTHROPIC_API_VERSION = "2023-06-01";
 
 /** $10 per 1,000 searches plus ~$0.002 of tokens on a short answer. */
 export const ANTHROPIC_COST_PER_CALL_USD = 0.012;
 
-/** Answers longer than this are not a measurement, they are an essay. */
-const ANTHROPIC_MAX_TOKENS = 2_048;
+/**
+ * Measured, not guessed. A live grounded call at 1,024 with thinking left on
+ * stopped at `max_tokens` mid-sentence; the same question with thinking off
+ * finished at 1,293 output tokens. 4,096 leaves headroom for a longer answer
+ * without inviting an essay, and truncation is now an error anyway.
+ */
+const ANTHROPIC_MAX_TOKENS = 4_096;
 /** A buyer question needs a handful of searches, not a research session. */
 const ANTHROPIC_MAX_SEARCHES = 5;
 
+type AnthropicSearchResult = {
+  type?: string;
+  url?: string;
+  title?: string;
+  encrypted_content?: string;
+  page_age?: string;
+};
+type AnthropicCitation = {
+  type?: string;
+  url?: string;
+  title?: string;
+  cited_text?: string;
+  encrypted_index?: string;
+};
 type AnthropicBlock = {
   type?: string;
   text?: string;
   name?: string;
   input?: { query?: string };
-  citations?: { type?: string; url?: string }[];
+  citations?: AnthropicCitation[];
+  /** Present on `web_search_tool_result`: the raw hits behind the answer. */
+  content?: AnthropicSearchResult[];
 };
 type AnthropicResponse = { model?: string; stop_reason?: string; content?: AnthropicBlock[] };
+
+/**
+ * A copy of the response with the bulk dropped.
+ *
+ * `web_search_tool_result[].content[].encrypted_content` is a base64 blob per
+ * search hit — a live call returned 17 hits and weighed 47 KB, of which 38 KB
+ * was blobs. `raw` is stored as jsonb on every sample, so across ~360 samples a
+ * run that is the difference between ~3 MB and ~17 MB a week, for bytes nothing
+ * can read. `cited_text` and `encrypted_index` go the same way: the quote shown
+ * in the UI comes from the judge, not from here.
+ */
+function sanitizeRaw(raw: AnthropicResponse): AnthropicResponse {
+  return {
+    ...raw,
+    content: (raw.content ?? []).map((block) => {
+      const copy = { ...block };
+      if (copy.content) {
+        copy.content = copy.content.map((result) => {
+          const trimmed = { ...result };
+          delete trimmed.encrypted_content;
+          delete trimmed.page_age;
+          return trimmed;
+        });
+      }
+      if (copy.citations) {
+        copy.citations = copy.citations.map((citation) => {
+          const trimmed = { ...citation };
+          delete trimmed.cited_text;
+          delete trimmed.encrypted_index;
+          return trimmed;
+        });
+      }
+      return copy;
+    }),
+  };
+}
 
 export async function askAnthropic(
   prompt: string,
@@ -58,6 +126,11 @@ export async function askAnthropic(
       body: JSON.stringify({
         model,
         max_tokens: ANTHROPIC_MAX_TOKENS,
+        // Sonnet 5 thinks by default, and thinking tokens come out of the same
+        // budget as the answer — a live check spent so many of them that the
+        // answer itself was cut off. What is being measured is the answer a
+        // buyer would read, not the reasoning behind it.
+        thinking: { type: "disabled" },
         system: NEUTRAL_SYSTEM_PROMPT,
         messages: [{ role: "user", content: prompt }],
         tools: [
@@ -83,6 +156,13 @@ export async function askAnthropic(
 
   if (raw.stop_reason === "refusal") {
     return { kind: "refused", message: "anthropic refused the prompt" };
+  }
+  // A cut-off answer is not a measurement: a brand named in the tail that never
+  // got written would score as absent, which is a false negative in the
+  // headline number. `pause_turn` is the same story — the turn is unfinished.
+  // Both become coverage gaps rather than quiet zeroes.
+  if (raw.stop_reason === "max_tokens" || raw.stop_reason === "pause_turn") {
+    return { kind: "error", message: `anthropic answer incomplete: ${raw.stop_reason}` };
   }
 
   const searchQueries: string[] = [];
@@ -125,7 +205,7 @@ export async function askAnthropic(
     citations,
     searchUsed,
     searchQueries,
-    raw,
+    raw: sanitizeRaw(raw),
     costUsd: ANTHROPIC_COST_PER_CALL_USD,
   };
 }
