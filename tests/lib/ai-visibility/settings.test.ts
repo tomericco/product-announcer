@@ -99,6 +99,30 @@ describe("getAiVisibilitySettings", () => {
     expect((await getAiVisibilitySettings(tenant.id)).monthlyCapUsd).toBe(500);
   });
 
+  it("rounds a sub-cent cap on the way in, so the saved value equals the value read back", async () => {
+    const tenant = await seedTenant(TENANT);
+
+    // The write path validates the cap but used to store it unrounded while
+    // the read path rounded it, so the settings card showed 20.999 right after
+    // saving and 21 on the next load. Both sides must agree.
+    const saved = await saveAiVisibilitySettings(tenant.id, { ...VALID, monthlyCapUsd: 20.999 });
+    expect(saved.ok).toBe(true);
+
+    const read = await getAiVisibilitySettings(tenant.id);
+    expect(read.monthlyCapUsd).toBe(21);
+    if (saved.ok) expect(saved.settings.monthlyCapUsd).toBe(read.monthlyCapUsd);
+  });
+
+  it("dedupes engine ids on read, so a hand-written row cannot double an engine's calls", async () => {
+    const tenant = await seedTenant(TENANT);
+    await db
+      .insert(aiVisibilitySettings)
+      .values({ tenantId: tenant.id, engines: ["openai", "openai", "gemini"] });
+
+    // planRun fans out over this array; a duplicate would plan that engine twice.
+    expect((await getAiVisibilitySettings(tenant.id)).engines).toEqual(["openai", "gemini"]);
+  });
+
   it("falls back to a sane value for a cadence or sample count the row should not hold", async () => {
     const tenant = await seedTenant(TENANT);
     await db

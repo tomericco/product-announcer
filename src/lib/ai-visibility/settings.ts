@@ -88,7 +88,9 @@ export async function getAiVisibilitySettings(
   // list precisely because an enabled feature with zero engines plans zero
   // calls behind a green badge, so the read must not hand one back either:
   // read and write have to agree on what a legal row is.
-  const filtered = row.engines.filter(isEngineId);
+  // Deduped for the same reason the write path dedupes: a row holding
+  // ["openai","openai"] would make `planRun` plan that engine's calls twice.
+  const filtered = [...new Set(row.engines.filter(isEngineId))];
   const engines = filtered.length > 0 ? filtered : [...ENGINE_IDS];
 
   // Clamped like its neighbours, and rounded because the column is float4 —
@@ -176,7 +178,10 @@ export async function saveAiVisibilitySettings(
     dayOfWeek,
     engines,
     samplesPerPrompt: samples as SamplesPerPrompt,
-    monthlyCapUsd: cap,
+    // Rounded on the way in so the value we store, return, and later read back
+    // through `getAiVisibilitySettings` are the same number. Without it a cap
+    // saved as 20.999 renders as 20.999 now and 21 on the next load.
+    monthlyCapUsd: roundUsd(cap),
   };
 
   const [row] = await database
