@@ -95,4 +95,80 @@ describe("AiVisibilityEvidence", () => {
     const dialog = await open();
     expect(within(dialog).getByText(/no evidence/i)).toBeInTheDocument();
   });
+
+  it("re-reads on a second open rather than showing what it read the first time", async () => {
+    // State resets on close on purpose: a signal's evidence is a record of a
+    // measurement, and a dialog that cached the first read would keep showing
+    // it after the row aged out from under the page.
+    render(<AiVisibilityEvidence signalId="s1" title="t" />);
+    const trigger = screen.getByRole("button", { name: "Evidence" });
+
+    await act(async () => {
+      fireEvent.click(trigger);
+    });
+    await act(async () => {
+      fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    });
+    await act(async () => {
+      fireEvent.click(trigger);
+    });
+
+    expect(loadAiVisibilityEvidence).toHaveBeenCalledTimes(2);
+  });
+
+  it("marks the brand the aliases name, so the excerpt reads as it does on the prompt page", async () => {
+    // The highlight is the whole reason the excerpt is rendered through
+    // `HighlightedAnswer` rather than as a plain paragraph — an excerpt where
+    // the reader has to hunt for who was named answers nothing.
+    const dialog = await open();
+    const marked = within(dialog).getByText("Lokalise");
+    expect(marked.tagName).toBe("MARK");
+    expect(marked).toHaveAttribute("title", "Lokalise (competitor)");
+  });
+
+  it("renders nothing where an excerpt would be when the engine's answer is gone", async () => {
+    loadAiVisibilityEvidence.mockResolvedValue({ ...VIEW, excerpt: null, citedUrls: [] });
+    const dialog = await open();
+
+    expect(within(dialog).getByText("GPT-5.x API + web search")).toBeInTheDocument();
+    expect(within(dialog).queryByText(/Cited sources/)).not.toBeInTheDocument();
+    expect(within(dialog).queryAllByRole("listitem")).toHaveLength(0);
+  });
+
+  it("shows the engine label alone when the run recorded no model id", async () => {
+    // A model id is missing for a run whose engine never answered. A blank
+    // <span> in the methodology line would read as an empty model name.
+    loadAiVisibilityEvidence.mockResolvedValue({ ...VIEW, modelId: null });
+    const dialog = await open();
+
+    expect(within(dialog).getByText("GPT-5.x API + web search")).toBeInTheDocument();
+    expect(within(dialog).queryByText("gpt-5.2-2026-07-01")).not.toBeInTheDocument();
+  });
+
+  it("shows something while the read is in flight, not an empty dialog", async () => {
+    let settle: (value: unknown) => void = () => {};
+    loadAiVisibilityEvidence.mockReturnValue(
+      new Promise((resolve) => {
+        settle = resolve;
+      })
+    );
+    render(<AiVisibilityEvidence signalId="s1" title="t" />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Evidence" }));
+    });
+
+    expect(within(screen.getByRole("dialog")).getByText(/loading/i)).toBeInTheDocument();
+
+    await act(async () => {
+      settle(VIEW);
+    });
+    expect(within(screen.getByRole("dialog")).getByText("0 of 3, two runs")).toBeInTheDocument();
+  });
+
+  it("keeps the signal's own title as the dialog's heading", async () => {
+    const dialog = await open();
+    expect(
+      within(dialog).getByText("Absent from 'best localization tools' on ChatGPT")
+    ).toBeInTheDocument();
+  });
 });

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, act, cleanup } from "@testing-library/react";
+import { render, screen, fireEvent, act, cleanup, within } from "@testing-library/react";
 import type { EngineId } from "../../../src/lib/ai-visibility/types";
 import {
   AiVisibilityForm,
@@ -33,6 +33,18 @@ function form(props: Partial<Parameters<typeof AiVisibilityForm>[0]> = {}) {
   return render(
     <AiVisibilityForm defaults={DEFAULTS} promptCount={28} costPerCall={COST} spentUsd={4.1} {...props} />
   );
+}
+
+/**
+ * What the form would actually POST. Read off the rendered `<form>` rather
+ * than by driving React's action plumbing, because the thing under test is
+ * whether each control (and each stand-in hidden input) carries its value into
+ * the FormData the action destructures.
+ */
+function submit(): FormData {
+  const element = document.querySelector("form");
+  if (!element) throw new Error("no form rendered");
+  return new FormData(element);
 }
 
 beforeEach(() => vi.clearAllMocks());
@@ -134,6 +146,15 @@ describe("AiVisibilityForm", () => {
     expect(screen.getByTestId("ai-visibility-estimate").textContent).not.toBe(before);
   });
 
+  it("groups the four engine switches under one named group", () => {
+    form();
+    // They were four bare switches under a <Label> with no control and no
+    // labelable descendant, so a screen-reader user met "GPT-5.x API + web
+    // search" with nothing saying it was one of a set of engines.
+    const engines = screen.getByRole("group", { name: "Engines" });
+    expect(within(engines).getAllByRole("switch")).toHaveLength(4);
+  });
+
   it("shows spend against the cap in dollars, never credits", () => {
     form();
     expect(screen.getByText("Spent this month $4.10 of $20.00")).toBeInTheDocument();
@@ -185,5 +206,111 @@ describe("AiVisibilityForm", () => {
   it("says the estimate exceeds the cap before the save, not after the run is paused", async () => {
     form({ promptCount: 30, defaults: { ...DEFAULTS, monthlyCapUsd: 1 } });
     expect(screen.getByText(/above your \$1\.00 cap/)).toBeInTheDocument();
+  });
+
+  /**
+   * The cap bounds, at both edges and one step outside each. $600 reached the
+   * user as a blank error boundary because the form only guarded the floor —
+   * so the edges are where this has to be pinned, not the middle.
+   */
+  describe("the cap's legal range", () => {
+    const cases: { cap: number; accepted: boolean }[] = [
+      { cap: 0, accepted: false },
+      { cap: 0.5, accepted: false },
+      { cap: 1, accepted: true },
+      { cap: 500, accepted: true },
+      { cap: 501, accepted: false },
+      { cap: -20, accepted: false },
+    ];
+
+    for (const testCase of cases) {
+      it(`$${testCase.cap} is ${testCase.accepted ? "accepted" : "refused before the submit"}`, () => {
+        form({ defaults: { ...DEFAULTS, monthlyCapUsd: testCase.cap } });
+        const save = screen.getByRole("button", { name: "Save" });
+        if (testCase.accepted) {
+          expect(save).not.toBeDisabled();
+          expect(screen.queryByText(/between \$1 and \$500/)).not.toBeInTheDocument();
+        } else {
+          expect(save).toBeDisabled();
+          expect(screen.getByText(/between \$1 and \$500/)).toBeInTheDocument();
+        }
+      });
+    }
+
+    it("refuses an emptied field rather than reading it as zero", () => {
+      form();
+      const input = screen.getByLabelText("Monthly cap");
+      act(() => {
+        fireEvent.change(input, { target: { value: "" } });
+      });
+
+      expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+      expect(screen.getByText(/between \$1 and \$500/)).toBeInTheDocument();
+      // `Number("")` is 0, which would otherwise render as "of $0.00" — a
+      // number the user never typed, presented as their cap.
+      expect(screen.getByText("Spent this month $4.10 of $—")).toBeInTheDocument();
+    });
+
+    it("refuses a value that is not a number at all", () => {
+      form();
+      const input = screen.getByLabelText("Monthly cap");
+      act(() => {
+        fireEvent.change(input, { target: { value: "abc" } });
+      });
+
+      expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    });
+
+    it("re-enables Save once the number is back in range", () => {
+      form({ defaults: { ...DEFAULTS, monthlyCapUsd: 600 } });
+      expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+
+      act(() => {
+        fireEvent.change(screen.getByLabelText("Monthly cap"), { target: { value: "50" } });
+      });
+
+      expect(screen.getByRole("button", { name: "Save" })).not.toBeDisabled();
+    });
+
+    it("does not also claim the estimate is over an illegal cap", () => {
+      // Two red paragraphs for one bad number is one too many, and "above
+      // your $0.00 cap" is not a sentence about anything.
+      form({ defaults: { ...DEFAULTS, monthlyCapUsd: 0 } });
+      expect(screen.queryByText(/above your/)).not.toBeInTheDocument();
+    });
+  });
+
+  it("keeps posting the chosen day while the cadence is off", async () => {
+    // The day Select unmounts when cadence is "off". Without the hidden input
+    // the saved day silently resets to Sunday the next time someone turns the
+    // schedule back on — a setting lost to a control that was not on screen.
+    form({ defaults: { ...DEFAULTS, cadence: "off", dayOfWeek: 4 } });
+
+    expect(screen.queryByLabelText("Day of week")).not.toBeInTheDocument();
+    const posted = submit();
+    expect(posted.get("cadence")).toBe("off");
+    expect(posted.get("dayOfWeek")).toBe("4");
+  });
+
+  it("posts every field the action reads, for an ordinary weekly save", () => {
+    form({ defaults: { ...DEFAULTS, cadence: "weekly", dayOfWeek: 2, monthlyCapUsd: 35 } });
+
+    const posted = submit();
+    expect(posted.get("cadence")).toBe("weekly");
+    expect(posted.get("dayOfWeek")).toBe("2");
+    expect(posted.get("samplesPerPrompt")).toBe("3");
+    expect(posted.get("monthlyCapUsd")).toBe("35");
+    // The array the Switches stand in for — a Switch is not a form control.
+    expect(posted.getAll("engines")).toEqual(["openai", "perplexity", "gemini", "anthropic"]);
+  });
+
+  it("posts only the engines still switched on", async () => {
+    form();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("switch", { name: /Gemini API, grounded/ }));
+    });
+
+    expect(submit().getAll("engines")).not.toContain("gemini");
   });
 });

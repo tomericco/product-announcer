@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { parseCompetitorId, parseDateFrom, parseDateTo, parseKind, parseMinScore, single } from "../../../src/lib/signals/params";
+import { signalKindEnum } from "../../../src/db/schema";
 
 describe("single", () => {
   it("returns the first element of an array param", () => {
@@ -26,6 +27,26 @@ describe("parseKind", () => {
 
   it("rejects an absent value", () => {
     expect(parseKind(undefined)).toBeUndefined();
+  });
+
+  it("accepts ai_visibility, so the filter the browser offers actually filters", () => {
+    // `SignalsFilters` puts "AI visibility" in its dropdown and pushes
+    // `?kind=ai_visibility`. If this whitelist did not know the value, the
+    // page would silently render every kind while the dropdown claimed it was
+    // filtered — the one failure mode a whitelist-on-read has.
+    expect(parseKind("ai_visibility")).toBe("ai_visibility");
+  });
+
+  /**
+   * The whitelist and the column have to agree. TypeScript checks the four
+   * LABEL maps against `Signal["kind"]`, but `KIND_VALUES` is its own
+   * `as const` tuple compared as strings — nothing in the type system stops a
+   * sixth kind being added to the enum and never reaching the filter.
+   */
+  it("round-trips every kind the column can actually hold", () => {
+    for (const kind of signalKindEnum.enumValues) {
+      expect(parseKind(kind)).toBe(kind);
+    }
   });
 });
 

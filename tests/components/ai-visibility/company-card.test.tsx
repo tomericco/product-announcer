@@ -65,6 +65,18 @@ describe("AiVisibilityCard", () => {
     expect(toast.error).toHaveBeenCalled();
   });
 
+  it("says what off actually means, in the one place the switch is", () => {
+    // Two promises the switch has to carry beside it: turning it off stops
+    // the billing, and turning it off does not throw away what was measured.
+    // Someone deciding whether to flip it should not have to go and find that
+    // out somewhere else.
+    card();
+    const intro = screen.getByText(/Asks ChatGPT, Perplexity, Gemini and Claude/);
+    expect(intro).toHaveTextContent("on a schedule you set in Settings");
+    expect(intro).toHaveTextContent("Off means nothing runs and nothing is billed");
+    expect(intro).toHaveTextContent("anything already measured is kept");
+  });
+
   it("states what the prompts were derived from", () => {
     card();
     expect(
@@ -108,9 +120,152 @@ describe("AiVisibilityCard", () => {
   it("keeps showing the last error after the switch is turned off", () => {
     // Turning it off after a failure must not hide the reason it failed —
     // that is the one moment an operator most wants to read it. Same rule
-    // NewsToggle documents.
-    card({ source: source({ status: "disabled", lastError: "Perplexity: 429 rate limited" }) });
+    // NewsToggle documents. `enabled: false` is load-bearing here: with the
+    // switch left on, the health block renders for a reason that has nothing
+    // to do with the rule under test.
+    card({
+      enabled: false,
+      source: source({ status: "disabled", lastError: "Perplexity: 429 rate limited" }),
+    });
     expect(screen.getByText("Perplexity: 429 rate limited")).toBeInTheDocument();
+    // The rest of the health block survives with it — the date and the badge
+    // are what tell the operator whether the error is current.
+    expect(screen.getByText("Last ran Aug 17, 2026")).toBeInTheDocument();
+  });
+
+  it("keeps the health block on screen the moment the switch is flipped off", async () => {
+    // Not only for a page loaded already-off: the flip is optimistic, so the
+    // block has to survive local state going false before any reload.
+    card({ enabled: true, source: source({ status: "failing", lastError: "Gemini 500" }) });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("switch", { name: /track ai visibility/i }));
+    });
+
+    expect(screen.getByRole("switch", { name: /track ai visibility/i })).not.toBeChecked();
+    expect(screen.getByText("Gemini 500")).toBeInTheDocument();
+  });
+
+  /**
+   * The whole matrix of (source row × settings.enabled), because the blocker
+   * this card shipped with existed precisely because every fixture passed one
+   * shape: an `active` source row. The switch reports `settings.enabled` —
+   * the column `sweep.ts` gates on — and NOTHING else, in all four states.
+   */
+  describe("what the switch says for each shape a workspace can be in", () => {
+    const cases: {
+      name: string;
+      source: Source | null;
+      enabled: boolean;
+      checked: boolean;
+    }[] = [
+      { name: "a fresh tenant with no source row at all", source: null, enabled: false, checked: false },
+      {
+        name: "a source row planRun created, still never enabled",
+        source: source({ status: "active" }),
+        enabled: false,
+        checked: false,
+      },
+      {
+        name: "genuinely on",
+        source: source({ status: "active" }),
+        enabled: true,
+        checked: true,
+      },
+      {
+        name: "switched off, source row disabled",
+        source: source({ status: "disabled" }),
+        enabled: false,
+        checked: false,
+      },
+      {
+        name: "a failing source belonging to a workspace that is still switched on",
+        source: source({ status: "failing", lastError: "Gemini 500" }),
+        enabled: true,
+        checked: true,
+      },
+      {
+        name: "a settings row that says on while no source row exists yet",
+        source: null,
+        enabled: true,
+        checked: true,
+      },
+    ];
+
+    for (const testCase of cases) {
+      it(`${testCase.name} → switch ${testCase.checked ? "checked" : "unchecked"}`, () => {
+        card({ source: testCase.source, enabled: testCase.enabled });
+        const toggle = screen.getByRole("switch", { name: /track ai visibility/i });
+        if (testCase.checked) expect(toggle).toBeChecked();
+        else expect(toggle).not.toBeChecked();
+      });
+    }
+  });
+
+  it("flips optimistically and refreshes when the save succeeds", async () => {
+    // The other half of the revert case: without this, a card that never
+    // flipped at all would pass the revert test for the wrong reason.
+    card({ enabled: false, source: null });
+
+    const toggle = screen.getByRole("switch", { name: /track ai visibility/i });
+    await act(async () => {
+      fireEvent.click(toggle);
+    });
+
+    expect(setAiVisibilityWatching).toHaveBeenCalledWith(true);
+    expect(toggle).toBeChecked();
+    expect(refresh).toHaveBeenCalled();
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it("reverts an optimistic turn-ON too, not only a turn-off", async () => {
+    setAiVisibilityWatching.mockRejectedValueOnce(new Error("nope"));
+    card({ enabled: false, source: null });
+
+    const toggle = screen.getByRole("switch", { name: /track ai visibility/i });
+    await act(async () => {
+      fireEvent.click(toggle);
+    });
+
+    expect(toggle).not.toBeChecked();
+    expect(toast.error).toHaveBeenCalled();
+    // A failed save must not tell the page its data has moved on.
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it("re-enables the switch after a failure, so the user can try again", async () => {
+    setAiVisibilityWatching.mockRejectedValueOnce(new Error("nope"));
+    card();
+
+    const toggle = screen.getByRole("switch", { name: /track ai visibility/i });
+    await act(async () => {
+      fireEvent.click(toggle);
+    });
+
+    expect(toggle).not.toBeDisabled();
+  });
+
+  it("says nothing about a derivation for a workspace with no prompts yet", () => {
+    // "Prompts generated from 5 competitors" beside zero prompts is a claim
+    // about something that has not happened.
+    card({ promptCount: 0, newCompetitorCount: 4, profileChanged: true });
+    expect(screen.queryByText(/Prompts generated from/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Profile changed since/)).not.toBeInTheDocument();
+  });
+
+  it("singularises one competitor and one persona", () => {
+    card({ competitorCount: 1, personaCount: 1, newCompetitorCount: 1, profileChanged: false });
+    expect(screen.getByText("Prompts generated from 1 competitor, 1 persona")).toBeInTheDocument();
+    expect(
+      screen.getByText("Profile changed since prompts were generated — 1 competitor")
+    ).toBeInTheDocument();
+  });
+
+  it("names an edited profile on its own when no competitor was added", () => {
+    card({ newCompetitorCount: 0, profileChanged: true });
+    expect(
+      screen.getByText("Profile changed since prompts were generated — an updated profile")
+    ).toBeInTheDocument();
   });
 
   it("links to both halves of the feature", () => {

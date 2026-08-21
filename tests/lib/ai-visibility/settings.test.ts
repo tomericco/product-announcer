@@ -7,6 +7,7 @@ import {
   getAiVisibilitySettingsForTenants,
   saveAiVisibilitySettings,
   ensureAiVisibilitySource,
+  getAiVisibilitySource,
   setAiVisibilityEnabled,
   DEFAULT_AI_VISIBILITY_SETTINGS,
   MIN_MONTHLY_CAP_USD,
@@ -561,6 +562,76 @@ describe("ensureAiVisibilitySource", () => {
     expect(theirs.id).not.toBe(mine.id);
     expect(theirs.status).toBe("active");
     expect((await aiVisibilitySource(tenant.id))[0].status).toBe("failing");
+  });
+});
+
+/**
+ * The /company card's health read. It exists because `ensureAiVisibilitySource`
+ * on a page render defaulted the row to `active`, which reported a feature as
+ * on that `sweep.ts` (gating on `settings.enabled`) would never run — and put
+ * every tenant who had ever opened /company into the sweep's candidate set.
+ */
+describe("getAiVisibilitySource", () => {
+  it("answers null for a workspace that has never turned the feature on", async () => {
+    const tenant = await seedTenant(TENANT);
+
+    expect(await getAiVisibilitySource(tenant.id)).toBeNull();
+  });
+
+  it("creates nothing — a page render must not manufacture the row it reports on", async () => {
+    const tenant = await seedTenant(TENANT);
+
+    await getAiVisibilitySource(tenant.id);
+    await getAiVisibilitySource(tenant.id);
+
+    expect(await aiVisibilitySource(tenant.id)).toHaveLength(0);
+    // And nothing else, either: an accidental `ensure` here would also drop
+    // the tenant into the sweep's candidate set.
+    expect(await db.select().from(sources).where(eq(sources.tenantId, tenant.id))).toHaveLength(0);
+  });
+
+  it("returns the row once the switch has created it", async () => {
+    const tenant = await seedTenant(TENANT);
+    await setAiVisibilityEnabled(tenant.id, true);
+
+    const source = await getAiVisibilitySource(tenant.id);
+
+    expect(source).not.toBeNull();
+    expect(source!.type).toBe("ai_visibility");
+    expect(source!.status).toBe("active");
+    expect(source!.label).toBe("AI visibility");
+  });
+
+  it("keeps returning the row after the switch is turned off, so the last error stays readable", async () => {
+    const tenant = await seedTenant(TENANT);
+    await ensureAiVisibilitySource(tenant.id, db, {
+      status: "failing",
+      lastError: "Perplexity: 429 rate limited",
+    });
+    await setAiVisibilityEnabled(tenant.id, false);
+
+    const source = await getAiVisibilitySource(tenant.id);
+
+    expect(source!.status).toBe("disabled");
+    expect(source!.lastError).toBe("Perplexity: 429 rate limited");
+  });
+
+  it("never returns the tenant's url-less news source in its place", async () => {
+    const tenant = await seedTenant(TENANT);
+    await db
+      .insert(sources)
+      .values({ tenantId: tenant.id, type: "news", url: null, label: "Industry news" });
+
+    expect(await getAiVisibilitySource(tenant.id)).toBeNull();
+  });
+
+  it("never returns another tenant's source row", async () => {
+    const tenant = await seedTenant(TENANT);
+    const other = await seedTenant(OTHER_TENANT);
+    await ensureAiVisibilitySource(other.id);
+
+    expect(await getAiVisibilitySource(tenant.id)).toBeNull();
+    expect((await getAiVisibilitySource(other.id))!.tenantId).toBe(other.id);
   });
 });
 

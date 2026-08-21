@@ -1,13 +1,17 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
-import type { Signal } from "../../src/db/schema";
+import { render, screen, cleanup } from "@testing-library/react";
+import { signalKindEnum, type Signal } from "../../src/db/schema";
 
-vi.mock("../../src/app/(dashboard)/signals/evidence-actions", () => ({
+const { loadSignalEvidence, loadAiVisibilityEvidence } = vi.hoisted(() => ({
   loadSignalEvidence: vi.fn(async () => null),
+  loadAiVisibilityEvidence: vi.fn(async () => null),
+}));
+vi.mock("../../src/app/(dashboard)/signals/evidence-actions", () => ({
+  loadSignalEvidence,
   loadEvidenceReassignTargets: vi.fn(async () => []),
 }));
 vi.mock("../../src/app/(dashboard)/signals/ai-visibility-actions", () => ({
-  loadAiVisibilityEvidence: vi.fn(async () => null),
+  loadAiVisibilityEvidence,
 }));
 
 import { SignalRow } from "../../src/app/(dashboard)/signals/signal-row";
@@ -57,5 +61,64 @@ describe("an ai_visibility signal row", () => {
   it("leaves the other kinds alone", () => {
     renderRow({ kind: "market_news" });
     expect(screen.queryByRole("button", { name: "Evidence" })).not.toBeInTheDocument();
+  });
+
+  it("does not hand an ai_visibility row the atomic-update drawer's loader", () => {
+    // The two controls are both spelled "Evidence". Asserting only on the
+    // button's name would pass just as well if the row had opened
+    // `EvidenceDrawer` — which loads through `evidence-actions` and would
+    // render "no atomic update behind this signal" forever.
+    renderRow();
+    expect(loadSignalEvidence).not.toHaveBeenCalled();
+    expect(loadAiVisibilityEvidence).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * One row per kind, because the branch at the bottom of `SignalRow` is the one
+ * thing TypeScript cannot check: the four LABEL maps are `Record<Signal["kind"],
+ * …>` and fail to compile when a kind is missing, but a kind with no branch is
+ * simply a row whose evidence is unreachable, and that compiles fine.
+ */
+describe("which control each kind offers", () => {
+  const cases: {
+    kind: Signal["kind"];
+    label: string;
+    evidence: boolean;
+  }[] = [
+    { kind: "shipped_work", label: "Shipped work", evidence: true },
+    { kind: "competitor_move", label: "Competitor move", evidence: false },
+    { kind: "market_news", label: "Market news", evidence: false },
+    { kind: "manual", label: "Manual", evidence: false },
+    { kind: "ai_visibility", label: "AI visibility", evidence: true },
+  ];
+
+  for (const testCase of cases) {
+    it(`${testCase.kind} reads "${testCase.label}" and ${
+      testCase.evidence ? "offers Evidence" : "offers nothing to open"
+    }`, () => {
+      renderRow({ kind: testCase.kind });
+
+      expect(screen.getByText(testCase.label)).toBeInTheDocument();
+      const button = screen.queryByRole("button", { name: "Evidence" });
+      if (testCase.evidence) expect(button).toBeInTheDocument();
+      else expect(button).not.toBeInTheDocument();
+    });
+  }
+
+  it("covers every kind the column can hold, so a sixth kind fails this file", () => {
+    expect(new Set(cases.map((testCase) => testCase.kind))).toEqual(
+      new Set(signalKindEnum.enumValues)
+    );
+  });
+
+  it("never offers two Evidence controls on one row", () => {
+    // The two branches are separate `&&`s over the same slot. A condition
+    // widened to `!== "market_news"` would put both on a shipped_work row.
+    for (const testCase of cases) {
+      cleanup();
+      renderRow({ kind: testCase.kind });
+      expect(screen.queryAllByRole("button", { name: "Evidence" }).length).toBeLessThanOrEqual(1);
+    }
   });
 });
