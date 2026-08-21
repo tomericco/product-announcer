@@ -7,6 +7,7 @@ const SIGNAL_KIND_LABEL: Record<Signal["kind"], string> = {
   competitor_move: "Competitor move",
   market_news: "Market news",
   manual: "Manual",
+  ai_visibility: "AI visibility",
 };
 
 /**

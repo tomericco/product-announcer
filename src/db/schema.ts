@@ -1,5 +1,9 @@
-import { pgTable, pgEnum, uuid, text, timestamp, primaryKey, integer, smallint, jsonb, uniqueIndex, index, boolean, real } from "drizzle-orm/pg-core";
+import { pgTable, pgEnum, uuid, text, timestamp, primaryKey, integer, smallint, jsonb, uniqueIndex, index, boolean, real, type AnyPgColumn } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
+// Relative, not "@/…": drizzle-kit bundles this file outside Next's path
+// resolution. Type-only, so it is erased entirely and adds no runtime edge
+// from the schema into `src/lib`.
+import type { AiVisibilityPayload, SampleExtraction } from "../lib/ai-visibility/types";
 
 // A persona in a tenant's brand profile is either a live reference to a seeded
 // system persona (resolved against `system_personas` at read time) or a
@@ -334,9 +338,15 @@ export const competitors = pgTable(
 
 export type Competitor = typeof competitors.$inferSelect;
 
-export const signalKindEnum = pgEnum("signal_kind", ["shipped_work", "competitor_move", "market_news", "manual"]);
+export const signalKindEnum = pgEnum("signal_kind", [
+  "shipped_work",
+  "competitor_move",
+  "market_news",
+  "manual",
+  "ai_visibility",
+]);
 export const signalStatusEnum = pgEnum("signal_status", ["new", "used", "stale"]);
-export const sourceTypeEnum = pgEnum("source_type", ["competitor_web", "news"]);
+export const sourceTypeEnum = pgEnum("source_type", ["competitor_web", "news", "ai_visibility"]);
 export const sourceStatusEnum = pgEnum("source_status", ["active", "failing", "disabled"]);
 
 export const sources = pgTable(
@@ -444,6 +454,12 @@ export const signals = pgTable(
     relevanceScore: real("relevance_score"),
     relevanceRationale: text("relevance_rationale"),
     topics: text("topics").array().notNull().default([]),
+    // Kind-specific evidence. Null for every kind but `ai_visibility`, whose
+    // rows carry the prompt, engine, model, sample count, answer excerpt and
+    // cited URLs the evidence dialog and the brief agent read. jsonb rather
+    // than columns because only one kind uses it and its shape is owned by
+    // `AiVisibilityPayload`, not by this table.
+    payload: jsonb("payload").$type<AiVisibilityPayload>(),
     // `used` is a reporting and pruning flag, NOT a consumption gate: spec 5's
     // ideation happily re-reads a signal it cited last week, because that
     // signal can join a new cluster this week.
@@ -468,6 +484,246 @@ export const signals = pgTable(
 );
 
 export type Signal = typeof signals.$inferSelect;
+
+// ---- AI visibility (spec 2026-08-19-ai-visibility-design.md) ----
+//
+// The vocabularies here — cadence, intent, status, trigger, engine id,
+// domain class — are all `text()` and not pgEnum, matching the repo rule for
+// growing vocabularies: Postgres has no DROP VALUE, and every one of these is
+// expected to gain entries (a fifth engine, a v2 intent). The TypeScript
+// unions in `src/lib/ai-visibility/types.ts` are the real contract.
+
+export const aiVisibilitySettings = pgTable("ai_visibility_settings", {
+  // One row per tenant, so the tenant IS the key. Absence of a row is a
+  // meaningful state — `getAiVisibilitySettings` returns defaults for it —
+  // which is why nothing creates this row eagerly.
+  tenantId: uuid("tenant_id")
+    .primaryKey()
+    .references(() => tenants.id, { onDelete: "cascade" }),
+  enabled: boolean("enabled").notNull().default(false),
+  /** "weekly" | "fortnightly" | "off". */
+  cadence: text("cadence").notNull().default("weekly"),
+  /** 0 = Sunday, matching `Date#getUTCDay()`. Always UTC — the spec fixes the timezone. */
+  dayOfWeek: smallint("day_of_week").notNull().default(1),
+  engines: text("engines")
+    .array()
+    .notNull()
+    .default(["openai", "perplexity", "gemini", "anthropic"]),
+  samplesPerPrompt: smallint("samples_per_prompt").notNull().default(3),
+  monthlyCapUsd: real("monthly_cap_usd").notNull().default(20),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type AiVisibilitySettings = typeof aiVisibilitySettings.$inferSelect;
+
+export const aiVisibilityPrompts = pgTable(
+  "ai_visibility_prompts",
+  {
+    id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    text: text("text").notNull(),
+    /** discovery | comparison | alternatives | how_to | brand_check | pricing. */
+    intent: text("intent").notNull(),
+    persona: text("persona"),
+    // SET NULL, not cascade: removing a competitor must not delete the
+    // history of what engines said while we were tracking them. The prompt
+    // is auto-paused instead (spec, "Profile edits").
+    competitorId: uuid("competitor_id").references(() => competitors.id, { onDelete: "set null" }),
+    /** Brand-check prompts name the tenant on purpose and are excluded from SOV. */
+    branded: boolean("branded").notNull().default(false),
+    /** "generated" | "user". */
+    origin: text("origin").notNull(),
+    /** "proposed" | "active" | "paused" | "rejected". */
+    status: text("status").notNull().default("proposed"),
+    /** The template this came from, so the monthly expansion can vary a cluster. */
+    cluster: text("cluster"),
+    // Editing wording creates a NEW row pointing at the old one and pauses
+    // the old one — history stays attached to the wording that produced it.
+    // SET NULL so deleting a run-less predecessor does not take its successor
+    // with it.
+    supersedesId: uuid("supersedes_id").references((): AnyPgColumn => aiVisibilityPrompts.id, {
+      onDelete: "set null",
+    }),
+    /** Human-readable bad-prompt reason, or null. Advisory: nothing is paused automatically. */
+    flagReason: text("flag_reason"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    approvedAt: timestamp("approved_at", { withTimezone: true }),
+    pausedAt: timestamp("paused_at", { withTimezone: true }),
+    approvedBy: uuid("approved_by").references(() => users.id, { onDelete: "set null" }),
+  },
+  (table) => [
+    index("ai_visibility_prompts_tenant_status_idx").on(table.tenantId, table.status),
+    // One live prompt per wording. Partial on `status <> 'rejected'` because
+    // rejected rows are negatives fed back into the next generation, and a
+    // tenant can turn the same suggestion down more than once — they must not
+    // collide with each other or block a later hand-written prompt.
+    uniqueIndex("ai_visibility_prompts_tenant_text_unique")
+      .on(table.tenantId, table.text)
+      .where(sql`${table.status} <> 'rejected'`),
+  ]
+);
+
+export type AiVisibilityPrompt = typeof aiVisibilityPrompts.$inferSelect;
+
+export const aiVisibilityRuns = pgTable(
+  "ai_visibility_runs",
+  {
+    id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    // SET NULL for the same reason as `signals.sourceId`: the run is the
+    // durable record of what we observed, and it must outlive its source row.
+    sourceId: uuid("source_id").references(() => sources.id, { onDelete: "set null" }),
+    /** "pending" | "running" | "complete" | "failed" | "paused_by_cap". */
+    status: text("status").notNull().default("pending"),
+    /** "scheduled" | "manual". */
+    trigger: text("trigger").notNull(),
+    // Snapshotted from settings at plan time, not read back from settings at
+    // read time: a tenant who turns Gemini off next week must not retroactively
+    // change what this run measured.
+    engines: text("engines").array().notNull(),
+    samplesPerPrompt: smallint("samples_per_prompt").notNull(),
+    plannedCalls: integer("planned_calls").notNull().default(0),
+    completedCalls: integer("completed_calls").notNull().default(0),
+    costUsd: real("cost_usd").notNull().default(0),
+    // engine id -> model id actually seen. A change between runs suppresses
+    // change-signals for that engine and puts a tick on the sparkline.
+    modelIds: jsonb("model_ids").$type<Record<string, string>>().notNull().default({}),
+    error: text("error"),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+  },
+  (table) => [index("ai_visibility_runs_tenant_started_idx").on(table.tenantId, table.startedAt)]
+);
+
+export type AiVisibilityRun = typeof aiVisibilityRuns.$inferSelect;
+
+export const aiVisibilitySamples = pgTable(
+  "ai_visibility_samples",
+  {
+    id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    runId: uuid("run_id")
+      .notNull()
+      .references(() => aiVisibilityRuns.id, { onDelete: "cascade" }),
+    // Denormalised from the run so every read path — metrics, the prompt
+    // detail page, the 180-day purge — can filter by tenant without a join.
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    promptId: uuid("prompt_id")
+      .notNull()
+      .references(() => aiVisibilityPrompts.id, { onDelete: "cascade" }),
+    engine: text("engine").notNull(),
+    sampleIndex: smallint("sample_index").notNull(),
+    /** "pending" | "ok" | "error" | "refused". Rows are inserted `pending` by planRun. */
+    status: text("status").notNull().default("pending"),
+    answerText: text("answer_text"),
+    modelId: text("model_id"),
+    searchUsed: boolean("search_used").notNull().default(false),
+    searchQueries: text("search_queries").array().notNull().default([]),
+    raw: jsonb("raw"),
+    costUsd: real("cost_usd").notNull().default(0),
+    error: text("error"),
+    judged: boolean("judged").notNull().default(false),
+    /** Deterministic and judged extraction disagreed. Excluded from rates. */
+    flagged: boolean("flagged").notNull().default(false),
+    extraction: jsonb("extraction").$type<SampleExtraction>(),
+    askedAt: timestamp("asked_at", { withTimezone: true }),
+  },
+  (table) => [
+    // The identity of a sample. `planRun` inserts the whole grid up front and
+    // `runSlice` may be re-entered after a timeout, so the insert must be
+    // idempotent or a resumed run would double its own call count.
+    uniqueIndex("ai_visibility_samples_identity_unique").on(
+      table.runId,
+      table.promptId,
+      table.engine,
+      table.sampleIndex
+    ),
+    // `runSlice`'s hot query: "give me the pending rows of this run".
+    index("ai_visibility_samples_run_status_idx").on(table.runId, table.status),
+    // The prompt-detail page and the rolling-window metrics.
+    index("ai_visibility_samples_tenant_prompt_engine_idx").on(table.tenantId, table.promptId, table.engine),
+  ]
+);
+
+export type AiVisibilitySample = typeof aiVisibilitySamples.$inferSelect;
+
+export const aiVisibilityCitations = pgTable(
+  "ai_visibility_citations",
+  {
+    id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    sampleId: uuid("sample_id")
+      .notNull()
+      .references(() => aiVisibilitySamples.id, { onDelete: "cascade" }),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    // Denormalised alongside sampleId so the cited-domain leaderboard can
+    // group by (runId, domain) without joining through samples.
+    runId: uuid("run_id")
+      .notNull()
+      .references(() => aiVisibilityRuns.id, { onDelete: "cascade" }),
+    url: text("url").notNull(),
+    /** eTLD+1, after redirect resolution. See `src/lib/ai-visibility/domains.ts`. */
+    domain: text("domain").notNull(),
+    /** 1-based position in the answer's citation list. Order is the signal. */
+    position: smallint("position").notNull(),
+    /** own | competitor | review | community | publisher | docs | wiki | other. */
+    domainClass: text("domain_class").notNull(),
+    competitorId: uuid("competitor_id").references(() => competitors.id, { onDelete: "set null" }),
+  },
+  (table) => [
+    index("ai_visibility_citations_tenant_domain_idx").on(table.tenantId, table.domain),
+    index("ai_visibility_citations_run_domain_idx").on(table.runId, table.domain),
+  ]
+);
+
+export type AiVisibilityCitation = typeof aiVisibilityCitations.$inferSelect;
+
+export const aiVisibilityAggregates = pgTable(
+  "ai_visibility_aggregates",
+  {
+    id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    runId: uuid("run_id")
+      .notNull()
+      .references(() => aiVisibilityRuns.id, { onDelete: "cascade" }),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    engine: text("engine").notNull(),
+    /** NULL means the engine-level row for this run. */
+    promptId: uuid("prompt_id").references(() => aiVisibilityPrompts.id, { onDelete: "cascade" }),
+    // COUNTS, never rates. The rolling 4-run window is a SUM over these rows,
+    // and rates are not summable — averaging four rates weights a run with 3
+    // samples the same as one with 30. Every rate in the UI is computed from
+    // these at read time.
+    n: integer("n").notNull(),
+    tenantMentions: integer("tenant_mentions").notNull(),
+    competitorMentions: jsonb("competitor_mentions").$type<Record<string, number>>().notNull().default({}),
+    ownCitations: integer("own_citations").notNull(),
+    recommendations: integer("recommendations").notNull(),
+  },
+  (table) => [
+    // Two partial uniques rather than one three-column unique, mirroring
+    // `sources`: Postgres treats NULLs as distinct, so a plain unique on
+    // (runId, engine, promptId) would give the engine-level rows — the ones
+    // with a NULL promptId — no uniqueness at all, and a re-run of
+    // `computeAggregates` would double every headline number.
+    uniqueIndex("ai_visibility_aggregates_run_engine_prompt_unique")
+      .on(table.runId, table.engine, table.promptId)
+      .where(sql`${table.promptId} IS NOT NULL`),
+    uniqueIndex("ai_visibility_aggregates_run_engine_null_prompt_unique")
+      .on(table.runId, table.engine)
+      .where(sql`${table.promptId} IS NULL`),
+  ]
+);
+
+export type AiVisibilityAggregate = typeof aiVisibilityAggregates.$inferSelect;
 
 export const briefOriginEnum = pgEnum("brief_origin", ["agent", "manual"]);
 export const briefStatusEnum = pgEnum("brief_status", ["new", "accepted", "dismissed", "expired"]);
