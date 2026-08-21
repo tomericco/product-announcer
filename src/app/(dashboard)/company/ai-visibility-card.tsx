@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { buttonVariants } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { cn } from "@/lib/utils";
 import type { Source } from "@/db/schema";
 import { setAiVisibilityWatching } from "./actions";
 import { DATE_FORMAT, SourceStatusBadge } from "./source-status";
@@ -128,7 +129,23 @@ export function AiVisibilityCard({
                 ? `Last ran without errors ${DATE_FORMAT.format(source.lastSuccessAt)}`
                 : "Hasn't completed a clean run yet"}
             </p>
-            {source.lastError && <p className="mt-1 text-destructive">{source.lastError}</p>}
+            {/* Toned by the status, not by the mere presence of a message.
+                Unlike news and competitors, this source's `lastError` also
+                carries benign refusals — the sweep records "No active prompts —
+                approve a prompt set to start measuring." and deliberately does
+                NOT set `failing` for it — so keying the colour off the string
+                painted that sentence red beside a green Active badge, and
+                `--destructive` owns real failures only. */}
+            {source.lastError && (
+              <p
+                className={cn(
+                  "mt-1",
+                  source.status === "failing" ? "text-destructive" : "text-muted-foreground"
+                )}
+              >
+                {source.lastError}
+              </p>
+            )}
           </li>
         </ul>
       )}

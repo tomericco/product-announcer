@@ -133,6 +133,25 @@ describe("AiVisibilityCard", () => {
     expect(screen.getByText("Last ran Aug 17, 2026")).toBeInTheDocument();
   });
 
+  it("reserves the destructive tone for a source that is actually failing", () => {
+    // `sources.lastError` carries benign refusals for this source alone: the
+    // sweep records "No active prompts…" and deliberately leaves the status
+    // `active`. Colouring off the string painted that sentence red beside a
+    // green Active badge, and `--destructive` owns real failures only.
+    card({
+      source: source({
+        status: "active",
+        lastError: "No active prompts — approve a prompt set to start measuring.",
+      }),
+    });
+    const benign = screen.getByText(/No active prompts/);
+    expect(benign).not.toHaveClass("text-destructive");
+    expect(benign).toHaveClass("text-muted-foreground");
+
+    card({ source: source({ status: "failing", lastError: "Gemini 500" }) });
+    expect(screen.getByText("Gemini 500")).toHaveClass("text-destructive");
+  });
+
   it("keeps the health block on screen the moment the switch is flipped off", async () => {
     // Not only for a page loaded already-off: the flip is optimistic, so the
     // block has to survive local state going false before any reload.
