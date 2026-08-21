@@ -3,6 +3,7 @@ import { and, eq } from "drizzle-orm";
 import { db } from "../../../src/db";
 import { sources, aiVisibilityRuns, aiVisibilitySettings } from "../../../src/db/schema";
 import { sweepAiVisibility, cadenceDue } from "../../../src/lib/ai-visibility/sweep";
+import type { PlanRunResult } from "../../../src/lib/ai-visibility/run";
 import { seedTenant, dropTenant } from "../../helpers/fixtures";
 
 const TENANT = "AI Visibility Sweep Test Tenant";
@@ -64,32 +65,62 @@ describe("cadenceDue", () => {
   });
 });
 
+// NOTE: this sweep reads the whole shared test database, and other test files
+// (`run.test.ts`, `signals.test.ts`, `settings.test.ts`, `prompts.test.ts`)
+// insert `ai_visibility` sources and in-flight runs concurrently. Every
+// assertion below is therefore scoped to ids this test created — never to a raw
+// call count — which is the rule `tests/lib/signals/news-sweep.test.ts` sets for
+// exactly the same reason. And every foreign candidate the sweep picks up is
+// answered with a plan that makes the sweep write nothing, so this file cannot
+// clobber another file's source rows either.
+const FOREIGN_RUN = "foreign-run";
+
+/** The answer a tenant this test did not create gets: a run that writes nothing. */
+const FOREIGN_PLAN: PlanRunResult = {
+  ok: true,
+  runId: FOREIGN_RUN,
+  plannedCalls: 0,
+  estimateUsd: 0,
+};
+
+/** A `plan` that answers `tenantId` with `result` and everyone else harmlessly. */
+function planOnly(tenantId: string, result: PlanRunResult) {
+  return vi.fn(async (id: string): Promise<PlanRunResult> => (id === tenantId ? result : FOREIGN_PLAN));
+}
+
+/** A `slice` that always reports work left, so nothing reaches `finalize`. */
+const idleSlice = () =>
+  vi.fn().mockResolvedValue({ processed: 0, remaining: 1, budgetSpent: true, pausedByCap: false });
+
+/** The calls whose subject (tenant id or run id) is one this test created. */
+const mine = (calls: unknown[][], id: string) => calls.filter((call) => call[0] === id);
+
 describe("sweepAiVisibility", () => {
   it("starts a run when the cadence is due, then slices and finalizes it", async () => {
     const { tenant } = await seedSource();
-    const plan = vi.fn().mockResolvedValue({ ok: true, runId: "run-1", plannedCalls: 3, estimateUsd: 0.03 });
+    const plan = planOnly(tenant.id, { ok: true, runId: "run-1", plannedCalls: 3, estimateUsd: 0.03 });
     const slice = vi.fn().mockResolvedValue({ processed: 3, remaining: 0, budgetSpent: false, pausedByCap: false });
     const finalize = vi.fn().mockResolvedValue({ status: "complete", judged: 3, signals: 1 });
 
     await sweepAiVisibility({ now: clock(MONDAY), plan, slice, finalize });
 
-    expect(plan).toHaveBeenCalledTimes(1);
-    expect(plan.mock.calls[0][0]).toBe(tenant.id);
-    expect(plan.mock.calls[0][1]).toMatchObject({ trigger: "scheduled" });
-    expect(slice).toHaveBeenCalledTimes(1);
-    expect(slice.mock.calls[0][0]).toBe("run-1");
-    expect(finalize).toHaveBeenCalledTimes(1);
+    const planned = mine(plan.mock.calls, tenant.id);
+    expect(planned).toHaveLength(1);
+    expect(planned[0][1]).toMatchObject({ trigger: "scheduled" });
+    expect(mine(slice.mock.calls, "run-1")).toHaveLength(1);
+    expect(mine(finalize.mock.calls, "run-1")).toHaveLength(1);
   });
 
   it("does nothing on a day the cadence does not fall on", async () => {
-    await seedSource();
-    const plan = vi.fn();
-    const slice = vi.fn();
+    const { tenant } = await seedSource();
+    const plan = planOnly(tenant.id, { ok: true, runId: "run-1", plannedCalls: 3, estimateUsd: 0.03 });
+    const slice = idleSlice();
 
     await sweepAiVisibility({ now: clock(TUESDAY), plan, slice, finalize: vi.fn() });
 
-    expect(plan).not.toHaveBeenCalled();
-    expect(slice).not.toHaveBeenCalled();
+    // Nothing planned for this tenant, so nothing of ours could reach the slice.
+    expect(mine(plan.mock.calls, tenant.id)).toHaveLength(0);
+    expect(mine(slice.mock.calls, "run-1")).toHaveLength(0);
   });
 
   it("resumes an in-flight run instead of planning a new one, on any day", async () => {
@@ -105,56 +136,74 @@ describe("sweepAiVisibility", () => {
         status: "running",
       })
       .returning();
-    const plan = vi.fn();
+    const plan = planOnly(tenant.id, { ok: true, runId: "run-1", plannedCalls: 3, estimateUsd: 0.03 });
     const slice = vi.fn().mockResolvedValue({ processed: 10, remaining: 0, budgetSpent: false, pausedByCap: false });
     const finalize = vi.fn().mockResolvedValue({ status: "complete", judged: 0, signals: 0 });
 
     await sweepAiVisibility({ now: clock(TUESDAY), plan, slice, finalize });
 
-    expect(plan).not.toHaveBeenCalled();
-    expect(slice.mock.calls[0][0]).toBe(run.id);
-    expect(finalize).toHaveBeenCalledTimes(1);
+    expect(mine(plan.mock.calls, tenant.id)).toHaveLength(0);
+    expect(mine(slice.mock.calls, run.id)).toHaveLength(1);
+    expect(mine(finalize.mock.calls, run.id)).toHaveLength(1);
   });
 
   it("does not finalize a run that still has pending samples", async () => {
     const { tenant, source } = await seedSource();
-    await db.insert(aiVisibilityRuns).values({
-      tenantId: tenant.id,
-      sourceId: source.id,
-      trigger: "scheduled",
-      engines: ["openai"],
-      samplesPerPrompt: 3,
-      status: "running",
-    });
+    const [run] = await db
+      .insert(aiVisibilityRuns)
+      .values({
+        tenantId: tenant.id,
+        sourceId: source.id,
+        trigger: "scheduled",
+        engines: ["openai"],
+        samplesPerPrompt: 3,
+        status: "running",
+      })
+      .returning();
     const slice = vi.fn().mockResolvedValue({ processed: 5, remaining: 40, budgetSpent: true, pausedByCap: false });
     const finalize = vi.fn();
 
-    await sweepAiVisibility({ now: clock(TUESDAY), plan: vi.fn(), slice, finalize });
+    await sweepAiVisibility({
+      now: clock(TUESDAY),
+      plan: planOnly(tenant.id, FOREIGN_PLAN),
+      slice,
+      finalize,
+    });
 
-    expect(finalize).not.toHaveBeenCalled();
+    expect(mine(slice.mock.calls, run.id)).toHaveLength(1);
+    expect(mine(finalize.mock.calls, run.id)).toHaveLength(0);
   });
 
   it("does not finalize a run the cap paused", async () => {
     const { tenant, source } = await seedSource();
-    await db.insert(aiVisibilityRuns).values({
-      tenantId: tenant.id,
-      sourceId: source.id,
-      trigger: "scheduled",
-      engines: ["openai"],
-      samplesPerPrompt: 3,
-      status: "running",
-    });
+    const [run] = await db
+      .insert(aiVisibilityRuns)
+      .values({
+        tenantId: tenant.id,
+        sourceId: source.id,
+        trigger: "scheduled",
+        engines: ["openai"],
+        samplesPerPrompt: 3,
+        status: "running",
+      })
+      .returning();
     const slice = vi.fn().mockResolvedValue({ processed: 5, remaining: 40, budgetSpent: false, pausedByCap: true });
     const finalize = vi.fn();
 
-    await sweepAiVisibility({ now: clock(TUESDAY), plan: vi.fn(), slice, finalize });
+    await sweepAiVisibility({
+      now: clock(TUESDAY),
+      plan: planOnly(tenant.id, FOREIGN_PLAN),
+      slice,
+      finalize,
+    });
 
-    expect(finalize).not.toHaveBeenCalled();
+    expect(mine(slice.mock.calls, run.id)).toHaveLength(1);
+    expect(mine(finalize.mock.calls, run.id)).toHaveLength(0);
   });
 
   it("records a cap refusal on the source instead of silently skipping", async () => {
     const { tenant } = await seedSource();
-    const plan = vi.fn().mockResolvedValue({
+    const plan = planOnly(tenant.id, {
       ok: false,
       reason: "cap_reached",
       spentUsd: 20,
@@ -162,7 +211,7 @@ describe("sweepAiVisibility", () => {
       capUsd: 20,
     });
 
-    await sweepAiVisibility({ now: clock(MONDAY), plan, slice: vi.fn(), finalize: vi.fn() });
+    await sweepAiVisibility({ now: clock(MONDAY), plan, slice: idleSlice(), finalize: vi.fn() });
 
     const [source] = await db
       .select()
@@ -179,9 +228,9 @@ describe("sweepAiVisibility", () => {
 
   it("records a disabled or empty prompt set on the source without failing the sweep", async () => {
     const { tenant } = await seedSource();
-    const plan = vi.fn().mockResolvedValue({ ok: false, reason: "no_prompts" });
+    const plan = planOnly(tenant.id, { ok: false, reason: "no_prompts" });
 
-    await sweepAiVisibility({ now: clock(MONDAY), plan, slice: vi.fn(), finalize: vi.fn() });
+    await sweepAiVisibility({ now: clock(MONDAY), plan, slice: idleSlice(), finalize: vi.fn() });
 
     const [source] = await db
       .select()
@@ -193,17 +242,17 @@ describe("sweepAiVisibility", () => {
   it("skips disabled sources entirely", async () => {
     const { tenant } = await seedSource();
     await db.update(sources).set({ status: "disabled" }).where(eq(sources.tenantId, tenant.id));
-    const plan = vi.fn();
+    const plan = planOnly(tenant.id, { ok: true, runId: "run-1", plannedCalls: 3, estimateUsd: 0.03 });
 
-    await sweepAiVisibility({ now: clock(MONDAY), plan, slice: vi.fn(), finalize: vi.fn() });
+    await sweepAiVisibility({ now: clock(MONDAY), plan, slice: idleSlice(), finalize: vi.fn() });
 
-    expect(plan).not.toHaveBeenCalled();
+    expect(mine(plan.mock.calls, tenant.id)).toHaveLength(0);
   });
 
   it("includes failing sources so a recovered tenant is picked up again", async () => {
     const { tenant } = await seedSource();
     await db.update(sources).set({ status: "failing" }).where(eq(sources.tenantId, tenant.id));
-    const plan = vi.fn().mockResolvedValue({ ok: true, runId: "run-1", plannedCalls: 3, estimateUsd: 0.03 });
+    const plan = planOnly(tenant.id, { ok: true, runId: "run-1", plannedCalls: 3, estimateUsd: 0.03 });
 
     await sweepAiVisibility({
       now: clock(MONDAY),
@@ -212,7 +261,7 @@ describe("sweepAiVisibility", () => {
       finalize: vi.fn().mockResolvedValue({ status: "complete", judged: 0, signals: 0 }),
     });
 
-    expect(plan).toHaveBeenCalledTimes(1);
+    expect(mine(plan.mock.calls, tenant.id)).toHaveLength(1);
   });
 
   it("never throws when one source blows up, and keeps going", async () => {
@@ -239,7 +288,14 @@ describe("sweepAiVisibility", () => {
       monthlyCapUsd: 20,
     });
 
-    const plan = vi.fn().mockResolvedValue({ ok: true, runId: "run-x", plannedCalls: 3, estimateUsd: 0.03 });
+    // A run id per tenant, so the slice calls this test made can be told apart
+    // from the ones a concurrently-seeded tenant made.
+    const plan = vi.fn(async (id: string): Promise<PlanRunResult> => ({
+      ok: true,
+      runId: `run-${id}`,
+      plannedCalls: 3,
+      estimateUsd: 0.03,
+    }));
     const slice = vi.fn().mockResolvedValue({ processed: 3, remaining: 0, budgetSpent: false, pausedByCap: false });
 
     await sweepAiVisibility({
@@ -250,13 +306,21 @@ describe("sweepAiVisibility", () => {
       finalize: vi.fn().mockResolvedValue({ status: "complete", judged: 0, signals: 0 }),
     });
 
-    expect(plan).toHaveBeenCalledTimes(2);
-    expect(slice).toHaveBeenCalledTimes(2);
-    for (const call of slice.mock.calls) {
-      expect(call[1].budgetMs).toBeLessThanOrEqual(50_000);
-      expect(call[1].budgetMs).toBeGreaterThan(0);
-    }
     expect(first.id).not.toBe(second.id);
+    expect(mine(plan.mock.calls, first.id)).toHaveLength(1);
+    expect(mine(plan.mock.calls, second.id)).toHaveLength(1);
+    const ourSlices = [
+      ...mine(slice.mock.calls, `run-${first.id}`),
+      ...mine(slice.mock.calls, `run-${second.id}`),
+    ];
+    expect(ourSlices).toHaveLength(2);
+    for (const call of ourSlices) {
+      // Two candidates at a 100s budget is 50s each; a third tenant seeded by
+      // another file only makes each share smaller, never larger.
+      const opts = call[1] as { budgetMs: number };
+      expect(opts.budgetMs).toBeLessThanOrEqual(50_000);
+      expect(opts.budgetMs).toBeGreaterThan(0);
+    }
   });
 
   it("orders candidates never-run first, then least-recently-run", async () => {
@@ -279,13 +343,16 @@ describe("sweepAiVisibility", () => {
     });
 
     const seen: string[] = [];
-    const plan = vi.fn().mockImplementation(async (tenantId: string) => {
+    const plan = vi.fn(async (tenantId: string): Promise<PlanRunResult> => {
       seen.push(tenantId);
-      return { ok: false, reason: "no_prompts" } as const;
+      if (tenantId !== never.id && tenantId !== recent.id) return FOREIGN_PLAN;
+      return { ok: false, reason: "no_prompts" };
     });
 
-    await sweepAiVisibility({ now: clock(MONDAY), plan, slice: vi.fn(), finalize: vi.fn() });
+    await sweepAiVisibility({ now: clock(MONDAY), plan, slice: idleSlice(), finalize: vi.fn() });
 
-    expect(seen[0]).toBe(never.id);
+    // Relative order, not absolute position: a tenant another file seeded a
+    // moment ago has a null `lastRunAt` too and sorts in among ours.
+    expect(seen.filter((id) => id === never.id || id === recent.id)).toEqual([never.id, recent.id]);
   });
 });
