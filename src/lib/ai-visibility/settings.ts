@@ -1,7 +1,8 @@
-import { and, eq, sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
 import { aiVisibilitySettings, sources, type Source } from "@/db/schema";
 import { ENGINE_IDS, type EngineId } from "@/lib/ai-visibility/types";
+import { roundUsd } from "@/lib/ai-visibility/money";
 
 export const CADENCES = ["weekly", "fortnightly", "off"] as const;
 export type Cadence = (typeof CADENCES)[number];
@@ -82,13 +83,28 @@ export async function getAiVisibilitySettings(
       ? row.dayOfWeek
       : DEFAULT_AI_VISIBILITY_SETTINGS.dayOfWeek;
 
+  // Filtering can empty the list — a row written when we supported an engine we
+  // have since dropped. `saveAiVisibilitySettings` refuses to write an empty
+  // list precisely because an enabled feature with zero engines plans zero
+  // calls behind a green badge, so the read must not hand one back either:
+  // read and write have to agree on what a legal row is.
+  const filtered = row.engines.filter(isEngineId);
+  const engines = filtered.length > 0 ? filtered : [...ENGINE_IDS];
+
+  // Clamped like its neighbours, and rounded because the column is float4 —
+  // see `roundUsd`. Without the rounding a cap saved as 20.10 reads back as
+  // 20.100000381469727 and shows up in the settings field that way.
+  const monthlyCapUsd = Number.isFinite(row.monthlyCapUsd)
+    ? Math.min(MAX_MONTHLY_CAP_USD, Math.max(MIN_MONTHLY_CAP_USD, roundUsd(row.monthlyCapUsd)))
+    : DEFAULT_AI_VISIBILITY_SETTINGS.monthlyCapUsd;
+
   return {
     enabled: row.enabled,
     cadence,
     dayOfWeek,
-    engines: row.engines.filter(isEngineId),
+    engines,
     samplesPerPrompt: samples,
-    monthlyCapUsd: row.monthlyCapUsd,
+    monthlyCapUsd,
   };
 }
 
@@ -200,16 +216,27 @@ export const AI_VISIBILITY_SOURCE_LABEL = "AI visibility";
  */
 export async function ensureAiVisibilitySource(
   tenantId: string,
-  database: typeof defaultDb = defaultDb
+  database: typeof defaultDb = defaultDb,
+  // Applied to both halves of the upsert, so a caller that wants to create the
+  // row AND set its health does it in one statement rather than an insert
+  // followed by an update that can fail on its own.
+  overrides: Partial<Pick<typeof sources.$inferInsert, "status" | "lastError">> = {}
 ): Promise<Source> {
   const [row] = await database
     .insert(sources)
-    .values({ tenantId, type: "ai_visibility", url: null, label: AI_VISIBILITY_SOURCE_LABEL })
+    .values({
+      tenantId,
+      type: "ai_visibility",
+      url: null,
+      label: AI_VISIBILITY_SOURCE_LABEL,
+      ...overrides,
+    })
     .onConflictDoUpdate({
       target: [sources.tenantId, sources.type],
       targetWhere: sql`${sources.url} IS NULL`,
-      // A no-op update whose only job is to make the statement RETURNING-able.
-      set: { label: AI_VISIBILITY_SOURCE_LABEL },
+      // `label` alone is a no-op whose only job is to make the statement
+      // RETURNING-able when there are no overrides.
+      set: { label: AI_VISIBILITY_SOURCE_LABEL, ...overrides },
     })
     .returning();
   return row;
@@ -237,17 +264,16 @@ export async function setAiVisibilityEnabled(
       set: { enabled, updatedAt: new Date() },
     });
 
-  await ensureAiVisibilitySource(tenantId, database);
-
-  await database
-    .update(sources)
-    .set({
-      status: enabled ? "active" : "disabled",
-      // Enabling clears the stale complaint — the common path is reading
-      // "Paused — monthly cap reached", raising the cap, and re-toggling.
-      // Disabling leaves it: that is exactly when an operator needs to see
-      // the last failure.
-      ...(enabled ? { lastError: null } : {}),
-    })
-    .where(and(eq(sources.tenantId, tenantId), eq(sources.type, "ai_visibility")));
+  // One statement, not an upsert followed by an update: a failure between the
+  // two would leave `settings.enabled = true` beside a `disabled` source row,
+  // and the badge would contradict the switch until someone toggled it again.
+  // Same shape as `setNewsWatching`.
+  await ensureAiVisibilitySource(tenantId, database, {
+    status: enabled ? "active" : "disabled",
+    // Enabling clears the stale complaint — the common path is reading
+    // "Paused — monthly cap reached", raising the cap, and re-toggling.
+    // Disabling leaves it: that is exactly when an operator needs to see
+    // the last failure.
+    ...(enabled ? { lastError: null } : {}),
+  });
 }

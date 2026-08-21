@@ -49,6 +49,40 @@ describe("getAiVisibilitySettings", () => {
     expect(settings.engines).toEqual(["openai"]);
   });
 
+  it("falls back to every supported engine when filtering leaves none", async () => {
+    const tenant = await seedTenant(TENANT);
+    await db
+      .insert(aiVisibilitySettings)
+      .values({ tenantId: tenant.id, engines: ["bing_copilot"] });
+
+    // `saveAiVisibilitySettings` refuses to write an empty list, so the read
+    // must not invent one either.
+    expect((await getAiVisibilitySettings(tenant.id)).engines).toEqual([
+      "openai",
+      "perplexity",
+      "gemini",
+      "anthropic",
+    ]);
+  });
+
+  it("round-trips a cap with cents, and clamps one out of range", async () => {
+    const tenant = await seedTenant(TENANT);
+    await saveAiVisibilitySettings(tenant.id, { ...VALID, monthlyCapUsd: 20.1 });
+
+    // float4 stores this approximately, but Postgres prints the shortest
+    // decimal that round-trips, so it comes back exact. The `roundUsd` on the
+    // read path is there for the float4 ARITHMETIC in the cost gate (see
+    // `money.ts`); on a stored scalar like this one it is a no-op, and this
+    // case exists to pin that the read does not mangle a legitimate cap.
+    expect((await getAiVisibilitySettings(tenant.id)).monthlyCapUsd).toBe(20.1);
+
+    await db
+      .update(aiVisibilitySettings)
+      .set({ monthlyCapUsd: 9999 })
+      .where(eq(aiVisibilitySettings.tenantId, tenant.id));
+    expect((await getAiVisibilitySettings(tenant.id)).monthlyCapUsd).toBe(500);
+  });
+
   it("falls back to a sane value for a cadence or sample count the row should not hold", async () => {
     const tenant = await seedTenant(TENANT);
     await db
@@ -206,6 +240,20 @@ describe("setAiVisibilityEnabled", () => {
       .from(sources)
       .where(and(eq(sources.tenantId, tenant.id), eq(sources.type, "ai_visibility")));
     expect(source.status).toBe("active");
+  });
+
+  it("creates the source already carrying its status, without a follow-up update", async () => {
+    const tenant = await seedTenant(TENANT);
+
+    // The row has never existed, so `disabled` can only have come from the
+    // INSERT half of the upsert — proof the status is not a second statement.
+    await setAiVisibilityEnabled(tenant.id, false);
+
+    const [source] = await db
+      .select()
+      .from(sources)
+      .where(and(eq(sources.tenantId, tenant.id), eq(sources.type, "ai_visibility")));
+    expect(source.status).toBe("disabled");
   });
 
   it("turning it off disables the source but keeps it, and keeps the settings", async () => {

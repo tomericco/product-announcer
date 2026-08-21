@@ -184,7 +184,7 @@ describe("ai_visibility schema", () => {
   });
 
   it("keeps one engine-level aggregate per run and engine alongside per-prompt rows", async () => {
-    const { tenant, source } = await seed();
+    const { tenant, competitor, source } = await seed();
     const prompt = await seedPrompt(tenant.id, "best issue trackers for startups");
     const run = await seedRun(tenant.id, source.id);
 
@@ -195,7 +195,9 @@ describe("ai_visibility schema", () => {
       promptId: null,
       n: 30,
       tenantMentions: 9,
-      competitorMentions: { Rival: 21 },
+      // Keyed by competitor id, never by name: names are editable and are not
+      // unique across tenants, and `computeAggregates` sums these maps.
+      competitorMentions: { [competitor.id]: 21 },
       ownCitations: 3,
       recommendations: 2,
     };
