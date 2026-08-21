@@ -14,6 +14,7 @@ import {
 } from "../../../src/db/schema";
 import type { EngineAnswer, EngineClient, EngineError } from "../../../src/lib/ai-visibility/types";
 import { finalizeRun, latestRun, planRun, runSlice } from "../../../src/lib/ai-visibility/run";
+import { engineMetrics } from "../../../src/lib/ai-visibility/metrics";
 import { seedTenant, dropTenant } from "../../helpers/fixtures";
 
 const TENANT = "AI Visibility Run Test Tenant";
@@ -455,6 +456,59 @@ describe("runSlice", () => {
       .where(and(eq(sources.tenantId, tenant.id), eq(sources.type, "ai_visibility")));
     expect(source.status).toBe("failing");
     expect(source.lastError).toContain("monthly cap");
+  });
+
+  it("aggregates what a cap-paused run already bought, so the samples still count", async () => {
+    // The seam the phases left open: `runSlice` pauses, `finalizeRun` refuses a
+    // `paused_by_cap` run, and `computeAggregates` has no other call site — so
+    // without aggregating here every answer paid for before the cap tripped is
+    // orphaned. It is charged against month-to-date spend and visible to no
+    // metric and no signal, and the run is terminal so nothing ever resumes it.
+    const { tenant, runId } = await planned();
+    await db
+      .update(aiVisibilitySettings)
+      .set({ monthlyCapUsd: 1 })
+      .where(eq(aiVisibilitySettings.tenantId, tenant.id));
+    await db.insert(aiVisibilityRuns).values({
+      tenantId: tenant.id,
+      trigger: "scheduled",
+      status: "complete",
+      engines: ["openai"],
+      samplesPerPrompt: 3,
+      // Low enough that two batches clear the gate and the third does not:
+      // $0.98, then $0.99, then $1.00 — which is `reached`. (`monthToDateSpend`
+      // rounds to cents, so $0.995 would already read as $1.00 and pause before
+      // a single sample was bought — the case this test exists to rule out.)
+      costUsd: 0.98,
+      startedAt: new Date("2026-03-01T09:00:00Z"),
+    });
+    const openai = fakeEngine("openai", () => answer());
+
+    const outcome = await runSlice(
+      runId,
+      { budgetMs: 60_000, concurrency: 1, now: advancingClock("2026-03-02T09:00:00Z", 10) },
+      { engines: { openai } }
+    );
+
+    expect(outcome.pausedByCap).toBe(true);
+    expect(outcome.remaining).toBeGreaterThan(0);
+    const ok = await db
+      .select()
+      .from(aiVisibilitySamples)
+      .where(and(eq(aiVisibilitySamples.runId, runId), eq(aiVisibilitySamples.status, "ok")));
+    expect(ok.length).toBeGreaterThan(0);
+
+    const rows = await db
+      .select()
+      .from(aiVisibilityAggregates)
+      .where(eq(aiVisibilityAggregates.runId, runId));
+    expect(rows.length).toBeGreaterThan(0);
+
+    // And the window has to admit the paused run, or the aggregates are written
+    // to a row nothing reads.
+    const metrics = await engineMetrics(tenant.id, db, () => new Date("2026-03-02T10:00:00Z"));
+    expect(metrics.find((m) => m.engine === "openai")?.n).toBe(ok.length);
+    expect(metrics.find((m) => m.engine === "all")?.n).toBe(ok.length);
   });
 
   it("is a no-op for a run that is already complete", async () => {

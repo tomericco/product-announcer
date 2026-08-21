@@ -507,6 +507,26 @@ export async function runSlice(
   const remaining = pending?.count ?? 0;
 
   if (pausedByCap) {
+    // A cap pause is TERMINAL: `finalizeRun` refuses a `paused_by_cap` run and
+    // the sweep never resumes one, so this is the run's only chance to record
+    // what it already bought. Without it every answer paid for before the gate
+    // tripped is orphaned — never aggregated, invisible to every metric and
+    // every signal — while its cost still counts against month-to-date spend.
+    //
+    // Safe on a partial run precisely because aggregates are counts, not rates
+    // (contract decision 4): a short run contributes a small `n` that sums
+    // correctly into the window, and the n >= 30 display thresholds already
+    // decide what a thin window is allowed to say.
+    //
+    // Logged rather than thrown: the pause itself is the thing that must not be
+    // lost. Leaving the run `running` because aggregation failed would block
+    // every future run behind `run_in_flight` with the cap still tripped.
+    try {
+      await computeAggregates(runId, database);
+    } catch (error) {
+      console.error(`[ai-visibility] could not aggregate cap-paused run ${runId}:`, error);
+    }
+
     const cap = await capExceeded(run.tenantId, settings, opts.now(), database);
     const message = capPausedMessage(cap.spentUsd, cap.capUsd);
     await database

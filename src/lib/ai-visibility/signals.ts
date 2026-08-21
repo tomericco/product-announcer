@@ -580,12 +580,17 @@ export type EmitSignalsDeps = { database?: typeof defaultDb };
 /**
  * Statuses `emitSignals` will read a run in.
  *
- * Mirrors `IN_FLIGHT` in `run.ts` plus `complete`, deliberately duplicated
- * rather than imported: `run.ts` imports this module's `emitSignals` as a
- * value, and importing a value back would turn today's type-only cycle into a
- * runtime one.
+ * Mirrors `IN_FLIGHT` in `run.ts` plus the two terminal statuses that carry
+ * aggregates, deliberately duplicated rather than imported: `run.ts` imports
+ * this module's `emitSignals` as a value, and importing a value back would turn
+ * today's type-only cycle into a runtime one.
+ *
+ * `paused_by_cap` belongs here for the same reason it belongs in
+ * `windowRunIds`: `runSlice` aggregates what the run bought before the cap
+ * tripped, and those counts are as final as a complete run's. Refusing to read
+ * them would make the samples the tenant paid for invisible to every signal.
  */
-const EMITTABLE_STATUSES = ["pending", "running", "complete"];
+const EMITTABLE_STATUSES = ["pending", "running", "complete", "paused_by_cap"];
 
 /**
  * How much of the leaderboard `new_cited_domain` may consider. Passed

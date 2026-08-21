@@ -1031,21 +1031,41 @@ describe("the window is the last four COMPLETE runs, summed", () => {
     expect(counts.tenantMentions).toBe(12);
   });
 
-  it("excludes runs that never completed without letting them consume a window slot", async () => {
+  it("excludes runs that never finished without letting them consume a window slot", async () => {
     const tenant = await seedTenant(TENANT);
     for (const day of ["01", "08", "15", "22"]) {
       const run = await seedRun(tenant.id, `2026-03-${day}T09:00:00Z`);
       await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "openai", n: 10, tenantMentions: 3 });
     }
-    // Three newer runs that are not complete. Filtering AFTER the limit would
-    // leave one complete run in the window and report n = 10.
-    for (const [day, status] of [["24", "failed"], ["25", "paused_by_cap"], ["26", "running"]] as const) {
+    // Two newer runs that never finished. Filtering AFTER the limit would leave
+    // two complete runs in the window and report n = 20.
+    for (const [day, status] of [["24", "failed"], ["26", "running"]] as const) {
       const run = await seedRun(tenant.id, `2026-03-${day}T09:00:00Z`, status);
       await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "openai", n: 500, tenantMentions: 500 });
     }
     const counts = await windowCounts(tenant.id, { engine: "openai" });
     expect(counts.n).toBe(40);
     expect(counts.tenantMentions).toBe(12);
+  });
+
+  it("counts a cap-paused run, whose aggregates are as final as a complete one's", async () => {
+    // Superseded assertion: this used to be lumped in with `failed` and
+    // `running` as a run to exclude. `paused_by_cap` is terminal, not in
+    // flight — `runSlice` aggregates what it bought before the cap tripped and
+    // nothing ever resumes it — so excluding it threw away every answer the
+    // tenant paid for, while the cost still counted against their cap.
+    const tenant = await seedTenant(TENANT);
+    for (const day of ["01", "08", "15", "22"]) {
+      const run = await seedRun(tenant.id, `2026-03-${day}T09:00:00Z`);
+      await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "openai", n: 10, tenantMentions: 3 });
+    }
+    const paused = await seedRun(tenant.id, "2026-03-29T09:00:00Z", "paused_by_cap");
+    await seedAggregate({ runId: paused.id, tenantId: tenant.id, engine: "openai", n: 5, tenantMentions: 2 });
+
+    const counts = await windowCounts(tenant.id, { engine: "openai" });
+    // The paused run takes the newest slot and the 1st drops out of the window.
+    expect(counts.n).toBe(35);
+    expect(counts.tenantMentions).toBe(11);
   });
 });
 

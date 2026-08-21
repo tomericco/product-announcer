@@ -117,10 +117,15 @@ async function windowRunIds(
     .where(
       and(
         eq(aiVisibilityRuns.tenantId, tenantId),
-        // Only complete runs. A run still in flight has partial aggregates or
-        // none, and letting one into the window would make every number wobble
-        // for as long as the cron takes.
-        eq(aiVisibilityRuns.status, "complete"),
+        // No run still IN FLIGHT: it has partial aggregates or none, and
+        // letting one in would make every number wobble for as long as the
+        // cron takes.
+        //
+        // `paused_by_cap` is not in flight — it is terminal, its aggregates are
+        // final, and `runSlice` writes them at the moment it pauses. Excluding
+        // it would throw away every answer the tenant paid for before the cap
+        // tripped, which is the one outcome a cost cap must not have.
+        inArray(aiVisibilityRuns.status, ["complete", "paused_by_cap"]),
         ...(before ? [lt(aiVisibilityRuns.startedAt, before)] : [])
       )
     )
