@@ -219,3 +219,188 @@ describe("askAnthropic", () => {
     expect(anthropicEngine.label).toContain("API");
   });
 });
+
+describe("askAnthropic, the remaining error paths and extraction edges", () => {
+  it("never calls out on a key that is only whitespace", async () => {
+    vi.stubEnv("ANTHROPIC_API_KEY", "   ");
+    const fetchImpl = vi.fn();
+
+    expect(await askAnthropic("x", { fetchImpl: fetchImpl as never })).toEqual({
+      kind: "error",
+      message: expect.stringContaining("ANTHROPIC_API_KEY"),
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("turns a 401, a 429 and a 500 into errors carrying the status and the body", async () => {
+    vi.stubEnv("ANTHROPIC_API_KEY", "sk-ant-test");
+
+    const unauthorized = vi.fn(
+      async () => new Response('{"error":{"message":"invalid x-api-key"}}', { status: 401 })
+    );
+    const result = await askAnthropic("x", { fetchImpl: unauthorized as never });
+    expect(result).toEqual({ kind: "error", message: expect.stringContaining("401") });
+    expect("kind" in result && result.message).toContain("invalid x-api-key");
+
+    const rateLimited = vi.fn(async () => new Response("rate_limit_error", { status: 429 }));
+    expect(await askAnthropic("x", { fetchImpl: rateLimited as never })).toEqual({
+      kind: "error",
+      message: expect.stringContaining("429"),
+    });
+
+    const broken = vi.fn(async () => new Response("boom", { status: 500 }));
+    expect(await askAnthropic("x", { fetchImpl: broken as never })).toEqual({
+      kind: "error",
+      message: expect.stringContaining("500"),
+    });
+  });
+
+  it("turns an unparseable body into an error rather than an exception", async () => {
+    vi.stubEnv("ANTHROPIC_API_KEY", "sk-ant-test");
+
+    const empty = vi.fn(async () => new Response("", { status: 200 }));
+    expect(await askAnthropic("x", { fetchImpl: empty as never })).toEqual({
+      kind: "error",
+      message: expect.stringMatching(/unparseable/i),
+    });
+
+    const html = vi.fn(async () => new Response("<html>502</html>", { status: 200 }));
+    expect(await askAnthropic("x", { fetchImpl: html as never })).toEqual({
+      kind: "error",
+      message: expect.stringMatching(/unparseable/i),
+    });
+  });
+
+  it("sends a bare model override and falls back to the requested id", async () => {
+    vi.stubEnv("ANTHROPIC_API_KEY", "sk-ant-test");
+    vi.stubEnv("AI_VISIBILITY_ANTHROPIC_MODEL", "claude-sonnet-5-20260401");
+    const fetchImpl = vi.fn(async () =>
+      json({
+        stop_reason: "end_turn",
+        content: [
+          { type: "server_tool_use", name: "web_search", input: { query: "q" } },
+          { type: "text", text: "An answer." },
+        ],
+      })
+    );
+
+    const result = await askAnthropic("x", { fetchImpl: fetchImpl as never });
+
+    const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    // Raw HTTP to api.anthropic.com — an "anthropic/" gateway prefix would be
+    // sent verbatim and rejected.
+    expect(body.model).toBe("claude-sonnet-5-20260401");
+    expect(body.model).not.toContain("/");
+    expect("kind" in result).toBe(false);
+    if ("kind" in result) return;
+    expect(result.modelId).toBe("claude-sonnet-5-20260401");
+  });
+
+  it("caps the searches so a buyer question is not a research session", async () => {
+    vi.stubEnv("ANTHROPIC_API_KEY", "sk-ant-test");
+    const fetchImpl = vi.fn(async () => json(ANSWER));
+
+    await askAnthropic("x", { fetchImpl: fetchImpl as never });
+
+    const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const tool = JSON.parse(init.body as string).tools[0];
+    expect(tool.max_uses).toBeGreaterThan(0);
+    expect(tool.max_uses).toBeLessThanOrEqual(10);
+  });
+
+  it("dedupes citations and queries across separate blocks, keeping first-cited order", async () => {
+    vi.stubEnv("ANTHROPIC_API_KEY", "sk-ant-test");
+    const fetchImpl = vi.fn(async () =>
+      json({
+        model: "claude-sonnet-5",
+        stop_reason: "end_turn",
+        content: [
+          { type: "server_tool_use", name: "web_search", input: { query: "q1" } },
+          { type: "server_tool_use", name: "web_search", input: { query: "q1" } },
+          { type: "server_tool_use", name: "web_search", input: { query: "q2" } },
+          // A different server tool is not a web search.
+          { type: "server_tool_use", name: "code_execution", input: { query: "IGNORED" } },
+          {
+            type: "text",
+            text: "First half. ",
+            citations: [
+              { url: "https://a.example/1" },
+              { url: "" },
+              {},
+              { url: "https://b.example/2" },
+            ],
+          },
+          {
+            type: "text",
+            text: "Second half.",
+            citations: [{ url: "https://a.example/1" }, { url: "https://c.example/3" }],
+          },
+        ],
+      })
+    );
+
+    const result = await askAnthropic("x", { fetchImpl: fetchImpl as never });
+
+    expect("kind" in result).toBe(false);
+    if ("kind" in result) return;
+    expect(result.text).toBe("First half. Second half.");
+    expect(result.searchQueries).toEqual(["q1", "q2"]);
+    expect(result.citations).toEqual([
+      { url: "https://a.example/1", position: 1 },
+      { url: "https://b.example/2", position: 2 },
+      { url: "https://c.example/3", position: 3 },
+    ]);
+  });
+
+  it("does not count a non-search server tool as having searched", async () => {
+    vi.stubEnv("ANTHROPIC_API_KEY", "sk-ant-test");
+    const fetchImpl = vi.fn(async () =>
+      json({
+        model: "m",
+        stop_reason: "end_turn",
+        content: [
+          { type: "server_tool_use", name: "code_execution", input: { query: "q" } },
+          { type: "text", text: "From memory." },
+        ],
+      })
+    );
+
+    expect(await askAnthropic("x", { fetchImpl: fetchImpl as never })).toEqual({
+      kind: "refused",
+      message: expect.stringMatching(/search/i),
+    });
+  });
+
+  it("strips the blobs as KEYS, and leaves a block that never had them alone", async () => {
+    vi.stubEnv("ANTHROPIC_API_KEY", "sk-ant-test");
+    const fetchImpl = vi.fn(async () => json(ANSWER));
+
+    const result = await askAnthropic("x", { fetchImpl: fetchImpl as never });
+
+    expect("kind" in result).toBe(false);
+    if ("kind" in result) return;
+    const blocks = (result.raw as { content: Record<string, unknown>[] }).content;
+
+    const searchResult = blocks.find((block) => block.type === "web_search_tool_result");
+    const hits = searchResult?.content as Record<string, unknown>[];
+    expect(hits).toHaveLength(1);
+    expect(Object.keys(hits[0])).not.toContain("encrypted_content");
+    expect(Object.keys(hits[0])).not.toContain("page_age");
+    // Identity survives: without the URL the citation is unusable evidence.
+    expect(hits[0].url).toBe("https://g2.com/categories/issue-tracking");
+
+    const textBlock = blocks.find((block) => block.type === "text");
+    for (const citation of textBlock?.citations as Record<string, unknown>[]) {
+      expect(Object.keys(citation)).not.toContain("cited_text");
+      expect(Object.keys(citation)).not.toContain("encrypted_index");
+      expect(citation.url).toEqual(expect.any(String));
+    }
+
+    // The tool-use block has neither `content` nor `citations`; sanitising must
+    // not invent either key on it.
+    const toolUse = blocks.find((block) => block.type === "server_tool_use");
+    expect(Object.keys(toolUse ?? {})).not.toContain("citations");
+    expect(toolUse?.input).toEqual({ query: "best issue trackers" });
+  });
+});

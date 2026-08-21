@@ -31,3 +31,45 @@ describe("the engine registry", () => {
     expect(perMonth).toBeLessThan(30);
   });
 });
+
+describe("the engine registry, wired to the clients it prices", () => {
+  it("prices each engine from that engine's own constant", async () => {
+    // A copy-paste that crossed two entries here would be invisible: every
+    // number is a plausible per-call cost, and the cap check would simply
+    // pause the wrong tenant early or late.
+    const [openai, perplexity, gemini, anthropic] = await Promise.all([
+      import("../../../../src/lib/ai-visibility/engines/openai"),
+      import("../../../../src/lib/ai-visibility/engines/perplexity"),
+      import("../../../../src/lib/ai-visibility/engines/gemini"),
+      import("../../../../src/lib/ai-visibility/engines/anthropic"),
+    ]);
+
+    expect(engineCost("openai")).toBe(openai.OPENAI_COST_PER_CALL_USD);
+    expect(engineCost("perplexity")).toBe(perplexity.PERPLEXITY_COST_PER_CALL_USD);
+    expect(engineCost("gemini")).toBe(gemini.GEMINI_COST_PER_CALL_USD);
+    expect(engineCost("anthropic")).toBe(anthropic.ANTHROPIC_COST_PER_CALL_USD);
+
+    expect(ENGINE_CLIENTS.openai).toBe(openai.openaiEngine);
+    expect(ENGINE_CLIENTS.perplexity).toBe(perplexity.perplexityEngine);
+    expect(ENGINE_CLIENTS.gemini).toBe(gemini.geminiEngine);
+    expect(ENGINE_CLIENTS.anthropic).toBe(anthropic.anthropicEngine);
+  });
+
+  it("gives every engine a label of its own, so a run report can tell them apart", () => {
+    const labels = ENGINE_IDS.map((id) => engineLabel(id));
+    expect(new Set(labels).size).toBe(ENGINE_IDS.length);
+    for (const label of labels) expect(label.trim().length).toBeGreaterThan(0);
+  });
+
+  it("keeps the default weekly run inside the $20 cap on every engine combination", () => {
+    // The cap is a hard pause, so the worst case — all four engines, the 30
+    // prompt maximum, 5 samples — is the number that decides whether a tenant
+    // on defaults can ever complete a month.
+    const worstCase = ENGINE_IDS.reduce((total, id) => total + engineCost(id) * 30 * 5, 0) * 4.33;
+    expect(worstCase).toBeGreaterThan(20);
+
+    // …whereas the shipped default (3 samples) must fit under it.
+    const defaults = ENGINE_IDS.reduce((total, id) => total + engineCost(id) * 30 * 3, 0) * 4.33;
+    expect(defaults).toBeLessThan(20);
+  });
+});

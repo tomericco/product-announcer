@@ -247,3 +247,247 @@ describe("askPerplexity", () => {
     expect(perplexityEngine.label).toContain("API");
   });
 });
+
+describe("askPerplexity, the remaining error paths and extraction edges", () => {
+  it("never calls out on a key that is only whitespace", async () => {
+    vi.stubEnv("PERPLEXITY_API_KEY", "   ");
+    const fetchImpl = vi.fn();
+
+    expect(await askPerplexity("x", { fetchImpl: fetchImpl as never })).toEqual({
+      kind: "error",
+      message: expect.stringContaining("PERPLEXITY_API_KEY"),
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("turns a 401 and a 500 into errors carrying the status and the body", async () => {
+    vi.stubEnv("PERPLEXITY_API_KEY", "pplx-test");
+
+    const unauthorized = vi.fn(async () => new Response("invalid api key", { status: 401 }));
+    const result = await askPerplexity("x", { fetchImpl: unauthorized as never });
+    expect(result).toEqual({ kind: "error", message: expect.stringContaining("401") });
+    expect("kind" in result && result.message).toContain("invalid api key");
+
+    const broken = vi.fn(async () => new Response("boom", { status: 500 }));
+    expect(await askPerplexity("x", { fetchImpl: broken as never })).toEqual({
+      kind: "error",
+      message: expect.stringContaining("500"),
+    });
+  });
+
+  it("turns an unparseable body into an error rather than an exception", async () => {
+    vi.stubEnv("PERPLEXITY_API_KEY", "pplx-test");
+
+    const empty = vi.fn(async () => new Response("", { status: 200 }));
+    expect(await askPerplexity("x", { fetchImpl: empty as never })).toEqual({
+      kind: "error",
+      message: expect.stringMatching(/unparseable/i),
+    });
+
+    const html = vi.fn(async () => new Response("<html>502</html>", { status: 200 }));
+    expect(await askPerplexity("x", { fetchImpl: html as never })).toEqual({
+      kind: "error",
+      message: expect.stringMatching(/unparseable/i),
+    });
+  });
+
+  it("sends the model override and falls back to the requested id when none comes back", async () => {
+    vi.stubEnv("PERPLEXITY_API_KEY", "pplx-test");
+    vi.stubEnv("AI_VISIBILITY_PERPLEXITY_MODEL", "perplexity/sonar-pro");
+    const fetchImpl = vi.fn(async () =>
+      json({
+        status: "completed",
+        output: [
+          { type: "search_results", results: [{ url: "https://a.example/1" }] },
+          { type: "message", content: [{ type: "output_text", text: "An answer." }] },
+        ],
+      })
+    );
+
+    const result = await askPerplexity("x", { fetchImpl: fetchImpl as never });
+
+    const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(init.body as string).model).toBe("perplexity/sonar-pro");
+    expect("kind" in result).toBe(false);
+    if ("kind" in result) return;
+    expect(result.modelId).toBe("perplexity/sonar-pro");
+  });
+
+  it("keeps a metered cost of zero instead of falling back to the estimate", async () => {
+    vi.stubEnv("PERPLEXITY_API_KEY", "pplx-test");
+    // A free-tier or cached call really can meter zero. `||` here would silently
+    // replace it with the estimate and over-bill the tenant's cap.
+    const fetchImpl = vi.fn(async () => json({ ...ANSWER, usage: { cost: { total_cost: 0 } } }));
+
+    const result = await askPerplexity("x", { fetchImpl: fetchImpl as never });
+
+    expect("kind" in result).toBe(false);
+    if ("kind" in result) return;
+    expect(result.costUsd).toBe(0);
+  });
+
+  it("merges text, queries and sources across several output items", async () => {
+    vi.stubEnv("PERPLEXITY_API_KEY", "pplx-test");
+    const fetchImpl = vi.fn(async () =>
+      json({
+        status: "completed",
+        model: "perplexity/sonar",
+        output: [
+          {
+            type: "search_results",
+            queries: ["q1", "q2"],
+            results: [{ url: "https://a.example/1" }, { url: "https://b.example/2" }],
+          },
+          {
+            type: "search_results",
+            queries: ["q2", "q3"],
+            // Already seen: one source cited twice is one source.
+            results: [{ url: "https://a.example/1" }, { url: "https://c.example/3" }],
+          },
+          {
+            type: "message",
+            content: [
+              { type: "output_text", text: "First half. " },
+              { type: "reasoning_text", text: "IGNORED" },
+              { type: "output_text", text: "Second half." },
+            ],
+          },
+        ],
+      })
+    );
+
+    const result = await askPerplexity("x", { fetchImpl: fetchImpl as never });
+
+    expect("kind" in result).toBe(false);
+    if ("kind" in result) return;
+    expect(result.text).toBe("First half. Second half.");
+    expect(result.searchQueries).toEqual(["q1", "q2", "q3"]);
+    expect(result.citations).toEqual([
+      { url: "https://a.example/1", position: 1 },
+      { url: "https://b.example/2", position: 2 },
+      { url: "https://c.example/3", position: 3 },
+    ]);
+  });
+
+  it("skips a source with no usable URL", async () => {
+    vi.stubEnv("PERPLEXITY_API_KEY", "pplx-test");
+    const fetchImpl = vi.fn(async () =>
+      json({
+        status: "completed",
+        model: "perplexity/sonar",
+        output: [
+          {
+            type: "search_results",
+            results: [{ id: 1, title: "no url" }, { id: 2, url: "" }, { id: 3, url: "https://a.example/1" }],
+          },
+          { type: "message", content: [{ type: "output_text", text: "An answer." }] },
+        ],
+      })
+    );
+
+    const result = await askPerplexity("x", { fetchImpl: fetchImpl as never });
+
+    expect("kind" in result).toBe(false);
+    if ("kind" in result) return;
+    expect(result.citations).toEqual([{ url: "https://a.example/1", position: 1 }]);
+  });
+});
+
+/**
+ * Perplexity's request and response shapes here were derived from published
+ * documentation — no PERPLEXITY_API_KEY was available to confirm them against a
+ * live call. These tests therefore prove ROBUSTNESS, not CORRECTNESS: if the
+ * real Agent API differs from what this client assumes, the parser must degrade
+ * to `{kind:"error"}` or to a sourceless answer, never throw an exception out of
+ * `ask()` and take the whole run slice with it. Passing these says nothing
+ * about whether the assumed shape is right.
+ */
+describe("askPerplexity, when the real response shape is not what we assumed", () => {
+  const cases: [string, unknown][] = [
+    [
+      "the retiring chat-completions shape, if /v1/agent proxied to it",
+      {
+        id: "x",
+        model: "sonar",
+        choices: [{ message: { role: "assistant", content: "An answer." } }],
+        citations: ["https://a.example/1"],
+      },
+    ],
+    [
+      "citations under a top-level key rather than a search_results item",
+      {
+        status: "completed",
+        model: "perplexity/sonar",
+        search_results: [{ url: "https://a.example/1" }],
+        output: [{ type: "message", content: [{ type: "output_text", text: "An answer." }] }],
+      },
+    ],
+    [
+      "the message text under a renamed part type",
+      {
+        status: "completed",
+        model: "perplexity/sonar",
+        output: [
+          { type: "search_results", results: [{ url: "https://a.example/1" }] },
+          { type: "message", content: [{ type: "text", text: "An answer." }] },
+        ],
+      },
+    ],
+    [
+      "no output key at all",
+      { status: "completed", model: "perplexity/sonar", response: { text: "An answer." } },
+    ],
+    [
+      "a status this client has never heard of",
+      { status: "queued", model: "perplexity/sonar" },
+    ],
+  ];
+
+  it.each(cases)("degrades rather than throwing: %s", async (_label, body) => {
+    vi.stubEnv("PERPLEXITY_API_KEY", "pplx-test");
+    const fetchImpl = vi.fn(async () => json(body));
+
+    const result = await askPerplexity("x", { fetchImpl: fetchImpl as never });
+
+    // Either a non-answer we can see in the run report, or an answer with no
+    // citations — never a thrown exception, and never a silent scored zero.
+    if ("kind" in result) {
+      expect(["error", "refused"]).toContain(result.kind);
+      expect(result.message.length).toBeGreaterThan(0);
+    } else {
+      expect(result.citations).toEqual([]);
+    }
+  });
+});
+
+/**
+ * OPEN DEFECT, pinned rather than hidden.
+ *
+ * `it.fails` asserts that the body below still throws. It does: `for (const
+ * item of raw.output ?? [])` assumes `output` is iterable, so a response that
+ * nests the items one level deeper — the single most likely way an unverified
+ * shape is wrong — throws a TypeError straight out of `ask()` instead of
+ * returning `{kind:"error"}`. That breaks the `EngineClient` contract and, with
+ * no try/catch in the caller, would take a whole run slice down.
+ *
+ * The fix is one guard (`Array.isArray(raw.output) ? raw.output : []`) in
+ * `src/lib/ai-visibility/engines/perplexity.ts`. When it lands, this test starts
+ * PASSING, which makes `it.fails` report it as failing — delete this block then
+ * and fold the case back into the list above.
+ */
+describe("askPerplexity, known unguarded shape", () => {
+  it.fails("should not throw when output items are nested one level deeper", async () => {
+    vi.stubEnv("PERPLEXITY_API_KEY", "pplx-test");
+    const fetchImpl = vi.fn(async () =>
+      json({
+        status: "completed",
+        model: "perplexity/sonar",
+        output: { items: [{ type: "message", content: [{ type: "output_text", text: "a" }] }] },
+      })
+    );
+
+    const result = await askPerplexity("x", { fetchImpl: fetchImpl as never });
+
+    expect("kind" in result).toBe(true);
+  });
+});

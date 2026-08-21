@@ -150,3 +150,333 @@ describe("askGemini", () => {
     expect(geminiEngine.label).toContain("API");
   });
 });
+
+describe("askGemini, the remaining error paths and extraction edges", () => {
+  it("never calls out on a key that is only whitespace", async () => {
+    vi.stubEnv("GEMINI_API_KEY", "   ");
+    const fetchImpl = vi.fn();
+
+    expect(await askGemini("x", { fetchImpl: fetchImpl as never })).toEqual({
+      kind: "error",
+      message: expect.stringContaining("GEMINI_API_KEY"),
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("keeps the key out of the URL, where it would end up in a log line", async () => {
+    vi.stubEnv("GEMINI_API_KEY", "gem-secret");
+    const fetchImpl = vi.fn(async () => json(ANSWER));
+
+    await askGemini("x", { fetchImpl: fetchImpl as never });
+
+    const [url] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).not.toContain("gem-secret");
+  });
+
+  it("turns a 401, a 403 and a 500 into errors carrying the status and the body", async () => {
+    vi.stubEnv("GEMINI_API_KEY", "gem-test");
+
+    const unauthorized = vi.fn(async () => new Response("API key not valid", { status: 401 }));
+    const result = await askGemini("x", { fetchImpl: unauthorized as never });
+    expect(result).toEqual({ kind: "error", message: expect.stringContaining("401") });
+    expect("kind" in result && result.message).toContain("API key not valid");
+
+    const forbidden = vi.fn(async () => new Response("no access", { status: 403 }));
+    expect(await askGemini("x", { fetchImpl: forbidden as never })).toEqual({
+      kind: "error",
+      message: expect.stringContaining("403"),
+    });
+
+    // The shape a withdrawn model id produces — the exact failure the review
+    // caught, and the one that must read as a coverage gap rather than a zero.
+    const notFound = vi.fn(
+      async () => new Response('{"error":{"message":"models/x is not found"}}', { status: 404 })
+    );
+    expect(await askGemini("x", { fetchImpl: notFound as never })).toEqual({
+      kind: "error",
+      message: expect.stringContaining("404"),
+    });
+
+    const broken = vi.fn(async () => new Response("boom", { status: 500 }));
+    expect(await askGemini("x", { fetchImpl: broken as never })).toEqual({
+      kind: "error",
+      message: expect.stringContaining("500"),
+    });
+  });
+
+  it("turns an unparseable body into an error rather than an exception", async () => {
+    vi.stubEnv("GEMINI_API_KEY", "gem-test");
+
+    const empty = vi.fn(async () => new Response("", { status: 200 }));
+    expect(await askGemini("x", { fetchImpl: empty as never })).toEqual({
+      kind: "error",
+      message: expect.stringMatching(/unparseable/i),
+    });
+
+    const html = vi.fn(async () => new Response("<html>502</html>", { status: 200 }));
+    expect(await askGemini("x", { fetchImpl: html as never })).toEqual({
+      kind: "error",
+      message: expect.stringMatching(/unparseable/i),
+    });
+  });
+
+  it("puts the model override in the URL and falls back to it for modelId", async () => {
+    vi.stubEnv("GEMINI_API_KEY", "gem-test");
+    vi.stubEnv("AI_VISIBILITY_GEMINI_MODEL", "gemini-4-flash");
+    const fetchImpl = vi.fn(async () =>
+      json({
+        candidates: [
+          {
+            content: { parts: [{ text: "An answer." }] },
+            finishReason: "STOP",
+            groundingMetadata: { webSearchQueries: ["q"] },
+          },
+        ],
+      })
+    );
+
+    const result = await askGemini("x", { fetchImpl: fetchImpl as never });
+
+    const [url] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe(
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-4-flash:generateContent"
+    );
+    expect("kind" in result).toBe(false);
+    if ("kind" in result) return;
+    // No `modelVersion` came back, so the id we asked for is what gets stored.
+    expect(result.modelId).toBe("gemini-4-flash");
+  });
+
+  it("refuses when there is no candidate to read at all", async () => {
+    vi.stubEnv("GEMINI_API_KEY", "gem-test");
+
+    for (const body of [{ modelVersion: "m" }, { modelVersion: "m", candidates: [] }]) {
+      const fetchImpl = vi.fn(async () => json(body));
+      expect(await askGemini("x", { fetchImpl: fetchImpl as never })).toEqual({
+        kind: "refused",
+        message: expect.stringMatching(/candidate/i),
+      });
+    }
+  });
+
+  it("counts the answer as grounded on queries alone or on chunks alone", async () => {
+    vi.stubEnv("GEMINI_API_KEY", "gem-test");
+
+    // Grounding metadata can report the searches without surfacing chunks…
+    const queriesOnly = vi.fn(async () =>
+      json({
+        modelVersion: "m",
+        candidates: [
+          {
+            content: { parts: [{ text: "An answer." }] },
+            finishReason: "STOP",
+            groundingMetadata: { webSearchQueries: ["q"] },
+          },
+        ],
+      })
+    );
+    const a = await askGemini("x", { fetchImpl: queriesOnly as never });
+    expect("kind" in a).toBe(false);
+    if ("kind" in a) return;
+    expect(a.searchUsed).toBe(true);
+    expect(a.citations).toEqual([]);
+
+    // …or surface chunks without echoing the queries.
+    const chunksOnly = vi.fn(async () =>
+      json({
+        modelVersion: "m",
+        candidates: [
+          {
+            content: { parts: [{ text: "An answer." }] },
+            finishReason: "STOP",
+            groundingMetadata: { groundingChunks: [{ web: { uri: REDIRECT_A } }] },
+          },
+        ],
+      })
+    );
+    const b = await askGemini("x", { fetchImpl: chunksOnly as never });
+    expect("kind" in b).toBe(false);
+    if ("kind" in b) return;
+    expect(b.searchUsed).toBe(true);
+    expect(b.searchQueries).toEqual([]);
+    expect(b.citations).toEqual([{ url: REDIRECT_A, position: 1 }]);
+  });
+
+  it("drops queries and chunks that carry nothing usable", async () => {
+    vi.stubEnv("GEMINI_API_KEY", "gem-test");
+    const fetchImpl = vi.fn(async () =>
+      json({
+        modelVersion: "m",
+        candidates: [
+          {
+            content: { parts: [{ text: "An answer." }, {}] },
+            finishReason: "STOP",
+            groundingMetadata: {
+              webSearchQueries: ["", "real query"],
+              groundingChunks: [{}, { web: {} }, { web: { uri: "" } }, { web: { uri: REDIRECT_B } }],
+            },
+          },
+        ],
+      })
+    );
+
+    const result = await askGemini("x", { fetchImpl: fetchImpl as never });
+
+    expect("kind" in result).toBe(false);
+    if ("kind" in result) return;
+    expect(result.text).toBe("An answer.");
+    expect(result.searchQueries).toEqual(["real query"]);
+    expect(result.citations).toEqual([{ url: REDIRECT_B, position: 1 }]);
+  });
+
+  it("still returns a grounded answer that finished on a non-STOP reason other than MAX_TOKENS", async () => {
+    vi.stubEnv("GEMINI_API_KEY", "gem-test");
+    // Deliberate: only truncation invalidates the measurement. A finishReason
+    // we do not recognise, on an answer that has text and grounding, is still
+    // an answer — treating it as an error would throw away real samples.
+    const fetchImpl = vi.fn(async () =>
+      json({
+        modelVersion: "m",
+        candidates: [
+          {
+            content: { parts: [{ text: "An answer." }] },
+            finishReason: "RECITATION",
+            groundingMetadata: { webSearchQueries: ["q"] },
+          },
+        ],
+      })
+    );
+
+    const result = await askGemini("x", { fetchImpl: fetchImpl as never });
+
+    expect("kind" in result).toBe(false);
+  });
+});
+
+/**
+ * Gemini's request and response shapes here were derived from published
+ * documentation — no GEMINI_API_KEY was available to confirm them against a
+ * live call. These tests therefore prove ROBUSTNESS, not CORRECTNESS: if the
+ * real grounded `generateContent` response differs from what this client
+ * assumes, the parser must degrade to `{kind:"error"}` / `{kind:"refused"}` or
+ * to an answer with zero citations, never throw out of `ask()`. Passing these
+ * says nothing about whether the assumed shape is right.
+ */
+describe("askGemini, when the real response shape is not what we assumed", () => {
+  const cases: [string, unknown][] = [
+    [
+      "grounding metadata under the REST snake_case spelling",
+      {
+        modelVersion: "m",
+        candidates: [
+          {
+            content: { parts: [{ text: "An answer." }] },
+            finishReason: "STOP",
+            grounding_metadata: {
+              grounding_chunks: [{ web: { uri: "https://a.example/1" } }],
+              web_search_queries: ["q"],
+            },
+          },
+        ],
+      },
+    ],
+    [
+      "citations under groundingSupports rather than groundingChunks",
+      {
+        modelVersion: "m",
+        candidates: [
+          {
+            content: { parts: [{ text: "An answer." }] },
+            finishReason: "STOP",
+            groundingMetadata: {
+              groundingSupports: [{ web: { uri: "https://a.example/1" } }],
+            },
+          },
+        ],
+      },
+    ],
+    [
+      "a chunk whose URL sits under a renamed key",
+      {
+        modelVersion: "m",
+        candidates: [
+          {
+            content: { parts: [{ text: "An answer." }] },
+            groundingMetadata: {
+              webSearchQueries: ["q"],
+              groundingChunks: [{ web: { url: "https://a.example/1" } }, { source: { uri: "x" } }],
+            },
+          },
+        ],
+      },
+    ],
+    [
+      "the answer text one level shallower than expected",
+      { modelVersion: "m", candidates: [{ text: "An answer.", finishReason: "STOP" }] },
+    ],
+    [
+      "candidates as a single object rather than a list",
+      {
+        modelVersion: "m",
+        candidates: { content: { parts: [{ text: "An answer." }] } },
+      },
+    ],
+    ["an empty object where a response was expected", {}],
+  ];
+
+  it.each(cases)("degrades rather than throwing: %s", async (_label, body) => {
+    vi.stubEnv("GEMINI_API_KEY", "gem-test");
+    const fetchImpl = vi.fn(async () => json(body));
+
+    const result = await askGemini("x", { fetchImpl: fetchImpl as never });
+
+    if ("kind" in result) {
+      expect(["error", "refused"]).toContain(result.kind);
+      expect(result.message.length).toBeGreaterThan(0);
+    } else {
+      expect(result.citations).toEqual([]);
+    }
+  });
+});
+
+/**
+ * OPEN DEFECT, pinned rather than hidden — the Gemini twin of the Perplexity
+ * one. `it.fails` asserts these still throw.
+ *
+ * `(candidate.content?.parts ?? []).map(...)` and `for (const chunk of
+ * grounding?.groundingChunks ?? [])` both assume a list. A response that puts an
+ * object there — a plausible way an unverified shape is wrong — throws a
+ * TypeError straight out of `ask()` instead of returning an EngineError,
+ * breaking the `EngineClient` contract.
+ *
+ * The fix is an `Array.isArray` guard at each site in
+ * `src/lib/ai-visibility/engines/gemini.ts`. When it lands these start PASSING,
+ * which makes `it.fails` report them as failing — delete this block then.
+ */
+describe("askGemini, known unguarded shapes", () => {
+  it.fails("should not throw when content.parts is an object", async () => {
+    vi.stubEnv("GEMINI_API_KEY", "gem-test");
+    const fetchImpl = vi.fn(async () =>
+      json({ modelVersion: "m", candidates: [{ content: { parts: { text: "An answer." } } }] })
+    );
+
+    expect("kind" in (await askGemini("x", { fetchImpl: fetchImpl as never }))).toBe(true);
+  });
+
+  it.fails("should not throw when groundingChunks is an object", async () => {
+    vi.stubEnv("GEMINI_API_KEY", "gem-test");
+    const fetchImpl = vi.fn(async () =>
+      json({
+        modelVersion: "m",
+        candidates: [
+          {
+            content: { parts: [{ text: "An answer." }] },
+            groundingMetadata: { groundingChunks: { web: { uri: "https://a.example/1" } } },
+          },
+        ],
+      })
+    );
+
+    expect("kind" in (await askGemini("x", { fetchImpl: fetchImpl as never }))).toBe(true);
+  });
+});

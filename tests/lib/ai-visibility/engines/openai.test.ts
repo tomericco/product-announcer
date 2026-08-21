@@ -231,3 +231,173 @@ describe("askOpenAi", () => {
     expect(openaiEngine.label).toContain("API");
   });
 });
+
+describe("askOpenAi, the remaining error paths and extraction edges", () => {
+  it("never calls out on a key that is only whitespace", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "   ");
+    const fetchImpl = vi.fn();
+
+    expect(await askOpenAi("x", { fetchImpl: fetchImpl as never })).toEqual({
+      kind: "error",
+      message: expect.stringContaining("OPENAI_API_KEY"),
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("turns a 401 into an error carrying the status and the body", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "sk-test");
+    const unauthorized = vi.fn(
+      async () => new Response('{"error":{"message":"Incorrect API key"}}', { status: 401 })
+    );
+
+    expect(await askOpenAi("x", { fetchImpl: unauthorized as never })).toEqual({
+      kind: "error",
+      message: expect.stringContaining("401"),
+    });
+    const result = await askOpenAi("x", { fetchImpl: unauthorized as never });
+    expect("kind" in result && result.message).toContain("Incorrect API key");
+  });
+
+  it("turns an unparseable body into an error rather than an exception", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "sk-test");
+
+    const empty = vi.fn(async () => new Response("", { status: 200 }));
+    expect(await askOpenAi("x", { fetchImpl: empty as never })).toEqual({
+      kind: "error",
+      message: expect.stringMatching(/unparseable/i),
+    });
+
+    // What a proxy or an edge error page actually returns when it intercepts.
+    const html = vi.fn(async () => new Response("<html>502 Bad Gateway</html>", { status: 200 }));
+    expect(await askOpenAi("x", { fetchImpl: html as never })).toEqual({
+      kind: "error",
+      message: expect.stringMatching(/unparseable/i),
+    });
+  });
+
+  it("sends the model override and falls back to the requested id when none comes back", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "sk-test");
+    vi.stubEnv("AI_VISIBILITY_OPENAI_MODEL", "gpt-5.6-preview");
+    const fetchImpl = vi.fn(async () =>
+      json({
+        status: "completed",
+        output: [
+          { type: "web_search_call", action: { queries: ["q"] } },
+          { type: "message", content: [{ type: "output_text", text: "An answer." }] },
+        ],
+      })
+    );
+
+    const result = await askOpenAi("x", { fetchImpl: fetchImpl as never });
+
+    const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(init.body as string).model).toBe("gpt-5.6-preview");
+    expect("kind" in result).toBe(false);
+    if ("kind" in result) return;
+    // No `model` in the response, so the id we asked for is what gets stored —
+    // never an empty string, which would break the model-change suppression.
+    expect(result.modelId).toBe("gpt-5.6-preview");
+  });
+
+  it("dedupes citations and queries across separate output items", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "sk-test");
+    const fetchImpl = vi.fn(async () =>
+      json({
+        model: "m",
+        status: "completed",
+        output: [
+          { type: "web_search_call", action: { type: "search", queries: ["q1", "q2"] } },
+          { type: "web_search_call", action: { type: "search", queries: ["q2", "q3"] } },
+          {
+            type: "message",
+            content: [
+              {
+                type: "output_text",
+                text: "First half. ",
+                annotations: [
+                  { type: "url_citation", url: "https://a.example/1" },
+                  { type: "url_citation", url: "" },
+                  { type: "url_citation" },
+                ],
+              },
+              {
+                type: "output_text",
+                text: "Second half.",
+                annotations: [{ type: "url_citation", url: "https://b.example/2" }],
+              },
+            ],
+          },
+          {
+            type: "message",
+            content: [
+              {
+                type: "output_text",
+                text: " Tail.",
+                // Already cited in the first message: one source cited twice is
+                // one source, and its position is where it FIRST appeared.
+                annotations: [
+                  { type: "url_citation", url: "https://a.example/1" },
+                  { type: "url_citation", url: "https://c.example/3" },
+                ],
+              },
+            ],
+          },
+        ],
+      })
+    );
+
+    const result = await askOpenAi("x", { fetchImpl: fetchImpl as never });
+
+    expect("kind" in result).toBe(false);
+    if ("kind" in result) return;
+    expect(result.text).toBe("First half. Second half. Tail.");
+    expect(result.searchQueries).toEqual(["q1", "q2", "q3"]);
+    expect(result.citations).toEqual([
+      { url: "https://a.example/1", position: 1 },
+      { url: "https://b.example/2", position: 2 },
+      { url: "https://c.example/3", position: 3 },
+    ]);
+  });
+
+  it("strips the encrypted blob as a KEY, not just as a value", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "sk-test");
+    const fetchImpl = vi.fn(async () => json(ANSWER));
+
+    const result = await askOpenAi("x", { fetchImpl: fetchImpl as never });
+
+    expect("kind" in result).toBe(false);
+    if ("kind" in result) return;
+    const output = (result.raw as { output: Record<string, unknown>[] }).output;
+    for (const item of output) {
+      expect(Object.keys(item)).not.toContain("encrypted_content");
+    }
+    // The reasoning item itself is kept — only its blob goes.
+    expect(output.some((item) => item.type === "reasoning")).toBe(true);
+    expect(JSON.stringify(result.raw)).not.toContain("encrypted_content");
+  });
+
+  it("counts a search call that carries no query at all", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "sk-test");
+    // `open_page` and `find_in_page` actions are navigation, not searches: they
+    // contribute no query, but they still prove the model went to the web.
+    const fetchImpl = vi.fn(async () =>
+      json({
+        model: "m",
+        status: "completed",
+        output: [
+          { type: "web_search_call", action: { type: "open_page", url: "https://a.example" } },
+          { type: "web_search_call" },
+          { type: "message", content: [{ type: "output_text", text: "An answer." }] },
+        ],
+      })
+    );
+
+    const result = await askOpenAi("x", { fetchImpl: fetchImpl as never });
+
+    expect("kind" in result).toBe(false);
+    if ("kind" in result) return;
+    expect(result.searchUsed).toBe(true);
+    expect(result.searchQueries).toEqual([]);
+    expect(result.citations).toEqual([]);
+  });
+});
