@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, act } from "@testing-library/react";
+import { render, screen, fireEvent, act, cleanup } from "@testing-library/react";
 import type { EngineId } from "../../../src/lib/ai-visibility/types";
 import {
   AiVisibilityForm,
@@ -11,10 +11,12 @@ vi.mock("../../../src/app/(dashboard)/settings/actions", () => ({
   saveAiVisibilityConfig: vi.fn(async () => {}),
 }));
 
+// The real constants from `engines/*.ts`. Gemini was 0 here, which exercised a
+// "free within its allowance" branch production can never produce.
 const COST: Record<EngineId, number> = {
   openai: 0.012,
   perplexity: 0.008,
-  gemini: 0.0,
+  gemini: 0.014,
   anthropic: 0.012,
 };
 
@@ -75,6 +77,31 @@ describe("monthlyEstimateUsd", () => {
     ).toBe(0);
   });
 
+  it("charges brand-check prompts one sample, exactly as the cap gate does", () => {
+    // `capExceeded` counts brand_check at one sample and everything else at
+    // the samples setting. An estimate that charged all 28 at 3 read ~5% high
+    // against the gate it is supposed to be describing.
+    const withBrandChecks = monthlyEstimateUsd({
+      promptCount: 28,
+      brandCheckCount: 2,
+      engines: ["openai"],
+      samplesPerPrompt: 3,
+      cadence: "weekly",
+      costPerCall: COST,
+    });
+    // 26 prompts × 3 samples + 2 brand checks × 1 = 80 calls per run.
+    expect(withBrandChecks).toBeCloseTo(80 * (52 / 12) * 0.012, 2);
+    expect(withBrandChecks).toBeLessThan(
+      monthlyEstimateUsd({
+        promptCount: 28,
+        engines: ["openai"],
+        samplesPerPrompt: 3,
+        cadence: "weekly",
+        costPerCall: COST,
+      })
+    );
+  });
+
   it("sums the engines that are on, and only those", () => {
     const both = monthlyEstimateUsd({
       promptCount: 10,
@@ -119,8 +146,14 @@ describe("AiVisibilityForm", () => {
     expect(screen.getByText(/only engine calls count/i)).toBeInTheDocument();
   });
 
-  it("warns that a single sample is noisy", async () => {
+  it("recommends 3 samples whether or not one is already chosen", () => {
+    // A standing recommendation, not a warning that fires on a bad choice —
+    // asserted at both settings so the test says what the component does.
     form({ defaults: { ...DEFAULTS, samplesPerPrompt: 1 } });
+    expect(screen.getByText(/3 recommended — single samples are noisy/)).toBeInTheDocument();
+
+    cleanup();
+    form({ defaults: { ...DEFAULTS, samplesPerPrompt: 3 } });
     expect(screen.getByText(/3 recommended — single samples are noisy/)).toBeInTheDocument();
   });
 
@@ -133,6 +166,20 @@ describe("AiVisibilityForm", () => {
     form({ defaults: { ...DEFAULTS, engines: [] } });
     expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
     expect(screen.getByText(/Turn on at least one engine/)).toBeInTheDocument();
+  });
+
+  it("refuses a cap the server would reject, instead of letting it throw an error page", () => {
+    // `saveAiVisibilitySettings` rejects anything over $500 and the action
+    // throws on it, which reached the user as a blank error boundary with no
+    // hint that the number was the problem.
+    form({ defaults: { ...DEFAULTS, monthlyCapUsd: 600 } });
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    expect(screen.getByText(/between \$1 and \$500/)).toBeInTheDocument();
+  });
+
+  it("refuses an empty or zero cap for the same reason", () => {
+    form({ defaults: { ...DEFAULTS, monthlyCapUsd: 0 } });
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
   });
 
   it("says the estimate exceeds the cap before the save, not after the run is paused", async () => {

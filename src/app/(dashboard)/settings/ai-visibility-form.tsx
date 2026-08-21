@@ -14,6 +14,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import type { EngineId } from "@/lib/ai-visibility/types";
+// Dependency-free module — safe on this side of the client boundary, and the
+// same two numbers `saveAiVisibilitySettings` validates against.
+import { MIN_MONTHLY_CAP_USD, MAX_MONTHLY_CAP_USD } from "@/lib/ai-visibility/money";
 import { ENGINE_LABEL, ENGINE_ORDER } from "../ai-visibility/engine-labels";
 import { saveAiVisibilityConfig } from "./actions";
 
@@ -55,23 +58,40 @@ function labelFor(options: { value: string; label: string }[], value: string) {
  */
 export function monthlyEstimateUsd({
   promptCount,
+  brandCheckCount = 0,
   engines,
   samplesPerPrompt,
   cadence,
   costPerCall,
 }: {
   promptCount: number;
+  /**
+   * How many of `promptCount` are `brand_check` prompts. They are sampled
+   * exactly once regardless of the samples setting, which is what
+   * `capExceeded` charges — a trust cue that disagrees with the gate it is
+   * describing is worse than no number.
+   */
+  brandCheckCount?: number;
   engines: EngineId[];
   samplesPerPrompt: number;
   cadence: "weekly" | "fortnightly" | "off";
   costPerCall: Record<EngineId, number>;
 }): number {
   const runs = RUNS_PER_MONTH[cadence] ?? 0;
-  const perRunPerEngine = promptCount * samplesPerPrompt;
   return engines.reduce(
-    (total, engine) => total + perRunPerEngine * runs * (costPerCall[engine] ?? 0),
+    (total, engine) => total + callsPerRun(promptCount, brandCheckCount, samplesPerPrompt) * runs * (costPerCall[engine] ?? 0),
     0
   );
+}
+
+/**
+ * Calls one engine makes in one run. Mirrors `capExceeded`, which counts
+ * brand-check prompts at one sample and everything else at the samples
+ * setting.
+ */
+function callsPerRun(promptCount: number, brandCheckCount: number, samplesPerPrompt: number): number {
+  const branded = Math.min(Math.max(brandCheckCount, 0), promptCount);
+  return (promptCount - branded) * samplesPerPrompt + branded;
 }
 
 /**
@@ -90,6 +110,7 @@ export function monthlyEstimateUsd({
 export function AiVisibilityForm({
   defaults,
   promptCount,
+  brandCheckCount = 0,
   costPerCall,
   spentUsd,
 }: {
@@ -101,6 +122,8 @@ export function AiVisibilityForm({
     monthlyCapUsd: number;
   };
   promptCount: number;
+  /** Of `promptCount`, how many are sampled once regardless of the setting. */
+  brandCheckCount?: number;
   costPerCall: Record<EngineId, number>;
   spentUsd: number;
 }) {
@@ -113,11 +136,13 @@ export function AiVisibilityForm({
   const capUsd = Number(cap);
   const estimate = monthlyEstimateUsd({
     promptCount,
+    brandCheckCount,
     engines,
     samplesPerPrompt: Number(samples),
     cadence,
     costPerCall,
   });
+  const callsPerRunPerEngine = callsPerRun(promptCount, brandCheckCount, Number(samples));
 
   // The lib rejects an empty engines array ({ ok:false, error:"engines" }):
   // an enabled feature with zero engines would look on and measure nothing,
@@ -127,7 +152,11 @@ export function AiVisibilityForm({
   const noEngines = engines.length === 0;
   const capIsANumber = cap.trim().length > 0 && Number.isFinite(capUsd);
   const overCap = capIsANumber && capUsd > 0 && estimate > capUsd;
-  const badCap = !capIsANumber || capUsd <= 0;
+  // The same bounds `saveAiVisibilitySettings` enforces. Without the upper one
+  // a cap of $600 sailed past Save and came back as an unhandled throw from
+  // the action — a blank error page with no hint that the number was at fault.
+  const badCap =
+    !capIsANumber || capUsd < MIN_MONTHLY_CAP_USD || capUsd > MAX_MONTHLY_CAP_USD;
 
   async function handleSave(formData: FormData) {
     await saveAiVisibilityConfig(formData);
@@ -185,8 +214,11 @@ export function AiVisibilityForm({
         </p>
       </div>
 
-      <div className="space-y-2">
-        <Label>Engines</Label>
+      {/* A fieldset, not a bare <Label>: the label element had no control and
+          no labelable descendant, so a screen-reader user met four unrelated
+          switches with no group context. */}
+      <fieldset className="space-y-2">
+        <legend className="text-sm leading-none font-medium select-none">Engines</legend>
         {ENGINE_ORDER.map((engine) => (
           <div key={engine} className="space-y-0.5">
             <Label>
@@ -201,12 +233,13 @@ export function AiVisibilityForm({
               />
               {ENGINE_LABEL[engine]}
             </Label>
+            {/* One branch, not two: every engine currently costs something
+                (Gemini's grounded calls included), so a "free within its
+                allowance" arm would be copy no tenant can ever see. */}
             <p className="pl-11 text-xs text-muted-foreground">
-              {costPerCall[engine] === 0
-                ? "Free within its monthly grounded-prompt allowance."
-                : `About $${(costPerCall[engine] * promptCount * Number(samples)).toFixed(
-                    2
-                  )} per run at your current prompt set.`}
+              {`About $${(costPerCall[engine] * callsPerRunPerEngine).toFixed(
+                2
+              )} per run at your current prompt set.`}
             </p>
           </div>
         ))}
@@ -219,7 +252,7 @@ export function AiVisibilityForm({
             Turn on at least one engine — with none on, runs are scheduled and measure nothing.
           </p>
         )}
-      </div>
+      </fieldset>
 
       <div className="space-y-2">
         <Label>Samples per prompt</Label>
@@ -251,7 +284,8 @@ export function AiVisibilityForm({
           id="ai-visibility-cap"
           name="monthlyCapUsd"
           type="number"
-          min={1}
+          min={MIN_MONTHLY_CAP_USD}
+          max={MAX_MONTHLY_CAP_USD}
           step={1}
           className="w-32"
           value={cap}
@@ -279,7 +313,8 @@ export function AiVisibilityForm({
         )}
         {badCap && (
           <p className="text-xs text-destructive">
-            Set a cap of at least $1 — the feature will not run without one.
+            Set a cap between ${MIN_MONTHLY_CAP_USD} and ${MAX_MONTHLY_CAP_USD} — the feature will not
+            run without one, and will not accept a larger one.
           </p>
         )}
       </div>

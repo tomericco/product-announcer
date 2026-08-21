@@ -37,10 +37,12 @@ function card(props: Partial<Parameters<typeof AiVisibilityCard>[0]> = {}) {
   return render(
     <AiVisibilityCard
       source={source()}
+      enabled
       promptCount={28}
       competitorCount={5}
       personaCount={3}
-      changedSinceCount={2}
+      newCompetitorCount={2}
+      profileChanged={false}
       {...props}
     />
   );
@@ -63,18 +65,44 @@ describe("AiVisibilityCard", () => {
     expect(toast.error).toHaveBeenCalled();
   });
 
-  it("states what the prompts were derived from, and what has moved since", () => {
+  it("states what the prompts were derived from", () => {
     card();
-    expect(
-      screen.getByText("Prompts generated from 5 competitors, 3 personas — 2 changed since")
-    ).toBeInTheDocument();
-  });
-
-  it("drops the trailing clause when nothing has changed", () => {
-    card({ changedSinceCount: 0 });
     expect(
       screen.getByText("Prompts generated from 5 competitors, 3 personas")
     ).toBeInTheDocument();
+  });
+
+  it("names what has moved since, rather than summing it into a count", () => {
+    // `companyProfiles.updatedAt` moves for a dozen writes that have nothing
+    // to do with personas — a logo upload, a guidelines save — so an edited
+    // profile is named, never counted alongside competitors. Same wording the
+    // prompts page uses for the same derivation.
+    card({ newCompetitorCount: 3, profileChanged: true });
+    expect(
+      screen.getByText("Profile changed since prompts were generated — 3 competitors, an updated profile")
+    ).toBeInTheDocument();
+  });
+
+  it("says nothing at all when nothing has changed", () => {
+    card({ newCompetitorCount: 0, profileChanged: false });
+    expect(screen.queryByText(/Profile changed since/)).not.toBeInTheDocument();
+  });
+
+  it("is off for a workspace that has never turned it on, whatever the source row says", () => {
+    // The source row is created by `planRun` and defaults to `active`, and an
+    // earlier version of the page created it on render. Seeding the switch
+    // from it showed a checked toggle and a green badge for a feature the
+    // sweep never runs, because the sweep gates on `settings.enabled`.
+    card({ enabled: false, source: source({ status: "active" }) });
+    expect(screen.getByRole("switch", { name: /track ai visibility/i })).not.toBeChecked();
+  });
+
+  it("shows no health block at all before the feature has ever run", () => {
+    card({ source: null, enabled: false });
+    expect(screen.queryByText(/Not run yet/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Hasn't completed a clean run/)).not.toBeInTheDocument();
+    // The switch is still there — turning it on is what creates the row.
+    expect(screen.getByRole("switch", { name: /track ai visibility/i })).toBeInTheDocument();
   });
 
   it("keeps showing the last error after the switch is turned off", () => {

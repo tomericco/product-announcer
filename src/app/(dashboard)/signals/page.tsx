@@ -76,7 +76,8 @@ export default async function SignalsPage({
             <Badge variant="secondary">{rows.length}</Badge>
           </div>
           <p className="text-sm text-muted-foreground">
-            Everything ingested in the last 60 days — shipped work, competitor moves, and market news — ahead of
+            Everything ingested in the last 60 days — shipped work, competitor moves, market news, and AI
+            visibility — ahead of
             scoring, clustering, or turning into a brief. A row with no score means scoring failed, not that it
             scored zero.
           </p>

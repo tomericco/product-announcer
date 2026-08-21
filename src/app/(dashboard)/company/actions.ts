@@ -256,7 +256,12 @@ export async function setNewsWatching(enabled: boolean) {
  * through `SourceStatusBadge` exactly as they do for news and competitors.
  * "Off" means no run starts and no engine call is paid for; history is kept.
  */
-export async function setAiVisibilityWatching(enabled: boolean): Promise<void> {
+export async function setAiVisibilityWatching(enabled: unknown): Promise<void> {
+  // A Server Action argument is client input whatever TypeScript says — the
+  // same rule `saveVisualIdentity` and `savePersonas` follow below. A
+  // non-boolean here would reach `setAiVisibilityEnabled` and be written
+  // straight into a `boolean` column.
+  if (typeof enabled !== "boolean") return;
   const session = await requireSession();
   await setAiVisibilityEnabled(session.user.tenantId, enabled);
   revalidatePath("/company");

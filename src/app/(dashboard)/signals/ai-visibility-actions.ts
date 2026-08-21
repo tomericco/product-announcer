@@ -1,10 +1,10 @@
 "use server";
 
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
-import { tenants } from "@/db/schema";
+import { signals, tenants } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
-import { listSignals } from "@/lib/signals/query";
+import { signalWindowCondition } from "@/lib/signals/window";
 import { listCompetitors } from "@/lib/workspace/competitors";
 import { buildAliases } from "@/lib/ai-visibility/aliases";
 import type { AnswerAlias } from "../ai-visibility/prompts/[promptId]/highlighted-answer";
@@ -30,17 +30,18 @@ const DATE_FORMAT = new Intl.DateTimeFormat("en-US", {
 
 /**
  * The evidence behind one `ai_visibility` signal, for the dialog on
- * `/signals`. Tenant-scoped from the session and never from the id the
- * browser sends: `listSignals` already filters on the session's tenant (plus
- * the 60-day window), so another tenant's id simply matches nothing and
- * returns null — the same undistinguished handling `readSignalEvidence`
- * documents, so this cannot leak cross-tenant existence either.
+ * `/signals`. One row by id, in `readSignalEvidence`'s shape — the id comes
+ * from the browser and is untrusted, so the tenant is in the WHERE clause and
+ * another tenant's id simply matches nothing and returns null, the same
+ * undistinguished handling that keeps this from leaking cross-tenant
+ * existence.
  *
- * `includeStale: true` because the browser itself can show stale rows, and a
- * stale signal's Evidence button must open its evidence rather than the
- * "aged out" empty state. The 60-day window still applies and is not a filter
- * any caller can widen: a signal old enough to have left the browser has
- * evidence nobody should still be acting on.
+ * `signalWindowCondition()` keeps the browser's 60-day guarantee without
+ * reading the whole window: a signal old enough to have aged out of the
+ * browser has evidence nobody should still be acting on, and the dialog's
+ * "may have aged out" copy is that designed behaviour speaking. Status is
+ * deliberately NOT filtered — the browser can show stale rows, and a stale
+ * row's Evidence button must open its evidence rather than the empty state.
  *
  * No revalidate: nothing here writes.
  */
@@ -48,11 +49,18 @@ export async function loadAiVisibilityEvidence(
   signalId: string
 ): Promise<AiVisibilityEvidenceView | null> {
   const session = await requireSession();
-  const rows = await listSignals(session.user.tenantId, {
-    kind: "ai_visibility",
-    includeStale: true,
-  });
-  const signal = rows.find((row) => row.id === signalId);
+  const [signal] = await db
+    .select({ title: signals.title, payload: signals.payload })
+    .from(signals)
+    .where(
+      and(
+        eq(signals.id, signalId),
+        eq(signals.tenantId, session.user.tenantId),
+        eq(signals.kind, "ai_visibility"),
+        signalWindowCondition()
+      )
+    )
+    .limit(1);
   const payload = signal?.payload;
   if (!signal || !payload) return null;
 

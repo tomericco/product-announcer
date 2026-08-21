@@ -4,7 +4,7 @@ import { requireSession } from "@/lib/workspace/session";
 import { getOrCreateCompanyProfile } from "@/lib/workspace/company-profile";
 import { listCompetitors } from "@/lib/workspace/competitors";
 import { listCompetitorSources, getNewsSource } from "@/lib/signals/sources";
-import { ensureAiVisibilitySource } from "@/lib/ai-visibility/settings";
+import { getAiVisibilitySettings, getAiVisibilitySource } from "@/lib/ai-visibility/settings";
 import { listPrompts } from "@/lib/ai-visibility/prompts";
 import { saveGuidelines } from "./actions";
 import { BrandStyleImport } from "./brand-style-import";
@@ -42,9 +42,12 @@ export default async function CompanyPage({
   const competitors = await listCompetitors(session.user.tenantId);
   const competitorSources = await listCompetitorSources(session.user.tenantId);
   const newsSource = await getNewsSource(session.user.tenantId);
-  // Created on first view rather than on first run, which is what makes the
-  // feature's health legible before anything has run.
-  const aiVisibilitySource = await ensureAiVisibilitySource(session.user.tenantId);
+  // A read, like `getNewsSource` above. Creating the row here would default it
+  // to `active`, reporting a feature as on that the sweep will never run, and
+  // would put every tenant who ever opened this page into the sweep's
+  // candidate set. `setAiVisibilityEnabled` and `planRun` create it.
+  const aiVisibilitySource = await getAiVisibilitySource(session.user.tenantId);
+  const aiVisibilitySettings = await getAiVisibilitySettings(session.user.tenantId);
   const activeAiVisibilityPrompts = await listPrompts(session.user.tenantId, { status: "active" });
   // Grouped here rather than in the client component so CompetitorsEditor
   // never needs to know how sources relate to competitors -- it just indexes
@@ -54,20 +57,21 @@ export default async function CompanyPage({
     if (!source.competitorId) continue;
     (sourcesByCompetitor[source.competitorId] ??= []).push(source);
   }
-  // The same derivation the prompts page's "Profile changed since prompts were
-  // generated" strip uses, expressed as one count: competitors added since the
-  // newest active prompt was approved, plus the profile itself if it has been
-  // edited since. Personas live in one JSON column with no per-persona
-  // timestamp, so an edited profile is the only evidence a persona moved.
+  // The prompts page's "Profile changed since prompts were generated" strip,
+  // derived the same way and passed down as the two separate facts it is:
+  // competitors added since the newest active prompt was approved, and whether
+  // the profile itself has been edited since. They are NOT summed —
+  // `companyProfiles.updatedAt` moves for a dozen unrelated writes, so a count
+  // would report a logo upload as a changed persona.
   const lastApprovedAt = activeAiVisibilityPrompts.reduce<Date | null>(
     (latest, prompt) =>
       prompt.approvedAt && (!latest || prompt.approvedAt > latest) ? prompt.approvedAt : latest,
     null
   );
-  const aiVisibilityChangedSince = lastApprovedAt
-    ? competitors.filter((competitor) => competitor.createdAt > lastApprovedAt).length +
-      (brandProfile.updatedAt > lastApprovedAt ? 1 : 0)
+  const newAiVisibilityCompetitors = lastApprovedAt
+    ? competitors.filter((competitor) => competitor.createdAt > lastApprovedAt).length
     : 0;
+  const aiVisibilityProfileChanged = lastApprovedAt !== null && brandProfile.updatedAt > lastApprovedAt;
 
   const personaCatalog = await db
     .select({
@@ -164,10 +168,12 @@ export default async function CompanyPage({
         <CardContent>
           <AiVisibilityCard
             source={aiVisibilitySource}
+            enabled={aiVisibilitySettings.enabled}
             promptCount={activeAiVisibilityPrompts.length}
             competitorCount={competitors.length}
             personaCount={brandProfile.userPersonas.length}
-            changedSinceCount={aiVisibilityChangedSince}
+            newCompetitorCount={newAiVisibilityCompetitors}
+            profileChanged={aiVisibilityProfileChanged}
           />
         </CardContent>
       </Card>

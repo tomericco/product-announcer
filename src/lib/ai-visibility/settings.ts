@@ -3,7 +3,11 @@ import { db as defaultDb } from "@/db";
 import { aiVisibilitySettings, sources, type Source } from "@/db/schema";
 import { ENGINE_IDS, type EngineId } from "@/lib/ai-visibility/types";
 import { isCapPausedError, monthToDateSpendUsd } from "@/lib/ai-visibility/cost";
-import { roundUsd } from "@/lib/ai-visibility/money";
+import {
+  roundUsd,
+  MIN_MONTHLY_CAP_USD,
+  MAX_MONTHLY_CAP_USD,
+} from "@/lib/ai-visibility/money";
 
 export const CADENCES = ["weekly", "fortnightly", "off"] as const;
 export type Cadence = (typeof CADENCES)[number];
@@ -12,8 +16,9 @@ export type Cadence = (typeof CADENCES)[number];
 export const SAMPLE_CHOICES = [1, 3, 5] as const;
 export type SamplesPerPrompt = (typeof SAMPLE_CHOICES)[number];
 
-export const MIN_MONTHLY_CAP_USD = 1;
-export const MAX_MONTHLY_CAP_USD = 500;
+// Defined in `money.ts` so the /settings form can import them without
+// reaching `@/db`; re-exported here because this is where callers expect them.
+export { MIN_MONTHLY_CAP_USD, MAX_MONTHLY_CAP_USD };
 
 export type AiVisibilitySettingsValues = {
   enabled: boolean;
@@ -336,6 +341,29 @@ export async function ensureAiVisibilitySource(
     })
     .returning();
   return row;
+}
+
+/**
+ * The feature's source row, if one exists yet — a READ, in `getNewsSource`'s
+ * shape, for the /company card's health block.
+ *
+ * Deliberately not `ensureAiVisibilitySource`. Creating the row on a page
+ * render defaults its status to `active`, which is the badge and (before the
+ * switch was seeded from the settings row) the toggle both reporting a feature
+ * as on that `sweep.ts` will never run, and it drops every tenant who has ever
+ * loaded /company into the sweep's candidate set. The row is created by the
+ * two paths that mean something — `setAiVisibilityEnabled` and `planRun`.
+ */
+export async function getAiVisibilitySource(
+  tenantId: string,
+  database: typeof defaultDb = defaultDb
+): Promise<Source | null> {
+  const [source] = await database
+    .select()
+    .from(sources)
+    .where(and(eq(sources.tenantId, tenantId), eq(sources.type, "ai_visibility")))
+    .limit(1);
+  return source ?? null;
 }
 
 /**

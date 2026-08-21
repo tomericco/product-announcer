@@ -25,18 +25,34 @@ import { DATE_FORMAT, SourceStatusBadge } from "./source-status";
  */
 export function AiVisibilityCard({
   source,
+  enabled: initialEnabled,
   promptCount,
   competitorCount,
   personaCount,
-  changedSinceCount,
+  newCompetitorCount,
+  profileChanged,
 }: {
   source: Source | null;
+  /**
+   * `ai_visibility_settings.enabled` — the column `sweep.ts` actually gates
+   * on, and therefore the only honest thing to seed this switch from.
+   *
+   * NOT `source.status !== "disabled"`. A source row can exist and read
+   * `active` while the feature has never been switched on (`planRun` creates
+   * one, and so did an earlier version of this page), which showed a checked
+   * switch and a green badge beside this card's own "it's off until you turn
+   * it on" — and nothing ran until the user toggled off and back on.
+   */
+  enabled: boolean;
   promptCount: number;
   competitorCount: number;
   personaCount: number;
-  changedSinceCount: number;
+  /** Competitors added since the newest active prompt was approved. */
+  newCompetitorCount: number;
+  /** Whether the company profile itself has been edited since then. */
+  profileChanged: boolean;
 }) {
-  const [enabled, setEnabled] = useState(source ? source.status !== "disabled" : false);
+  const [enabled, setEnabled] = useState(initialEnabled);
   const [pending, setPending] = useState(false);
   const router = useRouter();
 
@@ -56,9 +72,21 @@ export function AiVisibilityCard({
 
   const derivation = `Prompts generated from ${competitorCount} competitor${
     competitorCount === 1 ? "" : "s"
-  }, ${personaCount} persona${personaCount === 1 ? "" : "s"}${
-    changedSinceCount > 0 ? ` — ${changedSinceCount} changed since` : ""
-  }`;
+  }, ${personaCount} persona${personaCount === 1 ? "" : "s"}`;
+
+  // Worded exactly as the prompts page words the same derivation, and for the
+  // same reason: `companyProfiles.updatedAt` is bumped by a dozen unrelated
+  // writes (guidelines, visual identity, topics, a brand import), so folding
+  // it into a COUNT attached to a sentence about competitors and personas
+  // makes uploading a logo read as "1 persona changed". Named separately, it
+  // says only what it knows.
+  const changes: string[] = [];
+  if (newCompetitorCount > 0) {
+    changes.push(`${newCompetitorCount} competitor${newCompetitorCount === 1 ? "" : "s"}`);
+  }
+  if (profileChanged) changes.push("an updated profile");
+  const changedNote =
+    changes.length > 0 ? `Profile changed since prompts were generated — ${changes.join(", ")}` : null;
 
   return (
     <div className="space-y-3">
@@ -77,6 +105,9 @@ export function AiVisibilityCard({
       </p>
 
       {promptCount > 0 && <p className="text-xs text-muted-foreground">{derivation}</p>}
+      {promptCount > 0 && changedNote && (
+        <p className="text-xs text-muted-foreground">{changedNote}</p>
+      )}
 
       {/* Shown whenever a source row exists, INCLUDING while switched off:
           turning the toggle off after a failure must not hide the reason. */}

@@ -23,3 +23,13 @@
 export function roundUsd(value: number): number {
   return Math.round(value * 100) / 100;
 }
+
+/**
+ * The cap's legal range, in the one module both sides of the client boundary
+ * can import: `saveAiVisibilitySettings` validates against these, and the
+ * /settings form disables Save on them, so a number the form accepts is a
+ * number the server accepts. `settings.ts` re-exports both — it reaches `@/db`
+ * and a `"use client"` file cannot import it.
+ */
+export const MIN_MONTHLY_CAP_USD = 1;
+export const MAX_MONTHLY_CAP_USD = 500;

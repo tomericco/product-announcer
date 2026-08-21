@@ -91,6 +91,9 @@ export default async function SettingsPage() {
             key={JSON.stringify(aiVisibilitySettings)}
             defaults={aiVisibilitySettings}
             promptCount={aiVisibilityPrompts.length}
+            brandCheckCount={
+              aiVisibilityPrompts.filter((prompt) => prompt.intent === "brand_check").length
+            }
             costPerCall={engineCosts}
             spentUsd={aiVisibilitySpend.spentUsd}
           />
