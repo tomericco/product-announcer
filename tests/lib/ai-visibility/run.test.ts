@@ -9,6 +9,7 @@ import {
   aiVisibilityCitations,
   aiVisibilitySettings,
   competitors,
+  signals,
   sources,
 } from "../../../src/db/schema";
 import type { EngineAnswer, EngineClient, EngineError } from "../../../src/lib/ai-visibility/types";
@@ -967,6 +968,87 @@ describe("finalizeRun", () => {
 
     expect(out.status).toBe("complete");
     expect(emitted).toBe(0);
+  });
+
+  it("writes a real ai_visibility signal end to end when a trigger fires", async () => {
+    const { tenant, runId } = await ran(["ok", "ok", "ok"]);
+    const [rival] = await db
+      .insert(competitors)
+      .values({ tenantId: tenant.id, name: "Rival" })
+      .returning();
+    const [prompt] = await db
+      .select()
+      .from(aiVisibilityPrompts)
+      .where(eq(aiVisibilityPrompts.tenantId, tenant.id));
+
+    // This run's answers all name the competitor and never us…
+    await db
+      .update(aiVisibilitySamples)
+      .set({
+        extraction: {
+          deterministic: { tenantMentioned: false, competitorIds: [rival.id], ownDomainCited: false },
+        },
+      })
+      .where(eq(aiVisibilitySamples.runId, runId));
+
+    // …and so did the run before it, which is what makes the gap two runs old
+    // rather than one run of noise.
+    const [previous] = await db
+      .insert(aiVisibilityRuns)
+      .values({
+        tenantId: tenant.id,
+        trigger: "scheduled",
+        engines: ["openai"],
+        samplesPerPrompt: 3,
+        status: "complete",
+        modelIds: { openai: "gpt-5.1" },
+        startedAt: new Date("2026-02-23T09:00:00Z"),
+      })
+      .returning();
+    await db.insert(aiVisibilityAggregates).values({
+      runId: previous.id,
+      tenantId: tenant.id,
+      engine: "openai",
+      promptId: prompt.id,
+      n: 3,
+      tenantMentions: 0,
+      competitorMentions: { [rival.id]: 3 },
+      ownCitations: 0,
+      recommendations: 0,
+    });
+
+    const out = await finalizeRun(
+      runId,
+      { budgetMs: 60_000, now: frozen("2026-03-02T09:10:00Z") },
+      { judge: noopJudge }
+    );
+
+    expect(out.signals).toBe(1);
+    const rows = await db
+      .select()
+      .from(signals)
+      .where(and(eq(signals.tenantId, tenant.id), eq(signals.kind, "ai_visibility")));
+    expect(rows).toHaveLength(1);
+    expect(rows[0].payload?.signalType).toBe("gap_vs_competitor");
+    expect(rows[0].competitorId).toBe(rival.id);
+    expect(rows[0].title).toContain("Rival");
+  });
+
+  it("calls the real emitSignals when none is injected", async () => {
+    const { tenant, runId } = await ran(["ok", "ok", "ok"]);
+
+    await finalizeRun(runId, { budgetMs: 60_000, now: frozen("2026-03-02T09:10:00Z") }, { judge: noopJudge });
+
+    // Nothing here should trigger, but the call must have happened and must not
+    // have thrown — the stub this replaced would have silently produced nothing
+    // forever.
+    const rows = await db
+      .select()
+      .from(signals)
+      .where(and(eq(signals.tenantId, tenant.id), eq(signals.kind, "ai_visibility")));
+    expect(rows).toEqual([]);
+    const [run] = await db.select().from(aiVisibilityRuns).where(eq(aiVisibilityRuns.id, runId));
+    expect(run.status).toBe("complete");
   });
 });
 

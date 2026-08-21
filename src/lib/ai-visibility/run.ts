@@ -15,6 +15,7 @@ import { roundUsd } from "@/lib/ai-visibility/money";
 import { ENGINE_CLIENTS } from "@/lib/ai-visibility/engines";
 import { extractSample, loadBrandTargets, type ExtractSampleDeps } from "@/lib/ai-visibility/extract";
 import { judgeRun } from "@/lib/ai-visibility/judge";
+import { emitSignals } from "@/lib/ai-visibility/signals";
 import { mapWithConcurrency } from "@/lib/concurrency";
 import type { EngineClient, EngineId } from "@/lib/ai-visibility/types";
 
@@ -677,9 +678,7 @@ export async function finalizeRun(
   const database = deps.database ?? defaultDb;
   const judge = deps.judge ?? judgeRun;
   const aggregate = deps.aggregate ?? computeAggregates;
-  // Stubbed until Task F2 lands; Step 4 below replaces the default with the
-  // real `emitSignals`.
-  const emit = deps.emit ?? (async () => ({ written: 0, considered: 0 }));
+  const emit = deps.emit ?? emitSignals;
 
   const [run] = await database.select().from(aiVisibilityRuns).where(eq(aiVisibilityRuns.id, runId));
   if (!run) return { status: "failed", judged: 0, signals: 0 };

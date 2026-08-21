@@ -1,4 +1,20 @@
-import { MIN_N_PROMPT } from "@/lib/ai-visibility/metrics";
+import { and, asc, desc, eq, inArray, isNull, lt, ne, notInArray, or, sql } from "drizzle-orm";
+import { db as defaultDb } from "@/db";
+import {
+  competitors,
+  signals,
+  aiVisibilityAggregates,
+  aiVisibilityCitations,
+  aiVisibilityPrompts,
+  aiVisibilityRuns,
+  aiVisibilitySamples,
+} from "@/db/schema";
+import { isEligible } from "@/lib/ai-visibility/aggregate";
+import { citedDomains } from "@/lib/ai-visibility/cited-domains";
+import { engineLabel as labelFor } from "@/lib/ai-visibility/engines";
+import type { Clock } from "@/lib/ai-visibility/run";
+import { MIN_N_AGGREGATE, MIN_N_PROMPT, WINDOW_RUNS } from "@/lib/ai-visibility/metrics";
+import { ENGINE_IDS } from "@/lib/ai-visibility/types";
 import type {
   AiVisibilityPayload,
   AiVisibilitySignalType,
@@ -189,7 +205,15 @@ function samplesLabel(hits: number, n: number, runs: number): string {
   return `${hits} of ${n}, ${runWord}`;
 }
 
-export function evaluateTriggers(input: TriggerInput): SignalCandidate[] {
+/**
+ * Every trigger that fired, ranked by materiality, WITHOUT the per-run cap.
+ *
+ * Split out from `evaluateTriggers` so a caller can report how many rules fired
+ * before the cap threw the tail away — `emitSignals`'s `considered` is that
+ * number, and a `considered` that could never exceed `written` would say
+ * nothing about whether a run was noisy.
+ */
+export function rankTriggers(input: TriggerInput): SignalCandidate[] {
   const isoWeek = isoWeekKey(input.runDate);
   const runDate = input.runDate.toISOString();
   const byEngine = new Map(input.engines.map((e) => [e.engine, e]));
@@ -490,8 +514,408 @@ export function evaluateTriggers(input: TriggerInput): SignalCandidate[] {
   }
 
   // Deterministic: score, then externalId. The same run always produces the
-  // same ten, which is what makes the dedupe key meaningful across retries.
-  return candidates
-    .sort((a, b) => b.score - a.score || a.externalId.localeCompare(b.externalId))
-    .slice(0, MAX_SIGNALS_PER_RUN);
+  // same order, which is what makes the dedupe key meaningful across retries.
+  return candidates.sort(
+    (a, b) => b.score - a.score || a.externalId.localeCompare(b.externalId)
+  );
+}
+
+/**
+ * The at-most-ten most material triggers for this run (design §Signals:
+ * "capped at ~10 per run ranked by materiality").
+ */
+export function evaluateTriggers(input: TriggerInput): SignalCandidate[] {
+  return rankTriggers(input).slice(0, MAX_SIGNALS_PER_RUN);
+}
+
+export type EmitSignalsDeps = { database?: typeof defaultDb };
+
+type AggregateRow = {
+  runId: string;
+  engine: string;
+  promptId: string | null;
+  n: number;
+  tenantMentions: number;
+  competitorMentions: Record<string, number>;
+  ownCitations: number;
+  recommendations: number;
+};
+
+function sovOf(tenantMentions: number, competitorMentions: Record<string, number>): number | null {
+  const total = tenantMentions + Object.values(competitorMentions).reduce((s, c) => s + c, 0);
+  return total === 0 ? null : (tenantMentions / total) * 100;
+}
+
+/** Share of every tracked brand over a set of aggregate rows, as percentages. */
+function sharesOf(rows: AggregateRow[]): {
+  n: number;
+  sov: number | null;
+  competitorShares: Record<string, number>;
+} {
+  let n = 0;
+  let tenantMentions = 0;
+  const competitorMentions: Record<string, number> = {};
+  for (const row of rows) {
+    n += row.n;
+    tenantMentions += row.tenantMentions;
+    for (const [id, count] of Object.entries(row.competitorMentions ?? {})) {
+      competitorMentions[id] = (competitorMentions[id] ?? 0) + count;
+    }
+  }
+  const total = tenantMentions + Object.values(competitorMentions).reduce((s, c) => s + c, 0);
+  const competitorShares: Record<string, number> = {};
+  if (total > 0) {
+    for (const [id, count] of Object.entries(competitorMentions)) {
+      competitorShares[id] = (count / total) * 100;
+    }
+  }
+  return { n, sov: sovOf(tenantMentions, competitorMentions), competitorShares };
+}
+
+/**
+ * Turns one finished run into at most `MAX_SIGNALS_PER_RUN` signals.
+ *
+ * Everything the rules need is loaded here and evaluated by the pure
+ * `evaluateTriggers` — the DB shape and the rule logic are kept apart on
+ * purpose, because the rules are the part with eight ways to be subtly wrong
+ * and they deserve tests that do not need a database.
+ *
+ * Called by `finalizeRun` after aggregates exist, never before: every window
+ * below reads `ai_visibility_aggregates`, and running early would evaluate the
+ * previous run's numbers against itself.
+ */
+export async function emitSignals(
+  runId: string,
+  opts: { now: Clock },
+  deps: EmitSignalsDeps = {}
+): Promise<{ written: number; considered: number }> {
+  const database = deps.database ?? defaultDb;
+
+  const [run] = await database.select().from(aiVisibilityRuns).where(eq(aiVisibilityRuns.id, runId));
+  if (!run) return { written: 0, considered: 0 };
+  const tenantId = run.tenantId;
+
+  // ── The window: this run plus the three before it, newest first ────────
+  const windowRuns = await database
+    .select({
+      id: aiVisibilityRuns.id,
+      startedAt: aiVisibilityRuns.startedAt,
+      modelIds: aiVisibilityRuns.modelIds,
+    })
+    .from(aiVisibilityRuns)
+    .where(
+      and(
+        eq(aiVisibilityRuns.tenantId, tenantId),
+        // The run being finalized is still `running` when `finalizeRun` calls
+        // this — it is marked complete only after signals are written — so it
+        // has to be admitted by id. Without that it is missing from its own
+        // window, every band reads one run short, and nothing ever fires from
+        // the run that just finished.
+        or(eq(aiVisibilityRuns.id, runId), eq(aiVisibilityRuns.status, "complete")),
+        // `<=` this run's start, so a run finalized late cannot pick up a newer
+        // one as if it were history.
+        lt(aiVisibilityRuns.startedAt, new Date(run.startedAt.getTime() + 1))
+      )
+    )
+    .orderBy(desc(aiVisibilityRuns.startedAt))
+    .limit(WINDOW_RUNS);
+  if (windowRuns.length === 0) return { written: 0, considered: 0 };
+  const windowIds = windowRuns.map((r) => r.id);
+
+  const aggregates = (await database
+    .select({
+      runId: aiVisibilityAggregates.runId,
+      engine: aiVisibilityAggregates.engine,
+      promptId: aiVisibilityAggregates.promptId,
+      n: aiVisibilityAggregates.n,
+      tenantMentions: aiVisibilityAggregates.tenantMentions,
+      competitorMentions: aiVisibilityAggregates.competitorMentions,
+      ownCitations: aiVisibilityAggregates.ownCitations,
+      recommendations: aiVisibilityAggregates.recommendations,
+    })
+    .from(aiVisibilityAggregates)
+    .where(inArray(aiVisibilityAggregates.runId, windowIds))) as AggregateRow[];
+  if (aggregates.length === 0) return { written: 0, considered: 0 };
+
+  const prompts = await database
+    .select({
+      id: aiVisibilityPrompts.id,
+      text: aiVisibilityPrompts.text,
+      branded: aiVisibilityPrompts.branded,
+      intent: aiVisibilityPrompts.intent,
+    })
+    .from(aiVisibilityPrompts)
+    .where(eq(aiVisibilityPrompts.tenantId, tenantId));
+  const promptById = new Map(prompts.map((p) => [p.id, p]));
+
+  const rivals = await database
+    .select({ id: competitors.id, name: competitors.name })
+    .from(competitors)
+    .where(eq(competitors.tenantId, tenantId));
+  const competitorNames = Object.fromEntries(rivals.map((r) => [r.id, r.name]));
+
+  // ── Evidence: the newest verified judge quote per (prompt, engine) ──────
+  const latestSamples = await database
+    .select({
+      id: aiVisibilitySamples.id,
+      promptId: aiVisibilitySamples.promptId,
+      engine: aiVisibilitySamples.engine,
+      modelId: aiVisibilitySamples.modelId,
+      status: aiVisibilitySamples.status,
+      flagged: aiVisibilitySamples.flagged,
+      extraction: aiVisibilitySamples.extraction,
+      answerText: aiVisibilitySamples.answerText,
+      branded: aiVisibilityPrompts.branded,
+      intent: aiVisibilityPrompts.intent,
+    })
+    .from(aiVisibilitySamples)
+    .innerJoin(aiVisibilityPrompts, eq(aiVisibilitySamples.promptId, aiVisibilityPrompts.id))
+    .where(eq(aiVisibilitySamples.runId, runId))
+    .orderBy(asc(aiVisibilitySamples.sampleIndex));
+
+  const evidenceKey = (promptId: string, engine: string) => `${promptId} ${engine}`;
+  const evidenceBy = new Map<string, SignalEvidence>();
+  /** Which sample each key's evidence came from, so citations attach in one pass. */
+  const sampleForKey = new Map<string, string>();
+  const evidenceSampleIds: string[] = [];
+  const contradictionsBy = new Map<string, number>();
+
+  for (const sample of latestSamples) {
+    const key = evidenceKey(sample.promptId, sample.engine);
+    // A quote from a flagged row is a quote we could not verify — excluded as
+    // evidence for the same reason the row is excluded from rates.
+    if (!isEligible(sample, sample)) continue;
+
+    const judged = sample.extraction?.judged;
+    if (judged) {
+      const contradicted =
+        judged.positioningClaims.some((c) => c.state === "contradicted") || judged.hallucinations.length > 0;
+      if (contradicted) contradictionsBy.set(key, (contradictionsBy.get(key) ?? 0) + 1);
+    }
+
+    if (!evidenceBy.has(key)) {
+      evidenceBy.set(key, {
+        excerpt: judged?.quote ?? sample.answerText?.slice(0, 400) ?? null,
+        modelId: sample.modelId,
+        citedUrls: [],
+      });
+      evidenceSampleIds.push(sample.id);
+      sampleForKey.set(key, sample.id);
+    }
+  }
+
+  if (evidenceSampleIds.length > 0) {
+    const citations = await database
+      .select({
+        sampleId: aiVisibilityCitations.sampleId,
+        url: aiVisibilityCitations.url,
+        domain: aiVisibilityCitations.domain,
+        domainClass: aiVisibilityCitations.domainClass,
+      })
+      .from(aiVisibilityCitations)
+      .where(inArray(aiVisibilityCitations.sampleId, evidenceSampleIds))
+      .orderBy(asc(aiVisibilityCitations.position));
+    const bySample = new Map<string, { url: string; domain: string; domainClass: string }[]>();
+    for (const citation of citations) {
+      const list = bySample.get(citation.sampleId) ?? [];
+      list.push({ url: citation.url, domain: citation.domain, domainClass: citation.domainClass });
+      bySample.set(citation.sampleId, list);
+    }
+    for (const [key, evidence] of evidenceBy) {
+      const sampleId = sampleForKey.get(key);
+      if (sampleId) evidence.citedUrls = bySample.get(sampleId) ?? [];
+    }
+  }
+
+  // ── Per prompt x engine windows ────────────────────────────────────────
+  const promptWindows: PromptEngineWindow[] = [];
+  const promptRows = aggregates.filter((row) => row.promptId !== null);
+  const seenPairs = new Set<string>();
+
+  for (const row of promptRows) {
+    const key = evidenceKey(row.promptId!, row.engine);
+    if (seenPairs.has(key)) continue;
+    seenPairs.add(key);
+
+    const prompt = promptById.get(row.promptId!);
+    if (!prompt) continue;
+
+    const mine = promptRows.filter((r) => r.promptId === row.promptId && r.engine === row.engine);
+    const byRun = new Map(mine.map((r) => [r.runId, r]));
+    // Newest first, one entry per window run — a run with no row for this pair
+    // contributes n = 0, which `band` reads as "not measurable".
+    const runs: RunBand[] = windowRuns.map((w) => {
+      const r = byRun.get(w.id);
+      return {
+        runId: w.id,
+        hits: r?.tenantMentions ?? 0,
+        n: r?.n ?? 0,
+        competitorHits: r?.competitorMentions ?? {},
+      };
+    });
+
+    const nWindow = mine.reduce((s, r) => s + r.n, 0);
+    const ownCitationsWindow = mine.reduce((s, r) => s + r.ownCitations, 0);
+    const recommendationsWindow = mine.reduce((s, r) => s + r.recommendations, 0);
+
+    // "First own-URL citation on a prompt" needs history OUTSIDE the window —
+    // an own citation four runs ago means this one is not the first.
+    const [older] = await database
+      .select({ count: sql<number>`count(*)::int` })
+      .from(aiVisibilityAggregates)
+      .where(
+        and(
+          eq(aiVisibilityAggregates.promptId, row.promptId!),
+          eq(aiVisibilityAggregates.engine, row.engine),
+          ne(aiVisibilityAggregates.ownCitations, 0),
+          notInArray(aiVisibilityAggregates.runId, windowIds)
+        )
+      );
+
+    promptWindows.push({
+      promptId: row.promptId!,
+      promptText: prompt.text,
+      branded: prompt.branded || prompt.intent === "brand_check",
+      engine: row.engine as EngineId,
+      runs,
+      nWindow,
+      recommendationsWindow,
+      ownCitationsWindow,
+      ownCitationsBefore: older?.count ?? 0,
+      contradictionSamples: contradictionsBy.get(key) ?? 0,
+      evidence: evidenceBy.get(key) ?? { excerpt: null, modelId: null, citedUrls: [] },
+    });
+  }
+
+  // ── Per engine windows: this run's window vs the one before it ──────────
+  const previousRuns = await database
+    .select({ id: aiVisibilityRuns.id })
+    .from(aiVisibilityRuns)
+    .where(
+      and(
+        eq(aiVisibilityRuns.tenantId, tenantId),
+        eq(aiVisibilityRuns.status, "complete"),
+        lt(aiVisibilityRuns.startedAt, windowRuns[windowRuns.length - 1].startedAt)
+      )
+    )
+    .orderBy(desc(aiVisibilityRuns.startedAt))
+    .limit(WINDOW_RUNS);
+
+  const previousAggregates =
+    previousRuns.length > 0
+      ? ((await database
+          .select({
+            runId: aiVisibilityAggregates.runId,
+            engine: aiVisibilityAggregates.engine,
+            promptId: aiVisibilityAggregates.promptId,
+            n: aiVisibilityAggregates.n,
+            tenantMentions: aiVisibilityAggregates.tenantMentions,
+            competitorMentions: aiVisibilityAggregates.competitorMentions,
+            ownCitations: aiVisibilityAggregates.ownCitations,
+            recommendations: aiVisibilityAggregates.recommendations,
+          })
+          .from(aiVisibilityAggregates)
+          .where(
+            and(
+              inArray(
+                aiVisibilityAggregates.runId,
+                previousRuns.map((r) => r.id)
+              ),
+              isNull(aiVisibilityAggregates.promptId)
+            )
+          )) as AggregateRow[])
+      : [];
+
+  const thisRunModels = run.modelIds ?? {};
+  const previousRunModels = windowRuns[1]?.modelIds ?? {};
+
+  const engineWindows: EngineWindow[] = ENGINE_IDS.map((engine) => {
+    const now = sharesOf(aggregates.filter((r) => r.promptId === null && r.engine === engine));
+    const prev = sharesOf(previousAggregates.filter((r) => r.engine === engine));
+    const modelNow = thisRunModels[engine] ?? null;
+    const modelPrev = previousRunModels[engine] ?? null;
+    return {
+      engine,
+      // Below the display threshold the number is not shown to a human, so it
+      // must not silently drive a signal either.
+      sovNow: now.n >= MIN_N_AGGREGATE ? now.sov : null,
+      sovPrev: prev.n >= MIN_N_AGGREGATE ? prev.sov : null,
+      competitorSharesNow: now.competitorShares,
+      competitorSharesPrev: prev.competitorShares,
+      // A first sighting is not a change. Only a model id that differs from a
+      // known previous one suppresses.
+      modelChanged: modelPrev !== null && modelNow !== null && modelPrev !== modelNow,
+      modelId: modelNow,
+    };
+  });
+
+  // ── Domains ────────────────────────────────────────────────────────────
+  const leaderboard = await citedDomains(tenantId, { runs: WINDOW_RUNS }, database);
+  const seenEarlier = new Set<string>();
+  if (previousRuns.length > 0) {
+    const beforeIds = previousRuns.map((r) => r.id);
+    const rows = await database
+      .select({ domain: aiVisibilityCitations.domain })
+      .from(aiVisibilityCitations)
+      .where(and(eq(aiVisibilityCitations.tenantId, tenantId), inArray(aiVisibilityCitations.runId, beforeIds)));
+    for (const row of rows) seenEarlier.add(row.domain);
+  }
+
+  const domainWindows: DomainWindow[] = leaderboard.map((row, index) => ({
+    domain: row.domain,
+    domainClass: row.domainClass,
+    rank: index + 1,
+    // A brand-new tenant has no earlier runs at all; nothing is "new" then, or
+    // the first run would emit a domain signal for every source it saw.
+    seenBefore: previousRuns.length === 0 || seenEarlier.has(row.domain),
+    promptsTenantAbsent: row.tenantAbsentAnswers,
+    engines: row.engines,
+    sampleUrl: `https://${row.domain}`,
+  }));
+
+  // ── Evaluate and write ─────────────────────────────────────────────────
+  // Ranked but uncapped, so `considered` reports what the rules actually found
+  // and only `written` is capped.
+  const ranked = rankTriggers({
+    runId,
+    runDate: run.startedAt,
+    prompts: promptWindows,
+    engines: engineWindows,
+    domains: domainWindows,
+    competitorNames,
+    engineLabels: Object.fromEntries(ENGINE_IDS.map((e) => [e, labelFor(e)])),
+  });
+
+  let written = 0;
+  for (const candidate of ranked.slice(0, MAX_SIGNALS_PER_RUN)) {
+    try {
+      const inserted = await database
+        .insert(signals)
+        .values({
+          tenantId,
+          sourceId: run.sourceId,
+          kind: "ai_visibility",
+          externalId: candidate.externalId,
+          title: candidate.title,
+          excerpt: candidate.excerpt,
+          // When it happened, not when we noticed: the run's own start, so
+          // spec 5's decay ranking treats a late-finalized run correctly.
+          occurredAt: run.startedAt,
+          competitorId: candidate.competitorId,
+          payload: candidate.payload,
+        })
+        // Relies on signals_tenant_kind_external_unique. The ISO week in the
+        // key is what lets a standing gap re-surface next week while a second
+        // "Run now" on the same Tuesday writes nothing.
+        .onConflictDoNothing()
+        .returning({ id: signals.id });
+      if (inserted.length > 0) written++;
+    } catch (error) {
+      // One failed write must not cost the other nine. The run still completes
+      // and the source records the error via finalizeRun.
+      console.error(`[ai-visibility] could not write signal ${candidate.externalId}:`, error);
+    }
+  }
+
+  return { written, considered: ranked.length };
 }

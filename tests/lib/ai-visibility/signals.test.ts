@@ -1,4 +1,18 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
+import { and, eq } from "drizzle-orm";
+import { db } from "../../../src/db";
+import {
+  competitors,
+  signals,
+  aiVisibilityAggregates,
+  aiVisibilityCitations,
+  aiVisibilityPrompts,
+  aiVisibilityRuns,
+  aiVisibilitySamples,
+  sources,
+} from "../../../src/db/schema";
+import { seedTenant, dropTenant } from "../../helpers/fixtures";
+import type { AiVisibilityPayload, SampleExtraction } from "../../../src/lib/ai-visibility/types";
 import {
   band,
   isoWeekKey,
@@ -8,6 +22,7 @@ import {
   type PromptEngineWindow,
   type RunBand,
   type TriggerInput,
+  emitSignals,
 } from "../../../src/lib/ai-visibility/signals";
 
 const RUN_ID = "run-now";
@@ -401,6 +416,38 @@ describe("model-version-change suppression", () => {
     expect(out.map((c) => c.signalType)).toEqual(["gap_vs_competitor"]);
   });
 
+  it("suppresses gained_mention and own_page_cited on the changed engine too", () => {
+    const out = evaluateTriggers(
+      input({
+        prompts: [
+          promptWindow({
+            runs: [runBand(RUN_ID, 3), runBand("r2", 2), runBand("r3", 0), runBand("r4", 0)],
+            ownCitationsWindow: 2,
+            ownCitationsBefore: 0,
+          }),
+        ],
+        engines: [engineWindow({ modelChanged: true })],
+      })
+    );
+    expect(out).toEqual([]);
+  });
+
+  it("suppresses the cross-prompt competitor_gained on the changed engine", () => {
+    const gained = (promptId: string) =>
+      promptWindow({
+        promptId,
+        promptText: `prompt ${promptId}`,
+        runs: [runBand(RUN_ID, 1, 3, { "c-1": 3 }), runBand("r2", 1, 3, { "c-1": 0 })],
+      });
+    const out = evaluateTriggers(
+      input({
+        prompts: [gained("p1"), gained("p2"), gained("p3")],
+        engines: [engineWindow({ modelChanged: true })],
+      })
+    );
+    expect(out.map((c) => c.signalType)).not.toContain("competitor_gained");
+  });
+
   it("suppresses new_cited_domain on a run where any engine that cited it changed model", () => {
     const out = evaluateTriggers(
       input({
@@ -519,5 +566,313 @@ describe("dedupe key and materiality cap", () => {
     });
     expect(out[0].payload.citedUrls).toHaveLength(1);
     expect(out[0].excerpt).toBe("Rival is the strongest option.");
+  });
+});
+
+const DB_TENANT = "AI Visibility Signals Test Tenant";
+
+afterEach(async () => {
+  await dropTenant(DB_TENANT);
+});
+
+const clock = (iso: string) => () => new Date(iso);
+
+describe("emitSignals", () => {
+  /**
+   * Seeds a two-run history on one prompt and one engine, where a competitor
+   * owns the answer and the tenant never appears — the gap_vs_competitor case.
+   */
+  async function seedGap() {
+    const tenant = await seedTenant(DB_TENANT);
+    const [source] = await db
+      .insert(sources)
+      .values({ tenantId: tenant.id, type: "ai_visibility", label: "AI visibility" })
+      .returning();
+    const [rival] = await db.insert(competitors).values({ tenantId: tenant.id, name: "Rival" }).returning();
+    const [prompt] = await db
+      .insert(aiVisibilityPrompts)
+      .values({ tenantId: tenant.id, text: "best issue tracker for startups", intent: "discovery", origin: "generated", status: "active" })
+      .returning();
+
+    const runIds: string[] = [];
+    for (const [i, startedAt] of ["2026-02-23T09:00:00Z", "2026-03-02T09:00:00Z"].entries()) {
+      const [run] = await db
+        .insert(aiVisibilityRuns)
+        .values({
+          tenantId: tenant.id,
+          sourceId: source.id,
+          trigger: "scheduled",
+          engines: ["openai"],
+          samplesPerPrompt: 3,
+          status: "complete",
+          modelIds: { openai: "gpt-5.1" },
+          startedAt: new Date(startedAt),
+        })
+        .returning();
+      runIds.push(run.id);
+
+      await db.insert(aiVisibilityAggregates).values([
+        {
+          runId: run.id,
+          tenantId: tenant.id,
+          engine: "openai",
+          promptId: null,
+          n: 3,
+          tenantMentions: 0,
+          competitorMentions: { [rival.id]: 3 },
+          ownCitations: 0,
+          recommendations: 0,
+        },
+        {
+          runId: run.id,
+          tenantId: tenant.id,
+          engine: "openai",
+          promptId: prompt.id,
+          n: 3,
+          tenantMentions: 0,
+          competitorMentions: { [rival.id]: 3 },
+          ownCitations: 0,
+          recommendations: 0,
+        },
+      ]);
+
+      const extraction: SampleExtraction = {
+        deterministic: { tenantMentioned: false, competitorIds: [rival.id], ownDomainCited: false },
+        judged: {
+          orderedBrands: ["Rival"],
+          level: "absent",
+          framing: "not named",
+          quote: `Rival is the strongest option (run ${i}).`,
+          positioningClaims: [],
+          hallucinations: [],
+          answerType: "list",
+        },
+      };
+      for (let s = 0; s < 3; s++) {
+        const [sample] = await db
+          .insert(aiVisibilitySamples)
+          .values({
+            runId: run.id,
+            tenantId: tenant.id,
+            promptId: prompt.id,
+            engine: "openai",
+            sampleIndex: s,
+            status: "ok",
+            judged: true,
+            answerText: `Rival is the strongest option (run ${i}).`,
+            modelId: "gpt-5.1",
+            askedAt: new Date(startedAt),
+            extraction,
+          })
+          .returning();
+        if (s === 0) {
+          await db.insert(aiVisibilityCitations).values({
+            sampleId: sample.id,
+            tenantId: tenant.id,
+            runId: run.id,
+            url: "https://g2.com/categories/issue-tracking",
+            domain: "g2.com",
+            position: 1,
+            domainClass: "review",
+          });
+        }
+      }
+    }
+
+    return { tenant, source, rival, prompt, latestRunId: runIds[1], firstRunId: runIds[0] };
+  }
+
+  it("writes an ai_visibility signal with a real title, excerpt and payload", async () => {
+    const { tenant, source, rival, prompt, latestRunId } = await seedGap();
+
+    const out = await emitSignals(latestRunId, { now: clock("2026-03-02T10:00:00Z") });
+
+    expect(out.written).toBeGreaterThan(0);
+    const rows = await db
+      .select()
+      .from(signals)
+      .where(and(eq(signals.tenantId, tenant.id), eq(signals.kind, "ai_visibility")));
+
+    const gap = rows.find((r) => (r.payload as AiVisibilityPayload).signalType === "gap_vs_competitor")!;
+    expect(gap.title).toContain("Rival");
+    expect(gap.title).toContain("best issue tracker");
+    expect(gap.excerpt).toContain("Rival is the strongest option");
+    expect(gap.competitorId).toBe(rival.id);
+    expect(gap.sourceId).toBe(source.id);
+    expect(gap.occurredAt.toISOString()).toBe("2026-03-02T09:00:00.000Z");
+    expect(gap.externalId).toMatch(new RegExp(`^gap_vs_competitor:${prompt.id}:openai:\\d{4}-W\\d{2}$`));
+
+    const payload = gap.payload as AiVisibilityPayload;
+    expect(payload).toMatchObject({
+      signalType: "gap_vs_competitor",
+      promptId: prompt.id,
+      promptText: "best issue tracker for startups",
+      engine: "openai",
+      modelId: "gpt-5.1",
+      runId: latestRunId,
+      samples: "0 of 3, two runs",
+      competitorId: rival.id,
+    });
+    expect(payload.engineLabel).toBeTruthy();
+    expect(payload.citedUrls?.[0]?.domain).toBe("g2.com");
+  });
+
+  it("is idempotent within the week — re-emitting writes nothing new", async () => {
+    const { tenant, latestRunId } = await seedGap();
+
+    const first = await emitSignals(latestRunId, { now: clock("2026-03-02T10:00:00Z") });
+    const second = await emitSignals(latestRunId, { now: clock("2026-03-02T11:00:00Z") });
+
+    expect(second.written).toBe(0);
+    const rows = await db
+      .select()
+      .from(signals)
+      .where(and(eq(signals.tenantId, tenant.id), eq(signals.kind, "ai_visibility")));
+    expect(rows).toHaveLength(first.written);
+  });
+
+  it("writes nothing when the run's own aggregates show no trigger", async () => {
+    const tenant = await seedTenant(DB_TENANT);
+    const [run] = await db
+      .insert(aiVisibilityRuns)
+      .values({ tenantId: tenant.id, trigger: "scheduled", engines: ["openai"], samplesPerPrompt: 3, status: "complete" })
+      .returning();
+
+    const out = await emitSignals(run.id, { now: clock("2026-03-02T10:00:00Z") });
+    expect(out).toEqual({ written: 0, considered: 0 });
+  });
+
+  /**
+   * Seeds a THREE-run history — strong, then absent, then absent — on one
+   * prompt and one engine, every run on model gpt-5.1. The newest two absents
+   * after a strong run are exactly `lost_mention`'s trigger (it needs
+   * `runs[2]` strong, so a two-run history can never fire it and any
+   * suppression assertion on one would pass vacuously). This history is the
+   * discriminator for the run.modelIds → `EngineWindow.modelChanged` seam:
+   * the signal fires from it unless the newest run's model id differs.
+   */
+  async function seedLostMention() {
+    const tenant = await seedTenant(DB_TENANT);
+    const [prompt] = await db
+      .insert(aiVisibilityPrompts)
+      .values({ tenantId: tenant.id, text: "best issue tracker for startups", intent: "discovery", origin: "generated", status: "active" })
+      .returning();
+
+    let latestRunId = "";
+    const history: [startedAt: string, tenantMentions: number][] = [
+      ["2026-02-16T09:00:00Z", 3], // strong
+      ["2026-02-23T09:00:00Z", 0], // absent
+      ["2026-03-02T09:00:00Z", 0], // absent — held two runs
+    ];
+    for (const [startedAt, tenantMentions] of history) {
+      const [run] = await db
+        .insert(aiVisibilityRuns)
+        .values({
+          tenantId: tenant.id,
+          trigger: "scheduled",
+          engines: ["openai"],
+          samplesPerPrompt: 3,
+          status: "complete",
+          modelIds: { openai: "gpt-5.1" },
+          startedAt: new Date(startedAt),
+        })
+        .returning();
+      latestRunId = run.id;
+      await db.insert(aiVisibilityAggregates).values({
+        runId: run.id,
+        tenantId: tenant.id,
+        engine: "openai",
+        promptId: prompt.id,
+        n: 3,
+        tenantMentions,
+        competitorMentions: {},
+        ownCitations: 0,
+        recommendations: 0,
+      });
+    }
+    return { tenant, latestRunId };
+  }
+
+  async function emittedTypes(tenantId: string) {
+    const rows = await db
+      .select()
+      .from(signals)
+      .where(and(eq(signals.tenantId, tenantId), eq(signals.kind, "ai_visibility")));
+    return rows.map((r) => (r.payload as AiVisibilityPayload).signalType);
+  }
+
+  it("emits lost_mention from a strong -> absent -> absent history when the model did not change", async () => {
+    const { tenant, latestRunId } = await seedLostMention();
+
+    await emitSignals(latestRunId, { now: clock("2026-03-02T10:00:00Z") });
+
+    // The control for the suppression case below: the SAME history fires when
+    // the newest run kept its model id.
+    expect(await emittedTypes(tenant.id)).toContain("lost_mention");
+  });
+
+  it("suppresses change signals for an engine whose model id changed this run", async () => {
+    const { tenant, latestRunId } = await seedLostMention();
+    await db
+      .update(aiVisibilityRuns)
+      .set({ modelIds: { openai: "gpt-5.2" } })
+      .where(eq(aiVisibilityRuns.id, latestRunId));
+
+    await emitSignals(latestRunId, { now: clock("2026-03-02T10:00:00Z") });
+
+    expect(await emittedTypes(tenant.id)).not.toContain("lost_mention");
+  });
+
+  it("never writes more than the per-run cap", async () => {
+    const tenant = await seedTenant(DB_TENANT);
+    const [source] = await db
+      .insert(sources)
+      .values({ tenantId: tenant.id, type: "ai_visibility", label: "AI visibility" })
+      .returning();
+    const [rival] = await db.insert(competitors).values({ tenantId: tenant.id, name: "Rival" }).returning();
+
+    const prompts = [];
+    for (let i = 0; i < 25; i++) {
+      const [prompt] = await db
+        .insert(aiVisibilityPrompts)
+        .values({ tenantId: tenant.id, text: `prompt number ${i}`, intent: "discovery", origin: "generated", status: "active" })
+        .returning();
+      prompts.push(prompt);
+    }
+
+    let latest = "";
+    for (const startedAt of ["2026-02-23T09:00:00Z", "2026-03-02T09:00:00Z"]) {
+      const [run] = await db
+        .insert(aiVisibilityRuns)
+        .values({
+          tenantId: tenant.id,
+          sourceId: source.id,
+          trigger: "scheduled",
+          engines: ["openai"],
+          samplesPerPrompt: 3,
+          status: "complete",
+          modelIds: { openai: "gpt-5.1" },
+          startedAt: new Date(startedAt),
+        })
+        .returning();
+      latest = run.id;
+      await db.insert(aiVisibilityAggregates).values(
+        prompts.map((prompt) => ({
+          runId: run.id,
+          tenantId: tenant.id,
+          engine: "openai",
+          promptId: prompt.id,
+          n: 3,
+          tenantMentions: 0,
+          competitorMentions: { [rival.id]: 3 },
+          ownCitations: 0,
+          recommendations: 0,
+        }))
+      );
+    }
+
+    const out = await emitSignals(latest, { now: clock("2026-03-02T10:00:00Z") });
+    expect(out.considered).toBeGreaterThan(MAX_SIGNALS_PER_RUN);
+    expect(out.written).toBe(MAX_SIGNALS_PER_RUN);
   });
 });
