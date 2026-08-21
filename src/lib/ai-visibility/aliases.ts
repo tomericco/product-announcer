@@ -157,8 +157,25 @@ export function stripPromptEcho(text: string, promptText: string): string {
  */
 export function mentionsBrand(text: string, aliases: string[], promptText = ""): boolean {
   if (aliases.length === 0) return false;
-  const haystack = stripUrls(stripPromptEcho(text, promptText));
+  return mentionsBrandIn(mentionHaystack(text, promptText), aliases);
+}
 
+/**
+ * The text `mentionsBrand` actually searches — prompt echo and URLs removed.
+ *
+ * Split out because it is the expensive half and it does not depend on the
+ * brand: `stripUrls` runs five regexes whose scheme-less-link pattern is
+ * quadratic on dotted input (measured at ~800 ms over 30k characters of it),
+ * and the extractor asks the SAME answer about up to ten brands in a row.
+ * Building this once per sample instead of once per brand is the difference
+ * between ~0.8 s and ~8 s of blocked event loop, synchronously inside a slice.
+ */
+export function mentionHaystack(text: string, promptText = ""): string {
+  return stripUrls(stripPromptEcho(text, promptText));
+}
+
+/** `mentionsBrand` against a haystack the caller already built. */
+export function mentionsBrandIn(haystack: string, aliases: string[]): boolean {
   for (const alias of aliases) {
     const cleaned = alias.trim();
     if (cleaned.length < 2) continue;

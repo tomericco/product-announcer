@@ -8,7 +8,7 @@ import {
   aiVisibilityPrompts,
   aiVisibilitySamples,
 } from "@/db/schema";
-import { buildAliases, mentionsBrand } from "@/lib/ai-visibility/aliases";
+import { buildAliases, mentionHaystack, mentionsBrandIn } from "@/lib/ai-visibility/aliases";
 import {
   classifyDomain,
   isRedirector,
@@ -27,6 +27,18 @@ export type BrandContext = {
 };
 
 /**
+ * Ceiling on how much of an answer the mention pass reads.
+ *
+ * The strip regexes are quadratic on dotted input, and `answerText` is
+ * third-party text of whatever length an engine felt like returning — so
+ * without a bound the cost of one sample is set by the engine, not by us, and
+ * it is paid synchronously inside a slice that has 359 other samples to get
+ * through. 16k characters is roughly 4,000 words: far past any real engine
+ * answer, and a brand named only after it was not the answer's subject.
+ */
+export const MAX_MENTION_CHARS = 16_000;
+
+/**
  * The deterministic half of extraction — the arbiter for "mentioned".
  *
  * One mention per brand per sample (design §"Metrics"), so this returns
@@ -41,12 +53,14 @@ export function extractDeterministic(a: {
 }): SampleExtraction["deterministic"] {
   let tenantMentioned = false;
   const competitorIds: string[] = [];
+  // Built ONCE, not once per brand: stripping the prompt echo and the URLs is
+  // the expensive half of a mention check and it produces the same haystack
+  // every iteration. `mentionHaystack` lives in `aliases.ts` beside the matcher
+  // that consumes it, so this module and that one cannot drift into two
+  // different definitions of "mentioned".
+  const haystack = mentionHaystack(a.answerText.slice(0, MAX_MENTION_CHARS), a.promptText);
   for (const brand of a.brands) {
-    // `mentionsBrand`'s third argument is what strips the echoed prompt, and it
-    // strips URLs itself. Passing `promptText` here rather than pre-processing
-    // the answer is what keeps this module and `aliases.ts` from drifting into
-    // two different definitions of "mentioned".
-    if (!mentionsBrand(a.answerText, brand.aliases, a.promptText)) continue;
+    if (!mentionsBrandIn(haystack, brand.aliases)) continue;
     if (brand.isTenant) tenantMentioned = true;
     else if (!competitorIds.includes(brand.brandId)) competitorIds.push(brand.brandId);
   }

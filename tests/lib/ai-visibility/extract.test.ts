@@ -12,6 +12,7 @@ import {
   extractDeterministic,
   loadBrandTargets,
   extractSample,
+  MAX_MENTION_CHARS,
   type BrandTarget,
 } from "../../../src/lib/ai-visibility/extract";
 import { seedTenant, dropTenant, seedCompanyProfile } from "../../helpers/fixtures";
@@ -112,6 +113,33 @@ describe("extractDeterministic", () => {
       citations: [{ url: "https://acme.com/x" }],
     });
     expect(out.ownDomainCited).toBe(false);
+  });
+
+  it("reads a bounded prefix of the answer, and prepares it once for every brand", () => {
+    // The strip regexes are quadratic on dotted input and `answerText` is
+    // third-party text of whatever length an engine felt like returning, so
+    // without a bound the cost of one sample is the engine's choice, not ours —
+    // paid synchronously inside a slice with 359 other samples to get through.
+    const filler = "a.b.c.d.e.f.g.h. ".repeat(2000);
+    expect(filler.length).toBeGreaterThan(MAX_MENTION_CHARS);
+
+    const within = extractDeterministic({
+      answerText: `Acme is the pick. ${filler}`,
+      promptText: "best issue tracker",
+      ownDomain: null,
+      brands,
+      citations: [],
+    });
+    expect(within.tenantMentioned).toBe(true);
+
+    const beyond = extractDeterministic({
+      answerText: `${filler}Acme is the pick.`,
+      promptText: "best issue tracker",
+      ownDomain: null,
+      brands,
+      citations: [],
+    });
+    expect(beyond.tenantMentioned).toBe(false);
   });
 });
 
