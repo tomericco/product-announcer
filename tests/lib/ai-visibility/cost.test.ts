@@ -8,6 +8,9 @@ import {
   nextMonthStartUtc,
   monthToDateSpendUsd,
   capExceeded,
+  capPausedMessage,
+  isCapPausedError,
+  CAP_PAUSED_PREFIX,
 } from "../../../src/lib/ai-visibility/cost";
 import { seedTenant, dropTenant } from "../../helpers/fixtures";
 
@@ -312,5 +315,26 @@ describe("estimate edge cases the cap depends on", () => {
     expect(state.estimateUsd).toBe(0);
     expect(state.exceeded).toBe(false);
     expect(state.reached).toBe(false);
+  });
+});
+
+describe("the cap-pause sentence", () => {
+  it("writes the amounts to the cent, and recognises its own output", () => {
+    const message = capPausedMessage(20, 20.5);
+
+    expect(message).toBe(`${CAP_PAUSED_PREFIX} ($20.00 of $20.50).`);
+    // The round trip is the point: `runSlice` and the cron sweep write this
+    // string on the source, and `saveAiVisibilitySettings` has to be able to
+    // tell it apart from a real failure when it decides whether raising the cap
+    // should clear the red badge.
+    expect(isCapPausedError(message)).toBe(true);
+  });
+
+  it("does not mistake an engine outage, an empty error or no error for a cap pause", () => {
+    expect(isCapPausedError(null)).toBe(false);
+    expect(isCapPausedError("")).toBe(false);
+    expect(isCapPausedError("openai 429: rate limited")).toBe(false);
+    // Same words, different sentence: only the prefix this module owns counts.
+    expect(isCapPausedError("The monthly cap was reached")).toBe(false);
   });
 });

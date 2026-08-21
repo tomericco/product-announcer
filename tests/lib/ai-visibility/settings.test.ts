@@ -800,4 +800,44 @@ describe("saveAiVisibilitySettings and the cap pause", () => {
 
     expect(await aiVisibilitySource(tenant.id)).toHaveLength(0);
   });
+
+  it("leaves the badge red when the new cap exactly equals the month's spend", async () => {
+    // The boundary the pause itself is written on: `runSlice` pauses when
+    // spend >= cap, so "cap raised to exactly what has been spent" is still
+    // paused. Clearing here would un-red a source that cannot run a single
+    // sample, and the next tick would simply write the same sentence back.
+    const tenant = await seedTenant(TENANT);
+    const source = await seedCapPausedSource(tenant.id, capPausedMessage(20, 20));
+    await seedSpend(tenant.id, source.id, 20);
+
+    await saveAiVisibilitySettings(tenant.id, { ...VALID, monthlyCapUsd: 20 }, db, clock);
+
+    const [row] = await aiVisibilitySource(tenant.id);
+    expect(row.status).toBe("failing");
+    expect(row.lastError).toContain("monthly cap");
+  });
+
+  it("does not clear a cap pause off last month's spend", async () => {
+    // `monthToDateSpendUsd` is bounded on both sides. A run dated next month —
+    // a clock skew, or a fixture — must not be counted against this month's
+    // cap, or a tenant stays red for a reason nobody can find on the card.
+    const tenant = await seedTenant(TENANT);
+    const source = await seedCapPausedSource(tenant.id, capPausedMessage(20, 20));
+    await db.insert(aiVisibilityRuns).values({
+      tenantId: tenant.id,
+      sourceId: source.id,
+      trigger: "scheduled",
+      engines: ["openai"],
+      samplesPerPrompt: 3,
+      status: "complete",
+      startedAt: new Date("2026-02-04T09:00:00Z"),
+      costUsd: 500,
+    });
+
+    await saveAiVisibilitySettings(tenant.id, { ...VALID, monthlyCapUsd: 45 }, db, clock);
+
+    const [row] = await aiVisibilitySource(tenant.id);
+    expect(row.status).toBe("active");
+    expect(row.lastError).toBeNull();
+  });
 });

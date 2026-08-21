@@ -51,7 +51,7 @@ import { sweepCompetitorSources } from "../../../../../src/lib/signals/sweep";
 import { sweepNewsSources } from "../../../../../src/lib/signals/news-sweep";
 import { sweepAiVisibility } from "../../../../../src/lib/ai-visibility/sweep";
 import { expireStaleBriefs, sweepIdeation } from "../../../../../src/lib/briefs/sweep";
-import { GET } from "../../../../../src/app/api/cron/scheduler/route";
+import { GET, maxDuration } from "../../../../../src/app/api/cron/scheduler/route";
 
 function request(authorization?: string) {
   return new Request("https://app.example.com/api/cron/scheduler", {
@@ -79,6 +79,21 @@ describe("GET /api/cron/scheduler", () => {
 
   afterEach(() => {
     process.env.CRON_SECRET = ORIGINAL_CRON_SECRET;
+  });
+
+  it("states the invocation length the AI visibility sweep budgets itself against", async () => {
+    // `sweepAiVisibility` divides SWEEP_BUDGET_MS (120s) across the tenants due
+    // this tick and stops at that deadline, which is only a safe fraction of
+    // the invocation if the invocation's length is written down. Two steps run
+    // AFTER the sweep — brief expiry and ideation — so an invocation killed
+    // mid-sweep costs a day of both, not just some engine calls.
+    // `importActual`: the module is mocked at the top of this file, and the
+    // mock has no budget on it.
+    const { SWEEP_BUDGET_MS } = await vi.importActual<
+      typeof import("../../../../../src/lib/ai-visibility/sweep")
+    >("../../../../../src/lib/ai-visibility/sweep");
+    expect(maxDuration).toBe(300);
+    expect(SWEEP_BUDGET_MS * 2).toBeLessThan(maxDuration * 1_000);
   });
 
   it("returns 401 and runs nothing when the authorization header is missing", async () => {

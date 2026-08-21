@@ -1,6 +1,7 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { ENGINE_CLIENTS, engineLabel, engineCost } from "../../../../src/lib/ai-visibility/engines";
 import { ENGINE_IDS } from "../../../../src/lib/ai-visibility/types";
+import { ENGINE_REQUEST_TIMEOUT_MS } from "../../../../src/lib/ai-visibility/engines/shape";
 
 describe("the engine registry", () => {
   it("has one client per engine id, keyed by its own id", () => {
@@ -72,4 +73,44 @@ describe("the engine registry, wired to the clients it prices", () => {
     const defaults = ENGINE_IDS.reduce((total, id) => total + engineCost(id) * 30 * 3, 0) * 4.33;
     expect(defaults).toBeLessThan(20);
   });
+});
+
+describe("every engine bounds its own request", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("gives a grounded answer a generous minute, and no more", () => {
+    // Generous: every client asks the provider to run a live web search before
+    // answering, and aborting a slow grounded answer costs a real sample.
+    // Finite: `runSlice`'s budget only governs when it stops HANDING OUT work,
+    // so a request that never returns holds its concurrency slot until the
+    // platform kills the whole cron invocation.
+    expect(ENGINE_REQUEST_TIMEOUT_MS).toBe(60_000);
+  });
+
+  it.each([...ENGINE_IDS])(
+    "%s aborts a hung provider and degrades it to an ordinary EngineError",
+    async (id) => {
+      vi.stubEnv("OPENAI_API_KEY", "sk-test");
+      vi.stubEnv("PERPLEXITY_API_KEY", "pplx-test");
+      vi.stubEnv("GEMINI_API_KEY", "gem-test");
+      vi.stubEnv("ANTHROPIC_API_KEY", "sk-ant-test");
+      // What `AbortSignal.timeout` actually produces when it fires.
+      const fetchImpl = vi.fn(async () => {
+        throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+      });
+
+      const result = await ENGINE_CLIENTS[id].ask("best issue trackers", {
+        fetchImpl: fetchImpl as never,
+      });
+
+      const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+      expect(init.signal).toBeInstanceOf(AbortSignal);
+      expect((init.signal as AbortSignal).aborted).toBe(false);
+      // An error on one sample, not a throw: the sample is stored `error` and
+      // excluded from every rate, and the run carries on.
+      expect(result).toMatchObject({ kind: "error", message: expect.stringContaining("TimeoutError") });
+    }
+  );
 });

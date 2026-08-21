@@ -1,8 +1,12 @@
-import { describe, it, expect, afterEach, vi } from "vitest";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { db } from "../../../src/db";
 import { sources, aiVisibilityRuns, aiVisibilitySettings } from "../../../src/db/schema";
-import { sweepAiVisibility, cadenceDue } from "../../../src/lib/ai-visibility/sweep";
+import {
+  sweepAiVisibility,
+  cadenceDue,
+  MIN_SOURCE_BUDGET_MS,
+} from "../../../src/lib/ai-visibility/sweep";
 import type { PlanRunResult } from "../../../src/lib/ai-visibility/run";
 import { seedTenant, dropTenant } from "../../helpers/fixtures";
 
@@ -115,6 +119,17 @@ describe("cadenceDue", () => {
         new Date(TUESDAY)
       )
     ).toBe(false);
+  });
+
+  it("treats an unknown cadence as weekly for the catch-up, not as never", () => {
+    // Not reachable through the sweep — `getAiVisibilitySettingsForTenants`
+    // coerces the column first — but `cadenceDue` is exported and takes a bare
+    // string, and the fallback decides what a hand-written row does. Weekly is
+    // the safe reading: the alternative is a row that can never catch up.
+    const tuesday = new Date(TUESDAY);
+    expect(
+      cadenceDue({ cadence: "hourly", dayOfWeek: 1 }, new Date("2026-02-23T09:00:00Z"), tuesday)
+    ).toBe(true);
   });
 
   it("is false for a cadence nobody can save, rather than firing every day", () => {
@@ -606,5 +621,345 @@ describe("the budget knobs", () => {
     const mod = await reload();
     expect(mod.SWEEP_BUDGET_MS).toBe(45_000);
     expect(mod.SWEEP_CONCURRENCY).toBe(20);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The review fixes: the budget divisor, the deadline clamp, the resume-before-
+// cadence rule, and the two failure paths that must never reject the cron
+// handler. Same scoping rule as above — assertions filter to ids this test
+// created, and every foreign candidate is answered with `FOREIGN_PLAN`.
+// ---------------------------------------------------------------------------
+
+/** A due, enabled tenant of ours, with its own `ai_visibility` source. */
+async function seedRunningRun(tenantId: string, sourceId: string) {
+  const [run] = await db
+    .insert(aiVisibilityRuns)
+    .values({
+      tenantId,
+      sourceId,
+      trigger: "scheduled",
+      engines: ["openai"],
+      samplesPerPrompt: 3,
+      status: "running",
+    })
+    .returning();
+  return run;
+}
+
+/** A plan that answers every tenant of ours with its own run id. */
+const planPerTenant = () =>
+  vi.fn(
+    async (id: string): Promise<PlanRunResult> => ({
+      ok: true,
+      runId: `run-${id}`,
+      plannedCalls: 3,
+      estimateUsd: 0.03,
+    })
+  );
+
+const drainedSlice = () =>
+  vi.fn().mockResolvedValue({ processed: 3, remaining: 0, budgetSpent: false, pausedByCap: false });
+
+const completeFinalize = () =>
+  vi.fn().mockResolvedValue({ status: "complete", judged: 0, signals: 0 });
+
+describe("sweepAiVisibility — the tick's ceiling", () => {
+  it("divides the budget by the sources that will do work, not by every row", async () => {
+    // Two workers of ours: one due today, and one holding an in-flight run
+    // whose cadence would never fire on its own. Fourteen rows of ours that
+    // will do nothing: not due, `off`, and the feature switched off.
+    //
+    // Every tenant defaults to `dayOfWeek = 1`, so the ordinary Monday is the
+    // day they are ALL due and the ordinary Tuesday the day none are. A
+    // divisor counting rows rather than work would size Monday's share for a
+    // week in which nobody runs.
+    const { tenant: due } = await seedSource();
+    const { tenant: resumed, source: resumedSource } = await seedSource({ cadence: "off" });
+    const resumedRun = await seedRunningRun(resumed.id, resumedSource.id);
+    const { tenant: notDue } = await seedSource({ dayOfWeek: 2 });
+    const { tenant: off } = await seedSource({ cadence: "off" });
+    const { tenant: switchedOff } = await seedSource({ enabled: false });
+    for (let i = 0; i < 11; i += 1) await seedSource({ dayOfWeek: 2 });
+    // 2 workers, 16 candidates — ours alone.
+    const OUR_CANDIDATES = 16;
+    const BUDGET_MS = 1_000_000;
+
+    const plan = planPerTenant();
+    const slice = drainedSlice();
+
+    await sweepAiVisibility({
+      now: clock(MONDAY),
+      budgetMs: BUDGET_MS,
+      plan,
+      slice,
+      finalize: completeFinalize(),
+    });
+
+    expect(mine(plan.mock.calls, due.id)).toHaveLength(1);
+    for (const idle of [notDue, off, switchedOff, resumed]) {
+      // `resumed` included: an in-flight run is driven, never re-planned.
+      expect(mine(plan.mock.calls, idle.id)).toHaveLength(0);
+    }
+    const ourSlices = [
+      ...mine(slice.mock.calls, `run-${due.id}`),
+      ...mine(slice.mock.calls, resumedRun.id),
+    ];
+    expect(ourSlices).toHaveLength(2);
+    for (const call of ourSlices) {
+      const { budgetMs } = call[1] as { budgetMs: number };
+      // Dividing by the candidate list could not exceed this, however few
+      // tenants another file seeded; dividing by the work list cannot fall
+      // below it unless a dozen foreign tenants are due in this same instant.
+      expect(budgetMs).toBeGreaterThan(BUDGET_MS / OUR_CANDIDATES);
+      // Two workers of ours, so no share can be more than half the tick.
+      expect(budgetMs).toBeLessThanOrEqual(BUDGET_MS / 2);
+    }
+  });
+
+  it("clamps a later source's share to the time the tick actually has left", async () => {
+    // First one burns almost the whole tick. The second is still worth
+    // starting — there is time left — but only with the time that is left, not
+    // with the share the divisor promised it.
+    const { tenant: first } = await seedSource();
+    const { tenant: second } = await seedSource();
+    await db
+      .update(sources)
+      .set({ lastRunAt: new Date("2026-02-23T09:00:00Z") })
+      .where(eq(sources.tenantId, second.id));
+
+    let elapsedMs = 0;
+    const now = () => new Date(new Date(MONDAY).getTime() + elapsedMs);
+    const slice = vi.fn(async (runId: string) => {
+      // Only ours moves the clock, so a foreign tenant sliced in between
+      // cannot change the arithmetic this asserts.
+      if (runId === `run-${first.id}`) elapsedMs += 90_000;
+      return { processed: 3, remaining: 0, budgetSpent: false, pausedByCap: false };
+    });
+
+    await sweepAiVisibility({
+      now,
+      budgetMs: 100_000,
+      plan: planPerTenant(),
+      slice,
+      finalize: completeFinalize(),
+    });
+
+    // `lastRunAt ASC NULLS FIRST`: the never-run tenant goes first.
+    const [firstCall] = mine(slice.mock.calls, `run-${first.id}`);
+    const [secondCall] = mine(slice.mock.calls, `run-${second.id}`);
+    expect(firstCall).toBeDefined();
+    expect(secondCall).toBeDefined();
+    expect((secondCall[1] as { budgetMs: number }).budgetMs).toBeLessThanOrEqual(10_000);
+  });
+
+  it("hands finalize what this source's own budget has left, floored", async () => {
+    const { tenant } = await seedSource();
+    let elapsedMs = 0;
+    const now = () => new Date(new Date(MONDAY).getTime() + elapsedMs);
+    const slice = vi.fn(async (runId: string) => {
+      if (runId === "run-1") elapsedMs += 20_000;
+      return { processed: 3, remaining: 0, budgetSpent: false, pausedByCap: false };
+    });
+    const finalize = completeFinalize();
+
+    await sweepAiVisibility({
+      now,
+      // Large enough that no foreign tenant sliced before ours can push the
+      // deadline into this assertion.
+      budgetMs: 1_000_000,
+      plan: planOnly(tenant.id, { ok: true, runId: "run-1", plannedCalls: 3, estimateUsd: 0.03 }),
+      slice,
+      finalize,
+    });
+
+    const sliceBudget = (mine(slice.mock.calls, "run-1")[0][1] as { budgetMs: number }).budgetMs;
+    const [finalizeCall] = mine(finalize.mock.calls, "run-1");
+    // Whatever the share was, finalize gets it MINUS what the slice spent —
+    // the two together are one source's budget, not two.
+    expect((finalizeCall[1] as { budgetMs: number }).budgetMs).toBe(
+      Math.max(MIN_SOURCE_BUDGET_MS, sliceBudget - 20_000)
+    );
+  });
+});
+
+describe("sweepAiVisibility — resuming, refusing, and surviving", () => {
+  it("resumes an in-flight run for a tenant whose cadence would never fire", async () => {
+    // The in-flight check comes BEFORE the settings lookup on purpose: the run
+    // was already authorised and paid for, and a tenant who switched the
+    // feature off mid-run would otherwise leave the dashboard showing a
+    // permanent "Running…" with nothing able to close it out.
+    const { tenant, source } = await seedSource({ enabled: false, cadence: "off" });
+    const run = await seedRunningRun(tenant.id, source.id);
+    const plan = planOnly(tenant.id, { ok: true, runId: "run-1", plannedCalls: 3, estimateUsd: 0.03 });
+    const slice = vi.fn().mockResolvedValue({ processed: 1, remaining: 9, budgetSpent: true, pausedByCap: false });
+
+    await sweepAiVisibility({ now: clock(TUESDAY), plan, slice, finalize: vi.fn() });
+
+    expect(mine(plan.mock.calls, tenant.id)).toHaveLength(0);
+    expect(mine(slice.mock.calls, run.id)).toHaveLength(1);
+  });
+
+  it("records the `disabled` refusal in words a user can act on", async () => {
+    const { tenant } = await seedSource();
+    const plan = planOnly(tenant.id, { ok: false, reason: "disabled" });
+
+    await sweepAiVisibility({ now: clock(MONDAY), plan, slice: idleSlice(), finalize: vi.fn() });
+
+    const [row] = await db
+      .select()
+      .from(sources)
+      .where(and(eq(sources.tenantId, tenant.id), eq(sources.type, "ai_visibility")));
+    expect(row.lastError).toContain("turned off");
+    // Only the cap paints a source red; everything else keeps its status and
+    // just explains itself in the health block.
+    expect(row.status).toBe("active");
+    expect(row.lastRunAt).toBeNull();
+  });
+
+  it("keeps sweeping the sources after the one that blew up", async () => {
+    // The try/catch is per source, not around the loop. One tenant's broken
+    // run must cost that tenant a tick, not cost every tenant behind it a week.
+    const { tenant: broken } = await seedSource();
+    const { tenant: healthy } = await seedSource();
+    await db
+      .update(sources)
+      .set({ lastRunAt: new Date("2026-02-23T09:00:00Z") })
+      .where(eq(sources.tenantId, healthy.id));
+
+    const plan = vi.fn(async (id: string): Promise<PlanRunResult> => {
+      // `lastRunAt ASC NULLS FIRST` puts `broken` first.
+      if (id === broken.id) throw new Error("boom");
+      if (id !== healthy.id) return FOREIGN_PLAN;
+      return { ok: true, runId: `run-${healthy.id}`, plannedCalls: 3, estimateUsd: 0.03 };
+    });
+    const slice = drainedSlice();
+
+    await expect(
+      sweepAiVisibility({
+        now: clock(MONDAY),
+        plan,
+        slice,
+        finalize: completeFinalize(),
+      })
+    ).resolves.toBeUndefined();
+
+    expect(mine(plan.mock.calls, broken.id)).toHaveLength(1);
+    expect(mine(slice.mock.calls, `run-${healthy.id}`)).toHaveLength(1);
+  });
+
+  it("does not finalize a run the cap paused on its last batch", async () => {
+    // `remaining: 0` AND `pausedByCap: true` together is reachable, not a
+    // contradiction: `runSlice` re-checks the cap at the TOP of each iteration,
+    // so a final batch that drains the work list and tips the month over the
+    // cap breaks out with nothing pending and the pause set. Finalizing there
+    // would spend judge tokens on a run the cap stopped on purpose —
+    // `finalizeRun` refuses a `paused_by_cap` run itself, and this is the
+    // caller-side half of that same rule.
+    const { tenant, source } = await seedSource();
+    const run = await seedRunningRun(tenant.id, source.id);
+    const slice = vi
+      .fn()
+      .mockResolvedValue({ processed: 12, remaining: 0, budgetSpent: false, pausedByCap: true });
+    const finalize = vi.fn();
+
+    await sweepAiVisibility({
+      now: clock(TUESDAY),
+      plan: planOnly(tenant.id, FOREIGN_PLAN),
+      slice,
+      finalize,
+    });
+
+    expect(mine(slice.mock.calls, run.id)).toHaveLength(1);
+    expect(mine(finalize.mock.calls, run.id)).toHaveLength(0);
+  });
+
+  it.each(["complete", "running", "paused_by_cap", "failed"] as const)(
+    "leaves the source alone whatever finalize reports (%s)",
+    async (status) => {
+      // `finalizeRun` is resumable and records its own failures on the run.
+      // The sweep reads none of its arms, and must not invent a second opinion
+      // about them in the source's health block.
+      const { tenant } = await seedSource();
+      const finalize = vi.fn().mockResolvedValue({ status, judged: 0, signals: 0 });
+
+      await sweepAiVisibility({
+        now: clock(MONDAY),
+        plan: planOnly(tenant.id, { ok: true, runId: "run-1", plannedCalls: 3, estimateUsd: 0.03 }),
+        slice: drainedSlice(),
+        finalize,
+      });
+
+      expect(mine(finalize.mock.calls, "run-1")).toHaveLength(1);
+      const [row] = await db
+        .select()
+        .from(sources)
+        .where(and(eq(sources.tenantId, tenant.id), eq(sources.type, "ai_visibility")));
+      expect(row.status).toBe("active");
+      expect(row.lastError).toBeNull();
+    }
+  );
+});
+
+describe("sweepAiVisibility — a database that is down", () => {
+  // A throw out of either query would reject the cron handler, and every step
+  // that ran BEFORE this one (delivery retries, three signal sweeps) would be
+  // reported as a failed invocation while brief expiry and ideation never run
+  // at all. Both are logged and returned from instead.
+  let errors: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    errors = vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    errors.mockRestore();
+  });
+
+  it("returns instead of throwing when the candidate query fails", async () => {
+    const database = {
+      select: () => ({
+        from: () => ({
+          where: () => ({ orderBy: () => Promise.reject(new Error("connection terminated")) }),
+        }),
+      }),
+    } as never;
+    const plan = vi.fn();
+
+    await expect(
+      sweepAiVisibility({ database, now: clock(MONDAY), plan, slice: vi.fn(), finalize: vi.fn() })
+    ).resolves.toBeUndefined();
+
+    expect(plan).not.toHaveBeenCalled();
+    expect(errors).toHaveBeenCalled();
+  });
+
+  it("returns instead of throwing when classifying the candidates fails", async () => {
+    let selects = 0;
+    const database = {
+      select: () => {
+        selects += 1;
+        // 1: the candidate list. 2: the in-flight runs, which is where a
+        // connection dropped between the two queries surfaces.
+        if (selects === 1) {
+          return {
+            from: () => ({
+              where: () => ({
+                orderBy: async () => [{ id: "source-1", tenantId: "tenant-1", lastRunAt: null }],
+              }),
+            }),
+          };
+        }
+        return { from: () => ({ where: async () => Promise.reject(new Error("connection terminated")) }) };
+      },
+    } as never;
+    const plan = vi.fn();
+
+    await expect(
+      sweepAiVisibility({ database, now: clock(MONDAY), plan, slice: vi.fn(), finalize: vi.fn() })
+    ).resolves.toBeUndefined();
+
+    expect(plan).not.toHaveBeenCalled();
+    expect(errors).toHaveBeenCalled();
   });
 });
