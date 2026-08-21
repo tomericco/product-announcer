@@ -1,6 +1,17 @@
+import { and, asc, eq, ne, sql } from "drizzle-orm";
 import { generateObject } from "ai";
 import { z } from "zod";
 import { db as defaultDb } from "@/db";
+import {
+  companyProfiles,
+  competitors,
+  tenants,
+  aiVisibilityPrompts,
+  aiVisibilityRuns,
+  aiVisibilitySamples,
+} from "@/db/schema";
+import { mapWithConcurrency } from "@/lib/concurrency";
+import type { Clock } from "@/lib/ai-visibility/run";
 import { resolveModel, modelId } from "@/lib/ai/model";
 import { recordLlmUsage, type TokenUsage } from "@/lib/ai/llm-usage";
 import type { SampleExtraction } from "@/lib/ai-visibility/types";
@@ -177,4 +188,224 @@ export async function judgeChunk(
   } catch (error) {
     return { error: String(error) };
   }
+}
+
+export type JudgeRunResult = {
+  judged: number;
+  flagged: number;
+  /** Samples still unjudged after this pass — non-zero means come back next tick. */
+  remaining: number;
+  budgetSpent: boolean;
+  errors: string[];
+};
+
+function collapse(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Whether a judge quote actually appears in the answer it claims to come from.
+ *
+ * Whitespace is collapsed on both sides because models reflow line breaks when
+ * copying, and rejecting a correct quote over a wrapped newline would flag most
+ * of a run. Case is NOT folded: "verbatim" is the design's word, and a model
+ * that re-cases a span is paraphrasing it.
+ */
+export function quoteIsVerbatim(quote: string, answerText: string): boolean {
+  const needle = collapse(quote);
+  if (needle.length === 0) return false;
+  return collapse(answerText).includes(needle);
+}
+
+/**
+ * The D/J cross-check (design §Extraction: "D and J must agree on 'mentioned'
+ * or the row is flagged and excluded from rates").
+ *
+ * Deliberately only about mentioned-ness. The judge's level, framing and quote
+ * are additive; the deterministic alias match is the arbiter for the metric
+ * that matters, so a disagreement is evidence that one of the two is wrong
+ * about this row, not grounds for preferring either.
+ */
+export function agreementFlag(
+  deterministicMentioned: boolean,
+  level: JudgeLabel["level"]
+): SampleExtraction["agreementFlag"] | null {
+  const judgeMentioned = level !== "absent";
+  if (deterministicMentioned === judgeMentioned) return null;
+  return deterministicMentioned ? "d_only" : "j_only";
+}
+
+/** Positioning claims, one per line or per sentence, out of the free-text profile field. */
+function splitClaims(positioning: string | null): string[] {
+  if (!positioning) return [];
+  return positioning
+    .split(/[\n\r]+/)
+    .map((line) => line.replace(/^[-*]\s*/, "").trim())
+    .filter((line) => line.length > 0)
+    .slice(0, 8);
+}
+
+/**
+ * Judges every unjudged sample in a run, in chunks, under a wall-clock budget.
+ *
+ * Resumable on purpose: `finalizeRun` calls this with whatever budget the cron
+ * tick has left, and a `remaining > 0` result keeps the run `running` so the
+ * next tick finishes it. That is why an unjudged sample is left alone rather
+ * than marked judged-with-no-label — the latter would silently lose the levels
+ * for a whole run because one tick ran short.
+ */
+export async function judgeRun(
+  runId: string,
+  opts: { budgetMs: number; now: Clock },
+  deps: JudgeDeps = {}
+): Promise<JudgeRunResult> {
+  const database = deps.database ?? defaultDb;
+  const startedAt = opts.now().getTime();
+  const errors: string[] = [];
+
+  const [run] = await database
+    .select({ tenantId: aiVisibilityRuns.tenantId })
+    .from(aiVisibilityRuns)
+    .where(eq(aiVisibilityRuns.id, runId));
+  if (!run) return { judged: 0, flagged: 0, remaining: 0, budgetSpent: false, errors };
+
+  // Errored and refused samples have no answer to judge. Marked judged here so
+  // they can never block finalization, and never flagged — a rate-limited
+  // engine is a coverage gap, not a disagreement.
+  await database
+    .update(aiVisibilitySamples)
+    .set({ judged: true })
+    .where(
+      and(
+        eq(aiVisibilitySamples.runId, runId),
+        eq(aiVisibilitySamples.judged, false),
+        ne(aiVisibilitySamples.status, "ok")
+      )
+    );
+
+  const pending = await database
+    .select({
+      sampleId: aiVisibilitySamples.id,
+      answerText: aiVisibilitySamples.answerText,
+      extraction: aiVisibilitySamples.extraction,
+      promptText: aiVisibilityPrompts.text,
+    })
+    .from(aiVisibilitySamples)
+    .innerJoin(aiVisibilityPrompts, eq(aiVisibilitySamples.promptId, aiVisibilityPrompts.id))
+    .where(
+      and(
+        eq(aiVisibilitySamples.runId, runId),
+        eq(aiVisibilitySamples.judged, false),
+        eq(aiVisibilitySamples.status, "ok")
+      )
+    )
+    // Ordered by the sample grid, not by `id`: ids are random uuids, so an
+    // id-ordered chunk interleaves prompts arbitrarily and the mapping from a
+    // chunk position to a row is unpredictable between runs. This way a
+    // prompt's samples sit together in one chunk — the judge sees one question's
+    // answers side by side — and a resumed pass chunks the same way twice.
+    .orderBy(
+      asc(aiVisibilitySamples.promptId),
+      asc(aiVisibilitySamples.engine),
+      asc(aiVisibilitySamples.sampleIndex)
+    );
+
+  if (pending.length === 0) {
+    return { judged: 0, flagged: 0, remaining: 0, budgetSpent: false, errors };
+  }
+
+  const [tenant] = await database.select({ name: tenants.name }).from(tenants).where(eq(tenants.id, run.tenantId));
+  const [profile] = await database
+    .select({ positioning: companyProfiles.positioning })
+    .from(companyProfiles)
+    .where(eq(companyProfiles.tenantId, run.tenantId));
+  const rivals = await database
+    .select({ name: competitors.name })
+    .from(competitors)
+    .where(eq(competitors.tenantId, run.tenantId));
+
+  const ctx: JudgeContext = {
+    tenantName: tenant?.name ?? "the company",
+    competitorNames: rivals.map((r) => r.name),
+    positioningClaims: splitClaims(profile?.positioning ?? null),
+  };
+
+  const chunks: JudgeItem[][] = [];
+  for (let i = 0; i < pending.length; i += JUDGE_CHUNK_SIZE) {
+    chunks.push(
+      pending.slice(i, i + JUDGE_CHUNK_SIZE).map((row) => ({
+        sampleId: row.sampleId,
+        promptText: row.promptText,
+        answerText: row.answerText ?? "",
+      }))
+    );
+  }
+  const byId = new Map(pending.map((row) => [row.sampleId, row]));
+
+  let judged = 0;
+  let flagged = 0;
+  let budgetSpent = false;
+
+  // Waves of JUDGE_CONCURRENCY chunks, so the budget is checked between waves
+  // rather than only after the whole fan-out has finished.
+  for (let i = 0; i < chunks.length; i += JUDGE_CONCURRENCY) {
+    if (opts.now().getTime() - startedAt >= opts.budgetMs) {
+      budgetSpent = true;
+      break;
+    }
+
+    const wave = chunks.slice(i, i + JUDGE_CONCURRENCY);
+    const outcomes = await mapWithConcurrency(wave, JUDGE_CONCURRENCY, (chunk) =>
+      judgeChunk(chunk, ctx, run.tenantId, deps)
+    );
+
+    for (const outcome of outcomes) {
+      if ("error" in outcome) {
+        // The chunk's rows stay judged:false and are retried on the next tick.
+        errors.push(outcome.error);
+        continue;
+      }
+      for (const [sampleId, label] of outcome.labels) {
+        const row = byId.get(sampleId);
+        if (!row) continue;
+        const disagreement = agreementFlag(
+          row.extraction?.deterministic.tenantMentioned ?? false,
+          label.level
+        );
+        // Two independent reasons to distrust the row; both exclude it from
+        // rates, and the label is stored either way so the monthly spot check
+        // can see what the judge actually said.
+        const badQuote = !quoteIsVerbatim(label.quote, row.answerText ?? "");
+        const isFlagged = disagreement !== null || badQuote;
+
+        try {
+          await database
+            .update(aiVisibilitySamples)
+            .set({
+              judged: true,
+              flagged: isFlagged,
+              extraction: {
+                ...(row.extraction ?? {
+                  deterministic: { tenantMentioned: false, competitorIds: [], ownDomainCited: false },
+                }),
+                judged: label,
+                ...(disagreement !== null ? { agreementFlag: disagreement } : {}),
+              },
+            })
+            .where(eq(aiVisibilitySamples.id, sampleId));
+          judged++;
+          if (isFlagged) flagged++;
+        } catch (error) {
+          errors.push(`could not store judgement for ${sampleId}: ${String(error)}`);
+        }
+      }
+    }
+  }
+
+  const [left] = await database
+    .select({ count: sql<number>`count(*)::int` })
+    .from(aiVisibilitySamples)
+    .where(and(eq(aiVisibilitySamples.runId, runId), eq(aiVisibilitySamples.judged, false)));
+
+  return { judged, flagged, remaining: left?.count ?? 0, budgetSpent, errors };
 }
