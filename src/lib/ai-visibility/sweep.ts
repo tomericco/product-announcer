@@ -220,10 +220,10 @@ export async function sweepAiVisibility(deps: SweepAiVisibilityDeps = {}): Promi
         // An in-flight run is resumed on ANY day, cadence irrelevant: it was
         // already authorised and paid for, and leaving it half-finished until
         // next Monday would leave the dashboard showing a permanent "Running…".
-        // The sweep is not the only resumer — a manual "Run now" (H3) also
-        // drives an in-flight run forward — but the sweep is the guarantee: a
-        // run left `running` completes by the next tick even if nobody clicks
-        // anything.
+        // The sweep is the ONLY thing that resumes one: a manual "Run now" is
+        // refused while a run is in flight ("A run is already in progress."),
+        // and the live `after()` loop of the run that started it only drives
+        // its own run, only until its budget is gone.
         const runId = inFlight.get(source.tenantId) ?? null;
         if (runId) return { source, runId };
 

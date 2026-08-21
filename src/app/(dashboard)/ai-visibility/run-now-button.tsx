@@ -30,8 +30,9 @@ export function estimateSentence(estimate: RunEstimate): string {
 }
 
 /**
- * "Run now" — the header control, and the same control the /company card
- * renders. Disabled states carry their reason twice on purpose: in a
+ * "Run now" — the /ai-visibility header control. Only there: the /company card
+ * offers the two navigation links and the on/off switch, and nothing that
+ * spends money. Disabled states carry their reason twice on purpose: in a
  * `DisabledHint` for the pointer, and as a line under the button, because
  * "Paused — monthly cap reached" must be readable without hovering.
  */
