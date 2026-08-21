@@ -182,6 +182,66 @@ describe("savePromptAction", () => {
   });
 });
 
+describe("savePromptAction — the refusal arms", () => {
+  it("names a duplicate wording as a duplicate, not as an unusable prompt", async () => {
+    const first = new FormData();
+    first.set("text", "best localization tools for design teams");
+    first.set("intent", "discovery");
+    expect((await savePromptAction(first)).ok).toBe(true);
+
+    const again = new FormData();
+    again.set("text", "best localization tools for design teams");
+    again.set("intent", "discovery");
+    expect(await savePromptAction(again)).toEqual({
+      ok: false,
+      error: "You already have a prompt with that wording.",
+    });
+  });
+
+  it("reports an edit that collides with an existing prompt separately from a bad wording", async () => {
+    const existing = await seedProposal("best localization tools");
+    const target = await seedProposal("localization tools pricing");
+    // `editPrompt` supersedes an approved prompt; a proposal is edited inside
+    // the review batch instead.
+    await db
+      .update(aiVisibilityPrompts)
+      .set({ status: "active" })
+      .where(eq(aiVisibilityPrompts.tenantId, currentTenantId));
+
+    const form = new FormData();
+    form.set("promptId", target.id);
+    form.set("text", existing.text);
+    expect(await savePromptAction(form)).toEqual({
+      ok: false,
+      error: "You already have a prompt with that wording.",
+    });
+  });
+
+  it("refuses to edit a prompt that is not this tenant's, undistinguished from one that does not exist", async () => {
+    const other = await seedTenant(`${TENANT} Edit Foreign`);
+    const [foreign] = await db
+      .insert(aiVisibilityPrompts)
+      .values({ tenantId: other.id, text: "not ours", intent: "discovery", origin: "generated" })
+      .returning();
+
+    const form = new FormData();
+    form.set("promptId", foreign.id);
+    form.set("text", "a rewritten question about localization");
+    expect(await savePromptAction(form)).toEqual({ ok: false, error: "Unknown prompt." });
+
+    const [row] = await db.select().from(aiVisibilityPrompts).where(eq(aiVisibilityPrompts.id, foreign.id));
+    expect(row.text).toBe("not ours");
+    await dropTenant(`${TENANT} Edit Foreign`);
+  });
+
+  it("validates the text before it ever looks at the prompt id", async () => {
+    const form = new FormData();
+    form.set("promptId", "00000000-0000-4000-8000-000000000000");
+    form.set("text", "   ");
+    expect(await savePromptAction(form)).toEqual({ ok: false, error: "Write the prompt first." });
+  });
+});
+
 describe("approveProposalsAction", () => {
   it("approves the checked rows, rejects the rest, and applies inline edits", async () => {
     const keep = await seedProposal("best localization tools");
@@ -226,6 +286,83 @@ describe("approveProposalsAction", () => {
   it("refuses an empty batch rather than reporting a no-op as a success", async () => {
     expect(await approveProposalsAction(new FormData())).toEqual({ ok: false, error: "Nothing selected." });
   });
+
+  it("commits a whole batch of rejections — every unchecked row becomes a negative", async () => {
+    // Review is EXCLUSION: a rejected proposal is remembered so the next
+    // generation does not offer it again. Dropping the rows instead would
+    // make "Suggest more" hand back the same thirty prompts.
+    const first = await seedProposal("best localization tools");
+    const second = await seedProposal("localization tools pricing");
+
+    const form = new FormData();
+    form.append("reject", first.id);
+    form.append("reject", second.id);
+
+    expect(await approveProposalsAction(form)).toMatchObject({ ok: true, approved: 0, rejected: 2 });
+    const rows = await db
+      .select()
+      .from(aiVisibilityPrompts)
+      .where(eq(aiVisibilityPrompts.tenantId, currentTenantId));
+    expect(rows.map((row) => row.status)).toEqual(["rejected", "rejected"]);
+  });
+
+  it("refuses the batch on an unusable edit rather than approving the rest around it", async () => {
+    const good = await seedProposal("best localization tools");
+    const bad = await seedProposal("localization tools pricing");
+
+    const form = new FormData();
+    form.append("approve", good.id);
+    form.append("approve", bad.id);
+    form.set(`text:${bad.id}`, "which tool is best? and what does it cost?");
+
+    expect(await approveProposalsAction(form)).toEqual({ ok: false, error: "Ask one question per prompt." });
+    // Nothing was written: a partial commit would leave the reviewer unable to
+    // tell which half of their batch landed.
+    const rows = await db
+      .select()
+      .from(aiVisibilityPrompts)
+      .where(eq(aiVisibilityPrompts.tenantId, currentTenantId));
+    expect(rows.every((row) => row.status === "proposed")).toBe(true);
+  });
+
+  it("ignores a text: field for a row that is not being approved", async () => {
+    const keep = await seedProposal("best localization tools");
+    const dropped = await seedProposal("localization tools pricing");
+
+    const form = new FormData();
+    form.append("approve", keep.id);
+    form.append("reject", dropped.id);
+    // A stale edit box for a row the reviewer then unchecked. It must not be
+    // validated (and refuse the batch) nor written to a rejected row.
+    form.set(`text:${dropped.id}`, `${"word ".repeat(30)}`);
+
+    expect(await approveProposalsAction(form)).toMatchObject({ ok: true, approved: 1, rejected: 1 });
+    const [row] = await db.select().from(aiVisibilityPrompts).where(eq(aiVisibilityPrompts.id, dropped.id));
+    expect(row.text).toBe("localization tools pricing");
+  });
+
+  it("turns the cap into an instruction with a number, not a wall", async () => {
+    await db.insert(aiVisibilityPrompts).values(
+      Array.from({ length: 29 }, (_, index) => ({
+        tenantId: currentTenantId,
+        text: `active prompt number ${index}`,
+        intent: "discovery" as const,
+        origin: "generated" as const,
+        status: "active" as const,
+      }))
+    );
+    const first = await seedProposal("best localization tools");
+    const second = await seedProposal("localization tools pricing");
+    const third = await seedProposal("versional pricing");
+
+    const form = new FormData();
+    for (const proposal of [first, second, third]) form.append("approve", proposal.id);
+
+    expect(await approveProposalsAction(form)).toEqual({
+      ok: false,
+      error: "That would pass the 30 active prompt limit — uncheck 2 more.",
+    });
+  });
 });
 
 describe("togglePromptAction and deletePromptAction", () => {
@@ -258,6 +395,50 @@ describe("togglePromptAction and deletePromptAction", () => {
     expect(
       await db.select().from(aiVisibilityPrompts).where(eq(aiVisibilityPrompts.id, prompt.id))
     ).toHaveLength(0);
+  });
+
+  it("refuses a state that is not a boolean rather than guessing which way to flip", async () => {
+    const prompt = await seedProposal("best localization tools");
+
+    expect(await togglePromptAction(prompt.id, "true")).toEqual({ ok: false, error: "Unknown state." });
+    const [row] = await db.select().from(aiVisibilityPrompts).where(eq(aiVisibilityPrompts.id, prompt.id));
+    expect(row.status).toBe("proposed");
+  });
+
+  it("reports resuming past the cap as the instruction, not as a silent no-op", async () => {
+    await db.insert(aiVisibilityPrompts).values(
+      Array.from({ length: 30 }, (_, index) => ({
+        tenantId: currentTenantId,
+        text: `active prompt number ${index}`,
+        intent: "discovery" as const,
+        origin: "generated" as const,
+        status: "active" as const,
+      }))
+    );
+    const paused = await seedProposal("best localization tools");
+    await db.update(aiVisibilityPrompts).set({ status: "paused" }).where(eq(aiVisibilityPrompts.id, paused.id));
+
+    expect(await togglePromptAction(paused.id, true)).toEqual({
+      ok: false,
+      error: "You're at the 30 active prompt limit. Pause one first.",
+    });
+    const [row] = await db.select().from(aiVisibilityPrompts).where(eq(aiVisibilityPrompts.id, paused.id));
+    expect(row.status).toBe("paused");
+  });
+
+  it("never acts on another tenant's prompt, and says only 'Unknown prompt.'", async () => {
+    const other = await seedTenant(`${TENANT} Foreign`);
+    const [foreign] = await db
+      .insert(aiVisibilityPrompts)
+      .values({ tenantId: other.id, text: "not ours", intent: "discovery", origin: "generated", status: "active" })
+      .returning();
+
+    expect(await togglePromptAction(foreign.id, false)).toEqual({ ok: false, error: "Unknown prompt." });
+    expect(await deletePromptAction(foreign.id)).toEqual({ ok: false, error: "Unknown prompt." });
+
+    const [row] = await db.select().from(aiVisibilityPrompts).where(eq(aiVisibilityPrompts.id, foreign.id));
+    expect(row.status).toBe("active");
+    await dropTenant(`${TENANT} Foreign`);
   });
 });
 

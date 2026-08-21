@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen, fireEvent, act } from "@testing-library/react";
 import type { EngineMetrics } from "../../../src/lib/ai-visibility/types";
 import {
   OverviewCards,
@@ -8,12 +8,41 @@ import {
   type EngineTile,
 } from "../../../src/app/(dashboard)/ai-visibility/overview-cards";
 import { RunNowButton, estimateSentence } from "../../../src/app/(dashboard)/ai-visibility/run-now-button";
+import { GeneratePromptSetButton } from "../../../src/app/(dashboard)/ai-visibility/generate-prompt-set-button";
 
-vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: vi.fn() }) }));
-vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
-vi.mock("../../../src/app/(dashboard)/ai-visibility/actions", () => ({
-  runNowAction: vi.fn(async () => ({ ok: true as const, runId: "run-1" })),
+const { refresh, push, toast, runNowAction, generatePromptSetAction } = vi.hoisted(() => ({
+  refresh: vi.fn(),
+  push: vi.fn(),
+  toast: { success: vi.fn(), error: vi.fn() },
+  runNowAction: vi.fn<() => Promise<{ ok: boolean; runId?: string; error?: string }>>(async () => ({
+    ok: true,
+    runId: "run-1",
+  })),
+  generatePromptSetAction: vi.fn<() => Promise<{ ok: boolean; proposed?: number; error?: string }>>(async () => ({
+    ok: true,
+    proposed: 30,
+  })),
 }));
+
+const { router } = vi.hoisted(() => ({ router: {} as Record<string, unknown> }));
+router.refresh = refresh;
+router.push = push;
+vi.mock("next/navigation", () => ({ useRouter: () => router }));
+vi.mock("sonner", () => ({ toast }));
+vi.mock("../../../src/app/(dashboard)/ai-visibility/actions", () => ({
+  runNowAction,
+  generatePromptSetAction,
+}));
+
+beforeEach(() => vi.clearAllMocks());
+
+async function click(element: HTMLElement) {
+  await act(async () => {
+    fireEvent.click(element);
+  });
+}
+
+const ESTIMATE = { prompts: 28, engines: 4, samples: 3, calls: 336, usd: 3.12 };
 
 function metrics(overrides: Partial<EngineMetrics> = {}): EngineMetrics {
   // Every rate is 0..100, not 0..1 — `engineMetrics` returns percentages
@@ -241,5 +270,89 @@ describe("RunNowButton", () => {
     );
 
     expect(screen.getByRole("button", { name: "Run first audit now" })).toBeInTheDocument();
+  });
+
+  it("never starts a run straight off the click — the cost is confirmed first", async () => {
+    render(<RunNowButton estimate={ESTIMATE} disabledReason={null} />);
+
+    await click(screen.getByRole("button", { name: "Run now" }));
+
+    expect(runNowAction).not.toHaveBeenCalled();
+    expect(
+      screen.getByText(/≈ 28 prompts × 4 engines × 3 samples — about \$3\.12/)
+    ).toBeInTheDocument();
+    // The attribution-lag caveat travels with the spend, per the trust cues.
+    expect(screen.getByText(/Content changes show in 60–90 days\./)).toBeInTheDocument();
+  });
+
+  it("starts the run on confirmation and refreshes, so the header swaps to Running", async () => {
+    render(<RunNowButton estimate={ESTIMATE} disabledReason={null} />);
+    await click(screen.getByRole("button", { name: "Run now" }));
+
+    const confirm = screen.getAllByRole("button", { name: "Run now" }).at(-1)!;
+    await click(confirm);
+
+    expect(runNowAction).toHaveBeenCalledTimes(1);
+    expect(refresh).toHaveBeenCalled();
+    expect(toast.success).toHaveBeenCalledWith("Run started");
+  });
+
+  it("reports a refusal as a toast and leaves the dialog open to try again", async () => {
+    runNowAction.mockResolvedValueOnce({ ok: false, error: "A run is already in progress." });
+    render(<RunNowButton estimate={ESTIMATE} disabledReason={null} />);
+    await click(screen.getByRole("button", { name: "Run now" }));
+    await click(screen.getAllByRole("button", { name: "Run now" }).at(-1)!);
+
+    expect(toast.error).toHaveBeenCalledWith("A run is already in progress.");
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it("offers no dialog at all while disabled — the reason is the whole answer", async () => {
+    render(<RunNowButton estimate={ESTIMATE} disabledReason="Paused — monthly cap reached." />);
+
+    await click(screen.getByRole("button", { name: "Run now" }));
+    expect(screen.queryByText(/≈ 28 prompts/)).not.toBeInTheDocument();
+    expect(runNowAction).not.toHaveBeenCalled();
+  });
+});
+
+describe("GeneratePromptSetButton", () => {
+  it("drafts, then sends the reviewer to the prompts page", async () => {
+    render(<GeneratePromptSetButton disabledReason={null} />);
+
+    await click(screen.getByRole("button", { name: "Generate prompt set" }));
+
+    expect(generatePromptSetAction).toHaveBeenCalledTimes(1);
+    expect(toast.success).toHaveBeenCalledWith("30 prompts drafted — review them");
+    expect(push).toHaveBeenCalledWith("/ai-visibility/prompts");
+  });
+
+  it("leaves the surface exactly as it was on failure, so the retry is the same button", async () => {
+    generatePromptSetAction.mockResolvedValueOnce({ ok: false, error: "Couldn't draft prompts just now — try again." });
+    render(<GeneratePromptSetButton disabledReason={null} />);
+
+    await click(screen.getByRole("button", { name: "Generate prompt set" }));
+
+    expect(toast.error).toHaveBeenCalledWith("Couldn't draft prompts just now — try again.");
+    expect(push).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Generate prompt set" })).toBeInTheDocument();
+  });
+
+  it("states the reason next to a disabled control rather than only on hover", async () => {
+    render(<GeneratePromptSetButton disabledReason="Add a category and positioning on Company first." />);
+
+    expect(screen.getByRole("button", { name: "Generate prompt set" })).toBeDisabled();
+    expect(screen.getByText("Add a category and positioning on Company first.")).toBeInTheDocument();
+    await click(screen.getByRole("button", { name: "Generate prompt set" }));
+    expect(generatePromptSetAction).not.toHaveBeenCalled();
+  });
+
+  it("takes the outline variant where it shares a row with a primary action", () => {
+    // One accent-filled button per screen region: two chartreuse buttons side
+    // by side means one of them is not actually primary.
+    render(<GeneratePromptSetButton disabledReason={null} label="Suggest more" variant="outline" />);
+
+    const button = screen.getByRole("button", { name: "Suggest more" });
+    expect(button.className).not.toContain("bg-primary");
   });
 });

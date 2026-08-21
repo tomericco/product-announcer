@@ -133,4 +133,64 @@ describe("CompetitorBars", () => {
     expect(screen.getByText("n = 84 answers")).toBeInTheDocument();
     expect(screen.getByText("Adding a competitor lowers every share.")).toBeInTheDocument();
   });
+
+  it("outlines our own bar in --brand-ink so the one bar the card is about is not the faintest thing in it", () => {
+    // --brand is a FILL token: at L 0.885 it sits at ~1.2:1 against the card.
+    // Filled and left unoutlined, our bar disappears next to every competitor's
+    // much darker --chart-3. The guide's rule is that any accent-coloured
+    // border is --brand-ink, and this is the border.
+    const { container } = render(
+      <CompetitorBars
+        n={84}
+        rows={[
+          share({ brandId: "us", name: "Versional", isTenant: true, sharePct: 40 }),
+          share({ brandId: "c1", name: "Acme", sharePct: 25 }),
+        ]}
+      />
+    );
+
+    const bars = [...container.querySelectorAll("path.recharts-rectangle")];
+    expect(bars.map((bar) => bar.getAttribute("fill"))).toEqual(["var(--brand)", "var(--chart-3)"]);
+    expect(bars[0].getAttribute("stroke")).toBe("var(--brand-ink)");
+    // One accent per region: a competitor bar is a neutral chart tone with no
+    // outline at all.
+    expect(bars[1].getAttribute("stroke")).toBe("none");
+  });
+
+  it("labels every row with its share, us first, in the same order as the bars", () => {
+    render(
+      <CompetitorBars
+        n={84}
+        rows={[
+          share({ brandId: "c1", name: "Acme", sharePct: 25.4 }),
+          share({ brandId: "us", name: "Versional", isTenant: true, sharePct: 40 }),
+          share({ brandId: "other", name: "Other tracked brands", sharePct: 12 }),
+        ]}
+      />
+    );
+
+    const labels = screen.getAllByRole("button").map((button) => button.textContent);
+    expect(labels).toEqual(["Versional · 40%", "Acme · 25%", "Other tracked brands · 12%"]);
+  });
+});
+
+describe("chart theming", () => {
+  it("draws the sparkline in --brand-ink, never in --chart-1", () => {
+    // --chart-1 is byte-identical to --brand in globals.css. A 1.5px stroke of
+    // it sits at ~1.4:1 against the card and the whole trend line vanishes.
+    const { container } = render(<SovSparkline points={[point()]} ariaLabel="Share of voice" />);
+
+    const theme = container.querySelector("style")!.textContent!;
+    expect(theme).toContain("--color-sov: var(--brand-ink);");
+    expect(theme).not.toContain("var(--chart-1)");
+    expect(theme).not.toContain("--color-sov: var(--brand);");
+  });
+
+  it("keeps the benchmark's series token off the raw accent too", () => {
+    const { container } = render(<CompetitorBars rows={[share()]} n={84} />);
+
+    const theme = container.querySelector("style")!.textContent!;
+    expect(theme).toContain("--color-sharePct: var(--chart-2);");
+    expect(theme).not.toContain("var(--chart-1)");
+  });
 });

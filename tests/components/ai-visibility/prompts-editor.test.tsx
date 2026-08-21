@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, act, within } from "@testing-library/react";
+// Resolves to the `vi.mock("sonner")` double below — the toasts are the only
+// report these flows give, so they are asserted rather than ignored.
+import { toast } from "sonner";
 import {
   PromptsEditor,
   engineChipLine,
@@ -337,6 +340,63 @@ describe("SuggestionsSection", () => {
     expect(form.getAll("approve")).toEqual(["s2"]);
     expect(form.getAll("reject")).toEqual(["s1"]);
     expect(form.get("text:s2")).toBe("how much do localization tools cost");
+  });
+
+  it("sends no edit for a row whose wording was never touched", async () => {
+    // An unchanged text is not an edit. Sending it anyway would make every
+    // approval look like one in the audit trail.
+    render(
+      <SuggestionsSection
+        proposals={[proposal({ id: "s1" })]}
+        profileChangedNote={null}
+        canSuggestMore
+        suggestMoreReason={null}
+      />
+    );
+    await click(screen.getByRole("button", { name: "Review" }));
+    await click(screen.getByRole("button", { name: "Approve 1 of 1" }));
+
+    const form = approveProposalsAction.mock.calls[0][0] as FormData;
+    expect(form.get("text:s1")).toBeNull();
+  });
+
+  it("reports a whole-batch rejection by what happened, not as 'nothing approved'", async () => {
+    approveProposalsAction.mockResolvedValueOnce({ ok: true, approved: 0, rejected: 2 } as never);
+    render(
+      <SuggestionsSection
+        proposals={[proposal({ id: "s1" }), proposal({ id: "s2" })]}
+        profileChangedNote={null}
+        canSuggestMore
+        suggestMoreReason={null}
+      />
+    );
+    await click(screen.getByRole("button", { name: "Review" }));
+    for (const box of screen.getAllByRole("checkbox")) await click(box);
+    await click(screen.getByRole("button", { name: "Reject all 2" }));
+
+    expect(toast.success).toHaveBeenCalledWith("2 suggestions rejected");
+    expect(refresh).toHaveBeenCalled();
+  });
+
+  it("keeps the batch on screen and toasts the reason when the commit is refused", async () => {
+    approveProposalsAction.mockResolvedValueOnce({
+      ok: false,
+      error: "That would pass the 30 active prompt limit — uncheck 2 more.",
+    } as never);
+    render(
+      <SuggestionsSection
+        proposals={[proposal({ id: "s1" })]}
+        profileChangedNote={null}
+        canSuggestMore
+        suggestMoreReason={null}
+      />
+    );
+    await click(screen.getByRole("button", { name: "Review" }));
+    await click(screen.getByRole("button", { name: "Approve 1 of 1" }));
+
+    expect(toast.error).toHaveBeenCalledWith("That would pass the 30 active prompt limit — uncheck 2 more.");
+    expect(refresh).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Approve 1 of 1" })).toBeInTheDocument();
   });
 
   it("shows the profile-changed strip when the profile outgrew the prompts", () => {

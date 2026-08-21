@@ -68,6 +68,49 @@ describe("segmentAnswer", () => {
   it("returns the whole text as one plain segment when nothing matches", () => {
     expect(kinds("Nothing to see here.")).toEqual(["plain:Nothing to see here."]);
   });
+
+  it("gives an ambiguous name to us, never silently to a competitor", () => {
+    // Same start, same length: without the kind tiebreak the winner depends on
+    // the order competitors happen to come back from the database.
+    const ambiguous: AnswerAlias[] = [
+      { name: "Atlas", kind: "competitor", label: "Atlas Localization" },
+      { name: "Atlas", kind: "tenant", label: "Atlas" },
+    ];
+    expect(kinds("Atlas is the one.", ambiguous)).toEqual(["tenant:Atlas", "plain: is the one."]);
+  });
+
+  it("drops an overlapping match rather than truncating it into a partial word", () => {
+    // "Phrase TMS" wins from index 0; the bare "TMS" match that starts inside
+    // it must be dropped whole, not clipped to a dangling "MS".
+    const overlapping: AnswerAlias[] = [
+      { name: "Phrase TMS", kind: "competitor", label: "Phrase" },
+      { name: "TMS", kind: "competitor", label: "TMS Inc" },
+    ];
+    expect(kinds("Use Phrase TMS today.", overlapping)).toEqual([
+      "plain:Use ",
+      "competitor:Phrase TMS",
+      "plain: today.",
+    ]);
+  });
+
+  it("ignores an empty alias instead of marking every gap between characters", () => {
+    expect(kinds("Versional is fine.", [{ name: "", kind: "competitor", label: "" }])).toEqual([
+      "plain:Versional is fine.",
+    ]);
+  });
+
+  it("marks a name at the very start and at the very end without inventing empty segments", () => {
+    expect(kinds("Versional")).toEqual(["tenant:Versional"]);
+    expect(kinds("Try Versional")).toEqual(["plain:Try ", "tenant:Versional"]);
+  });
+
+  it("marks a name touching punctuation — a full stop is not a word character", () => {
+    expect(kinds("(Versional).")).toEqual(["plain:(", "tenant:Versional", "plain:)."]);
+  });
+
+  it("returns nothing at all for an empty answer", () => {
+    expect(segmentAnswer("", ALIASES)).toEqual([]);
+  });
 });
 
 describe("HighlightedAnswer", () => {
