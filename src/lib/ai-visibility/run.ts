@@ -319,8 +319,11 @@ export async function runSlice(
     return { processed: 0, remaining: 0, budgetSpent: false, pausedByCap: false };
   }
 
-  // Two drivers reach this run in production: the daily cron sweep, and a
-  // manual "Run now" that finds a run already in flight and drives it forward.
+  // Two drivers reach this run in production: the daily cron sweep, and the
+  // `after()` loop of the manual "Run now" that started it — which keeps
+  // slicing for its own budget while the next cron tick can arrive on top of
+  // it. (A second "Run now" is not one of them: `planRun` refuses with
+  // `run_in_flight` and the action reports "A run is already in progress.")
   // Without the lease they both select the same `pending` rows and both pay for
   // them — the tenant is billed twice, `completedCalls` over-counts, extraction
   // doubles every citation row into the leaderboard, and two `computeAggregates`
@@ -729,9 +732,10 @@ export async function finalizeRun(
   try {
     const judged = await judge(runId, { budgetMs: opts.budgetMs, now: opts.now }, { database });
     if (judged.remaining > 0) {
-      // Deliberately leaves the run `running`: the next cron tick — or an
-      // earlier manual "Run now", which also drives in-flight runs — resumes
-      // here.
+      // Deliberately leaves the run `running`: the next cron tick resumes
+      // here. Nothing else will — a manual "Run now" is refused outright while
+      // a run is in flight, and its own `after()` loop has already returned by
+      // the time the judge budget runs out.
       //
       // The judge's errors are written to the run row rather than dropped. A
       // run that cannot finish is the one state where the reason has to be
@@ -744,6 +748,10 @@ export async function finalizeRun(
           .set({ error: judged.errors.join("; ") })
           .where(eq(aiVisibilityRuns.id, runId));
       }
+      // Handed back like every other exit takes care to do. Holding it would
+      // make the run unresumable until the lease expires — and the budget this
+      // lease was sized from is the one that just ran out.
+      await releaseSliceLease(database, runId, lease);
       return { status: "running", judged: judged.judged, signals: 0 };
     }
 
@@ -756,6 +764,7 @@ export async function finalizeRun(
       .from(aiVisibilitySamples)
       .where(and(eq(aiVisibilitySamples.runId, runId), eq(aiVisibilitySamples.status, "pending")));
     if ((stillPending?.count ?? 0) > 0) {
+      await releaseSliceLease(database, runId, lease);
       return { status: "running", judged: judged.judged, signals: 0 };
     }
 

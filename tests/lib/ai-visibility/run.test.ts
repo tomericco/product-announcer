@@ -1003,6 +1003,54 @@ describe("finalizeRun", () => {
     expect(run.error).toContain("overloaded");
   });
 
+  it("hands the lease back on both of the ways it leaves a run still running", async () => {
+    // Every other exit releases; these two did not. A leaked lease makes the
+    // run unresumable until it expires — and the lease was sized from the very
+    // budget that just ran out, so the next tick would find it still held.
+    const outOfJudgeBudget = await ran(["ok", "ok", "ok"]);
+    const out = await finalizeRun(
+      outOfJudgeBudget.runId,
+      { budgetMs: 60_000, now: frozen("2026-03-02T09:10:00Z") },
+      {
+        judge: async () => ({ judged: 0, flagged: 0, remaining: 3, budgetSpent: true, errors: [] }),
+        emit: async () => ({ written: 0, considered: 0 }),
+      }
+    );
+    expect(out.status).toBe("running");
+    const [judgeRun] = await db
+      .select()
+      .from(aiVisibilityRuns)
+      .where(eq(aiVisibilityRuns.id, outOfJudgeBudget.runId));
+    expect(judgeRun.sliceLeaseUntil).toBeNull();
+    expect(judgeRun.sliceLeaseOwner).toBeNull();
+
+    await dropTenant(TENANT);
+
+    const stillAnswering = await ran(["ok", "ok", "ok"]);
+    const [sample] = await db
+      .select()
+      .from(aiVisibilitySamples)
+      .where(eq(aiVisibilitySamples.runId, stillAnswering.runId))
+      .orderBy(asc(aiVisibilitySamples.sampleIndex));
+    await db
+      .update(aiVisibilitySamples)
+      .set({ status: "pending", answerText: null, extraction: null })
+      .where(eq(aiVisibilitySamples.id, sample.id));
+
+    const pendingOut = await finalizeRun(
+      stillAnswering.runId,
+      { budgetMs: 60_000, now: frozen("2026-03-02T09:10:00Z") },
+      { judge: noopJudge, emit: async () => ({ written: 0, considered: 0 }) }
+    );
+    expect(pendingOut.status).toBe("running");
+    const [pendingRun] = await db
+      .select()
+      .from(aiVisibilityRuns)
+      .where(eq(aiVisibilityRuns.id, stillAnswering.runId));
+    expect(pendingRun.sliceLeaseUntil).toBeNull();
+    expect(pendingRun.sliceLeaseOwner).toBeNull();
+  });
+
   it("does not emit signals a second time for an already complete run", async () => {
     const { runId } = await ran(["ok", "ok", "ok"]);
     await db.update(aiVisibilityRuns).set({ status: "complete" }).where(eq(aiVisibilityRuns.id, runId));
