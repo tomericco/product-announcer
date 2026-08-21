@@ -21,6 +21,13 @@ export type AiVisibilityEvidenceView = {
   aliases: AnswerAlias[];
 };
 
+/** Same guard, same shape, as `/ai-visibility`'s actions and `signals/params.ts`. */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function uuidOrNull(value: unknown): string | null {
+  return typeof value === "string" && UUID_RE.test(value) ? value : null;
+}
+
 const DATE_FORMAT = new Intl.DateTimeFormat("en-US", {
   month: "short",
   day: "numeric",
@@ -49,12 +56,19 @@ export async function loadAiVisibilityEvidence(
   signalId: string
 ): Promise<AiVisibilityEvidenceView | null> {
   const session = await requireSession();
+  // A Server Action argument is client input whatever TypeScript says, and this
+  // one goes straight into a comparison against a `uuid` column: a non-uuid
+  // makes Postgres raise 22P02 out of the action, so the dialog gets an
+  // exception instead of the empty state it is built to show. `null` is the
+  // same undistinguished miss another tenant's id already gets.
+  const id = uuidOrNull(signalId);
+  if (id === null) return null;
   const [signal] = await db
     .select({ title: signals.title, payload: signals.payload })
     .from(signals)
     .where(
       and(
-        eq(signals.id, signalId),
+        eq(signals.id, id),
         eq(signals.tenantId, session.user.tenantId),
         eq(signals.kind, "ai_visibility"),
         signalWindowCondition()

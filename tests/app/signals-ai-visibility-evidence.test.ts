@@ -104,6 +104,19 @@ describe("loadAiVisibilityEvidence", () => {
     expect(await loadAiVisibilityEvidence("33333333-3333-4333-8333-333333333333")).toBeNull();
   });
 
+  it("returns null for an id that is not a uuid, instead of throwing Postgres 22P02", async () => {
+    // The argument is client input whatever TypeScript says, and it goes
+    // straight into a comparison against a `uuid` column: without the guard the
+    // dialog gets an exception where every other miss gets the empty state.
+    const tenant = await seedTenant(TENANT);
+    currentTenantId = tenant.id;
+
+    expect(await loadAiVisibilityEvidence("not-a-uuid")).toBeNull();
+    expect(await loadAiVisibilityEvidence("")).toBeNull();
+    expect(await loadAiVisibilityEvidence("1; drop table signals")).toBeNull();
+    expect(await loadAiVisibilityEvidence(undefined as unknown as string)).toBeNull();
+  });
+
   it("returns null for a signal that has aged out of the browser's 60-day window", async () => {
     // Deliberate, not a bug to widen the read for: a signal old enough to have
     // fallen out of /signals has evidence nobody should still be acting on,

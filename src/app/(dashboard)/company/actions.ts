@@ -257,12 +257,16 @@ export async function setNewsWatching(enabled: boolean) {
  * "Off" means no run starts and no engine call is paid for; history is kept.
  */
 export async function setAiVisibilityWatching(enabled: unknown): Promise<void> {
+  // Authenticate first, validate second — the order every neighbouring action
+  // uses. Reversed, an unauthenticated caller can tell a rejected argument
+  // ("returns") from an accepted one ("throws on the session"), which is a
+  // free probe of the validator and of this action's existence.
+  const session = await requireSession();
   // A Server Action argument is client input whatever TypeScript says — the
   // same rule `saveVisualIdentity` and `savePersonas` follow below. A
   // non-boolean here would reach `setAiVisibilityEnabled` and be written
   // straight into a `boolean` column.
   if (typeof enabled !== "boolean") return;
-  const session = await requireSession();
   await setAiVisibilityEnabled(session.user.tenantId, enabled);
   revalidatePath("/company");
   revalidatePath("/ai-visibility");
