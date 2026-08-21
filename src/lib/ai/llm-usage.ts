@@ -17,6 +17,10 @@ export type LlmOperation =
   | "ideation"
   | "brief_draft"
   | "brief_proposal"
+  // AI visibility spec. One call per prompt-set generation or monthly
+  // expansion — the engine calls themselves are raw fetch and are billed on
+  // `ai_visibility_runs.costUsd`, not here.
+  | "ai_visibility_prompts"
   // Image spec §9. `illustration_plan` is a normal token row (the text model
   // planning which images a draft needs); `image_generation` bills per image
   // and sets `imageCount` instead of the token columns.
