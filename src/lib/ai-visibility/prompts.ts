@@ -189,3 +189,146 @@ export async function createPrompt(
   if (!row) return { ok: false, error: "duplicate" };
   return { ok: true, prompt: row };
 }
+
+export type ApproveProposalsInput = {
+  approveIds: string[];
+  rejectIds: string[];
+  /** Wording the reviewer retyped in the suggestions section before approving. */
+  edits?: { promptId: string; text: string }[];
+  approvedBy?: string | null;
+};
+
+export type ApproveProposalsResult =
+  | { ok: true; approved: number; rejected: number }
+  | { ok: false; error: "cap"; available: number; requested: number }
+  | { ok: false; error: "invalid" | "duplicate" };
+
+/**
+ * Commits one review of the suggestions section: approve the checked rows,
+ * store the unchecked ones as rejected negatives, apply any inline edits.
+ *
+ * Batch with exclusions rather than one accept per row — thirty individual
+ * accepts is the complaint the spec names (Peec). Rejected rows are kept, not
+ * deleted: the next generation reads them as negatives, the same way brief
+ * dismiss-reasons feed ideation.
+ *
+ * Edits are applied IN PLACE, deliberately unlike `editPrompt`. That
+ * function's new-row-plus-supersede rule exists so a prompt's history stays
+ * attached to the wording that produced it — and a `proposed` row has no
+ * history, because nothing has ever run against it. Superseding here would
+ * leave a paused ghost per typo fix, and rejecting-then-recreating would
+ * poison the negatives feed with a prompt the human actually wanted.
+ *
+ * The cap is checked against the still-`proposed` slice of the batch before
+ * anything is written — a re-submitted stale form full of already-active ids
+ * no-ops instead of bouncing off a spurious cap error — and every write runs
+ * in one transaction, so a batch that does not fit (or whose edits collide)
+ * changes nothing at all rather than applying the first N.
+ */
+export async function approveProposals(
+  tenantId: string,
+  input: ApproveProposalsInput,
+  database: typeof defaultDb = defaultDb
+): Promise<ApproveProposalsResult> {
+  const approveIds = [...new Set(input.approveIds)];
+  // Approval wins if an id somehow arrives in both lists.
+  const approveSet = new Set(approveIds);
+  const rejectIds = [...new Set(input.rejectIds)].filter((id) => !approveSet.has(id));
+
+  // Shape-validated before any write. A wording collision is caught by the
+  // unique index inside the transaction below, which rolls the whole batch
+  // back — neither kind of bad edit can half-apply a batch.
+  const edits: { promptId: string; text: string }[] = [];
+  for (const edit of input.edits ?? []) {
+    if (!approveSet.has(edit.promptId)) continue;
+    const text = normalizePromptText(edit.text);
+    if (text === null) return { ok: false, error: "invalid" };
+    edits.push({ promptId: edit.promptId, text });
+  }
+
+  if (approveIds.length > 0) {
+    // Only rows still awaiting review count against the cap. A replayed
+    // stale form (ids already active or rejected) falls through to the
+    // status-guarded updates below and no-ops, instead of erroring here.
+    const pending = await database
+      .select({ id: aiVisibilityPrompts.id })
+      .from(aiVisibilityPrompts)
+      .where(
+        and(
+          eq(aiVisibilityPrompts.tenantId, tenantId),
+          inArray(aiVisibilityPrompts.id, approveIds),
+          eq(aiVisibilityPrompts.status, "proposed")
+        )
+      );
+    if (pending.length > 0) {
+      const active = await countActivePrompts(tenantId, database);
+      const available = Math.max(MAX_ACTIVE_PROMPTS - active, 0);
+      if (pending.length > available) {
+        return { ok: false, error: "cap", available, requested: pending.length };
+      }
+    }
+  }
+
+  const now = new Date();
+  try {
+    // One transaction for the whole review: every edit, approval and
+    // rejection lands, or none of them do.
+    return await database.transaction(async (tx) => {
+      for (const edit of edits) {
+        await tx
+          .update(aiVisibilityPrompts)
+          .set({ text: edit.text })
+          .where(
+            and(
+              eq(aiVisibilityPrompts.tenantId, tenantId),
+              eq(aiVisibilityPrompts.id, edit.promptId),
+              // Only a proposal may be rewritten in place.
+              eq(aiVisibilityPrompts.status, "proposed")
+            )
+          );
+      }
+
+      let approved = 0;
+      if (approveIds.length > 0) {
+        const rows = await tx
+          .update(aiVisibilityPrompts)
+          .set({ status: "active", approvedAt: now, approvedBy: input.approvedBy ?? null, pausedAt: null })
+          .where(
+            and(
+              eq(aiVisibilityPrompts.tenantId, tenantId),
+              inArray(aiVisibilityPrompts.id, approveIds),
+              // Re-submitting a stale form must not re-approve or resurrect
+              // anything: only rows still awaiting review move.
+              eq(aiVisibilityPrompts.status, "proposed")
+            )
+          )
+          .returning({ id: aiVisibilityPrompts.id });
+        approved = rows.length;
+      }
+
+      let rejected = 0;
+      if (rejectIds.length > 0) {
+        const rows = await tx
+          .update(aiVisibilityPrompts)
+          .set({ status: "rejected" })
+          .where(
+            and(
+              eq(aiVisibilityPrompts.tenantId, tenantId),
+              inArray(aiVisibilityPrompts.id, rejectIds),
+              eq(aiVisibilityPrompts.status, "proposed")
+            )
+          )
+          .returning({ id: aiVisibilityPrompts.id });
+        rejected = rows.length;
+      }
+
+      return { ok: true as const, approved, rejected };
+    });
+  } catch {
+    // The partial unique index fired on an edit: the reviewer retyped a
+    // suggestion into the exact wording of a prompt they already have. The
+    // transaction rolled back, so nothing — not even the earlier edits in
+    // the batch — was written.
+    return { ok: false, error: "duplicate" };
+  }
+}

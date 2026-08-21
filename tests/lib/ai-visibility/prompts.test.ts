@@ -1,21 +1,25 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { db } from "../../../src/db";
-import { competitors, aiVisibilityPrompts } from "../../../src/db/schema";
+import { competitors, aiVisibilityPrompts, users } from "../../../src/db/schema";
 import {
   MAX_ACTIVE_PROMPTS,
   listPrompts,
   getPrompt,
   countActivePrompts,
   createPrompt,
+  approveProposals,
   normalizePromptText,
 } from "../../../src/lib/ai-visibility/prompts";
 import { seedTenant, dropTenant } from "../../helpers/fixtures";
 
 const TENANT = "AI Visibility Prompts Test Tenant";
+/** `users` is not tenant-scoped, so `dropTenant` does not reach it. */
+const PROMPTS_USER_EMAIL = "ai-visibility-prompts@example.test";
 
 afterEach(async () => {
   await dropTenant(TENANT);
+  await db.delete(users).where(eq(users.email, PROMPTS_USER_EMAIL));
 });
 
 async function fillActive(tenantId: string, howMany: number) {
@@ -212,5 +216,163 @@ describe("getPrompt", () => {
     } finally {
       await dropTenant(`${TENANT} Two`);
     }
+  });
+});
+
+async function seedProposals(tenantId: string, texts: string[]) {
+  const ids: string[] = [];
+  for (const text of texts) {
+    const result = await createPrompt(tenantId, { text, intent: "discovery", origin: "generated", status: "proposed" });
+    expect(result.ok).toBe(true);
+    if (result.ok) ids.push(result.prompt.id);
+  }
+  return ids;
+}
+
+describe("approveProposals", () => {
+  it("activates the checked rows and keeps the unchecked ones as negatives", async () => {
+    const tenant = await seedTenant(TENANT);
+    const [user] = await db.insert(users).values({ email: PROMPTS_USER_EMAIL, name: "Reviewer" }).returning();
+    const [a, b, c] = await seedProposals(tenant.id, ["prompt a", "prompt b", "prompt c"]);
+
+    const result = await approveProposals(tenant.id, {
+      approveIds: [a, b],
+      rejectIds: [c],
+      approvedBy: user.id,
+    });
+
+    expect(result).toEqual({ ok: true, approved: 2, rejected: 1 });
+    expect(await countActivePrompts(tenant.id)).toBe(2);
+    const [rejected] = await db.select().from(aiVisibilityPrompts).where(eq(aiVisibilityPrompts.id, c));
+    expect(rejected.status).toBe("rejected");
+    const [approved] = await db.select().from(aiVisibilityPrompts).where(eq(aiVisibilityPrompts.id, a));
+    expect(approved.approvedBy).toBe(user.id);
+    expect(approved.approvedAt).not.toBeNull();
+  });
+
+  it("applies an inline edit in place — a proposal has no history to protect", async () => {
+    const tenant = await seedTenant(TENANT);
+    const [a, b] = await seedProposals(tenant.id, ["prompt a", "prompt b"]);
+
+    const result = await approveProposals(tenant.id, {
+      approveIds: [a, b],
+      rejectIds: [],
+      edits: [{ promptId: a, text: "  best issue trackers for   seed-stage teams " }],
+    });
+
+    expect(result).toEqual({ ok: true, approved: 2, rejected: 0 });
+    const [edited] = await db.select().from(aiVisibilityPrompts).where(eq(aiVisibilityPrompts.id, a));
+    expect(edited.text).toBe("best issue trackers for seed-stage teams");
+    expect(edited.status).toBe("active");
+    expect(edited.supersedesId).toBeNull();
+    const rows = await db
+      .select()
+      .from(aiVisibilityPrompts)
+      .where(eq(aiVisibilityPrompts.tenantId, tenant.id));
+    expect(rows).toHaveLength(2);
+  });
+
+  it("ignores an edit to a row the reviewer then unchecked", async () => {
+    const tenant = await seedTenant(TENANT);
+    const [a, b] = await seedProposals(tenant.id, ["prompt a", "prompt b"]);
+
+    await approveProposals(tenant.id, {
+      approveIds: [a],
+      rejectIds: [b],
+      edits: [{ promptId: b, text: "an edit nobody asked to keep" }],
+    });
+
+    const [untouched] = await db.select().from(aiVisibilityPrompts).where(eq(aiVisibilityPrompts.id, b));
+    expect(untouched.text).toBe("prompt b");
+    expect(untouched.status).toBe("rejected");
+  });
+
+  it("writes nothing at all when an edit is unusable or collides", async () => {
+    const tenant = await seedTenant(TENANT);
+    await createPrompt(tenant.id, { text: "an existing active prompt", intent: "discovery" });
+    const [a, b] = await seedProposals(tenant.id, ["prompt a", "prompt b"]);
+
+    expect(
+      await approveProposals(tenant.id, { approveIds: [a, b], rejectIds: [], edits: [{ promptId: a, text: "no" }] })
+    ).toEqual({ ok: false, error: "invalid" });
+    expect(
+      await approveProposals(tenant.id, {
+        approveIds: [a, b],
+        rejectIds: [],
+        edits: [{ promptId: a, text: "an existing active prompt" }],
+      })
+    ).toEqual({ ok: false, error: "duplicate" });
+
+    expect(await countActivePrompts(tenant.id)).toBe(1);
+    const [still] = await db.select().from(aiVisibilityPrompts).where(eq(aiVisibilityPrompts.id, a));
+    expect(still.status).toBe("proposed");
+    expect(still.text).toBe("prompt a");
+  });
+
+  it("rolls the whole batch back when a later edit collides — no partial state survives", async () => {
+    const tenant = await seedTenant(TENANT);
+    await createPrompt(tenant.id, { text: "an existing active prompt", intent: "discovery" });
+    const [a, b] = await seedProposals(tenant.id, ["prompt a", "prompt b"]);
+
+    const result = await approveProposals(tenant.id, {
+      approveIds: [a, b],
+      rejectIds: [],
+      edits: [
+        { promptId: a, text: "a perfectly fine rewording" },
+        // The second edit hits the partial unique index after the first has
+        // already been applied inside the transaction.
+        { promptId: b, text: "an existing active prompt" },
+      ],
+    });
+
+    expect(result).toEqual({ ok: false, error: "duplicate" });
+    const [first] = await db.select().from(aiVisibilityPrompts).where(eq(aiVisibilityPrompts.id, a));
+    expect(first.text).toBe("prompt a");
+    expect(first.status).toBe("proposed");
+    const [second] = await db.select().from(aiVisibilityPrompts).where(eq(aiVisibilityPrompts.id, b));
+    expect(second.text).toBe("prompt b");
+    expect(second.status).toBe("proposed");
+    expect(await countActivePrompts(tenant.id)).toBe(1);
+  });
+
+  it("no-ops a replayed approve form even at the cap, instead of a spurious cap error", async () => {
+    const tenant = await seedTenant(TENANT);
+    await fillActive(tenant.id, MAX_ACTIVE_PROMPTS);
+    const [alreadyActive] = await db
+      .select({ id: aiVisibilityPrompts.id })
+      .from(aiVisibilityPrompts)
+      .where(and(eq(aiVisibilityPrompts.tenantId, tenant.id), eq(aiVisibilityPrompts.status, "active")))
+      .limit(1);
+
+    const result = await approveProposals(tenant.id, { approveIds: [alreadyActive.id], rejectIds: [] });
+
+    expect(result).toEqual({ ok: true, approved: 0, rejected: 0 });
+    expect(await countActivePrompts(tenant.id)).toBe(MAX_ACTIVE_PROMPTS);
+  });
+
+  it("refuses the whole batch when it would breach the cap, and says by how much", async () => {
+    const tenant = await seedTenant(TENANT);
+    await fillActive(tenant.id, MAX_ACTIVE_PROMPTS - 1);
+    const ids = await seedProposals(tenant.id, ["prompt a", "prompt b", "prompt c"]);
+
+    const result = await approveProposals(tenant.id, { approveIds: ids, rejectIds: [] });
+
+    expect(result).toEqual({ ok: false, error: "cap", available: 1, requested: 3 });
+    expect(await countActivePrompts(tenant.id)).toBe(MAX_ACTIVE_PROMPTS - 1);
+  });
+
+  it("touches only this tenant's proposals, and only rows still `proposed`", async () => {
+    const tenant = await seedTenant(TENANT);
+    const [a] = await seedProposals(tenant.id, ["prompt a"]);
+    const active = await createPrompt(tenant.id, { text: "already active", intent: "discovery" });
+    expect(active.ok).toBe(true);
+    const activeId = active.ok ? active.prompt.id : "";
+
+    const first = await approveProposals(tenant.id, { approveIds: [a, activeId], rejectIds: [] });
+    expect(first).toEqual({ ok: true, approved: 1, rejected: 0 });
+
+    // Re-running the same batch is a no-op, not a second approval.
+    const second = await approveProposals(tenant.id, { approveIds: [a], rejectIds: [] });
+    expect(second).toEqual({ ok: true, approved: 0, rejected: 0 });
   });
 });
