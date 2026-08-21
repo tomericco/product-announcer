@@ -24,6 +24,7 @@ const COMPANY_SECTIONS = [
   { href: "/company#company-context", label: "Company context" },
   { href: "/company#competitors", label: "Competitors" },
   { href: "/company#industry-news", label: "Industry news" },
+  { href: "/company#ai-visibility", label: "AI visibility" },
   { href: "/company#industry", label: "Industry" },
   { href: "/company#user-personas", label: "User personas" },
   { href: "/company#derive-from-updates", label: "Derive from your updates page" },

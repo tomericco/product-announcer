@@ -4,12 +4,15 @@ import { requireSession } from "@/lib/workspace/session";
 import { getOrCreateCompanyProfile } from "@/lib/workspace/company-profile";
 import { listCompetitors } from "@/lib/workspace/competitors";
 import { listCompetitorSources, getNewsSource } from "@/lib/signals/sources";
+import { ensureAiVisibilitySource } from "@/lib/ai-visibility/settings";
+import { listPrompts } from "@/lib/ai-visibility/prompts";
 import { saveGuidelines } from "./actions";
 import { BrandStyleImport } from "./brand-style-import";
 import { CompanyContextForm } from "./company-context-form";
 import { CompetitorsEditor } from "./competitors-editor";
 import { IndustrySelect } from "./industry-select";
 import { NewsToggle } from "./news-toggle";
+import { AiVisibilityCard } from "./ai-visibility-card";
 import { PersonasEditor } from "./personas-editor";
 import { GuidelinesEditor } from "./guidelines-editor";
 import { VisualIdentityEditor } from "./visual-identity-editor";
@@ -39,6 +42,10 @@ export default async function CompanyPage({
   const competitors = await listCompetitors(session.user.tenantId);
   const competitorSources = await listCompetitorSources(session.user.tenantId);
   const newsSource = await getNewsSource(session.user.tenantId);
+  // Created on first view rather than on first run, which is what makes the
+  // feature's health legible before anything has run.
+  const aiVisibilitySource = await ensureAiVisibilitySource(session.user.tenantId);
+  const activeAiVisibilityPrompts = await listPrompts(session.user.tenantId, { status: "active" });
   // Grouped here rather than in the client component so CompetitorsEditor
   // never needs to know how sources relate to competitors -- it just indexes
   // by the id it already has.
@@ -47,6 +54,21 @@ export default async function CompanyPage({
     if (!source.competitorId) continue;
     (sourcesByCompetitor[source.competitorId] ??= []).push(source);
   }
+  // The same derivation the prompts page's "Profile changed since prompts were
+  // generated" strip uses, expressed as one count: competitors added since the
+  // newest active prompt was approved, plus the profile itself if it has been
+  // edited since. Personas live in one JSON column with no per-persona
+  // timestamp, so an edited profile is the only evidence a persona moved.
+  const lastApprovedAt = activeAiVisibilityPrompts.reduce<Date | null>(
+    (latest, prompt) =>
+      prompt.approvedAt && (!latest || prompt.approvedAt > latest) ? prompt.approvedAt : latest,
+    null
+  );
+  const aiVisibilityChangedSince = lastApprovedAt
+    ? competitors.filter((competitor) => competitor.createdAt > lastApprovedAt).length +
+      (brandProfile.updatedAt > lastApprovedAt ? 1 : 0)
+    : 0;
+
   const personaCatalog = await db
     .select({
       key: systemPersonas.key,
@@ -128,6 +150,25 @@ export default async function CompanyPage({
         </CardHeader>
         <CardContent>
           <NewsToggle source={newsSource} />
+        </CardContent>
+      </Card>
+
+      <Card id="ai-visibility">
+        <CardHeader>
+          <CardTitle>AI visibility</CardTitle>
+          <CardDescription>
+            Measures how often ChatGPT, Perplexity, Gemini and Claude name you when buyers ask about your
+            category. Costs a few dollars a month per workspace, so it&apos;s off until you turn it on.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <AiVisibilityCard
+            source={aiVisibilitySource}
+            promptCount={activeAiVisibilityPrompts.length}
+            competitorCount={competitors.length}
+            personaCount={brandProfile.userPersonas.length}
+            changedSinceCount={aiVisibilityChangedSince}
+          />
         </CardContent>
       </Card>
 

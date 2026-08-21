@@ -98,7 +98,8 @@ describe("NavLinks Company sections — auto expand/collapse, no independent tog
     usePathname.mockReturnValue("/company");
     const { container } = render(<NavLinks boardCount={0} />);
     const sectionLinks = Array.from(linkFor(container, "/company").parentElement!.querySelectorAll('a[href^="/company#"]'));
-    expect(sectionLinks.length).toBe(10);
+    // Eleven since the AI-visibility card joined the page, next to Industry news.
+    expect(sectionLinks.length).toBe(11);
     for (const link of sectionLinks) {
       expect((link as HTMLAnchorElement).getAttribute("href")).toMatch(/^\/company#/);
     }
