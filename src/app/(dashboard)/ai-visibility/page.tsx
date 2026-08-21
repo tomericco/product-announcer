@@ -2,7 +2,7 @@ import Link from "next/link";
 import { eq } from "drizzle-orm";
 import { ScanSearch } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   EmptyState,
@@ -29,7 +29,7 @@ import {
   windowCounts,
 } from "@/lib/ai-visibility/metrics";
 import { citedDomains } from "@/lib/ai-visibility/cited-domains";
-import { capExceeded, capPausedMessage, estimateRunCost } from "@/lib/ai-visibility/cost";
+import { capExceeded, capPausedMessage } from "@/lib/ai-visibility/cost";
 import { listSignals } from "@/lib/signals/query";
 import type { EngineId, WindowCounts } from "@/lib/ai-visibility/types";
 import { DATE_FORMAT } from "../company/source-status";
@@ -57,7 +57,10 @@ function Header({ lastRunLine }: { lastRunLine: string | null }) {
         <h1 className="font-heading text-3xl leading-[1.15] tracking-[0.015em]">AI visibility</h1>
         <TooltipProvider>
           <Tooltip>
-            <TooltipTrigger render={<span className="inline-flex" />}>
+            {/* A button, not a span: this is the page's single trust cue,
+                and a non-focusable trigger puts it out of reach of anyone
+                navigating by keyboard. */}
+            <TooltipTrigger render={<button type="button" className="inline-flex" />}>
               <Badge variant="outline">API-observed</Badge>
             </TooltipTrigger>
             <TooltipContent>
@@ -113,9 +116,12 @@ export default async function AiVisibilityPage() {
             kept.
           </EmptyStateDescription>
           <EmptyStateActions>
-            <Button variant="outline" render={<Link href="/company#ai-visibility" />}>
+            {/* A styled Link, not `Button render={<Link/>}`: Base UI's Button
+                stamps role="button" on whatever it renders, and this only
+                navigates. */}
+            <Link href="/company#ai-visibility" className={buttonVariants({ variant: "outline" })}>
               Open Company
-            </Button>
+            </Link>
           </EmptyStateActions>
         </EmptyState>
       </div>
@@ -146,7 +152,9 @@ export default async function AiVisibilityPage() {
           </EmptyStateDescription>
           <EmptyStateActions>
             {proposals.length > 0 ? (
-              <Button render={<Link href="/ai-visibility/prompts" />}>Review {proposals.length} prompts</Button>
+              <Link href="/ai-visibility/prompts" className={buttonVariants()}>
+                Review {proposals.length} prompts
+              </Link>
             ) : (
               <GeneratePromptSetButton
                 disabledReason={missing ? "Add a category and positioning on Company first." : null}
@@ -185,30 +193,40 @@ export default async function AiVisibilityPage() {
   // outage. A paused run carries the sentence itself on `run.error`, which is
   // preferred over composing a second wording of the same fact.
   const cappedRun = lastRun?.status === "paused_by_cap" ? lastRun : null;
-  const capNotice = cappedRun
-    ? (cappedRun.error ?? capPausedMessage(cap.spentUsd, cap.capUsd))
-    : cap.exceeded
-      ? capPausedMessage(cap.spentUsd, cap.capUsd)
+  // The live, actionable state: spend plus the next run would cross the cap.
+  // Destructive, with a route to Settings.
+  const capBlocking = cap.exceeded
+    ? (cappedRun?.error ?? capPausedMessage(cap.spentUsd, cap.capUsd))
+    : null;
+  // A cap pause the calendar has already resolved. Muted and DATED, never the
+  // error tone: quoting this month's spend figure over a pause that happened
+  // in a month that has ended reads as a live problem and is not one.
+  const capResolvedNote =
+    !cap.exceeded && cappedRun
+      ? `The ${DATE_FORMAT.format(cappedRun.startedAt)} run stopped at the $${cap.capUsd.toFixed(
+          2
+        )} monthly cap. Runs have resumed.`
       : null;
 
-  // `estimateRunCost` returns a bare USD number; the call count is ours.
-  const estimateUsd = estimateRunCost({
-    promptCount: activePrompts.length,
-    engines: settings.engines,
-    samplesPerPrompt: settings.samplesPerPrompt,
-  });
-  const plannedCalls = activePrompts.length * settings.engines.length * settings.samplesPerPrompt;
+  // `capExceeded` has already split brand-check prompts (one sample per engine)
+  // from the rest, so its estimate is the one the gate itself used. Recomputing
+  // it here with a flat `prompts × engines × samples` would quote the human a
+  // number the enforcement disagrees with — always higher, and higher on the
+  // one screen whose job is to be trusted about money.
+  const brandedPrompts = activePrompts.filter((prompt) => prompt.intent === "brand_check").length;
+  const plannedCalls =
+    (activePrompts.length - brandedPrompts) * settings.engines.length * settings.samplesPerPrompt +
+    brandedPrompts * settings.engines.length;
 
   // Both gates the design names, in the order it names them. `runNowAction`
   // re-checks each one — this is the visible reason, not the enforcement.
   // `exceeded`, not `reached`: the pre-run gate is spend PLUS the next run's
   // estimate, which is the number that decides whether starting is allowed. A
   // run the cap paused LAST month does not disable the button this month.
-  const runDisabledReason = inFlight
+  const runningLine = inFlight
     ? `Running… ${inFlight.completedCalls} / ${inFlight.plannedCalls} calls`
-    : cap.exceeded
-      ? (capNotice ?? capPausedMessage(cap.spentUsd, cap.capUsd))
-      : null;
+    : null;
+  const runDisabledReason = runningLine ?? capBlocking;
 
   const shownEngines = ENGINE_ORDER.filter((engine) => settings.engines.includes(engine));
 
@@ -288,7 +306,22 @@ export default async function AiVisibilityPage() {
   const enginePerBrand = (counts: WindowCounts, mentions: number) =>
     brandMentionTotal(counts) === 0 ? null : sharePct(mentions, brandMentionTotal(counts));
 
-  const brandShares: BrandShare[] = [
+  /**
+   * Mentions belonging to brands this card can NAME — us plus the competitors
+   * still on the profile.
+   *
+   * `competitorMentions` is keyed by competitor id and keeps counting a
+   * competitor after it is deleted (the history of what engines said while we
+   * tracked them is deliberately not erased), so the named rows can sum to
+   * less than the denominator. Without the remainder row below, the bars would
+   * quietly disagree with the headline tile and the missing slice would have
+   * no name — which is exactly why `brandMentionTotal` is exported.
+   */
+  const accountedIn = (counts: WindowCounts) =>
+    counts.tenantMentions +
+    competitors.reduce((sum, competitor) => sum + (counts.competitorMentions[competitor.id] ?? 0), 0);
+
+  const namedShares: BrandShare[] = [
     {
       brandId: "tenant",
       name: tenantName,
@@ -312,6 +345,41 @@ export default async function AiVisibilityPage() {
       })),
     })),
   ];
+
+  const remainder = pooledTotal - accountedIn(pooledCounts);
+  const brandShares: BrandShare[] =
+    remainder > 0
+      ? [
+          ...namedShares,
+          {
+            brandId: "other",
+            name: "Other tracked brands",
+            isTenant: false,
+            mentions: remainder,
+            sharePct: sharePct(remainder, pooledTotal),
+            perEngine: perEngineCounts.map(({ engine, counts }) => {
+              const engineRemainder = brandMentionTotal(counts) - accountedIn(counts);
+              return {
+                engine,
+                sharePct: engineRemainder > 0 ? enginePerBrand(counts, engineRemainder) : null,
+              };
+            }),
+          },
+        ]
+      : namedShares;
+
+  /**
+   * The benchmark obeys the SAME two display rules as the tiles above it, read
+   * off the pooled row the tiles themselves use.
+   *
+   * Without this the card contradicted the page: at n = 12 every tile said
+   * "Collecting baseline" while the bars underneath printed a confident
+   * "You · 62%", and with nobody named at all every brand drew "· 0%" —
+   * a share computed from a denominator of zero, which is the precise
+   * zero-versus-unknown conflation this feature exists to prevent.
+   */
+  const benchmark: "baseline" | "none-named" | "ready" =
+    pooled.mentionRate === null ? "baseline" : pooledTotal === 0 ? "none-named" : "ready";
 
   // `promptMatrix` is deliberately un-thresholded — applying MIN_N_PROMPT and
   // rendering "–" below it is `cellReading`'s job, which also has to tell a
@@ -354,7 +422,14 @@ export default async function AiVisibilityPage() {
     signalId: signalByDomain.get(row.domain) ?? null,
   }));
 
-  const lastRunLine = lastRun
+  // An in-flight run is NOT "Last run": its `completedCalls` and `costUsd` are
+  // a partial tally that keeps moving, and printing them under that label
+  // reports a half-finished run as a finished one. The spec's Running state
+  // belongs here, in the muted header, rather than only as destructive text
+  // under the disabled button.
+  const lastRunLine = runningLine
+    ? runningLine
+    : lastRun
     ? lastRun.status === "failed"
       ? `Last run ${DATE_FORMAT.format(lastRun.startedAt)} — failed`
       : `Last run ${DATE_FORMAT.format(lastRun.startedAt)} · ${lastRun.completedCalls} answers · $${lastRun.costUsd.toFixed(2)}`
@@ -369,7 +444,8 @@ export default async function AiVisibilityPage() {
             <h1 className="font-heading text-3xl leading-[1.15] tracking-[0.015em]">AI visibility</h1>
             <TooltipProvider>
               <Tooltip>
-                <TooltipTrigger render={<span className="inline-flex" />}>
+                {/* A button, not a span — see the note in `Header`. */}
+                <TooltipTrigger render={<button type="button" className="inline-flex" />}>
                   <Badge variant="outline">API-observed</Badge>
                 </TooltipTrigger>
                 <TooltipContent>
@@ -380,21 +456,19 @@ export default async function AiVisibilityPage() {
             </TooltipProvider>
           </div>
           <p className="text-sm text-muted-foreground">{lastRunLine}</p>
-          {capNotice && (
+          {capBlocking && (
             <p className="text-sm text-destructive">
-              {capNotice}{" "}
-              {cap.exceeded ? (
-                <>
-                  <Link href="/settings#ai-visibility" className="underline underline-offset-2">
-                    Raise it in Settings
-                  </Link>
-                  , or wait for next month.
-                </>
-              ) : (
-                "Runs have resumed this month."
-              )}
+              {capBlocking}{" "}
+              <Link href="/settings#ai-visibility" className="underline underline-offset-2">
+                Raise it in Settings
+              </Link>
+              , or wait for next month.
             </p>
           )}
+          {/* Dated and muted: a pause the calendar already resolved is history,
+              not an error, and the error tone over a spend figure from a month
+              that has ended reads as a live problem. */}
+          {capResolvedNote && <p className="text-sm text-muted-foreground">{capResolvedNote}</p>}
         </div>
         <RunNowButton
           estimate={{
@@ -402,9 +476,11 @@ export default async function AiVisibilityPage() {
             engines: settings.engines.length,
             samples: settings.samplesPerPrompt,
             calls: plannedCalls,
-            usd: estimateUsd,
+            // The gate's own number, not a second computation of it.
+            usd: cap.estimateUsd,
           }}
           disabledReason={runDisabledReason}
+          disabledTone={runningLine ? "muted" : "destructive"}
         />
       </div>
 
@@ -420,7 +496,10 @@ export default async function AiVisibilityPage() {
           <EmptyStateDescription>
             {settings.cadence === "off"
               ? "Scheduled runs are off. Run it now, or set a cadence in Settings."
-              : `First audit ${DAY_LABEL[settings.dayOfWeek]} — or run it now.`}
+              : // Guarded rather than trusted: `getAiVisibilitySettings` clamps
+                // dayOfWeek to 0..6, but "First audit undefined" is a bad way to
+                // find out that ever stopped being true.
+                `First audit ${DAY_LABEL[settings.dayOfWeek] ?? "on the scheduled day"} — or run it now.`}
           </EmptyStateDescription>
         </EmptyState>
       ) : (
@@ -440,7 +519,17 @@ export default async function AiVisibilityPage() {
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <CompetitorBars rows={brandShares} n={pooled.n} />
+              {benchmark === "baseline" ? (
+                <p className="text-sm text-muted-foreground">
+                  Collecting baseline — n = {pooled.n} answers. Shares appear once there are enough.
+                </p>
+              ) : benchmark === "none-named" ? (
+                <p className="text-sm">
+                  No brands named in any answer — not ours, not a competitor&apos;s. n = {pooled.n} answers.
+                </p>
+              ) : (
+                <CompetitorBars rows={brandShares} n={pooled.n} />
+              )}
             </CardContent>
           </Card>
 

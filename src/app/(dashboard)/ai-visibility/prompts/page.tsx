@@ -13,7 +13,9 @@ import { requireSession } from "@/lib/workspace/session";
 import { getOrCreateCompanyProfile } from "@/lib/workspace/company-profile";
 import { listCompetitors } from "@/lib/workspace/competitors";
 import { MAX_ACTIVE_PROMPTS, listPrompts } from "@/lib/ai-visibility/prompts";
+import { getAiVisibilitySettings } from "@/lib/ai-visibility/settings";
 import { MIN_N_PROMPT, promptMatrix } from "@/lib/ai-visibility/metrics";
+import { buttonVariants } from "@/components/ui/button";
 import { GeneratePromptSetButton } from "../generate-prompt-set-button";
 import { personaFilterOptions, readPromptsFilters } from "./filter-params";
 import { PromptsEditor, type PromptRowData } from "./prompts-editor";
@@ -39,10 +41,8 @@ export default async function PromptsPage({
   const session = await requireSession();
   const tenantId = session.user.tenantId;
 
-  // `getAiVisibilitySettings` is deliberately NOT read here: nothing on this
-  // page depends on cadence, engines or the cap, and a prompt set is editable
-  // whether or not measurement is switched on.
-  const [profile, competitors, allPrompts, matrix, personaCatalog] = await Promise.all([
+  const [settings, profile, competitors, allPrompts, matrix, personaCatalog] = await Promise.all([
+    getAiVisibilitySettings(tenantId),
     getOrCreateCompanyProfile(tenantId),
     listCompetitors(tenantId),
     listPrompts(tenantId, { status: ["proposed", "active", "paused"] }),
@@ -60,6 +60,37 @@ export default async function PromptsPage({
     personas,
     competitors.map((competitor) => competitor.id)
   );
+
+  // ---- State: Off ---------------------------------------------------------
+  // The spec's States table says "same" as the overview, and it is right to:
+  // an editor full of live-looking Switches on a feature that is switched off
+  // invites edits that will not measure anything.
+  if (!settings.enabled) {
+    return (
+      <div className="space-y-4">
+        <div className="space-y-1">
+          <Link href="/ai-visibility" className="text-sm text-muted-foreground hover:underline">
+            ← AI visibility
+          </Link>
+          <h1 className="font-heading text-3xl leading-[1.15] tracking-[0.015em]">Prompts</h1>
+        </div>
+        <EmptyState>
+          <EmptyStateIcon>
+            <ScanSearch />
+          </EmptyStateIcon>
+          <EmptyStateTitle>AI visibility is off</EmptyStateTitle>
+          <EmptyStateDescription>
+            Turn it on in Company to start measuring how often engines name you. Your prompts are kept.
+          </EmptyStateDescription>
+          <EmptyStateActions>
+            <Link href="/company#ai-visibility" className={buttonVariants({ variant: "outline" })}>
+              Open Company
+            </Link>
+          </EmptyStateActions>
+        </EmptyState>
+      </div>
+    );
+  }
 
   const competitorName = new Map(competitors.map((competitor) => [competitor.id, competitor.name]));
   const matrixByPrompt = new Map(matrix.map((row) => [row.promptId, row]));
@@ -113,6 +144,14 @@ export default async function PromptsPage({
 
   const activeCount = allPrompts.filter((prompt) => prompt.status === "active").length;
 
+  // The current query, re-serialised, so the filter bar MERGES into it rather
+  // than rebuilding from empty and dropping every unrelated key.
+  const baseQuery = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (Array.isArray(value)) for (const entry of value) baseQuery.append(key, entry);
+    else if (value !== undefined) baseQuery.set(key, value);
+  }
+
   // The design's "Profile changed since prompts were generated" strip, derived
   // from data already loaded. Observation only: generation stays a click,
   // because it costs a model call.
@@ -135,6 +174,9 @@ export default async function PromptsPage({
     changes.length > 0 ? `Profile changed since prompts were generated — ${changes.join(", ")}` : null;
 
   const missingProfile = !profile.category || !profile.positioning;
+  const hasAnyPrompts = allPrompts.some(
+    (prompt) => prompt.status === "active" || prompt.status === "paused"
+  );
 
   return (
     <div className="space-y-4">
@@ -153,6 +195,9 @@ export default async function PromptsPage({
       </div>
 
       <SuggestionsSection
+        // Keyed on the batch: a new set of suggestions arriving while this is
+        // mounted gets fresh state rather than the previous batch's.
+        key={proposals.map((proposal) => proposal.id).join(",")}
         proposals={proposals}
         profileChangedNote={profileChangedNote}
         canSuggestMore={activeCount < MAX_ACTIVE_PROMPTS && !missingProfile}
@@ -165,7 +210,10 @@ export default async function PromptsPage({
         }
       />
 
-      {rows.length === 0 && proposals.length === 0 ? (
+      {/* Gated on the UNFILTERED set. Gating on `rows` replaced the whole page
+          — filter bar included — the moment a filter matched nothing, leaving
+          no on-screen way back to an unfiltered list. */}
+      {!hasAnyPrompts && proposals.length === 0 ? (
         <EmptyState>
           <EmptyStateIcon>
             <ScanSearch />
@@ -189,6 +237,7 @@ export default async function PromptsPage({
           competitors={competitors.map((competitor) => ({ id: competitor.id, name: competitor.name }))}
           activeCount={activeCount}
           maxActive={MAX_ACTIVE_PROMPTS}
+          baseQuery={baseQuery.toString()}
         />
       )}
     </div>

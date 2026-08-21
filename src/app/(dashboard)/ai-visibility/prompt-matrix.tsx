@@ -97,6 +97,18 @@ export function PromptMatrix({ rows }: { rows: MatrixRow[] }) {
               {ENGINE_ORDER.map((engine) => {
                 const cell = row.cells[engine];
                 const reading = cellReading(cell);
+                // "GPT –" is the whole accessible name a screen reader gets
+                // from the visible text, and it says nothing: not which
+                // question, not which engine, not why there is a dash. The
+                // label carries all three. The failure wording stays at ENGINE
+                // scope — `failed` is set from `runEngineHealth`, which counts
+                // errored prompts per engine, and claiming THIS prompt failed
+                // is a fact the data does not contain.
+                const description = reading.tone !== "unavailable"
+                  ? `named in ${cell.named} of ${cell.samples} answers`
+                  : cell.failed
+                    ? "no usable answers; this engine failed during the last run"
+                    : `fewer than ${MIN_CELL_SAMPLES} usable answers yet`;
                 return (
                   <TableCell key={engine} className="text-center">
                     <TooltipProvider>
@@ -104,7 +116,7 @@ export function PromptMatrix({ rows }: { rows: MatrixRow[] }) {
                         <TooltipTrigger render={<span className="inline-flex" />}>
                           <Link
                             href={`/ai-visibility/prompts/${row.promptId}?engine=${engine}`}
-                            aria-label={`${ENGINE_SHORT[engine]} ${reading.text}`}
+                            aria-label={`${row.text} — ${ENGINE_LABEL[engine]}: ${description}`}
                             className={cn(
                               "inline-flex h-5 min-w-10 items-center justify-center rounded-md border border-transparent px-2 text-xs font-medium tabular-nums",
                               TONE_CLASS[reading.tone]
@@ -116,7 +128,7 @@ export function PromptMatrix({ rows }: { rows: MatrixRow[] }) {
                         <TooltipContent>
                           {reading.tone === "unavailable"
                             ? cell.failed
-                              ? `${ENGINE_LABEL[engine]} failed on this prompt — excluded from every rate.`
+                              ? `${ENGINE_LABEL[engine]} failed during the last run — its cells are excluded from every rate.`
                               : `Fewer than ${MIN_CELL_SAMPLES} usable answers yet.`
                             : `Named in ${cell.named} of ${cell.samples} answers on ${ENGINE_LABEL[engine]}.`}
                         </TooltipContent>

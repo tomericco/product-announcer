@@ -69,7 +69,7 @@ export function CitedDomainsTable({ rows }: { rows: CitedDomainRow[] }) {
                 <Badge variant={classification.variant}>{classification.label}</Badge>
               </TableCell>
               <TableCell>
-                {proposable && (
+                {proposable ? (
                   // A styled Link rather than `Button render={<Link/>}`: Base
                   // UI's Button stamps `role="button"` onto whatever it
                   // renders, and this control does nothing but navigate — a
@@ -81,6 +81,20 @@ export function CitedDomainsTable({ rows }: { rows: CitedDomainRow[] }) {
                   >
                     Propose brief
                   </Link>
+                ) : (
+                  // A third-party row with no signal is the one case where the
+                  // action's ABSENCE needs explaining: signals age out of the
+                  // 60-day window, and a row that offered "Propose brief" last
+                  // month and offers nothing now looks broken rather than
+                  // expired. Our own domain gets no note — it is not a gap.
+                  classification.label === "Third-party" && (
+                    <span
+                      className="text-xs text-muted-foreground"
+                      title="Signals age out after 60 days. Propose a brief from the Signals page, or wait for this domain to be cited again."
+                    >
+                      Evidence aged out
+                    </span>
+                  )
                 )}
               </TableCell>
             </TableRow>

@@ -19,9 +19,16 @@ import { generatePromptSetAction } from "./actions";
 export function GeneratePromptSetButton({
   disabledReason,
   label = "Generate prompt set",
+  variant = "default",
 }: {
   disabledReason: string | null;
   label?: string;
+  /**
+   * `outline` where this button shares a row with the primary action. One
+   * accent-filled button per screen region: two chartreuse buttons side by
+   * side means one of them is not actually primary.
+   */
+  variant?: "default" | "outline";
 }) {
   const [pending, startTransition] = useTransition();
   const router = useRouter();
@@ -39,6 +46,7 @@ export function GeneratePromptSetButton({
 
   return (
     <Button
+      variant={variant}
       disabled={pending}
       onClick={() =>
         startTransition(async () => {

@@ -24,9 +24,16 @@ export type ProposalRow = {
 /** A batch this small is the monthly top-up strip, not the initial set. */
 const COLLAPSE_AT_OR_BELOW = 10;
 
-/** "Approve 28 of 30" — the count is the whole affordance. */
+/**
+ * "Approve 28 of 30" — the count is the whole affordance.
+ *
+ * Zero checked is a real, committable decision: it rejects the batch, and
+ * every rejection is a negative the next generation reads. Labelling it
+ * "Approve none" described the button as doing nothing, which is the opposite
+ * of what it does.
+ */
 export function approveLabel(checkedCount: number, total: number): string {
-  return checkedCount === 0 ? "Approve none" : `Approve ${checkedCount} of ${total}`;
+  return checkedCount === 0 ? `Reject all ${total}` : `Approve ${checkedCount} of ${total}`;
 }
 
 /**
@@ -49,7 +56,14 @@ export function SuggestionsSection({
   canSuggestMore: boolean;
   suggestMoreReason: string | null;
 }) {
-  const [checked, setChecked] = useState<Set<string>>(new Set(proposals.map((p) => p.id)));
+  // EXCLUSIONS, not selections. A `useState` initialised from `proposals`
+  // never re-runs, and "Suggest more" pushes to the same URL — so the
+  // component stays mounted holding the previous batch's ids, and a checked
+  // set built that way arrives EMPTY for the new proposals. Every untouched
+  // row would then commit as a `rejected` negative: the batch silently
+  // rejects itself. Absence means approved, which is also exactly what
+  // "review is exclusion, not selection" says.
+  const [excluded, setExcluded] = useState<Set<string>>(new Set());
   const [texts, setTexts] = useState<Record<string, string>>(
     Object.fromEntries(proposals.map((p) => [p.id, p.text]))
   );
@@ -59,10 +73,12 @@ export function SuggestionsSection({
   const [pending, startTransition] = useTransition();
   const router = useRouter();
 
+  const checkedCount = proposals.filter((proposal) => !excluded.has(proposal.id)).length;
+
   function commit() {
     const form = new FormData();
     for (const proposal of proposals) {
-      if (checked.has(proposal.id)) {
+      if (!excluded.has(proposal.id)) {
         form.append("approve", proposal.id);
         const edited = texts[proposal.id]?.trim();
         // Only send an edit when the wording actually changed — an
@@ -76,7 +92,9 @@ export function SuggestionsSection({
     startTransition(async () => {
       const result = await approveProposalsAction(form);
       if (result.ok) {
-        toast.success(`${result.approved} prompts approved`);
+        toast.success(
+          result.approved > 0 ? `${result.approved} prompts approved` : `${result.rejected} suggestions rejected`
+        );
         router.refresh();
       } else {
         toast.error(result.error);
@@ -87,7 +105,7 @@ export function SuggestionsSection({
   const suggestMore = (
     <div className="flex flex-col items-start gap-1">
       {canSuggestMore ? (
-        <GeneratePromptSetButton disabledReason={null} label="Suggest more" />
+        <GeneratePromptSetButton disabledReason={null} label="Suggest more" variant="outline" />
       ) : (
         <>
           <DisabledHint hint={suggestMoreReason ?? "Not available right now."}>
@@ -142,10 +160,10 @@ export function SuggestionsSection({
             <input
               type="checkbox"
               className="mt-2 size-4 shrink-0 rounded border-input"
-              checked={checked.has(proposal.id)}
+              checked={!excluded.has(proposal.id)}
               aria-label={`Approve ${proposal.text}`}
               onChange={() =>
-                setChecked((prev) => {
+                setExcluded((prev) => {
                   const next = new Set(prev);
                   if (next.has(proposal.id)) next.delete(proposal.id);
                   else next.add(proposal.id);
@@ -172,8 +190,11 @@ export function SuggestionsSection({
 
       <div className="flex flex-wrap items-center justify-between gap-2 border-t pt-3">
         {suggestMore}
-        <Button onClick={commit} disabled={pending || checked.size === 0}>
-          {pending ? "Approving…" : approveLabel(checked.size, proposals.length)}
+        {/* Enabled at zero checked: rejecting the whole batch is a decision
+            the reviewer is allowed to make, and disabling it there left the
+            "reject everything" path with no button at all. */}
+        <Button onClick={commit} disabled={pending}>
+          {pending ? "Saving…" : approveLabel(checkedCount, proposals.length)}
         </Button>
       </div>
     </div>

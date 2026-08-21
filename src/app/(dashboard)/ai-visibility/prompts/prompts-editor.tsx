@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { MoreHorizontal, Plus } from "lucide-react";
@@ -87,6 +88,7 @@ export function PromptsEditor({
   competitors,
   activeCount,
   maxActive,
+  baseQuery = "",
 }: {
   rows: PromptRowData[];
   filters: PromptsFilterState;
@@ -94,6 +96,16 @@ export function PromptsEditor({
   competitors: { id: string; name: string }[];
   activeCount: number;
   maxActive: number;
+  /**
+   * The page's current query string, so a filter change MERGES into it rather
+   * than rebuilding it. `writePromptsFilters` documents and its test pins that
+   * merge behaviour precisely so an unrelated key (a `?highlight=` deep link)
+   * survives touching a Select — rebuilding from an empty `URLSearchParams`
+   * throws it away. Passed as a prop rather than read from
+   * `useSearchParams()`, keeping this component's rule intact: filter values
+   * come from props, never from the hook.
+   */
+  baseQuery?: string;
 }) {
   const router = useRouter();
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -107,7 +119,9 @@ export function PromptsEditor({
 
   function push(next: Partial<PromptsFilterState>) {
     const merged = { ...filters, ...next };
-    router.push(`/ai-visibility/prompts${toQuerySuffix(writePromptsFilters(new URLSearchParams(), merged))}`);
+    router.push(
+      `/ai-visibility/prompts${toQuerySuffix(writePromptsFilters(new URLSearchParams(baseQuery), merged))}`
+    );
   }
 
   function toggle(row: PromptRowData) {
@@ -238,6 +252,14 @@ export function PromptsEditor({
         )}
       </div>
 
+      {/* An empty RESULT, not an empty prompt set — the filter bar above stays
+          on screen, which is the only way back. */}
+      {rows.length === 0 && (
+        <p className="rounded-lg border border-dashed p-3 text-sm text-muted-foreground">
+          No prompts match these filters.
+        </p>
+      )}
+
       <ul className="flex flex-col gap-2">
         {rows.map((row) => (
           <li key={row.id}>
@@ -267,9 +289,9 @@ export function PromptsEditor({
                     </div>
                   </div>
                 ) : (
-                  <a href={`/ai-visibility/prompts/${row.id}`} className="font-medium hover:underline">
+                  <Link href={`/ai-visibility/prompts/${row.id}`} className="font-medium hover:underline">
                     {row.text}
-                  </a>
+                  </Link>
                 )}
 
                 <div className="flex flex-wrap items-center gap-1.5">

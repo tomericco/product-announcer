@@ -43,10 +43,17 @@ describe("CitedDomainsTable", () => {
     expect(screen.queryByRole("link", { name: "Propose brief" })).not.toBeInTheDocument();
   });
 
-  it("withholds it when no signal was emitted, rather than linking to an empty form", () => {
+  it("withholds it when no signal was emitted, and says why rather than leaving a blank cell", () => {
     render(<CitedDomainsTable rows={[domain({ signalId: null })]} />);
 
     expect(screen.queryByRole("link", { name: "Propose brief" })).not.toBeInTheDocument();
+    expect(screen.getByText("Evidence aged out")).toBeInTheDocument();
+  });
+
+  it("explains nothing on our own row — being cited there is the outcome, not a gap", () => {
+    render(<CitedDomainsTable rows={[domain({ domainClass: "own", signalId: null })]} />);
+
+    expect(screen.queryByText("Evidence aged out")).not.toBeInTheDocument();
   });
 
   it("shows the count and the share of answers, not one without the other", () => {

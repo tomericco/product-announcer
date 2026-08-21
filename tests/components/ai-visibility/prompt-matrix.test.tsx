@@ -66,9 +66,36 @@ describe("PromptMatrix", () => {
   it("links a cell to that prompt's detail page with the engine tab pre-opened", () => {
     render(<PromptMatrix rows={[row(0)]} />);
 
-    expect(screen.getByRole("link", { name: "GPT 2/3" })).toHaveAttribute(
-      "href",
-      "/ai-visibility/prompts/p0?engine=openai"
+    expect(
+      screen.getByRole("link", {
+        name: "best localization tools 0 — GPT-5.x API + web search: named in 2 of 3 answers",
+      })
+    ).toHaveAttribute("href", "/ai-visibility/prompts/p0?engine=openai");
+  });
+
+  it("names a dashed cell by WHY it is dashed — the visible text is a bare dash", () => {
+    const failed = { named: null, samples: 0, failed: true };
+    const thin = { named: 1, samples: 2, failed: false };
+    render(
+      <PromptMatrix
+        rows={[
+          row(0, {
+            cells: { openai: failed, perplexity: thin, gemini: thin, anthropic: thin } as MatrixRow["cells"],
+          }),
+        ]}
+      />
     );
+
+    // Engine scope, not prompt scope: `failed` comes from per-engine health.
+    expect(
+      screen.getByRole("link", {
+        name: "best localization tools 0 — GPT-5.x API + web search: no usable answers; this engine failed during the last run",
+      })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", {
+        name: "best localization tools 0 — Perplexity Sonar API: fewer than 3 usable answers yet",
+      })
+    ).toBeInTheDocument();
   });
 });

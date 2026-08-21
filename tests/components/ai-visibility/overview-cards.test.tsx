@@ -46,6 +46,7 @@ function tile(overrides: Partial<EngineTile> = {}): EngineTile {
 describe("tileReading", () => {
   it("reads the headline, the Wilson band and the muted 30-day delta", () => {
     expect(tileReading(metrics())).toEqual({
+      kind: "share",
       headline: "31%",
       band: "±5 pp",
       delta: "+3 pp vs 30 days ago",
@@ -69,7 +70,7 @@ describe("tileReading", () => {
           deltaPp: null,
         })
       )
-    ).toEqual({ headline: "Collecting baseline", band: null, delta: null });
+    ).toEqual({ kind: "baseline", headline: "Collecting baseline", band: null, delta: null });
   });
 
   it("distinguishes a MEASURED zero from a thin cut — 84 answers naming nobody is a finding, not missing data", () => {
@@ -78,6 +79,7 @@ describe("tileReading", () => {
     // tell a tenant with 84 collected answers that their data is still coming
     // in, which is false and hides the most actionable state on the page.
     expect(tileReading(metrics({ mentionRate: 0, shareOfVoice: null, wilsonPp: null, deltaPp: null }))).toEqual({
+      kind: "measured-zero",
       headline: "No brands named",
       band: null,
       delta: null,
@@ -141,6 +143,28 @@ describe("OverviewCards", () => {
     expect(screen.queryByText(/pp$/)).not.toBeInTheDocument();
   });
 
+  it("renders a measured zero differently from a thin cut — both are bandless, only one is a finding", () => {
+    const baseline = metrics({
+      n: 11,
+      mentionRate: null,
+      shareOfVoice: null,
+      citationRate: null,
+      recommendationRate: null,
+      wilsonPp: null,
+      deltaPp: null,
+    });
+    const measuredZero = metrics({ mentionRate: 0, shareOfVoice: null, wilsonPp: null, deltaPp: null });
+    const { rerender } = render(<OverviewCards tiles={[tile({ metrics: baseline })]} />);
+    const baselineClass = screen.getByText("Collecting baseline").className;
+
+    rerender(<OverviewCards tiles={[tile({ metrics: measuredZero })]} />);
+    const findingClass = screen.getByText("No brands named").className;
+
+    expect(baselineClass).toContain("text-muted-foreground");
+    expect(findingClass).not.toContain("text-muted-foreground");
+    expect(findingClass).toContain("text-foreground");
+  });
+
   it("keeps the delta muted and uncoloured, per the attribution-lag rule", () => {
     render(<OverviewCards tiles={[tile()]} />);
 
@@ -183,6 +207,28 @@ describe("RunNowButton", () => {
 
     expect(screen.getByRole("button", { name: "Run now" })).toBeDisabled();
     expect(screen.getByText("A run is already in progress.")).toBeInTheDocument();
+  });
+
+  it("reserves the error tone for the cap — a run in progress is not a failure", () => {
+    const { rerender } = render(
+      <RunNowButton
+        estimate={{ prompts: 28, engines: 4, samples: 3, calls: 336, usd: 3.12 }}
+        disabledReason="Running… 41 / 360 calls"
+        disabledTone="muted"
+      />
+    );
+    expect(screen.getByText("Running… 41 / 360 calls").className).toContain("text-muted-foreground");
+
+    rerender(
+      <RunNowButton
+        estimate={{ prompts: 28, engines: 4, samples: 3, calls: 336, usd: 3.12 }}
+        disabledReason="Paused — monthly cap reached ($20.00 of $20.00)."
+        disabledTone="destructive"
+      />
+    );
+    expect(screen.getByText("Paused — monthly cap reached ($20.00 of $20.00).").className).toContain(
+      "text-destructive"
+    );
   });
 
   it("takes its label from the caller, so the post-approval CTA can differ", () => {

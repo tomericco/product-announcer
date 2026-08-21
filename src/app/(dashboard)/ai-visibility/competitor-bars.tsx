@@ -60,7 +60,15 @@ export function CompetitorBars({ rows, n }: { rows: BrandShare[]; n: number }) {
                 key={row.brandId}
                 // Theme tokens directly — `--color-*` variables exist only
                 // for ChartConfig series keys (here, `--color-sharePct`).
+                //
+                // Our bar is the accent FILL (principle 1: --brand is a fill,
+                // ink on bright) with a --brand-ink outline. Without the
+                // outline the one bar the card exists to point at is the
+                // faintest thing in it: --brand sits at ~1.2:1 against the
+                // card while every competitor is the much darker --chart-3.
                 fill={row.isTenant ? "var(--brand)" : "var(--chart-3)"}
+                stroke={row.isTenant ? "var(--brand-ink)" : "none"}
+                strokeWidth={row.isTenant ? 1 : 0}
               />
             ))}
           </Bar>

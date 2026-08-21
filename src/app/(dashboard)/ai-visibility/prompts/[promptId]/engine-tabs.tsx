@@ -72,7 +72,11 @@ function Sample({ sample, aliases }: { sample: SampleView; aliases: AnswerAlias[
             the highlight alone cannot say it. */}
         {sample.level && <Badge variant="secondary">{LEVEL_LABEL[sample.level]}</Badge>}
         {sample.flagged && <Badge variant="outline">Excluded — checks disagreed</Badge>}
-        {sample.status !== "ok" && (
+        {/* `pending` is not a failure — `planRun` inserts the whole grid up
+            front, so during a run most rows have simply not been asked yet.
+            Badging them "Error" reports a healthy in-flight run as a broken
+            one on the page a human opens to watch it. */}
+        {sample.status !== "ok" && sample.status !== "pending" && (
           <Badge variant="destructive">{sample.status === "refused" ? "Refused" : "Error"}</Badge>
         )}
       </div>
@@ -88,6 +92,8 @@ function Sample({ sample, aliases }: { sample: SampleView; aliases: AnswerAlias[
             {expanded ? "Show less" : "Show full answer"}
           </Button>
         </>
+      ) : sample.status === "pending" ? (
+        <p className="text-sm text-muted-foreground">Waiting for this engine.</p>
       ) : (
         <p className="text-sm text-destructive">
           {sample.error ?? "No answer — excluded from every rate on this page."}

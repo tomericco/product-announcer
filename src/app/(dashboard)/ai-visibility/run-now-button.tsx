@@ -38,10 +38,17 @@ export function estimateSentence(estimate: RunEstimate): string {
 export function RunNowButton({
   estimate,
   disabledReason,
+  disabledTone = "muted",
   label = "Run now",
 }: {
   estimate: RunEstimate;
   disabledReason: string | null;
+  /**
+   * The tone of the reason line. `--destructive` owns warnings and errors, and
+   * the cap is one; a run being in progress is not, and painting "Running…
+   * 41 / 360 calls" red reports a healthy run as a failure.
+   */
+  disabledTone?: "muted" | "destructive";
   label?: string;
 }) {
   const [open, setOpen] = useState(false);
@@ -54,7 +61,9 @@ export function RunNowButton({
         <DisabledHint hint={disabledReason}>
           <Button disabled>{label}</Button>
         </DisabledHint>
-        <p className="text-xs text-destructive">{disabledReason}</p>
+        <p className={disabledTone === "destructive" ? "text-xs text-destructive" : "text-xs text-muted-foreground"}>
+          {disabledReason}
+        </p>
       </div>
     );
   }

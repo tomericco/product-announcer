@@ -73,12 +73,17 @@ export function publishMarkerRunIds(
   return marked;
 }
 
-// Themed through ChartConfig against the existing --chart-* tokens in
-// globals.css rather than a literal colour, so the line follows the warm
-// palette in both modes. --chart-1 is the accent itself; the markers sit on
-// --chart-4 so they read as annotation, not as a second series.
+// Themed through ChartConfig against existing tokens rather than a literal
+// colour, so the line follows the warm palette in both modes.
+//
+// --brand-ink, NOT --chart-1. Those two are not interchangeable and --chart-1
+// is byte-identical to --brand (globals.css): a 1.5px stroke of it sits at
+// ~1.4:1 against the card and the whole trend line disappears. The brand guide
+// is explicit — any accent-coloured glyph, label or border uses --brand-ink.
+// The markers stay on --chart-4 so they read as annotation, not as a second
+// series.
 const CHART_CONFIG = {
-  sov: { label: "Share of voice", color: "var(--chart-1)" },
+  sov: { label: "Share of voice", color: "var(--brand-ink)" },
 } satisfies ChartConfig;
 
 /**

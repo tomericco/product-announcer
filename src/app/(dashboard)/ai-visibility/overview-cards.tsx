@@ -4,7 +4,19 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { EngineId, EngineMetrics } from "@/lib/ai-visibility/types";
 import { SovSparkline, type SovPoint } from "./sov-sparkline";
 
-export type TileReading = { headline: string; band: string | null; delta: string | null };
+export type TileReading = {
+  /**
+   * Which of the three readings this is. The headline text alone cannot carry
+   * it: "Collecting baseline" and "No brands named" are both bandless, so
+   * styling off `band === null` renders a measured finding in the same muted
+   * "still waiting" tone as an absence of data — and the measured zero is
+   * usually the most actionable thing on the page.
+   */
+  kind: "share" | "baseline" | "measured-zero";
+  headline: string;
+  band: string | null;
+  delta: string | null;
+};
 
 /**
  * `engineMetrics` returns every rate already in percentage points (0..100),
@@ -40,12 +52,13 @@ function percent(rate: number | null): string {
  */
 export function tileReading(metrics: EngineMetrics): TileReading {
   if (metrics.mentionRate === null) {
-    return { headline: "Collecting baseline", band: null, delta: null };
+    return { kind: "baseline", headline: "Collecting baseline", band: null, delta: null };
   }
   if (metrics.shareOfVoice === null) {
-    return { headline: "No brands named", band: null, delta: null };
+    return { kind: "measured-zero", headline: "No brands named", band: null, delta: null };
   }
   return {
+    kind: "share",
     headline: `${Math.round(metrics.shareOfVoice)}%`,
     band: metrics.wilsonPp === null ? null : `±${Math.round(metrics.wilsonPp)} pp`,
     delta:
@@ -97,9 +110,13 @@ export function OverviewCards({ tiles }: { tiles: EngineTile[] }) {
               <div className="flex items-baseline gap-2">
                 <span
                   className={
-                    reading.band
+                    reading.kind === "share"
                       ? "text-2xl leading-none font-medium tabular-nums"
-                      : "text-sm text-muted-foreground"
+                      : reading.kind === "measured-zero"
+                        ? // A finding, not an absence: full-contrast text, so it
+                          // does not read as "still collecting".
+                          "text-sm font-medium text-foreground"
+                        : "text-sm text-muted-foreground"
                   }
                 >
                   {reading.headline}

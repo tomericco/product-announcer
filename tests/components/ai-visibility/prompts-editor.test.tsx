@@ -184,6 +184,29 @@ describe("PromptsEditor", () => {
     expect(push).toHaveBeenCalledWith("/ai-visibility/prompts?status=paused");
   });
 
+  it("keeps the filter bar and says so when a filter matches nothing — otherwise there is no way back", async () => {
+    editor({ rows: [], filters: { ...PROMPTS_FILTER_DEFAULTS, status: "paused" } });
+
+    expect(screen.getByText("No prompts match these filters.")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Status" })).toBeInTheDocument();
+    await click(screen.getByRole("button", { name: "Clear filters" }));
+    expect(push).toHaveBeenCalledWith("/ai-visibility/prompts");
+  });
+
+  it("merges a filter change into the url it was given, rather than rebuilding it", async () => {
+    editor({ baseQuery: "highlight=p1" });
+
+    await click(screen.getByRole("combobox", { name: "Status" }));
+    const option = screen.getByRole("option", { name: "Paused" });
+    await act(async () => {
+      option.focus();
+      fireEvent.keyDown(option, { key: "Enter" });
+      fireEvent.keyUp(option, { key: "Enter" });
+    });
+
+    expect(push).toHaveBeenCalledWith("/ai-visibility/prompts?highlight=p1&status=paused");
+  });
+
   it("badges a flagged prompt with the reason and suggests pausing, without pausing it", () => {
     editor({ rows: [row({ flagReason: "No brands named in three runs" })] });
     expect(screen.getByText("No brands named in three runs")).toBeInTheDocument();
@@ -194,7 +217,10 @@ describe("PromptsEditor", () => {
 describe("approveLabel", () => {
   it("counts what is checked against what was offered", () => {
     expect(approveLabel(28, 30)).toBe("Approve 28 of 30");
-    expect(approveLabel(0, 30)).toBe("Approve none");
+  });
+
+  it("names the zero case for what it does — rejecting the batch is a decision, not a no-op", () => {
+    expect(approveLabel(0, 30)).toBe("Reject all 30");
   });
 });
 
@@ -222,6 +248,59 @@ describe("SuggestionsSection", () => {
     expect(boxes).toHaveLength(2);
     for (const box of boxes) expect(box).toBeChecked();
     expect(screen.getByRole("button", { name: "Approve 2 of 2" })).toBeInTheDocument();
+  });
+
+  it("treats a batch it has never been told about as approved, not as silently rejected", async () => {
+    // The bug this pins: state initialised from `proposals` never re-runs, and
+    // "Suggest more" pushes to the same URL, so the component can receive a
+    // brand-new batch while mounted. Selection-shaped state arrives empty for
+    // those ids and commits every untouched row as a `rejected` negative.
+    const { rerender } = render(
+      <SuggestionsSection
+        proposals={[proposal({ id: "s1" })]}
+        profileChangedNote={null}
+        canSuggestMore
+        suggestMoreReason={null}
+      />
+    );
+    await click(screen.getByRole("button", { name: "Review" }));
+
+    rerender(
+      <SuggestionsSection
+        proposals={[proposal({ id: "s9", text: "a freshly suggested prompt" })]}
+        profileChangedNote={null}
+        canSuggestMore
+        suggestMoreReason={null}
+      />
+    );
+
+    expect(screen.getByRole("checkbox")).toBeChecked();
+    await click(screen.getByRole("button", { name: "Approve 1 of 1" }));
+
+    const form = approveProposalsAction.mock.calls[0][0] as FormData;
+    expect(form.getAll("approve")).toEqual(["s9"]);
+    expect(form.getAll("reject")).toEqual([]);
+  });
+
+  it("lets a reviewer reject the whole batch instead of leaving that path buttonless", async () => {
+    render(
+      <SuggestionsSection
+        proposals={[proposal({ id: "s1" }), proposal({ id: "s2" })]}
+        profileChangedNote={null}
+        canSuggestMore
+        suggestMoreReason={null}
+      />
+    );
+    await click(screen.getByRole("button", { name: "Review" }));
+
+    for (const box of screen.getAllByRole("checkbox")) await click(box);
+    const commit = screen.getByRole("button", { name: "Reject all 2" });
+    expect(commit).toBeEnabled();
+
+    await click(commit);
+    const form = approveProposalsAction.mock.calls[0][0] as FormData;
+    expect(form.getAll("approve")).toEqual([]);
+    expect(form.getAll("reject")).toEqual(["s1", "s2"]);
   });
 
   it("mounts a big batch already expanded — the initial ~30 must not hide behind a click", () => {
