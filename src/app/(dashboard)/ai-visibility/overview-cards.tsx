@@ -2,7 +2,8 @@
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { EngineId, EngineMetrics } from "@/lib/ai-visibility/types";
-import { SovSparkline, type SovPoint } from "./sov-sparkline";
+import { SovSparkline } from "./sov-sparkline";
+import type { SovPoint } from "./sparkline-points";
 
 export type TileReading = {
   /**

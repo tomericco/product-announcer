@@ -17,7 +17,10 @@ import { relatedPieces } from "@/lib/briefs/query";
 import { DATE_FORMAT } from "../../../company/source-status";
 import { CitedDomainsTable } from "../../cited-domains-table";
 import { ENGINE_LABEL, ENGINE_ORDER } from "../../engine-labels";
-import { SovSparkline, publishMarkerRunIds, type SovPoint } from "../../sov-sparkline";
+import { SovSparkline } from "../../sov-sparkline";
+// Not from "../../sov-sparkline": this is a Server Component, and a function
+// imported through a "use client" module is a client reference it cannot call.
+import { publishMarkerRunIds, type SovPoint } from "../../sparkline-points";
 import { INTENT_LABEL } from "../prompts-editor";
 import { EngineTabs, type SampleView } from "./engine-tabs";
 import type { AnswerAlias } from "./highlighted-answer";

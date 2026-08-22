@@ -40,7 +40,7 @@ import { GeneratePromptSetButton } from "./generate-prompt-set-button";
 import { OverviewCards, type EngineTile } from "./overview-cards";
 import { PromptMatrix, type MatrixRow } from "./prompt-matrix";
 import { RunNowButton } from "./run-now-button";
-import type { SovPoint } from "./sov-sparkline";
+import type { SovPoint } from "./sparkline-points";
 
 const DAY_LABEL = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"] as const;
 

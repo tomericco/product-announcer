@@ -3,7 +3,7 @@ import { render, screen } from "@testing-library/react";
 import type { EngineId } from "../../../src/lib/ai-visibility/types";
 import type { SampleView } from "../../../src/app/(dashboard)/ai-visibility/prompts/[promptId]/engine-tabs";
 import type { AnswerAlias } from "../../../src/app/(dashboard)/ai-visibility/prompts/[promptId]/highlighted-answer";
-import type { SovPoint } from "../../../src/app/(dashboard)/ai-visibility/sov-sparkline";
+import type { SovPoint } from "../../../src/app/(dashboard)/ai-visibility/sparkline-points";
 import type { CitedDomainRow } from "../../../src/app/(dashboard)/ai-visibility/cited-domains-table";
 
 /**

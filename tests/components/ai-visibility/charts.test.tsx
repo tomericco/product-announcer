@@ -1,11 +1,13 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
+import { SovSparkline } from "../../../src/app/(dashboard)/ai-visibility/sov-sparkline";
+// The pure derivations live outside the "use client" module so a Server
+// Component can call them — importing them from here mirrors that.
 import {
-  SovSparkline,
   publishMarkerRunIds,
   sparklineMarkers,
   type SovPoint,
-} from "../../../src/app/(dashboard)/ai-visibility/sov-sparkline";
+} from "../../../src/app/(dashboard)/ai-visibility/sparkline-points";
 import {
   CompetitorBars,
   orderedShares,
