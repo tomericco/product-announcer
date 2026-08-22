@@ -4,6 +4,9 @@ import { db } from "../../src/db";
 import { tenants, notionConnections, changeEvents } from "../../src/db/schema";
 
 const TENANT = "Notion Connections Schema Test Tenant";
+/** File-unique: see tests/app/api/webhooks/notion/route.test.ts — the route
+ * selects by workspace id alone, so shared ids cross test files. */
+const WORKSPACE = "ws-connections-schema";
 
 async function seedTenant(): Promise<string> {
   const [tenant] = await db.insert(tenants).values({ name: TENANT }).returning({ id: tenants.id });
@@ -24,7 +27,7 @@ describe("notion_connections schema", () => {
         accessTokenCiphertext: "aa",
         accessTokenIv: "bb",
         accessTokenAuthTag: "cc",
-        workspaceId: "ws-1",
+        workspaceId: WORKSPACE,
         databaseId: "db-1",
         databaseName: "Tasks",
         statusPropertyId: "prop-1",

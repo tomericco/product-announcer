@@ -11,6 +11,7 @@ import {
   Images,
   Plug,
   Radar,
+  ScanSearch,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -23,6 +24,7 @@ const COMPANY_SECTIONS = [
   { href: "/company#company-context", label: "Company context" },
   { href: "/company#competitors", label: "Competitors" },
   { href: "/company#industry-news", label: "Industry news" },
+  { href: "/company#ai-visibility", label: "AI visibility" },
   { href: "/company#industry", label: "Industry" },
   { href: "/company#user-personas", label: "User personas" },
   { href: "/company#derive-from-updates", label: "Derive from your updates page" },
@@ -34,6 +36,9 @@ const COMPANY_SECTIONS = [
 
 const NAV = [
   { href: "/signals", label: "Signals", icon: Radar },
+  // Directly after Signals: the two are read in the same weekly pass, and the
+  // AI-visibility signals land in that browser.
+  { href: "/ai-visibility", label: "AI visibility", icon: ScanSearch },
   { href: "/board", label: "Board", icon: Columns3 },
   { href: "/calendar", label: "Calendar", icon: CalendarDays },
   { href: "/history", label: "Release history", icon: History },

@@ -1,6 +1,12 @@
 import type { SignalFilters } from "./query";
 
-const KIND_VALUES = ["shipped_work", "competitor_move", "market_news", "manual"] as const;
+const KIND_VALUES = [
+  "shipped_work",
+  "competitor_move",
+  "market_news",
+  "manual",
+  "ai_visibility",
+] as const;
 
 // Matches any RFC 4122 UUID (the shape `crypto.randomUUID()` produces), not a
 // specific version — `competitorId` only ever needs to look like a uuid

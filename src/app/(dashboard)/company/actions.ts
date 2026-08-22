@@ -12,6 +12,7 @@ import { parseTopics } from "@/lib/workspace/parse-topics";
 import { addCompetitor, listCompetitors, removeCompetitor } from "@/lib/workspace/competitors";
 import { bootstrapCompanyContext } from "@/lib/workspace/company-bootstrap";
 import { discoverCompetitorSources } from "@/lib/signals/discover-sources";
+import { setAiVisibilityEnabled } from "@/lib/ai-visibility/settings";
 import { DEFAULT_VISUAL_IDENTITY, MAX_REFERENCE_IMAGES, parseVisualIdentity } from "@/lib/images/visual-identity";
 import { deriveVisualIdentityFromPage } from "@/lib/workspace/derive-visual-identity";
 import { compressPng } from "@/lib/images/compress";
@@ -245,6 +246,30 @@ export async function setNewsWatching(enabled: boolean) {
     });
 
   revalidatePath("/company");
+}
+
+/**
+ * The on/off switch for the whole AI-visibility feature, from the Company card.
+ *
+ * `setAiVisibilityEnabled` flips BOTH the settings row and the `sources` row
+ * (clearing `lastError` on enable), so health and last-error keep working
+ * through `SourceStatusBadge` exactly as they do for news and competitors.
+ * "Off" means no run starts and no engine call is paid for; history is kept.
+ */
+export async function setAiVisibilityWatching(enabled: unknown): Promise<void> {
+  // Authenticate first, validate second — the order every neighbouring action
+  // uses. Reversed, an unauthenticated caller can tell a rejected argument
+  // ("returns") from an accepted one ("throws on the session"), which is a
+  // free probe of the validator and of this action's existence.
+  const session = await requireSession();
+  // A Server Action argument is client input whatever TypeScript says — the
+  // same rule `saveVisualIdentity` and `savePersonas` follow below. A
+  // non-boolean here would reach `setAiVisibilityEnabled` and be written
+  // straight into a `boolean` column.
+  if (typeof enabled !== "boolean") return;
+  await setAiVisibilityEnabled(session.user.tenantId, enabled);
+  revalidatePath("/company");
+  revalidatePath("/ai-visibility");
 }
 
 /**

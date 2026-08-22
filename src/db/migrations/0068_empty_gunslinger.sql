@@ -1,0 +1,3 @@
+ALTER TABLE "ai_visibility_runs" ADD COLUMN "slice_lease_until" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "ai_visibility_samples" ADD COLUMN "judge_attempts" smallint DEFAULT 0 NOT NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX "ai_visibility_runs_tenant_in_flight_unique" ON "ai_visibility_runs" USING btree ("tenant_id") WHERE "ai_visibility_runs"."status" IN ('pending', 'running');

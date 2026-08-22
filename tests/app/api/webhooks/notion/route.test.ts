@@ -7,6 +7,18 @@ import { encryptSecret } from "../../../../../src/lib/credentials/encryption";
 
 const TOKEN = "verif-token";
 const TENANT = "Notion Webhook Route Test Tenant";
+/**
+ * File-unique, for the same reason `TENANT` is: the route deliberately selects
+ * every connection for a workspace id with no tenant scope (one Notion
+ * workspace can be connected by several tenants), so a workspace id shared
+ * with another test file makes that file's rows part of this one's fan-out.
+ * With the shared Postgres and parallel files, a generic "ws-1" turned the
+ * call-count assertions below into a race against whoever else was running.
+ */
+const WORKSPACE = "ws-webhook-route";
+/** The two-tenants-one-workspace fixture, kept distinct from `WORKSPACE` so the
+ * fan-out tests count only the connections they seeded themselves. */
+const SHARED_WORKSPACE = "ws-webhook-route-shared";
 process.env.CREDENTIALS_ENCRYPTION_KEY = process.env.CREDENTIALS_ENCRYPTION_KEY ?? "a".repeat(64);
 
 vi.mock("../../../../../src/lib/change-events/ingest-notion-task", () => ({
@@ -42,7 +54,7 @@ async function seedConnection(
     accessTokenCiphertext: at.ciphertext,
     accessTokenIv: at.iv,
     accessTokenAuthTag: at.authTag,
-    workspaceId: "ws-1",
+    workspaceId: WORKSPACE,
     databaseId: "db-1",
     statusPropertyId: "prop-status",
     statusPropertyName: "Status",
@@ -84,7 +96,7 @@ describe("notion webhook route", () => {
 
   it("200s and ignores a non page.properties_updated event", async () => {
     await seedConnection();
-    const res = await POST(post(JSON.stringify({ type: "page.created", workspace_id: "ws-1" })) as never);
+    const res = await POST(post(JSON.stringify({ type: "page.created", workspace_id: WORKSPACE })) as never);
     expect(res.status).toBe(200);
   });
 
@@ -104,7 +116,7 @@ describe("notion webhook route", () => {
     await seedConnection();
     await processNotionEvent({
       type: "page.properties_updated",
-      workspace_id: "ws-1",
+      workspace_id: WORKSPACE,
       entity: { id: "page-1" },
       data: { updated_properties: ["some-other-prop"] },
     });
@@ -127,7 +139,7 @@ describe("notion webhook route", () => {
     vi.mocked(getPageBodyText).mockResolvedValue("Body detail.");
     await processNotionEvent({
       type: "page.properties_updated",
-      workspace_id: "ws-1",
+      workspace_id: WORKSPACE,
       entity: { id: "page-1" },
       data: { updated_properties: [] },
       timestamp: "2026-07-24T10:00:00.000Z",
@@ -147,7 +159,7 @@ describe("notion webhook route", () => {
     });
     await processNotionEvent({
       type: "page.properties_updated",
-      workspace_id: "ws-1",
+      workspace_id: WORKSPACE,
       entity: { id: "page-1" },
       data: { updated_properties: ["prop-status"] },
     });
@@ -165,7 +177,7 @@ describe("notion webhook route", () => {
     vi.mocked(getPageBodyText).mockResolvedValue("Users can toggle a dark theme in settings.");
     await processNotionEvent({
       type: "page.properties_updated",
-      workspace_id: "ws-1",
+      workspace_id: WORKSPACE,
       entity: { id: "page-1" },
       data: { updated_properties: ["prop-status"] },
       timestamp: "2026-07-24T10:00:00.000Z",
@@ -184,8 +196,8 @@ describe("notion webhook route", () => {
   it("fans out to BOTH tenants that share a workspace, ingesting once per tenant", async () => {
     // Two distinct tenants connect the SAME Notion workspace. Neither may be
     // silently dropped: the event must ingest for both.
-    const tidA = await seedConnection({ workspaceId: "ws-shared" });
-    const tidB = await seedConnection({ workspaceId: "ws-shared" });
+    const tidA = await seedConnection({ workspaceId: SHARED_WORKSPACE });
+    const tidB = await seedConnection({ workspaceId: SHARED_WORKSPACE });
     vi.mocked(getPage).mockResolvedValue({
       url: "https://notion.so/page-1",
       title: "Add dark mode",
@@ -194,7 +206,7 @@ describe("notion webhook route", () => {
     });
     await processNotionEvent({
       type: "page.properties_updated",
-      workspace_id: "ws-shared",
+      workspace_id: SHARED_WORKSPACE,
       entity: { id: "page-1" },
       data: { updated_properties: ["prop-status"] },
       timestamp: "2026-07-24T10:00:00.000Z",
@@ -207,8 +219,8 @@ describe("notion webhook route", () => {
   it("applies the cheap-reject per connection when connections use different status property ids", async () => {
     // Same workspace, but each connection watches a different status property.
     // Only the connection whose property is in updated_properties should ingest.
-    const tidA = await seedConnection({ workspaceId: "ws-shared", statusPropertyId: "prop-A" });
-    await seedConnection({ workspaceId: "ws-shared", statusPropertyId: "prop-B" });
+    const tidA = await seedConnection({ workspaceId: SHARED_WORKSPACE, statusPropertyId: "prop-A" });
+    await seedConnection({ workspaceId: SHARED_WORKSPACE, statusPropertyId: "prop-B" });
     vi.mocked(getPage).mockResolvedValue({
       url: "https://notion.so/page-1",
       title: "Add dark mode",
@@ -217,7 +229,7 @@ describe("notion webhook route", () => {
     });
     await processNotionEvent({
       type: "page.properties_updated",
-      workspace_id: "ws-shared",
+      workspace_id: SHARED_WORKSPACE,
       entity: { id: "page-1" },
       data: { updated_properties: ["prop-A"] },
       timestamp: "2026-07-24T10:00:00.000Z",
@@ -227,8 +239,8 @@ describe("notion webhook route", () => {
   });
 
   it("continues to other connections when one connection's processing throws", async () => {
-    const tidA = await seedConnection({ workspaceId: "ws-shared" });
-    const tidB = await seedConnection({ workspaceId: "ws-shared" });
+    const tidA = await seedConnection({ workspaceId: SHARED_WORKSPACE });
+    const tidB = await seedConnection({ workspaceId: SHARED_WORKSPACE });
     // First getPage call (whichever connection is processed first) throws; the
     // second must still be processed and ingested.
     vi.mocked(getPage)
@@ -241,7 +253,7 @@ describe("notion webhook route", () => {
       });
     await processNotionEvent({
       type: "page.properties_updated",
-      workspace_id: "ws-shared",
+      workspace_id: SHARED_WORKSPACE,
       entity: { id: "page-1" },
       data: { updated_properties: ["prop-status"] },
       timestamp: "2026-07-24T10:00:00.000Z",

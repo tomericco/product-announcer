@@ -4,12 +4,15 @@ import { requireSession } from "@/lib/workspace/session";
 import { getOrCreateCompanyProfile } from "@/lib/workspace/company-profile";
 import { listCompetitors } from "@/lib/workspace/competitors";
 import { listCompetitorSources, getNewsSource } from "@/lib/signals/sources";
+import { getAiVisibilitySettings, getAiVisibilitySource } from "@/lib/ai-visibility/settings";
+import { listPrompts } from "@/lib/ai-visibility/prompts";
 import { saveGuidelines } from "./actions";
 import { BrandStyleImport } from "./brand-style-import";
 import { CompanyContextForm } from "./company-context-form";
 import { CompetitorsEditor } from "./competitors-editor";
 import { IndustrySelect } from "./industry-select";
 import { NewsToggle } from "./news-toggle";
+import { AiVisibilityCard } from "./ai-visibility-card";
 import { PersonasEditor } from "./personas-editor";
 import { GuidelinesEditor } from "./guidelines-editor";
 import { VisualIdentityEditor } from "./visual-identity-editor";
@@ -39,6 +42,13 @@ export default async function CompanyPage({
   const competitors = await listCompetitors(session.user.tenantId);
   const competitorSources = await listCompetitorSources(session.user.tenantId);
   const newsSource = await getNewsSource(session.user.tenantId);
+  // A read, like `getNewsSource` above. Creating the row here would default it
+  // to `active`, reporting a feature as on that the sweep will never run, and
+  // would put every tenant who ever opened this page into the sweep's
+  // candidate set. `setAiVisibilityEnabled` and `planRun` create it.
+  const aiVisibilitySource = await getAiVisibilitySource(session.user.tenantId);
+  const aiVisibilitySettings = await getAiVisibilitySettings(session.user.tenantId);
+  const activeAiVisibilityPrompts = await listPrompts(session.user.tenantId, { status: "active" });
   // Grouped here rather than in the client component so CompetitorsEditor
   // never needs to know how sources relate to competitors -- it just indexes
   // by the id it already has.
@@ -47,6 +57,22 @@ export default async function CompanyPage({
     if (!source.competitorId) continue;
     (sourcesByCompetitor[source.competitorId] ??= []).push(source);
   }
+  // The prompts page's "Profile changed since prompts were generated" strip,
+  // derived the same way and passed down as the two separate facts it is:
+  // competitors added since the newest active prompt was approved, and whether
+  // the profile itself has been edited since. They are NOT summed —
+  // `companyProfiles.updatedAt` moves for a dozen unrelated writes, so a count
+  // would report a logo upload as a changed persona.
+  const lastApprovedAt = activeAiVisibilityPrompts.reduce<Date | null>(
+    (latest, prompt) =>
+      prompt.approvedAt && (!latest || prompt.approvedAt > latest) ? prompt.approvedAt : latest,
+    null
+  );
+  const newAiVisibilityCompetitors = lastApprovedAt
+    ? competitors.filter((competitor) => competitor.createdAt > lastApprovedAt).length
+    : 0;
+  const aiVisibilityProfileChanged = lastApprovedAt !== null && brandProfile.updatedAt > lastApprovedAt;
+
   const personaCatalog = await db
     .select({
       key: systemPersonas.key,
@@ -128,6 +154,27 @@ export default async function CompanyPage({
         </CardHeader>
         <CardContent>
           <NewsToggle source={newsSource} />
+        </CardContent>
+      </Card>
+
+      <Card id="ai-visibility">
+        <CardHeader>
+          <CardTitle>AI visibility</CardTitle>
+          <CardDescription>
+            Measures how often ChatGPT, Perplexity, Gemini and Claude name you when buyers ask about your
+            category. Costs a few dollars a month per workspace, so it&apos;s off until you turn it on.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <AiVisibilityCard
+            source={aiVisibilitySource}
+            enabled={aiVisibilitySettings.enabled}
+            promptCount={activeAiVisibilityPrompts.length}
+            competitorCount={competitors.length}
+            personaCount={brandProfile.userPersonas.length}
+            newCompetitorCount={newAiVisibilityCompetitors}
+            profileChanged={aiVisibilityProfileChanged}
+          />
         </CardContent>
       </Card>
 

@@ -20,6 +20,7 @@ const KIND_OPTIONS = [
   { value: "competitor_move", label: "Competitor move" },
   { value: "market_news", label: "Market news" },
   { value: "manual", label: "Manual" },
+  { value: "ai_visibility", label: "AI visibility" },
 ];
 
 function labelFor(options: { value: string; label: string }[], value: string) {

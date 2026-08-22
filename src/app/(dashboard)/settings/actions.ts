@@ -15,6 +15,7 @@ import { parseHour } from "@/lib/workspace/parse-hour";
 import { normalizeWeekStart, parseHolidayCountries } from "@/lib/workspace/calendar-settings";
 import { getOrCreateCompanyProfile } from "@/lib/workspace/company-profile";
 import { parseImagePolicy } from "@/lib/images/policy";
+import { saveAiVisibilitySettings } from "@/lib/ai-visibility/settings";
 
 export async function saveWorkspaceName(formData: FormData) {
   const session = await requireSession();
@@ -116,6 +117,29 @@ export async function saveWorkspaceSchedule(formData: FormData) {
 
   revalidatePath("/settings");
   revalidatePath("/company");
+}
+
+/**
+ * Persists cadence, engines, samples and the cap. Deliberately does NOT
+ * touch `enabled` — that switch lives on the Company card, and widening this
+ * action would let a Settings save silently turn the feature back on.
+ *
+ * The throw is what `ToastForm`-style handlers need in order NOT to fire a
+ * success toast. The form validates the same fields client-side first, so a
+ * throw here means a bug or a stale tab rather than ordinary use.
+ */
+export async function saveAiVisibilityConfig(formData: FormData): Promise<void> {
+  const session = await requireSession();
+  const result = await saveAiVisibilitySettings(session.user.tenantId, {
+    cadence: formData.get("cadence"),
+    dayOfWeek: Number(formData.get("dayOfWeek")),
+    engines: formData.getAll("engines"),
+    samplesPerPrompt: Number(formData.get("samplesPerPrompt")),
+    monthlyCapUsd: Number(formData.get("monthlyCapUsd")),
+  });
+  if (!result.ok) throw new Error(`Invalid ${result.error}`);
+  revalidatePath("/settings");
+  revalidatePath("/ai-visibility");
 }
 
 export async function generateInviteLink(): Promise<{ url: string; expiresAt: string }> {

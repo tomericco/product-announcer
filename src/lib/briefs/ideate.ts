@@ -3,6 +3,7 @@ import { z } from "zod";
 import { resolveModel, modelId } from "@/lib/ai/model";
 import { recordLlmUsage } from "@/lib/ai/llm-usage";
 import type { RelevanceProfile } from "@/lib/signals/relevance";
+import { fenceSignals, SIGNAL_FENCE_NOTE } from "@/lib/briefs/signal-fence";
 
 /**
  * The brief agent's one model call.
@@ -170,6 +171,12 @@ function buildSystem(profile: RelevanceProfile): string {
     "decision. If new evidence supports one of those rather than justifying a",
     "separate piece, return an `extend` action naming its id instead of proposing",
     "a near-duplicate. An inbox that repeats itself within a week stops being read.",
+    "",
+    // The trust boundary. A signal's title and excerpt are third-party text —
+    // news copy, competitor pages, and now engine answers, which `signals.ts`
+    // writes into an `ai_visibility` signal's excerpt verbatim — so whoever
+    // ranks for a public buyer question gets a sentence in this prompt.
+    SIGNAL_FENCE_NOTE,
   ]
     .filter((l) => l !== null)
     .join("\n");
@@ -180,16 +187,9 @@ function buildPrompt(
   openBriefs: OpenBrief[],
   context: IdeationContext,
 ): string {
-  // A signal with no known date is rendered without one, never with today's.
-  // "date unknown" is honest and costs the model a little context; a fabricated
-  // date is a claim the strategist will repeat into a `whyNow` a human reads as
-  // fact.
-  const sig = signals
-    .map(
-      (s) =>
-        `[${s.id}] (${s.kind}, ${s.occurredAt ? s.occurredAt.toISOString().slice(0, 10) : "publication date unknown"})\n  ${s.title}\n  ${s.excerpt ?? "(no excerpt)"}`
-    )
-    .join("\n\n");
+  // Fenced, with the id and the date header outside — see `signal-fence.ts`
+  // for why the excerpt in particular cannot be interpolated bare.
+  const sig = fenceSignals(signals);
 
   const open =
     openBriefs.length > 0

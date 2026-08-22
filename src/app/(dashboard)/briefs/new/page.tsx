@@ -79,7 +79,16 @@ export default async function NewBriefPage({
           drive the editor's view mode. */}
       <EditorProvider>
         <NewBriefEditor
-          evidence={chosen.map((s) => ({ id: s.id, title: s.title, url: s.url, kind: s.kind }))}
+          // `payload` travels too: an `ai_visibility` signal's evidence is
+          // the payload, so dropping it here would leave the preview showing a
+          // bare title for exactly the kind that has nothing else to show.
+          evidence={chosen.map((s) => ({
+            id: s.id,
+            title: s.title,
+            url: s.url,
+            kind: s.kind,
+            payload: s.payload,
+          }))}
         >
           {droppedOverCap > 0 && (
             <div className="rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm">
