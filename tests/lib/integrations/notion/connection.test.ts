@@ -7,6 +7,9 @@ import { NotionApiError } from "../../../../src/lib/integrations/notion/client";
 import { withFreshToken } from "../../../../src/lib/integrations/notion/connection";
 
 const TENANT = "Notion Connection Refresh Test Tenant";
+/** File-unique: see tests/app/api/webhooks/notion/route.test.ts — the route
+ * selects by workspace id alone, so shared ids cross test files. */
+const WORKSPACE = "ws-connection-refresh";
 process.env.CREDENTIALS_ENCRYPTION_KEY = process.env.CREDENTIALS_ENCRYPTION_KEY ?? "a".repeat(64);
 
 vi.mock("../../../../src/lib/integrations/notion/oauth", () => ({
@@ -28,7 +31,7 @@ async function seedConnection(overrides: Partial<typeof notionConnections.$infer
       refreshTokenCiphertext: rt.ciphertext,
       refreshTokenIv: rt.iv,
       refreshTokenAuthTag: rt.authTag,
-      workspaceId: "ws-1",
+      workspaceId: WORKSPACE,
       status: "active",
       ...overrides,
     })
@@ -54,7 +57,7 @@ describe("withFreshToken", () => {
     vi.mocked(refreshAccessToken).mockResolvedValue({
       accessToken: "new-access",
       refreshToken: "new-refresh",
-      workspaceId: "ws-1",
+      workspaceId: WORKSPACE,
       botId: null,
     });
     let calls = 0;
@@ -74,7 +77,7 @@ describe("withFreshToken", () => {
     vi.mocked(refreshAccessToken).mockResolvedValue({
       accessToken: "new-access",
       refreshToken: "new-refresh",
-      workspaceId: "ws-1",
+      workspaceId: WORKSPACE,
       botId: null,
     });
     await expect(
