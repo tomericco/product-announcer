@@ -616,16 +616,16 @@ describe("overview — what the tiles, the matrix and the domain table are hande
           promptId: "p1",
           text: "best localization tools",
           branded: false,
-          cells: [{ engine: "openai", hits: 2, n: 3 }],
+          cells: [{ engine: "openai", hits: 2, n: 3, competitorsNamed: 2 }],
         },
       ],
     });
     await renderPage();
 
     const cells = captured.matrix![0].cells;
-    expect(cells.openai).toEqual({ named: 2, samples: 3, failed: false });
+    expect(cells.openai).toEqual({ named: 2, samples: 3, failed: false, competitors: 2 });
     // Never asked: null, not 0 — 0 would claim we asked and were not named.
-    expect(cells.gemini).toEqual({ named: null, samples: 0, failed: false });
+    expect(cells.gemini).toEqual({ named: null, samples: 0, failed: false, competitors: 0 });
     expect(cells.anthropic!.failed).toBe(true);
   });
 

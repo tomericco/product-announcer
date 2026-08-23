@@ -342,7 +342,30 @@ export async function engineMetrics(
   );
 }
 
-export type PromptMatrixCell = { engine: EngineId; hits: number; n: number };
+export type PromptMatrixCell = {
+  engine: EngineId;
+  hits: number;
+  n: number;
+  /**
+   * How many DISTINCT tracked competitors were named on this prompt/engine over
+   * the window — the difference between the two findings a `0/3` used to
+   * collapse into one cell.
+   *
+   * A `0/3` where three rivals were named is a gap to write against: the engine
+   * answers this question with brands, and none of them is ours. A `0/3` where
+   * nobody was named at all is the opposite — the engine answers without
+   * naming anyone, and no comparison page will change that. They rendered
+   * identically because `hits` counts us and nothing else.
+   *
+   * Distinct competitors rather than total competitor mentions: "3 rivals show
+   * up here" is the fact a marketer acts on, and a mention total is a bigger
+   * number over a different unit sitting in the same cell as "2 of 3 answers",
+   * which is exactly the kind of quiet unit mismatch this feature keeps
+   * arranging itself against. A competitor deleted from the profile mid-window
+   * still counts, for the same reason `brandMentionTotal` keeps counting it.
+   */
+  competitorsNamed: number;
+};
 export type PromptMatrixRow = {
   promptId: string;
   text: string;
@@ -384,7 +407,10 @@ export async function promptMatrix(
   if (prompts.length === 0) return [];
 
   const runIds = await windowRunIds(tenantId, WINDOW_RUNS, undefined, database);
-  const byKey = new Map<string, { hits: number; n: number }>();
+  // The competitor ids are accumulated as a SET per cell rather than as a
+  // count: the same rival appears in every run of the window, and adding four
+  // runs' keys together would report one competitor as four.
+  const byKey = new Map<string, { hits: number; n: number; competitors: Set<string> }>();
   if (runIds.length > 0) {
     const rows = await database
       .select({
@@ -392,6 +418,7 @@ export async function promptMatrix(
         engine: aiVisibilityAggregates.engine,
         n: aiVisibilityAggregates.n,
         tenantMentions: aiVisibilityAggregates.tenantMentions,
+        competitorMentions: aiVisibilityAggregates.competitorMentions,
       })
       .from(aiVisibilityAggregates)
       .where(
@@ -406,9 +433,15 @@ export async function promptMatrix(
     for (const row of rows) {
       if (!row.promptId) continue;
       const key = `${row.promptId} ${row.engine}`;
-      const cell = byKey.get(key) ?? { hits: 0, n: 0 };
+      const cell = byKey.get(key) ?? { hits: 0, n: 0, competitors: new Set<string>() };
       cell.hits += row.tenantMentions;
       cell.n += row.n;
+      for (const [id, count] of Object.entries(row.competitorMentions ?? {})) {
+        // A key with a zero count is a competitor the aggregate wrote down and
+        // did not observe; counting it would name a rival on a prompt where no
+        // answer mentioned one.
+        if (count > 0) cell.competitors.add(id);
+      }
       byKey.set(key, cell);
     }
   }
@@ -420,7 +453,12 @@ export async function promptMatrix(
     branded: prompt.branded,
     cells: ENGINE_IDS.map((engine) => {
       const cell = byKey.get(`${prompt.id} ${engine}`);
-      return { engine, hits: cell?.hits ?? 0, n: cell?.n ?? 0 };
+      return {
+        engine,
+        hits: cell?.hits ?? 0,
+        n: cell?.n ?? 0,
+        competitorsNamed: cell?.competitors.size ?? 0,
+      };
     }),
   }));
 }

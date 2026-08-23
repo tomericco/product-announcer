@@ -421,6 +421,10 @@ export default async function AiVisibilityPage() {
             named: cell ? cell.hits : null,
             samples: cell ? cell.n : 0,
             failed: failedCells.has(`${row.promptId} ${engine}`),
+            // The other half of the cell: `hits` counts only us, so without
+            // this a prompt where three rivals were named and we were not
+            // rendered exactly like one where the engine named nobody.
+            competitors: cell ? cell.competitorsNamed : 0,
           },
         ];
       })
@@ -614,7 +618,8 @@ export default async function AiVisibilityPage() {
             <CardHeader>
               <CardTitle>Prompts by engine</CardTitle>
               <CardDescription>
-                How many of the last three answers named you, per prompt and engine. A cell opens that prompt on
+                How many of the last answers named you, per prompt and engine, and how many tracked competitors
+                were named in them. Gaps — rivals named, you absent — sort first. A cell opens that prompt on
                 that engine.
               </CardDescription>
             </CardHeader>

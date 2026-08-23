@@ -357,7 +357,7 @@ describe("promptMatrix", () => {
     const tenant = await seedTenant(TENANT);
     const prompt = await seedPromptRow(tenant.id);
     const run = await seedRun(tenant.id, "2026-03-01T09:00:00Z");
-    await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "openai", promptId: prompt.id, n: 3, tenantMentions: 2 });
+    await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "openai", promptId: prompt.id, n: 3, tenantMentions: 2, competitorMentions: { rival: 3 } });
     await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "gemini", promptId: prompt.id, n: 1, tenantMentions: 0 });
 
     const rows = await promptMatrix(tenant.id);
@@ -365,10 +365,82 @@ describe("promptMatrix", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ promptId: prompt.id, text: "best issue tracker for startups", intent: "discovery", branded: false });
     expect(rows[0].cells.map((c) => c.engine)).toEqual(["openai", "gemini", "anthropic"]);
-    expect(rows[0].cells.find((c) => c.engine === "openai")).toEqual({ engine: "openai", hits: 2, n: 3 });
+    expect(rows[0].cells.find((c) => c.engine === "openai")).toEqual({ engine: "openai", hits: 2, n: 3, competitorsNamed: 1 });
     // Below MIN_N_PROMPT, but still returned raw — the UI decides what to render.
-    expect(rows[0].cells.find((c) => c.engine === "gemini")).toEqual({ engine: "gemini", hits: 0, n: 1 });
-    expect(rows[0].cells.find((c) => c.engine === "anthropic")).toEqual({ engine: "anthropic", hits: 0, n: 0 });
+    expect(rows[0].cells.find((c) => c.engine === "gemini")).toEqual({ engine: "gemini", hits: 0, n: 1, competitorsNamed: 0 });
+    expect(rows[0].cells.find((c) => c.engine === "anthropic")).toEqual({ engine: "anthropic", hits: 0, n: 0, competitorsNamed: 0 });
+  });
+
+  it("counts DISTINCT competitors across the window, not one per run", async () => {
+    // The same rival is named in every run of a four-run window. Summing the
+    // jsonb keys would report one competitor as four, and the cell would claim
+    // a crowd where there is one name.
+    const tenant = await seedTenant(TENANT);
+    const prompt = await seedPromptRow(tenant.id);
+    for (const day of ["2026-02-08", "2026-02-15", "2026-02-22", "2026-03-01"]) {
+      const run = await seedRun(tenant.id, `${day}T09:00:00Z`);
+      await seedAggregate({
+        runId: run.id,
+        tenantId: tenant.id,
+        engine: "openai",
+        promptId: prompt.id,
+        n: 3,
+        tenantMentions: 0,
+        competitorMentions: { rival: 3 },
+      });
+    }
+
+    const rows = await promptMatrix(tenant.id);
+    expect(rows[0].cells.find((c) => c.engine === "openai")!.competitorsNamed).toBe(1);
+  });
+
+  it("separates the two zeroes: rivals named here, and nobody named at all", async () => {
+    const tenant = await seedTenant(TENANT);
+    const gap = await seedPromptRow(tenant.id, { text: "best tools for teams" });
+    const emptySpace = await seedPromptRow(tenant.id, { text: "how do teams do this" });
+    const run = await seedRun(tenant.id, "2026-03-01T09:00:00Z");
+    await seedAggregate({
+      runId: run.id,
+      tenantId: tenant.id,
+      engine: "openai",
+      promptId: gap.id,
+      n: 3,
+      tenantMentions: 0,
+      competitorMentions: { a: 3, b: 2, c: 1 },
+    });
+    await seedAggregate({
+      runId: run.id,
+      tenantId: tenant.id,
+      engine: "openai",
+      promptId: emptySpace.id,
+      n: 3,
+      tenantMentions: 0,
+    });
+
+    const rows = await promptMatrix(tenant.id);
+    const cellFor = (text: string) =>
+      rows.find((r) => r.text === text)!.cells.find((c) => c.engine === "openai")!;
+    // Identical `hits` and `n` — the whole finding is in the third number.
+    expect(cellFor("best tools for teams")).toMatchObject({ hits: 0, n: 3, competitorsNamed: 3 });
+    expect(cellFor("how do teams do this")).toMatchObject({ hits: 0, n: 3, competitorsNamed: 0 });
+  });
+
+  it("does not count a competitor an aggregate wrote down with a zero", async () => {
+    const tenant = await seedTenant(TENANT);
+    const prompt = await seedPromptRow(tenant.id);
+    const run = await seedRun(tenant.id, "2026-03-01T09:00:00Z");
+    await seedAggregate({
+      runId: run.id,
+      tenantId: tenant.id,
+      engine: "openai",
+      promptId: prompt.id,
+      n: 3,
+      tenantMentions: 1,
+      competitorMentions: { seen: 2, unseen: 0 },
+    });
+
+    const rows = await promptMatrix(tenant.id);
+    expect(rows[0].cells.find((c) => c.engine === "openai")!.competitorsNamed).toBe(1);
   });
 
   it("omits paused, proposed and rejected prompts", async () => {
@@ -1021,9 +1093,9 @@ describe("the per-prompt threshold belongs to the caller, not to promptMatrix", 
 
     // Below, at and above the cell threshold — all three come back raw, so the
     // cell component can tell "2 of 3 samples" from "the engine failed".
-    expect(cell("two samples")).toEqual({ engine: "openai", hits: 1, n: 2 });
-    expect(cell("three samples")).toEqual({ engine: "openai", hits: 2, n: 3 });
-    expect(cell("four samples")).toEqual({ engine: "openai", hits: 3, n: 4 });
+    expect(cell("two samples")).toEqual({ engine: "openai", hits: 1, n: 2, competitorsNamed: 0 });
+    expect(cell("three samples")).toEqual({ engine: "openai", hits: 2, n: 3, competitorsNamed: 0 });
+    expect(cell("four samples")).toEqual({ engine: "openai", hits: 3, n: 4, competitorsNamed: 0 });
   });
 });
 
