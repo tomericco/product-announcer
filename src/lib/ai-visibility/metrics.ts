@@ -8,6 +8,7 @@ import {
   aiVisibilitySamples,
 } from "@/db/schema";
 import type { DomainClass } from "@/lib/ai-visibility/domains";
+import { MIN_N_AGGREGATE, MIN_N_PROMPT } from "@/lib/ai-visibility/thresholds";
 import {
   ENGINE_IDS,
   type EngineId,
@@ -18,10 +19,10 @@ import {
 
 /** Design §Metrics: a rolling 4-run window, ~12 samples per prompt. */
 export const WINDOW_RUNS = 4;
-/** Contract decision 8: an engine aggregate is hidden below this. */
-export const MIN_N_AGGREGATE = 30;
-/** Contract decision 8: a per-prompt cell is hidden below this. */
-export const MIN_N_PROMPT = 3;
+// The two display floors live in `./thresholds` so a client component can read
+// them without pulling `@/db` into the browser bundle. Re-exported here because
+// this is where every server-side caller already imports them from.
+export { MIN_N_AGGREGATE, MIN_N_PROMPT };
 /** How many runs a sparkline plots. Design §UX: "12-week sparkline". */
 export const HISTORY_RUNS = 12;
 /** Design §Metrics: "Deltas are 30-day only". */

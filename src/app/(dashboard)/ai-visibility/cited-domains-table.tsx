@@ -8,6 +8,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import type { DomainClass } from "@/lib/ai-visibility/domains";
 import type { EngineId } from "@/lib/ai-visibility/types";
 import { ENGINE_SHORT } from "./engine-labels";
+import { ratePct } from "./format";
 
 export type CitedDomainRow = {
   domain: string;
@@ -69,15 +70,6 @@ export function evidenceNote(row: CitedDomainRow): { label: string; hint: string
 }
 
 /**
- * Row 3 of the overview: where the engines actually get their answers.
- *
- * "Propose brief" is offered only on a third-party row that already has a
- * `new_cited_domain` signal behind it — `/briefs/new?signals=` resolves the
- * id through `listSignals`, so linking without one lands on an empty form
- * with the evidence silently dropped. Our own domain gets no such action:
- * being cited on our own page is the outcome, not a gap.
- */
-/**
  * The note, and the reason it is a `Tooltip` on a real button rather than the
  * `title` attribute it used to be.
  *
@@ -93,73 +85,88 @@ function EvidenceNote({ row }: { row: CitedDomainRow }) {
   const note = evidenceNote(row);
   if (note === null) return null;
   return (
-    <TooltipProvider>
-      <Tooltip>
-        <TooltipTrigger render={<button type="button" className="inline-flex text-left" />}>
-          <span className="text-xs text-muted-foreground">{note.label}</span>
-        </TooltipTrigger>
-        <TooltipContent>{note.hint}</TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
+    <Tooltip>
+      <TooltipTrigger render={<button type="button" className="inline-flex text-left" />}>
+        <span className="text-xs text-muted-foreground">{note.label}</span>
+      </TooltipTrigger>
+      <TooltipContent>{note.hint}</TooltipContent>
+    </Tooltip>
   );
 }
 
+/**
+ * Where the engines actually get their answers.
+ *
+ * "Propose brief" is offered only on a third-party row that already has a
+ * `new_cited_domain` signal behind it — `/briefs/new?signals=` resolves the
+ * id through `listSignals`, so linking without one lands on an empty form
+ * with the evidence silently dropped. Our own domain gets no such action:
+ * being cited on our own page is the outcome, not a gap.
+ *
+ * ONE `TooltipProvider`, wrapping the whole table rather than one per row. The
+ * provider is a context and a shared open/close timer, not a per-tooltip
+ * requirement: a provider per row means fifteen contexts, fifteen timers, and
+ * no grouping — the delay never carries from one row to the next, so a reader
+ * scanning the column waits out the full delay on every hover.
+ */
 export function CitedDomainsTable({ rows }: { rows: CitedDomainRow[] }) {
   return (
-    <Table>
-      <TableHeader>
-        <TableRow>
-          <TableHead className="w-full">Domain</TableHead>
-          <TableHead>Citations</TableHead>
-          <TableHead>Engines</TableHead>
-          <TableHead>Class</TableHead>
-          <TableHead />
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {rows.map((row) => {
-          const classification = domainClassLabel(row);
-          const proposable = classification.label === "Third-party" && row.signalId !== null;
-          return (
-            <TableRow key={row.domain}>
-              <TableCell className="max-w-0 truncate">{row.domain}</TableCell>
-              <TableCell className="tabular-nums">
-                {/* "searched", not "answers": the denominator is grounded
-                    answers only, since an engine that answered from memory
-                    cited nothing and cannot be part of a share of citations. */}
-                {row.citations} ({Math.round(row.answerSharePct)}% of searched answers)
-              </TableCell>
-              <TableCell className="text-muted-foreground">
-                {row.engines.map((engine) => ENGINE_SHORT[engine]).join(" · ")}
-              </TableCell>
-              <TableCell>
-                <Badge variant={classification.variant}>{classification.label}</Badge>
-              </TableCell>
-              <TableCell>
-                {proposable ? (
-                  // A styled Link rather than `Button render={<Link/>}`: Base
-                  // UI's Button stamps `role="button"` onto whatever it
-                  // renders, and this control does nothing but navigate — a
-                  // link that announces itself as a button loses the one cue
-                  // that says a new page is coming.
-                  <Link
-                    href={`/briefs/new?signals=${row.signalId}`}
-                    className={buttonVariants({ variant: "ghost", size: "sm" })}
-                  >
-                    Propose brief
-                  </Link>
-                ) : (
-                  // A third-party row with no signal is the one case where the
-                  // action's ABSENCE needs explaining: without a note, a row
-                  // that offers nothing where its neighbours offer a brief
-                  // looks broken. Our own domain gets no note — it is not a gap.
-                  classification.label === "Third-party" && <EvidenceNote row={row} />
-                )}
-              </TableCell>
-            </TableRow>
-          );
-        })}
-      </TableBody>
-    </Table>
+    <TooltipProvider>
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead className="w-full">Domain</TableHead>
+            <TableHead>Citations</TableHead>
+            <TableHead>Engines</TableHead>
+            <TableHead>Class</TableHead>
+            <TableHead />
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {rows.map((row) => {
+            const classification = domainClassLabel(row);
+            const proposable = classification.label === "Third-party" && row.signalId !== null;
+            return (
+              <TableRow key={row.domain}>
+                <TableCell className="max-w-0 truncate">{row.domain}</TableCell>
+                <TableCell className="tabular-nums">
+                  {/* "searched", not "answers": the denominator is grounded
+                      answers only, since an engine that answered from memory
+                      cited nothing and cannot be part of a share of citations. */}
+                  {row.citations} ({ratePct(row.answerSharePct)} of searched answers)
+                </TableCell>
+                <TableCell className="text-muted-foreground">
+                  {row.engines.map((engine) => ENGINE_SHORT[engine]).join(" · ")}
+                </TableCell>
+                <TableCell>
+                  <Badge variant={classification.variant}>{classification.label}</Badge>
+                </TableCell>
+                <TableCell>
+                  {proposable ? (
+                    // A styled Link rather than `Button render={<Link/>}`: Base
+                    // UI's Button stamps `role="button"` onto whatever it
+                    // renders, and this control does nothing but navigate — a
+                    // link that announces itself as a button loses the one cue
+                    // that says a new page is coming.
+                    <Link
+                      href={`/briefs/new?signals=${row.signalId}`}
+                      className={buttonVariants({ variant: "ghost", size: "sm" })}
+                    >
+                      Propose brief
+                    </Link>
+                  ) : (
+                    // A third-party row with no signal is the one case where the
+                    // action's ABSENCE needs explaining: without a note, a row
+                    // that offers nothing where its neighbours offer a brief
+                    // looks broken. Our own domain gets no note — it is not a gap.
+                    classification.label === "Third-party" && <EvidenceNote row={row} />
+                  )}
+                </TableCell>
+              </TableRow>
+            );
+          })}
+        </TableBody>
+      </Table>
+    </TooltipProvider>
   );
 }

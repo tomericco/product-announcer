@@ -17,6 +17,9 @@ import type { EngineId } from "@/lib/ai-visibility/types";
 // Dependency-free module — safe on this side of the client boundary, and the
 // same two numbers `saveAiVisibilitySettings` validates against.
 import { MIN_MONTHLY_CAP_USD, MAX_MONTHLY_CAP_USD } from "@/lib/ai-visibility/money";
+// Also dependency-free, and the same brand-check rule `capExceeded` charges and
+// the two Run-now buttons quote. This card had its own copy of it.
+import { callsPerEnginePerRun } from "@/lib/ai-visibility/planned-calls";
 import { ENGINE_LABEL, ENGINE_ORDER } from "../ai-visibility/engine-labels";
 import { saveAiVisibilityConfig } from "./actions";
 
@@ -79,19 +82,11 @@ export function monthlyEstimateUsd({
 }): number {
   const runs = RUNS_PER_MONTH[cadence] ?? 0;
   return engines.reduce(
-    (total, engine) => total + callsPerRun(promptCount, brandCheckCount, samplesPerPrompt) * runs * (costPerCall[engine] ?? 0),
+    (total, engine) =>
+      total +
+      callsPerEnginePerRun(promptCount, brandCheckCount, samplesPerPrompt) * runs * (costPerCall[engine] ?? 0),
     0
   );
-}
-
-/**
- * Calls one engine makes in one run. Mirrors `capExceeded`, which counts
- * brand-check prompts at one sample and everything else at the samples
- * setting.
- */
-function callsPerRun(promptCount: number, brandCheckCount: number, samplesPerPrompt: number): number {
-  const branded = Math.min(Math.max(brandCheckCount, 0), promptCount);
-  return (promptCount - branded) * samplesPerPrompt + branded;
 }
 
 /**
@@ -142,7 +137,7 @@ export function AiVisibilityForm({
     cadence,
     costPerCall,
   });
-  const callsPerRunPerEngine = callsPerRun(promptCount, brandCheckCount, Number(samples));
+  const callsPerRunPerEngine = callsPerEnginePerRun(promptCount, brandCheckCount, Number(samples));
 
   // The lib rejects an empty engines array ({ ok:false, error:"engines" }):
   // an enabled feature with zero engines would look on and measure nothing,

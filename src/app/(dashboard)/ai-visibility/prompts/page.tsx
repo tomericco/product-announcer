@@ -15,10 +15,11 @@ import { listCompetitors } from "@/lib/workspace/competitors";
 import { MAX_ACTIVE_PROMPTS, listPrompts } from "@/lib/ai-visibility/prompts";
 import { getAiVisibilitySettings } from "@/lib/ai-visibility/settings";
 import { MIN_N_PROMPT, promptMatrix } from "@/lib/ai-visibility/metrics";
+import { plannedCallsForPrompts } from "@/lib/ai-visibility/planned-calls";
 import { latestRun } from "@/lib/ai-visibility/run";
 import { capExceeded, capPausedMessage } from "@/lib/ai-visibility/cost";
-import { buttonVariants } from "@/components/ui/button";
 import { GeneratePromptSetButton } from "../generate-prompt-set-button";
+import { AiVisibilityOffEmptyState } from "../off-empty-state";
 import { RunNowButton } from "../run-now-button";
 import { personaFilterOptions, readPromptsFilters } from "./filter-params";
 import { PromptsEditor, type PromptRowData } from "./prompts-editor";
@@ -77,20 +78,7 @@ export default async function PromptsPage({
           </Link>
           <h1 className="font-heading text-3xl leading-[1.15] tracking-[0.015em]">Prompts</h1>
         </div>
-        <EmptyState>
-          <EmptyStateIcon>
-            <ScanSearch />
-          </EmptyStateIcon>
-          <EmptyStateTitle>AI visibility is off</EmptyStateTitle>
-          <EmptyStateDescription>
-            Turn it on in Company to start measuring how often engines name you. Your prompts are kept.
-          </EmptyStateDescription>
-          <EmptyStateActions>
-            <Link href="/company#ai-visibility" className={buttonVariants({ variant: "outline" })}>
-              Open Company
-            </Link>
-          </EmptyStateActions>
-        </EmptyState>
+        <AiVisibilityOffEmptyState kept="Your prompts are kept." />
       </div>
     );
   }
@@ -172,9 +160,12 @@ export default async function PromptsPage({
   // Counted the way the cap gate counts it: a brand-check prompt is one call
   // per engine, not `samplesPerPrompt` of them. A flat product here would quote
   // a number the enforcement disagrees with, on the control that spends money.
-  const brandedActive = allPrompts.filter(
-    (prompt) => prompt.status === "active" && prompt.intent === "brand_check"
-  ).length;
+  // `plannedCallsForPrompts` is that rule, shared with the overview header and
+  // with the settings card's monthly estimate.
+  const firstAuditCalls = plannedCallsForPrompts(
+    allPrompts.filter((prompt) => prompt.status === "active"),
+    { engineCount: settings.engines.length, samplesPerPrompt: settings.samplesPerPrompt }
+  );
 
   // The current query, re-serialised, so the filter bar MERGES into it rather
   // than rebuilding from empty and dropping every unrelated key.
@@ -231,9 +222,7 @@ export default async function PromptsPage({
               prompts: activeCount,
               engines: settings.engines.length,
               samples: settings.samplesPerPrompt,
-              calls:
-                (activeCount - brandedActive) * settings.engines.length * settings.samplesPerPrompt +
-                brandedActive * settings.engines.length,
+              calls: firstAuditCalls,
               usd: firstAuditCap.estimateUsd,
             }}
             disabledReason={

@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import { db } from "../../../src/db";
 import { aiVisibilityPrompts } from "../../../src/db/schema";
 import { capExceeded } from "../../../src/lib/ai-visibility/cost";
+import { plannedCallsForPrompts } from "../../../src/lib/ai-visibility/planned-calls";
 import { engineCost } from "../../../src/lib/ai-visibility/engines";
 import { ENGINE_IDS, type EngineId } from "../../../src/lib/ai-visibility/types";
 import { monthlyEstimateUsd } from "../../../src/app/(dashboard)/settings/ai-visibility-form";
@@ -144,6 +145,34 @@ describe("the settings estimate and the cap gate agree", () => {
         samplesPerPrompt: 3,
       })
     ).toBeCloseTo(gate.estimateUsd, 8);
+  });
+
+  it("counts the same calls the gate charges for, from the prompt list the pages hold", async () => {
+    // The third copy of this formula. Both Run-now buttons quote a CALL count
+    // beside the gate's dollar figure, and they used to derive it by hand —
+    // `prompts × engines × samples` plus a brand-check correction, written out
+    // twice. A flat product reads high, and it reads high on the control that
+    // spends money.
+    const tenant = await seedTenant(TENANT);
+    const specs = [
+      ...Array.from({ length: 4 }, () => ({ intent: "discovery" })),
+      { intent: "brand_check" },
+      { intent: "brand_check" },
+    ];
+    await seedPrompts(tenant.id, specs);
+    const settings = { engines: ["openai", "gemini"], samplesPerPrompt: 3, monthlyCapUsd: 20 };
+
+    const gate = await capExceeded(tenant.id, settings, new Date("2026-08-17T00:00:00Z"));
+    const calls = plannedCallsForPrompts(specs, {
+      engineCount: settings.engines.length,
+      samplesPerPrompt: settings.samplesPerPrompt,
+    });
+
+    // 4 × 3 + 2 × 1 = 14 per engine, 28 across two. A flat product says 36.
+    expect(calls).toBe(28);
+    // And the gate priced exactly those calls: both engines here cost the same
+    // per call in the fixture only if that holds, so assert per-engine instead.
+    expect(gate.estimateUsd).toBeCloseTo(14 * (engineCost("openai") + engineCost("gemini")), 8);
   });
 
   it("agrees at zero prompts, where both must say zero rather than NaN", async () => {

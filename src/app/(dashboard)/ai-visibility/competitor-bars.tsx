@@ -5,6 +5,7 @@ import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } f
 import { PreviewCard, PreviewCardContent, PreviewCardTrigger } from "@/components/ui/preview-card";
 import type { EngineId } from "@/lib/ai-visibility/types";
 import { ENGINE_LABEL } from "./engine-labels";
+import { ratePct } from "./format";
 
 export type BrandShare = {
   brandId: string;
@@ -80,7 +81,7 @@ export function CompetitorBars({ rows, n }: { rows: BrandShare[]; n: number }) {
           <li key={row.brandId}>
             <PreviewCard>
               <PreviewCardTrigger render={<button type="button" className="hover:text-foreground" />}>
-                {row.name} · {row.sharePct.toFixed(0)}%
+                {row.name} · {ratePct(row.sharePct)}
               </PreviewCardTrigger>
               <PreviewCardContent className="max-w-64">
                 <p className="font-medium">{row.name}</p>
@@ -92,7 +93,7 @@ export function CompetitorBars({ rows, n }: { rows: BrandShare[]; n: number }) {
                   {row.perEngine.map((cut) => (
                     <li key={cut.engine} className="flex justify-between gap-3">
                       <span className="text-muted-foreground">{ENGINE_LABEL[cut.engine]}</span>
-                      <span>{cut.sharePct === null ? "—" : `${cut.sharePct.toFixed(0)}%`}</span>
+                      <span>{ratePct(cut.sharePct)}</span>
                     </li>
                   ))}
                 </ul>
