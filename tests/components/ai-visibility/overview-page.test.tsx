@@ -38,6 +38,7 @@ const captured = {
     label?: string;
   } | null,
   generate: null as { disabledReason: string | null } | null,
+  stop: null as { completedCalls: number; plannedCalls: number } | null,
 };
 
 vi.mock("@/app/(dashboard)/ai-visibility/overview-cards", () => ({
@@ -80,6 +81,12 @@ vi.mock("@/app/(dashboard)/ai-visibility/run-now-button", () => ({
   }) => {
     captured.runNow = props;
     return <div data-testid="run-now" />;
+  },
+}));
+vi.mock("@/app/(dashboard)/ai-visibility/stop-run-button", () => ({
+  StopRunButton: (props: { completedCalls: number; plannedCalls: number }) => {
+    captured.stop = props;
+    return <div data-testid="stop-run" />;
   },
 }));
 vi.mock("@/app/(dashboard)/ai-visibility/generate-prompt-set-button", () => ({
@@ -280,6 +287,7 @@ beforeEach(() => {
   captured.domains = null;
   captured.runNow = null;
   captured.generate = null;
+  captured.stop = null;
 });
 
 describe("overview — the nine states, and that they are mutually exclusive", () => {
@@ -370,6 +378,36 @@ describe("overview — the nine states, and that they are mutually exclusive", (
 
     expect(captured.runNow?.disabledReason).toBe("Running… 0 / 270 calls");
     expect(captured.runNow?.disabledTone).toBe("muted");
+  });
+
+  it("Running: Stop is offered, and carries the same counts the progress line does", async () => {
+    setup({ run: run({ status: "running", completedCalls: 41, plannedCalls: 270, costUsd: 0.4 }) });
+    await renderPage();
+
+    expect(screen.getByTestId("stop-run")).toBeInTheDocument();
+    expect(captured.stop).toEqual({ completedCalls: 41, plannedCalls: 270 });
+  });
+
+  it("Stop is offered only while a run is in flight", async () => {
+    // There is nothing to stop otherwise, and a permanently disabled Stop
+    // beside Run now is noise.
+    setup({ run: run({ status: "complete" }) });
+    await renderPage();
+    expect(screen.queryByTestId("stop-run")).not.toBeInTheDocument();
+  });
+
+  it("Stopped: the header says stopped, not failed, and keeps the counts it bought", async () => {
+    // A stopped run's answers ARE in every number below, so the line has to
+    // account for them — and it must not read like the ordinary "Last run",
+    // which would leave the thin window unexplained.
+    setup({
+      run: run({ status: "cancelled", completedCalls: 41, plannedCalls: 270, costUsd: 0.4 }),
+    });
+    await renderPage();
+
+    expect(screen.getByText(/— stopped · 41 calls · \$0\.40/)).toBeInTheDocument();
+    expect(screen.queryByText(/failed/)).not.toBeInTheDocument();
+    expect(screen.queryByTestId("stop-run")).not.toBeInTheDocument();
   });
 
   it("Paused by cap: quotes the run's own sentence, routes to Settings, and disables Run now destructively", async () => {

@@ -18,7 +18,7 @@ vi.mock("../../src/lib/workspace/session", () => ({
 }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 
-const { generatePromptSet, planRun, runSlice, finalizeRun, afterCallbacks } = vi.hoisted(() => ({
+const { generatePromptSet, planRun, runSlice, finalizeRun, cancelRun, afterCallbacks } = vi.hoisted(() => ({
   generatePromptSet: vi.fn(async () => ({ ok: true as const, proposals: [] as unknown[] })),
   // Declared with their call signatures, so `mock.calls[0][1].budgetMs` below
   // is a real assertion rather than an index into an empty tuple.
@@ -40,10 +40,19 @@ const { generatePromptSet, planRun, runSlice, finalizeRun, afterCallbacks } = vi
   finalizeRun: vi.fn<(runId: string, opts: { budgetMs: number; now: () => Date }) => Promise<unknown>>(
     async () => ({})
   ),
+  cancelRun: vi.fn<
+    (
+      tenantId: string,
+      opts: { now: () => Date }
+    ) => Promise<
+      | { ok: true; runId: string; completedCalls: number; plannedCalls: number }
+      | { ok: false; reason: "not_in_flight" }
+    >
+  >(async () => ({ ok: true, runId: "run-1", completedCalls: 41, plannedCalls: 270 })),
   afterCallbacks: [] as (() => Promise<void>)[],
 }));
 vi.mock("../../src/lib/ai-visibility/generate-prompts", () => ({ generatePromptSet }));
-vi.mock("../../src/lib/ai-visibility/run", () => ({ planRun, runSlice, finalizeRun }));
+vi.mock("../../src/lib/ai-visibility/run", () => ({ planRun, runSlice, finalizeRun, cancelRun }));
 // `after` is captured, never auto-run: the tests invoke the callback by hand,
 // which is exactly the "response already flushed" timing being pinned.
 vi.mock("next/server", () => ({
@@ -54,6 +63,7 @@ vi.mock("next/server", () => ({
 
 import {
   approveProposalsAction,
+  cancelRunAction,
   deletePromptAction,
   generatePromptSetAction,
   runNowAction,
@@ -526,6 +536,20 @@ describe("runNowAction", () => {
     expect(finalizeRun).not.toHaveBeenCalled();
   });
 
+  it("stops driving when somebody cancels the run mid-slice", async () => {
+    // Checked BEFORE `remaining`, because a stopped run keeps its un-asked
+    // samples pending forever: on `remaining` alone this loop would spin on a
+    // `runSlice` that returns instantly until the 240s budget lapsed.
+    runSlice.mockResolvedValue({ processed: 12, remaining: 258, budgetSpent: false, pausedByCap: false, cancelled: true });
+
+    await runNowAction();
+    await afterCallbacks[0]();
+
+    expect(runSlice).toHaveBeenCalledTimes(1);
+    // `cancelRun` already settled it — aggregates written, signals emitted.
+    expect(finalizeRun).not.toHaveBeenCalled();
+  });
+
   it("schedules no background work for a refused run", async () => {
     planRun.mockResolvedValueOnce({ ok: false, reason: "disabled" } as never);
     await runNowAction();
@@ -576,5 +600,31 @@ describe("generatePromptSetAction", () => {
       ok: false,
       error: "Couldn't draft prompts just now — try again.",
     });
+  });
+});
+
+describe("cancelRunAction", () => {
+  it("derives the run from the session tenant and never from the caller", async () => {
+    // The same rule `runNowAction` follows: no id crosses the wire, so there is
+    // nothing for a client to substitute with another tenant's run.
+    expect(await cancelRunAction()).toEqual({ ok: true, runId: "run-1", completedCalls: 41 });
+    expect(cancelRun).toHaveBeenCalledTimes(1);
+    expect(cancelRun.mock.calls[0][0]).toBe(currentTenantId);
+    expect(typeof cancelRun.mock.calls[0][1].now).toBe("function");
+  });
+
+  it("revalidates both surfaces that show run state", async () => {
+    await cancelRunAction();
+    expect(revalidatePath).toHaveBeenCalledWith("/ai-visibility");
+    expect(revalidatePath).toHaveBeenCalledWith("/company");
+  });
+
+  it("refuses cleanly when there is nothing in flight", async () => {
+    // The run finished, or another tab already stopped it, between the render
+    // that drew the button and the click on it.
+    cancelRun.mockResolvedValueOnce({ ok: false, reason: "not_in_flight" });
+
+    expect(await cancelRunAction()).toEqual({ ok: false, error: "No run is in progress." });
+    expect(revalidatePath).not.toHaveBeenCalled();
   });
 });

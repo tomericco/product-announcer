@@ -13,7 +13,7 @@ import {
   sources,
 } from "../../../src/db/schema";
 import type { EngineAnswer, EngineClient, EngineError } from "../../../src/lib/ai-visibility/types";
-import { finalizeRun, latestRun, planRun, runSlice } from "../../../src/lib/ai-visibility/run";
+import { cancelRun, finalizeRun, latestRun, planRun, runSlice } from "../../../src/lib/ai-visibility/run";
 import { engineMetrics } from "../../../src/lib/ai-visibility/metrics";
 import { seedTenant, dropTenant } from "../../helpers/fixtures";
 
@@ -290,7 +290,7 @@ describe("runSlice", () => {
       { engines: { openai } }
     );
 
-    expect(outcome).toEqual({ processed: 3, remaining: 0, budgetSpent: false, pausedByCap: false });
+    expect(outcome).toEqual({ processed: 3, remaining: 0, budgetSpent: false, pausedByCap: false, cancelled: false });
     expect(openai.calls).toEqual([
       "best issue tracker for startups",
       "best issue tracker for startups",
@@ -522,7 +522,7 @@ describe("runSlice", () => {
       { engines: { openai } }
     );
 
-    expect(outcome).toEqual({ processed: 0, remaining: 0, budgetSpent: false, pausedByCap: false });
+    expect(outcome).toEqual({ processed: 0, remaining: 0, budgetSpent: false, pausedByCap: false, cancelled: false });
     expect(openai.calls).toHaveLength(0);
   });
 
@@ -543,7 +543,7 @@ describe("runSlice", () => {
 
     // Losing the race is a no-op, not an error — and above all not a second
     // set of engine calls for work the holder is already paying for.
-    expect(outcome).toEqual({ processed: 0, remaining: 0, budgetSpent: false, pausedByCap: false });
+    expect(outcome).toEqual({ processed: 0, remaining: 0, budgetSpent: false, pausedByCap: false, cancelled: false });
     expect(openai.calls).toHaveLength(0);
     const samples = await db.select().from(aiVisibilitySamples).where(eq(aiVisibilitySamples.runId, runId));
     expect(samples.every((s) => s.status === "pending")).toBe(true);
@@ -1252,7 +1252,7 @@ describe("runSlice edge cases", () => {
       { engines: { openai: fakeEngine("openai", () => answer()) } }
     );
 
-    expect(outcome).toEqual({ processed: 0, remaining: 0, budgetSpent: false, pausedByCap: false });
+    expect(outcome).toEqual({ processed: 0, remaining: 0, budgetSpent: false, pausedByCap: false, cancelled: false });
   });
 
   it("does not restart a run the cap already paused", async () => {
@@ -1269,7 +1269,7 @@ describe("runSlice edge cases", () => {
     // Only `pending` and `running` are drivable. Resuming a cap-paused run here
     // would spend past a cap the tenant set on purpose, and un-say the message
     // the settings card is showing them.
-    expect(outcome).toEqual({ processed: 0, remaining: 0, budgetSpent: false, pausedByCap: false });
+    expect(outcome).toEqual({ processed: 0, remaining: 0, budgetSpent: false, pausedByCap: false, cancelled: false });
     expect(openai.calls).toHaveLength(0);
   });
 
@@ -1621,5 +1621,230 @@ describe("finalizeRun preconditions and lease handling", () => {
       .where(and(eq(sources.tenantId, tenant.id), eq(sources.type, "ai_visibility")));
     expect(source.status).toBe("active");
     expect(source.lastError).toContain("gave up judging");
+  });
+});
+
+describe("cancelRun", () => {
+  /** A planned, un-driven run for the tenant, with `prompts` prompts on one engine. */
+  async function plannedRun(prompts = 1) {
+    const tenant = await seedTenant(TENANT);
+    await seedSettings(tenant.id, { engines: ["openai"], samplesPerPrompt: 3 });
+    for (let i = 0; i < prompts; i++) {
+      await seedPrompt(tenant.id, { text: `best issue tracker for startups ${i}` });
+    }
+    const result = await planRun(tenant.id, { trigger: "manual", now: frozen("2026-03-02T09:00:00Z") });
+    if (!result.ok) throw new Error(`planRun refused: ${result.reason}`);
+    return { tenant, runId: result.runId, plannedCalls: result.plannedCalls };
+  }
+
+  /** Signals are a whole subsystem of their own; these tests are about the stop. */
+  const noEmit = async () => ({ written: 0, considered: 0 });
+
+  /**
+   * An engine that answers normally, and whose FIRST call stops the run before
+   * it returns — which is where a real Stop lands, mid-wave.
+   *
+   * The cancel is AWAITED inside `ask` rather than left floating, so the status
+   * flip is committed before `mapWithConcurrency` resolves the wave and the
+   * slice comes back round to its status check. A floating promise makes the
+   * test a race against the connection pool, which is not the thing under test.
+   */
+  function stoppingEngine(tenantId: string): EngineClient & { calls: string[] } {
+    const calls: string[] = [];
+    let stopped = false;
+    return {
+      id: "openai",
+      label: "openai (stops the run)",
+      calls,
+      async ask(prompt: string) {
+        calls.push(prompt);
+        if (!stopped) {
+          stopped = true;
+          await cancelRun(tenantId, { now: frozen("2026-03-02T09:05:00Z") }, { emit: noEmit });
+        }
+        return answer();
+      },
+    };
+  }
+
+  it("frees the tenant to plan a new run immediately", async () => {
+    // The point of the whole feature. `cancelled` is outside the partial unique
+    // index on `(tenant_id) WHERE status IN ('pending','running')`, so the next
+    // plan is allowed the moment the stop lands — not after the monthly cap
+    // lapses, which is the only exit that existed before.
+    const { tenant, runId } = await plannedRun();
+
+    const stopped = await cancelRun(tenant.id, { now: frozen("2026-03-02T09:05:00Z") }, { emit: noEmit });
+    expect(stopped).toMatchObject({ ok: true, runId });
+
+    const replanned = await planRun(tenant.id, { trigger: "manual", now: frozen("2026-03-02T09:06:00Z") });
+    expect(replanned.ok).toBe(true);
+    if (!replanned.ok) throw new Error("unreachable");
+    expect(replanned.runId).not.toBe(runId);
+  });
+
+  it("releases the slice lease", async () => {
+    // Nothing should have to wait out a lease on a run that will never resume —
+    // and a driver still mid-slice fails its next renewal, which stops it even
+    // if it somehow missed the status check.
+    const { tenant, runId } = await plannedRun();
+    await db
+      .update(aiVisibilityRuns)
+      .set({ sliceLeaseUntil: new Date("2026-03-02T09:30:00Z"), sliceLeaseOwner: crypto.randomUUID() })
+      .where(eq(aiVisibilityRuns.id, runId));
+
+    await cancelRun(tenant.id, { now: frozen("2026-03-02T09:05:00Z") }, { emit: noEmit });
+
+    const [run] = await db.select().from(aiVisibilityRuns).where(eq(aiVisibilityRuns.id, runId));
+    expect(run.sliceLeaseUntil).toBeNull();
+    expect(run.sliceLeaseOwner).toBeNull();
+  });
+
+  it("refuses cleanly when there is nothing in flight", async () => {
+    const tenant = await seedTenant(TENANT);
+    await seedSettings(tenant.id);
+
+    expect(await cancelRun(tenant.id, { now: frozen("2026-03-02T09:05:00Z") }, { emit: noEmit })).toEqual({
+      ok: false,
+      reason: "not_in_flight",
+    });
+  });
+
+  it("cannot be cancelled twice into a different state", async () => {
+    // Two operators, or one impatient double-click. The flip is a single
+    // conditional UPDATE, so the second press matches no row: it must not
+    // re-stamp `finishedAt`, must not re-run the settle, and must not move the
+    // run out of `cancelled`.
+    const { tenant, runId } = await plannedRun();
+    await cancelRun(tenant.id, { now: frozen("2026-03-02T09:05:00Z") }, { emit: noEmit });
+    const [first] = await db.select().from(aiVisibilityRuns).where(eq(aiVisibilityRuns.id, runId));
+
+    const second = await cancelRun(tenant.id, { now: frozen("2026-03-02T09:09:00Z") }, { emit: noEmit });
+
+    expect(second).toEqual({ ok: false, reason: "not_in_flight" });
+    const [after] = await db.select().from(aiVisibilityRuns).where(eq(aiVisibilityRuns.id, runId));
+    expect(after.status).toBe("cancelled");
+    expect(after.finishedAt).toEqual(first.finishedAt);
+  });
+
+  it("stops runSlice handing out work after the current wave", async () => {
+    // The stop that actually halts spending. The wave already handed to the
+    // engines is bought either way — nothing aborts an HTTP call in flight — so
+    // it lands; the batch after it is never claimed.
+    const { tenant, runId, plannedCalls } = await plannedRun(3);
+    expect(plannedCalls).toBe(9);
+
+    const openai = stoppingEngine(tenant.id);
+
+    const outcome = await runSlice(
+      runId,
+      { budgetMs: 60_000, concurrency: 3, now: advancingClock("2026-03-02T09:00:00Z", 10) },
+      { engines: { openai } }
+    );
+
+    // One full wave of three, and not one call more out of nine.
+    expect(openai.calls).toHaveLength(3);
+    expect(outcome.cancelled).toBe(true);
+    expect(outcome.processed).toBe(3);
+
+    const samples = await db.select().from(aiVisibilitySamples).where(eq(aiVisibilitySamples.runId, runId));
+    expect(samples.filter((s) => s.status === "ok")).toHaveLength(3);
+    // The six that were never asked stay pending forever. That is what makes
+    // `remaining` useless as a "is it over?" test and `cancelled` necessary.
+    expect(samples.filter((s) => s.status === "pending")).toHaveLength(6);
+
+    const [run] = await db.select().from(aiVisibilityRuns).where(eq(aiVisibilityRuns.id, runId));
+    expect(run.status).toBe("cancelled");
+  });
+
+  it("does not spend anything when the stop lands before any wave", async () => {
+    const { tenant, runId } = await plannedRun();
+    await cancelRun(tenant.id, { now: frozen("2026-03-02T09:05:00Z") }, { emit: noEmit });
+    const openai = fakeEngine("openai", () => answer());
+
+    const outcome = await runSlice(
+      runId,
+      { budgetMs: 60_000, concurrency: 3, now: advancingClock("2026-03-02T09:06:00Z", 10) },
+      { engines: { openai } }
+    );
+
+    expect(openai.calls).toHaveLength(0);
+    expect(outcome.cancelled).toBe(true);
+  });
+
+  it("keeps what the run bought, aggregates it, and admits it to the window", async () => {
+    // Same admission rule as `paused_by_cap`: these are real answers that were
+    // really paid for, and `isEligible` has already dropped the errored and
+    // refused ones. Throwing the rest away would charge the tenant for
+    // measurements and then refuse to show them.
+    const { tenant, runId } = await plannedRun(3);
+    const openai = stoppingEngine(tenant.id);
+
+    await runSlice(
+      runId,
+      { budgetMs: 60_000, concurrency: 3, now: advancingClock("2026-03-02T09:00:00Z", 10) },
+      { engines: { openai } }
+    );
+
+    const ok = await db
+      .select()
+      .from(aiVisibilitySamples)
+      .where(and(eq(aiVisibilitySamples.runId, runId), eq(aiVisibilitySamples.status, "ok")));
+    expect(ok).toHaveLength(3);
+
+    const rows = await db
+      .select()
+      .from(aiVisibilityAggregates)
+      .where(eq(aiVisibilityAggregates.runId, runId));
+    expect(rows.length).toBeGreaterThan(0);
+
+    // And the window admits it, or the aggregates are written where nothing
+    // reads them — the exact bug `SETTLED_RUN_STATUSES` exists to prevent.
+    const metrics = (await engineMetrics(tenant.id, db, () => new Date("2026-03-02T10:00:00Z"))).metrics;
+    expect(metrics.find((m) => m.engine === "openai")?.n).toBe(ok.length);
+
+    // Counters re-derived from the sample rows, not left on the per-batch tally.
+    const [run] = await db.select().from(aiVisibilityRuns).where(eq(aiVisibilityRuns.id, runId));
+    expect(run.completedCalls).toBe(3);
+    expect(run.costUsd).toBeCloseTo(0.03, 5);
+    expect(run.error).toContain("Stopped after 3 of 9 calls");
+    expect(run.finishedAt).not.toBeNull();
+  });
+
+  it("finalizeRun settles a cancelled run rather than resurrecting or judging it", async () => {
+    const { tenant, runId } = await plannedRun();
+    const openai = fakeEngine("openai", () => answer());
+    await runSlice(
+      runId,
+      { budgetMs: 60_000, concurrency: 3, now: advancingClock("2026-03-02T09:00:00Z", 10) },
+      { engines: { openai } }
+    );
+    // Cancel a drained run: it never reached finalize, and the sweep will never
+    // look at it again, so `finalizeRun` is the only thing that could.
+    await db.delete(aiVisibilityAggregates).where(eq(aiVisibilityAggregates.runId, runId));
+    await db
+      .update(aiVisibilityRuns)
+      .set({ status: "running" })
+      .where(eq(aiVisibilityRuns.id, runId));
+    await cancelRun(tenant.id, { now: frozen("2026-03-02T09:05:00Z") }, { emit: noEmit });
+    await db.delete(aiVisibilityAggregates).where(eq(aiVisibilityAggregates.runId, runId));
+
+    const judge = async () => {
+      throw new Error("the judge must not run after a human pressed Stop");
+    };
+    const result = await finalizeRun(
+      runId,
+      { budgetMs: 30_000, now: frozen("2026-03-02T09:06:00Z") },
+      { judge: judge as never, emit: noEmit }
+    );
+
+    expect(result.status).toBe("cancelled");
+    const [run] = await db.select().from(aiVisibilityRuns).where(eq(aiVisibilityRuns.id, runId));
+    expect(run.status).toBe("cancelled");
+    const rows = await db
+      .select()
+      .from(aiVisibilityAggregates)
+      .where(eq(aiVisibilityAggregates.runId, runId));
+    expect(rows.length).toBeGreaterThan(0);
   });
 });

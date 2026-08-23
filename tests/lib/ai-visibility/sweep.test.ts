@@ -223,6 +223,63 @@ describe("sweepAiVisibility", () => {
     expect(mine(finalize.mock.calls, run.id)).toHaveLength(1);
   });
 
+  it("does not resume a run somebody stopped", async () => {
+    // `cancelled` is terminal and outside `('pending','running')`, so the
+    // classify pass cannot see it. If it ever could, the sweep would spend the
+    // rest of a work list the operator explicitly stopped paying for — on a day
+    // they are not even looking at the page.
+    const { tenant, source } = await seedSource();
+    const [run] = await db
+      .insert(aiVisibilityRuns)
+      .values({
+        tenantId: tenant.id,
+        sourceId: source.id,
+        trigger: "manual",
+        engines: ["openai"],
+        samplesPerPrompt: 3,
+        status: "cancelled",
+      })
+      .returning();
+    const plan = planOnly(tenant.id, { ok: false, reason: "no_prompts" });
+    const slice = idleSlice();
+    const finalize = vi.fn();
+
+    // TUESDAY: not the cadence day, so the only reason to touch this tenant at
+    // all would be an in-flight run — which is exactly what a stopped one is not.
+    await sweepAiVisibility({ now: clock(TUESDAY), plan, slice, finalize });
+
+    expect(mine(slice.mock.calls, run.id)).toHaveLength(0);
+    expect(mine(finalize.mock.calls, run.id)).toHaveLength(0);
+    expect(mine(plan.mock.calls, tenant.id)).toHaveLength(0);
+  });
+
+  it("does not finalize a run stopped while this slice was driving it", async () => {
+    // The stop lands mid-slice: the driver reports `cancelled`, and `remaining`
+    // is nonzero forever because the un-asked samples stay pending. `runSlice`
+    // has already settled it, so finalizing would only re-emit its signals.
+    const { tenant, source } = await seedSource();
+    const [run] = await db
+      .insert(aiVisibilityRuns)
+      .values({
+        tenantId: tenant.id,
+        sourceId: source.id,
+        trigger: "scheduled",
+        engines: ["openai"],
+        samplesPerPrompt: 3,
+        status: "running",
+      })
+      .returning();
+    const slice = vi
+      .fn()
+      .mockResolvedValue({ processed: 3, remaining: 0, budgetSpent: false, pausedByCap: false, cancelled: true });
+    const finalize = vi.fn();
+
+    await sweepAiVisibility({ now: clock(TUESDAY), plan: planOnly(tenant.id, FOREIGN_PLAN), slice, finalize });
+
+    expect(mine(slice.mock.calls, run.id)).toHaveLength(1);
+    expect(mine(finalize.mock.calls, run.id)).toHaveLength(0);
+  });
+
   it("does not finalize a run that still has pending samples", async () => {
     const { tenant, source } = await seedSource();
     const [run] = await db
