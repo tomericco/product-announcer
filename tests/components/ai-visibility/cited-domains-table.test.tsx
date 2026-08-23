@@ -11,7 +11,7 @@ function domain(overrides: Partial<CitedDomainRow> = {}): CitedDomainRow {
     domain: "g2.com",
     citations: 14,
     answerSharePct: 17,
-    engines: ["openai", "perplexity"],
+    engines: ["openai", "gemini"],
     domainClass: "review",
     signalId: "signal-1",
     ...overrides,

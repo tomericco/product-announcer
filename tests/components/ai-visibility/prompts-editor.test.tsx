@@ -65,7 +65,6 @@ function row(overrides: Partial<PromptRowData> = {}): PromptRowData {
     deletable: false,
     chips: [
       { engine: "openai", named: 2, samples: 3 },
-      { engine: "perplexity", named: 0, samples: 3 },
       { engine: "gemini", named: 3, samples: 3 },
       { engine: "anthropic", named: 1, samples: 3 },
     ],
@@ -107,7 +106,7 @@ async function click(element: HTMLElement) {
 
 describe("engineChipLine", () => {
   it("reads as counts per engine, in a fixed order", () => {
-    expect(engineChipLine(row().chips)).toBe("GPT 2/3 · Pplx 0/3 · Gem 3/3 · Claude 1/3");
+    expect(engineChipLine(row().chips)).toBe("GPT 2/3 · Gem 3/3 · Claude 1/3");
   });
 
   it("dashes an engine with no usable samples rather than printing 0/0", () => {

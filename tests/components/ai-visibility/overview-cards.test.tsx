@@ -42,7 +42,7 @@ async function click(element: HTMLElement) {
   });
 }
 
-const ESTIMATE = { prompts: 28, engines: 4, samples: 3, calls: 336, usd: 3.12 };
+const ESTIMATE = { prompts: 28, engines: 3, samples: 3, calls: 252, usd: 3.12 };
 
 function metrics(overrides: Partial<EngineMetrics> = {}): EngineMetrics {
   // Every rate is 0..100, not 0..1 — `engineMetrics` returns percentages
@@ -204,9 +204,9 @@ describe("OverviewCards", () => {
   });
 
   it("prints a partial failure in the destructive tone, not as a muted aside", () => {
-    render(<OverviewCards tiles={[tile({ failureNote: "Perplexity failed on 9 prompts — rate limited" })]} />);
+    render(<OverviewCards tiles={[tile({ failureNote: "Gemini API, grounded failed on 9 prompts — rate limited" })]} />);
 
-    const note = screen.getByText("Perplexity failed on 9 prompts — rate limited");
+    const note = screen.getByText("Gemini API, grounded failed on 9 prompts — rate limited");
     expect(note.className).toContain("text-destructive");
   });
 
@@ -219,8 +219,8 @@ describe("OverviewCards", () => {
 
 describe("estimateSentence", () => {
   it("states the shape of the spend in plain dollars, never credits", () => {
-    expect(estimateSentence({ prompts: 28, engines: 4, samples: 3, calls: 336, usd: 3.12 })).toBe(
-      "≈ 28 prompts × 4 engines × 3 samples — about $3.12"
+    expect(estimateSentence({ prompts: 28, engines: 3, samples: 3, calls: 252, usd: 3.12 })).toBe(
+      "≈ 28 prompts × 3 engines × 3 samples — about $3.12"
     );
   });
 });
@@ -229,7 +229,7 @@ describe("RunNowButton", () => {
   it("is disabled with a visible reason rather than silently inert", () => {
     render(
       <RunNowButton
-        estimate={{ prompts: 28, engines: 4, samples: 3, calls: 336, usd: 3.12 }}
+        estimate={{ prompts: 28, engines: 3, samples: 3, calls: 252, usd: 3.12 }}
         disabledReason="A run is already in progress."
       />
     );
@@ -241,16 +241,16 @@ describe("RunNowButton", () => {
   it("reserves the error tone for the cap — a run in progress is not a failure", () => {
     const { rerender } = render(
       <RunNowButton
-        estimate={{ prompts: 28, engines: 4, samples: 3, calls: 336, usd: 3.12 }}
-        disabledReason="Running… 41 / 360 calls"
+        estimate={{ prompts: 28, engines: 3, samples: 3, calls: 252, usd: 3.12 }}
+        disabledReason="Running… 41 / 270 calls"
         disabledTone="muted"
       />
     );
-    expect(screen.getByText("Running… 41 / 360 calls").className).toContain("text-muted-foreground");
+    expect(screen.getByText("Running… 41 / 270 calls").className).toContain("text-muted-foreground");
 
     rerender(
       <RunNowButton
-        estimate={{ prompts: 28, engines: 4, samples: 3, calls: 336, usd: 3.12 }}
+        estimate={{ prompts: 28, engines: 3, samples: 3, calls: 252, usd: 3.12 }}
         disabledReason="Paused — monthly cap reached ($20.00 of $20.00)."
         disabledTone="destructive"
       />
@@ -263,7 +263,7 @@ describe("RunNowButton", () => {
   it("takes its label from the caller, so the post-approval CTA can differ", () => {
     render(
       <RunNowButton
-        estimate={{ prompts: 28, engines: 4, samples: 3, calls: 336, usd: 3.12 }}
+        estimate={{ prompts: 28, engines: 3, samples: 3, calls: 252, usd: 3.12 }}
         disabledReason={null}
         label="Run first audit now"
       />
@@ -279,7 +279,7 @@ describe("RunNowButton", () => {
 
     expect(runNowAction).not.toHaveBeenCalled();
     expect(
-      screen.getByText(/≈ 28 prompts × 4 engines × 3 samples — about \$3\.12/)
+      screen.getByText(/≈ 28 prompts × 3 engines × 3 samples — about \$3\.12/)
     ).toBeInTheDocument();
     // The attribution-lag caveat travels with the spend, per the trust cues.
     expect(screen.getByText(/Content changes show in 60–90 days\./)).toBeInTheDocument();

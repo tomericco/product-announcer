@@ -94,11 +94,11 @@ describe("citedDomains", () => {
 
   it("lists the engines that cited a domain, in engine order", async () => {
     const { tenant, run, prompt } = await fixture();
-    await answer({ tenantId: tenant.id, runId: run.id, promptId: prompt.id, engine: "perplexity", sampleIndex: 0, tenantMentioned: true, domains: [{ domain: "g2.com", domainClass: "review" }] });
+    await answer({ tenantId: tenant.id, runId: run.id, promptId: prompt.id, engine: "anthropic", sampleIndex: 0, tenantMentioned: true, domains: [{ domain: "g2.com", domainClass: "review" }] });
     await answer({ tenantId: tenant.id, runId: run.id, promptId: prompt.id, engine: "openai", sampleIndex: 0, tenantMentioned: true, domains: [{ domain: "g2.com", domainClass: "review" }] });
 
     const rows = await citedDomains(tenant.id, {});
-    expect(rows[0].engines).toEqual(["openai", "perplexity"]);
+    expect(rows[0].engines).toEqual(["openai", "anthropic"]);
   });
 
   it("reports where the tenant was absent from the citing answers", async () => {
@@ -356,7 +356,7 @@ describe("citedDomains answer share arithmetic", () => {
     await answer({ tenantId: tenant.id, runId: run.id, promptId: prompt.id, engine: "openai", sampleIndex: 1, tenantMentioned: true, domains: [{ domain: "g2.com", domainClass: "review" }] });
     await answer({ tenantId: tenant.id, runId: run.id, promptId: prompt.id, engine: "openai", sampleIndex: 2, tenantMentioned: true, domains: [{ domain: "g2.com", domainClass: "review" }, { domain: "blog.example.com", domainClass: "publisher" }] });
     // An eligible answer citing nothing still sits in the denominator.
-    await answer({ tenantId: tenant.id, runId: run.id, promptId: prompt.id, engine: "perplexity", sampleIndex: 0, tenantMentioned: true, domains: [] });
+    await answer({ tenantId: tenant.id, runId: run.id, promptId: prompt.id, engine: "gemini", sampleIndex: 0, tenantMentioned: true, domains: [] });
 
     const rows = await citedDomains(tenant.id, {});
     const g2 = rows.find((r) => r.domain === "g2.com")!;

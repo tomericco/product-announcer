@@ -38,7 +38,7 @@ function form(fields: {
   const data = new FormData();
   data.set("cadence", fields.cadence ?? "weekly");
   data.set("dayOfWeek", fields.dayOfWeek ?? "1");
-  for (const engine of fields.engines ?? ["openai", "perplexity"]) data.append("engines", engine);
+  for (const engine of fields.engines ?? ["openai", "gemini"]) data.append("engines", engine);
   data.set("samplesPerPrompt", fields.samplesPerPrompt ?? "3");
   data.set("monthlyCapUsd", fields.monthlyCapUsd ?? "20");
   return data;

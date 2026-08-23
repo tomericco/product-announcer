@@ -78,7 +78,7 @@ describe("computeAggregates", () => {
       .returning();
     const [run] = await db
       .insert(aiVisibilityRuns)
-      .values({ tenantId: tenant.id, trigger: "manual", engines: ["openai", "perplexity"], samplesPerPrompt: 3, status: "running" })
+      .values({ tenantId: tenant.id, trigger: "manual", engines: ["openai", "gemini"], samplesPerPrompt: 3, status: "running" })
       .returning();
     return { tenant, rival, pa, pb, run };
   }
@@ -168,7 +168,7 @@ describe("computeAggregates", () => {
   it("keeps engines separate", async () => {
     const { tenant, pa, run } = await seedFixture();
     await addSample({ runId: run.id, tenantId: tenant.id, promptId: pa.id, engine: "openai", sampleIndex: 0, extraction: extraction(true, [], false) });
-    await addSample({ runId: run.id, tenantId: tenant.id, promptId: pa.id, engine: "perplexity", sampleIndex: 0, extraction: extraction(false, [], false) });
+    await addSample({ runId: run.id, tenantId: tenant.id, promptId: pa.id, engine: "gemini", sampleIndex: 0, extraction: extraction(false, [], false) });
 
     const out = await computeAggregates(run.id);
     expect(out).toEqual({ engineRows: 2, promptRows: 2 });
@@ -178,7 +178,7 @@ describe("computeAggregates", () => {
       .from(aiVisibilityAggregates)
       .where(and(eq(aiVisibilityAggregates.runId, run.id), isNull(aiVisibilityAggregates.promptId)));
     expect(rows.find((r) => r.engine === "openai")?.tenantMentions).toBe(1);
-    expect(rows.find((r) => r.engine === "perplexity")?.tenantMentions).toBe(0);
+    expect(rows.find((r) => r.engine === "gemini")?.tenantMentions).toBe(0);
   });
 
   it("counts one mention per brand per sample even if the extraction repeats an id", async () => {

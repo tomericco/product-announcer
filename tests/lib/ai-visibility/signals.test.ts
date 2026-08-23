@@ -82,7 +82,7 @@ function input(overrides: Partial<TriggerInput> = {}): TriggerInput {
     engines: [engineWindow()],
     domains: [],
     competitorNames: { "c-1": "Rival", "c-2": "Beta" },
-    engineLabels: { openai: "GPT-5.x API + web search", perplexity: "Perplexity Sonar API" },
+    engineLabels: { openai: "GPT-5.x API + web search", gemini: "Gemini API, grounded" },
     ...overrides,
   };
 }
@@ -264,10 +264,10 @@ describe("competitor_gained across prompts", () => {
   });
 
   it("does not fire when the three prompts are spread across two engines", () => {
-    // "≥3 prompts" is per engine: two prompts on GPT and one on Perplexity is
+    // "≥3 prompts" is per engine: two prompts on GPT and one on Gemini is
     // not one competitor taking over an engine, and a brief written from it
     // would name the wrong surface.
-    const onEngine = (promptId: string, engine: "openai" | "perplexity") =>
+    const onEngine = (promptId: string, engine: "openai" | "gemini") =>
       promptWindow({
         promptId,
         promptText: `prompt ${promptId}`,
@@ -276,15 +276,15 @@ describe("competitor_gained across prompts", () => {
       });
     const out = evaluateTriggers(
       input({
-        prompts: [onEngine("p1", "openai"), onEngine("p2", "openai"), onEngine("p3", "perplexity")],
-        engines: [engineWindow({ engine: "openai" }), engineWindow({ engine: "perplexity" })],
+        prompts: [onEngine("p1", "openai"), onEngine("p2", "openai"), onEngine("p3", "gemini")],
+        engines: [engineWindow({ engine: "openai" }), engineWindow({ engine: "gemini" })],
       })
     );
     expect(out.filter((c) => c.signalType === "competitor_gained")).toHaveLength(0);
   });
 
   it("fires once per engine when the same competitor gains on both", () => {
-    const onEngine = (promptId: string, engine: "openai" | "perplexity") =>
+    const onEngine = (promptId: string, engine: "openai" | "gemini") =>
       promptWindow({
         promptId,
         promptText: `prompt ${promptId}`,
@@ -297,17 +297,17 @@ describe("competitor_gained across prompts", () => {
           onEngine("p1", "openai"),
           onEngine("p2", "openai"),
           onEngine("p3", "openai"),
-          onEngine("p4", "perplexity"),
-          onEngine("p5", "perplexity"),
-          onEngine("p6", "perplexity"),
+          onEngine("p4", "gemini"),
+          onEngine("p5", "gemini"),
+          onEngine("p6", "gemini"),
         ],
-        engines: [engineWindow({ engine: "openai" }), engineWindow({ engine: "perplexity" })],
+        engines: [engineWindow({ engine: "openai" }), engineWindow({ engine: "gemini" })],
       })
     );
     const rows = out.filter((c) => c.signalType === "competitor_gained");
     expect(rows.map((c) => c.externalId).sort()).toEqual([
+      `competitor_gained:c-1:gemini:${isoWeekKey(RUN_DATE)}`,
       `competitor_gained:c-1:openai:${isoWeekKey(RUN_DATE)}`,
-      `competitor_gained:c-1:perplexity:${isoWeekKey(RUN_DATE)}`,
     ]);
   });
 
@@ -642,13 +642,13 @@ describe("engine-level share-of-voice summary", () => {
       input({
         engines: [
           engineWindow({ engine: "openai", sovNow: 12, sovPrev: 30 }),
-          engineWindow({ engine: "perplexity", sovNow: 5, sovPrev: 40 }),
+          engineWindow({ engine: "gemini", sovNow: 5, sovPrev: 40 }),
         ],
       })
     );
     expect(out.map((c) => c.externalId).sort()).toEqual([
+      `lost_mention:all:gemini:${isoWeekKey(RUN_DATE)}`,
       `lost_mention:all:openai:${isoWeekKey(RUN_DATE)}`,
-      `lost_mention:all:perplexity:${isoWeekKey(RUN_DATE)}`,
     ]);
   });
 
@@ -771,7 +771,7 @@ describe("model-version-change suppression", () => {
     });
     const unchanged = promptWindow({
       promptId: "p2",
-      engine: "perplexity",
+      engine: "gemini",
       runs: [runBand(RUN_ID, 0), runBand("r2", 0), runBand("r3", 3)],
     });
 
@@ -780,13 +780,13 @@ describe("model-version-change suppression", () => {
         prompts: [changed, unchanged],
         engines: [
           engineWindow({ engine: "openai", modelChanged: true }),
-          engineWindow({ engine: "perplexity", modelChanged: false }),
+          engineWindow({ engine: "gemini", modelChanged: false }),
         ],
       })
     );
 
     expect(out).toHaveLength(1);
-    expect(out[0].payload.engine).toBe("perplexity");
+    expect(out[0].payload.engine).toBe("gemini");
   });
 
   it("does NOT suppress standing-state signals for the changed engine", () => {

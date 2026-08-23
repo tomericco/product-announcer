@@ -51,7 +51,7 @@ describe("getAiVisibilitySettings", () => {
     const settings = await getAiVisibilitySettings(tenant.id);
 
     expect(settings).toEqual(DEFAULT_AI_VISIBILITY_SETTINGS);
-    expect(settings.engines).toEqual(["openai", "perplexity", "gemini", "anthropic"]);
+    expect(settings.engines).toEqual(["openai", "gemini", "anthropic"]);
     // The defaults must not be the shared object — a caller mutating the
     // returned engines array would poison every later read in the process.
     expect(settings.engines).not.toBe(DEFAULT_AI_VISIBILITY_SETTINGS.engines);
@@ -68,6 +68,21 @@ describe("getAiVisibilitySettings", () => {
     expect(settings.engines).toEqual(["openai"]);
   });
 
+  it("coerces away `perplexity`, the engine we retired, on read", async () => {
+    const tenant = await seedTenant(TENANT);
+    await db
+      .insert(aiVisibilitySettings)
+      .values({ tenantId: tenant.id, engines: ["openai", "perplexity", "gemini", "anthropic"] });
+
+    // This is the migration path for tenants who enabled Perplexity before we
+    // dropped it: their stored row keeps the id — we never backfill the column
+    // — and the read simply stops returning it, so the rest of their choices
+    // survive untouched and nothing downstream ever plans a Perplexity call.
+    const settings = await getAiVisibilitySettings(tenant.id);
+
+    expect(settings.engines).toEqual(["openai", "gemini", "anthropic"]);
+  });
+
   it("falls back to every supported engine when filtering leaves none", async () => {
     const tenant = await seedTenant(TENANT);
     await db
@@ -78,7 +93,6 @@ describe("getAiVisibilitySettings", () => {
     // must not invent one either.
     expect((await getAiVisibilitySettings(tenant.id)).engines).toEqual([
       "openai",
-      "perplexity",
       "gemini",
       "anthropic",
     ]);
@@ -351,17 +365,17 @@ describe("saveAiVisibilitySettings", () => {
     }
   });
 
-  it("accepts one engine and accepts all four", async () => {
+  it("accepts one engine and accepts all three", async () => {
     const tenant = await seedTenant(TENANT);
 
-    const one = await saveAiVisibilitySettings(tenant.id, { ...VALID, engines: ["perplexity"] });
-    expect(one.ok && one.settings.engines).toEqual(["perplexity"]);
+    const one = await saveAiVisibilitySettings(tenant.id, { ...VALID, engines: ["anthropic"] });
+    expect(one.ok && one.settings.engines).toEqual(["anthropic"]);
 
     const all = await saveAiVisibilitySettings(tenant.id, {
       ...VALID,
-      engines: ["openai", "perplexity", "gemini", "anthropic"],
+      engines: ["openai", "gemini", "anthropic"],
     });
-    expect(all.ok && all.settings.engines).toEqual(["openai", "perplexity", "gemini", "anthropic"]);
+    expect(all.ok && all.settings.engines).toEqual(["openai", "gemini", "anthropic"]);
   });
 
   it("collapses a repeated engine id rather than planning the call twice", async () => {
@@ -531,12 +545,12 @@ describe("ensureAiVisibilitySource", () => {
 
     const second = await ensureAiVisibilitySource(tenant.id, db, {
       status: "failing",
-      lastError: "Perplexity timed out",
+      lastError: "Claude timed out",
     });
 
     expect(second.id).toBe(first.id);
     expect(second.status).toBe("failing");
-    expect(second.lastError).toBe("Perplexity timed out");
+    expect(second.lastError).toBe("Claude timed out");
   });
 
   it("leaves an existing row's health alone when called with no overrides", async () => {
@@ -606,14 +620,14 @@ describe("getAiVisibilitySource", () => {
     const tenant = await seedTenant(TENANT);
     await ensureAiVisibilitySource(tenant.id, db, {
       status: "failing",
-      lastError: "Perplexity: 429 rate limited",
+      lastError: "Gemini: 429 rate limited",
     });
     await setAiVisibilityEnabled(tenant.id, false);
 
     const source = await getAiVisibilitySource(tenant.id);
 
     expect(source!.status).toBe("disabled");
-    expect(source!.lastError).toBe("Perplexity: 429 rate limited");
+    expect(source!.lastError).toBe("Gemini: 429 rate limited");
   });
 
   it("never returns the tenant's url-less news source in its place", async () => {

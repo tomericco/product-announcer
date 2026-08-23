@@ -114,7 +114,7 @@ function setup(overrides: Record<string, unknown> = {}) {
     enabled: true,
     cadence: "weekly",
     dayOfWeek: 1,
-    engines: ["openai", "perplexity", "gemini", "anthropic"],
+    engines: ["openai", "gemini", "anthropic"],
     samplesPerPrompt: 3,
     monthlyCapUsd: 20,
     ...((o.settings as object) ?? {}),

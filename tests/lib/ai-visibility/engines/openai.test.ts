@@ -420,7 +420,7 @@ describe("askOpenAi, shapes that are not what the docs describe", () => {
   /**
    * `ask()` promises `EngineAnswer | EngineError` and must never throw: a
    * TypeError out of here has no catch above it and would end the run slice.
-   * Verified live, unlike Gemini and Perplexity — but a provider is free to
+   * Verified live, unlike Gemini — but a provider is free to
    * change a shape between releases, and the contract has to hold regardless.
    */
   it("does not throw when the body, or any list inside it, is the wrong type", async () => {

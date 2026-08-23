@@ -35,8 +35,8 @@ async function seedPrompts(tenantId: string, specs: { intent: string; status?: s
 
 describe("estimateRunCost", () => {
   it("multiplies prompts by engines by samples, per engine cost", () => {
-    const engines = ["openai", "perplexity"] as const;
-    const expected = 4 * 3 * (engineCost("openai") + engineCost("perplexity"));
+    const engines = ["openai", "gemini"] as const;
+    const expected = 4 * 3 * (engineCost("openai") + engineCost("gemini"));
     expect(estimateRunCost({ promptCount: 4, engines: [...engines], samplesPerPrompt: 3 })).toBeCloseTo(expected, 8);
   });
 

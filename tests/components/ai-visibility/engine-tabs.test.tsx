@@ -44,10 +44,10 @@ describe("EngineTabs — the tab strip", () => {
   });
 
   it("shows one tab per engine the tenant runs, short label with the full one on hover", () => {
-    tabs([], ["openai", "perplexity"], "openai");
+    tabs([], ["openai", "anthropic"], "openai");
 
     expect(screen.getByRole("tab", { name: "GPT" })).toHaveAttribute("title", "GPT-5.x API + web search");
-    expect(screen.getByRole("tab", { name: "Pplx" })).toHaveAttribute("title", "Perplexity Sonar API");
+    expect(screen.getByRole("tab", { name: "Claude" })).toHaveAttribute("title", "Claude API + web search");
     expect(screen.queryByRole("tab", { name: "Gem" })).not.toBeInTheDocument();
   });
 

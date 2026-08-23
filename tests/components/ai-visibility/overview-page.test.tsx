@@ -135,7 +135,7 @@ vi.mock("@/lib/ai-visibility/cost", async (importOriginal) => {
 
 const AiVisibilityPage = (await import("@/app/(dashboard)/ai-visibility/page")).default;
 
-const ALL_ENGINES: EngineId[] = ["openai", "perplexity", "gemini", "anthropic"];
+const ALL_ENGINES: EngineId[] = ["openai", "gemini", "anthropic"];
 
 function metrics(engine: EngineId | "all", overrides: Partial<EngineMetrics> = {}): EngineMetrics {
   return {
@@ -160,8 +160,8 @@ function run(overrides: Record<string, unknown> = {}) {
     id: "run-1",
     status: "complete",
     startedAt: new Date("2026-08-17T09:00:00Z"),
-    completedCalls: 336,
-    plannedCalls: 336,
+    completedCalls: 252,
+    plannedCalls: 252,
     costUsd: 3.12,
     error: null,
     ...overrides,
@@ -273,7 +273,7 @@ describe("overview — the nine states, and that they are mutually exclusive", (
     expect(screen.queryByTestId("generate-prompt-set")).not.toBeInTheDocument();
   });
 
-  it("No run yet: one empty state naming the next scheduled day, not four broken-looking tables", async () => {
+  it("No run yet: one empty state naming the next scheduled day, not three broken-looking tables", async () => {
     setup({ run: null });
     await renderPage();
 
@@ -296,10 +296,10 @@ describe("overview — the nine states, and that they are mutually exclusive", (
   });
 
   it("Running: the header reports progress and never calls a half-finished run 'Last run'", async () => {
-    setup({ run: run({ status: "running", completedCalls: 41, plannedCalls: 360, costUsd: 0.4 }) });
+    setup({ run: run({ status: "running", completedCalls: 41, plannedCalls: 270, costUsd: 0.4 }) });
     await renderPage();
 
-    expect(screen.getByText("Running… 41 / 360 calls")).toBeInTheDocument();
+    expect(screen.getByText("Running… 41 / 270 calls")).toBeInTheDocument();
     expect(screen.queryByText(/Last run/)).not.toBeInTheDocument();
     // A partial tally must not be printed as a finished run's cost.
     expect(screen.queryByText(/\$0\.40/)).not.toBeInTheDocument();
@@ -308,10 +308,10 @@ describe("overview — the nine states, and that they are mutually exclusive", (
   });
 
   it("Running: the button's reason is muted — an in-flight run is not a failure", async () => {
-    setup({ run: run({ status: "pending", completedCalls: 0, plannedCalls: 360 }) });
+    setup({ run: run({ status: "pending", completedCalls: 0, plannedCalls: 270 }) });
     await renderPage();
 
-    expect(captured.runNow?.disabledReason).toBe("Running… 0 / 360 calls");
+    expect(captured.runNow?.disabledReason).toBe("Running… 0 / 270 calls");
     expect(captured.runNow?.disabledTone).toBe("muted");
   });
 
@@ -360,15 +360,15 @@ describe("overview — the nine states, and that they are mutually exclusive", (
   it("Partial failure: the failing engine's tile carries the destructive note, the others do not", async () => {
     setup({
       health: [
-        { engine: "perplexity", erroredPrompts: 9, lastError: "rate limited", totalSamples: 30, okSamples: 3, erroredSamples: 27, refusedSamples: 0 },
+        { engine: "gemini", erroredPrompts: 9, lastError: "rate limited", totalSamples: 30, okSamples: 3, erroredSamples: 27, refusedSamples: 0 },
         { engine: "openai", erroredPrompts: 0, lastError: null, totalSamples: 84, okSamples: 84, erroredSamples: 0, refusedSamples: 0 },
       ],
     });
     await renderPage();
 
     const byEngine = new Map(captured.tiles!.map((tile) => [tile.engine, tile]));
-    expect(byEngine.get("perplexity")!.failureNote).toBe(
-      "Perplexity Sonar API failed on 9 prompts — rate limited"
+    expect(byEngine.get("gemini")!.failureNote).toBe(
+      "Gemini API, grounded failed on 9 prompts — rate limited"
     );
     expect(byEngine.get("openai")!.failureNote).toBeNull();
     // The pooled tile is not an engine and has no health row of its own.
@@ -402,7 +402,7 @@ describe("overview — the nine states, and that they are mutually exclusive", (
     setup();
     await renderPage();
 
-    expect(screen.getByText("Last run Aug 17, 2026 · 336 answers · $3.12")).toBeInTheDocument();
+    expect(screen.getByText("Last run Aug 17, 2026 · 252 answers · $3.12")).toBeInTheDocument();
   });
 });
 
@@ -563,15 +563,15 @@ describe("overview — what the tiles, the matrix and the domain table are hande
     });
     await renderPage();
 
-    // 2 x 4 x 3 + 1 x 4 = 28. A flat prompts x engines x samples would say 36
+    // 2 x 3 x 3 + 1 x 3 = 21. A flat prompts x engines x samples would say 27
     // and quote a number the enforcement disagrees with.
-    expect(captured.runNow!.estimate.calls).toBe(28);
+    expect(captured.runNow!.estimate.calls).toBe(21);
     expect(captured.runNow!.estimate.prompts).toBe(3);
   });
 
   it("marks a matrix cell as failed per ENGINE, and a missing cut as no samples rather than zero", async () => {
     setup({
-      health: [{ engine: "perplexity", erroredPrompts: 4, lastError: "429", totalSamples: 12, okSamples: 0, erroredSamples: 12, refusedSamples: 0 }],
+      health: [{ engine: "anthropic", erroredPrompts: 4, lastError: "429", totalSamples: 12, okSamples: 0, erroredSamples: 12, refusedSamples: 0 }],
       matrix: [
         {
           promptId: "p1",
@@ -587,7 +587,7 @@ describe("overview — what the tiles, the matrix and the domain table are hande
     expect(cells.openai).toEqual({ named: 2, samples: 3, failed: false });
     // Never asked: null, not 0 — 0 would claim we asked and were not named.
     expect(cells.gemini).toEqual({ named: null, samples: 0, failed: false });
-    expect(cells.perplexity.failed).toBe(true);
+    expect(cells.anthropic.failed).toBe(true);
   });
 
   it("does not mark an engine failed for REFUSING — a refusal is an answer, not an outage", async () => {

@@ -33,7 +33,7 @@ async function seedSettings(
   await db.insert(aiVisibilitySettings).values({
     tenantId,
     enabled: true,
-    engines: ["openai", "perplexity"],
+    engines: ["openai", "gemini"],
     samplesPerPrompt: 3,
     monthlyCapUsd: 20,
     ...overrides,
@@ -104,7 +104,7 @@ describe("planRun", () => {
     await db.insert(aiVisibilityRuns).values({
       tenantId: tenant.id,
       trigger: "scheduled",
-      engines: ["openai", "perplexity"],
+      engines: ["openai", "gemini"],
       samplesPerPrompt: 3,
       status: "complete",
       costUsd: 0.95,
@@ -132,7 +132,7 @@ describe("planRun", () => {
     const [run] = await db.select().from(aiVisibilityRuns).where(eq(aiVisibilityRuns.id, result.runId));
     expect(run.status).toBe("pending");
     expect(run.trigger).toBe("scheduled");
-    expect(run.engines.sort()).toEqual(["openai", "perplexity"]);
+    expect(run.engines.sort()).toEqual(["gemini", "openai"]);
     expect(run.samplesPerPrompt).toBe(3);
     // 1 discovery prompt x 2 engines x 3 samples + 1 brand_check x 2 engines x 1 sample
     expect(run.plannedCalls).toBe(8);
@@ -255,7 +255,7 @@ function answer(overrides: Partial<EngineAnswer> = {}): EngineAnswer {
 }
 
 function fakeEngine(
-  id: "openai" | "perplexity",
+  id: "openai" | "gemini",
   reply: (prompt: string, call: number) => EngineAnswer | EngineError
 ): EngineClient & { calls: string[] } {
   const calls: string[] = [];
@@ -1230,7 +1230,7 @@ describe("planRun guards not covered above", () => {
     if (!result.ok) throw new Error("unreachable");
     const samples = await db.select().from(aiVisibilitySamples).where(eq(aiVisibilitySamples.runId, result.runId));
     expect(new Set(samples.map((s) => s.engine))).toEqual(
-      new Set(["openai", "perplexity", "gemini", "anthropic"])
+      new Set(["openai", "gemini", "anthropic"])
     );
   });
 });
@@ -1374,7 +1374,7 @@ describe("runSlice edge cases", () => {
 
   it("remembers each engine's model id across slices instead of overwriting the map", async () => {
     const tenant = await seedTenant(TENANT);
-    await seedSettings(tenant.id, { engines: ["openai", "perplexity"], samplesPerPrompt: 1 });
+    await seedSettings(tenant.id, { engines: ["openai", "gemini"], samplesPerPrompt: 1 });
     await seedPrompt(tenant.id, { text: "best issue tracker for startups" });
     const plan = await planRun(tenant.id, { trigger: "manual", now: frozen("2026-03-02T09:00:00Z") });
     if (!plan.ok) throw new Error(`planRun refused: ${plan.reason}`);
@@ -1392,15 +1392,15 @@ describe("runSlice edge cases", () => {
       burnTheBudget();
       return answer({ modelId: "gpt-5.1-2026-01-01" });
     });
-    const perplexity = fakeEngine("perplexity", () => {
+    const gemini = fakeEngine("gemini", () => {
       burnTheBudget();
-      return answer({ modelId: "sonar-pro-2026-02-01" });
+      return answer({ modelId: "gemini-3.7-flash-2026-02-01" });
     });
 
     const first = await runSlice(
       plan.runId,
       { budgetMs: 60_000, concurrency: 1, now: () => new Date(start + elapsedMs) },
-      { engines: { openai, perplexity } }
+      { engines: { openai, gemini } }
     );
     expect(first.processed).toBe(1);
     expect(first.budgetSpent).toBe(true);
@@ -1408,7 +1408,7 @@ describe("runSlice edge cases", () => {
     await runSlice(
       plan.runId,
       { budgetMs: 60_000, concurrency: 1, now: advancingClock("2026-03-02T09:05:00Z", 10) },
-      { engines: { openai, perplexity } }
+      { engines: { openai, gemini } }
     );
 
     const [run] = await db.select().from(aiVisibilityRuns).where(eq(aiVisibilityRuns.id, plan.runId));
@@ -1417,7 +1417,7 @@ describe("runSlice edge cases", () => {
     // first, and a model jump looks like a change in visibility.
     expect(run.modelIds).toEqual({
       openai: "gpt-5.1-2026-01-01",
-      perplexity: "sonar-pro-2026-02-01",
+      gemini: "gemini-3.7-flash-2026-02-01",
     });
   });
 

@@ -71,7 +71,7 @@ async function seedRun(
       tenantId,
       sourceId,
       trigger: "manual",
-      engines: ["openai", "perplexity"],
+      engines: ["openai", "gemini"],
       samplesPerPrompt: 3,
       plannedCalls: 6,
       ...overrides,
@@ -81,7 +81,7 @@ async function seedRun(
 }
 
 describe("ai_visibility schema", () => {
-  it("defaults a settings row to the four engines, weekly, 3 samples, $20", async () => {
+  it("defaults a settings row to the three engines, weekly, 3 samples, $20", async () => {
     const { tenant } = await seed();
 
     const [row] = await db.insert(aiVisibilitySettings).values({ tenantId: tenant.id }).returning();
@@ -89,7 +89,7 @@ describe("ai_visibility schema", () => {
     expect(row.enabled).toBe(false);
     expect(row.cadence).toBe("weekly");
     expect(row.dayOfWeek).toBe(1);
-    expect(row.engines).toEqual(["openai", "perplexity", "gemini", "anthropic"]);
+    expect(row.engines).toEqual(["openai", "gemini", "anthropic"]);
     expect(row.samplesPerPrompt).toBe(3);
     expect(row.monthlyCapUsd).toBe(20);
   });
@@ -430,7 +430,7 @@ describe("ai_visibility schema", () => {
     // engine, and next week's run all have to coexist.
     await db.insert(aiVisibilitySamples).values(identity);
     await db.insert(aiVisibilitySamples).values({ ...identity, sampleIndex: 1 });
-    await db.insert(aiVisibilitySamples).values({ ...identity, engine: "perplexity" });
+    await db.insert(aiVisibilitySamples).values({ ...identity, engine: "gemini" });
     await db.insert(aiVisibilitySamples).values({ ...identity, runId: otherRun.id });
 
     const rows = await db

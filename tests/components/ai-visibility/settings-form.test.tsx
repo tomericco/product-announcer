@@ -15,7 +15,6 @@ vi.mock("../../../src/app/(dashboard)/settings/actions", () => ({
 // "free within its allowance" branch production can never produce.
 const COST: Record<EngineId, number> = {
   openai: 0.012,
-  perplexity: 0.008,
   gemini: 0.014,
   anthropic: 0.012,
 };
@@ -24,7 +23,7 @@ const DEFAULTS = {
   enabled: true,
   cadence: "weekly" as const,
   dayOfWeek: 1,
-  engines: ["openai", "perplexity", "gemini", "anthropic"] as EngineId[],
+  engines: ["openai", "gemini", "anthropic"] as EngineId[],
   samplesPerPrompt: 3 as const,
   monthlyCapUsd: 20,
 };
@@ -117,7 +116,7 @@ describe("monthlyEstimateUsd", () => {
   it("sums the engines that are on, and only those", () => {
     const both = monthlyEstimateUsd({
       promptCount: 10,
-      engines: ["openai", "perplexity"],
+      engines: ["openai", "gemini"],
       samplesPerPrompt: 1,
       cadence: "weekly",
       costPerCall: COST,
@@ -140,19 +139,19 @@ describe("AiVisibilityForm", () => {
 
     await act(async () => {
       fireEvent.click(screen.getByRole("switch", { name: /Gemini API, grounded/ }));
-      fireEvent.click(screen.getByRole("switch", { name: /Perplexity Sonar API/ }));
+      fireEvent.click(screen.getByRole("switch", { name: /Claude API \+ web search/ }));
     });
 
     expect(screen.getByTestId("ai-visibility-estimate").textContent).not.toBe(before);
   });
 
-  it("groups the four engine switches under one named group", () => {
+  it("groups the three engine switches under one named group", () => {
     form();
-    // They were four bare switches under a <Label> with no control and no
+    // They were three bare switches under a <Label> with no control and no
     // labelable descendant, so a screen-reader user met "GPT-5.x API + web
     // search" with nothing saying it was one of a set of engines.
     const engines = screen.getByRole("group", { name: "Engines" });
-    expect(within(engines).getAllByRole("switch")).toHaveLength(4);
+    expect(within(engines).getAllByRole("switch")).toHaveLength(3);
   });
 
   it("shows spend against the cap in dollars, never credits", () => {
@@ -301,7 +300,7 @@ describe("AiVisibilityForm", () => {
     expect(posted.get("samplesPerPrompt")).toBe("3");
     expect(posted.get("monthlyCapUsd")).toBe("35");
     // The array the Switches stand in for — a Switch is not a form control.
-    expect(posted.getAll("engines")).toEqual(["openai", "perplexity", "gemini", "anthropic"]);
+    expect(posted.getAll("engines")).toEqual(["openai", "gemini", "anthropic"]);
   });
 
   it("posts only the engines still switched on", async () => {

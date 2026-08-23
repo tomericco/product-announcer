@@ -10,7 +10,7 @@ import {
 
 function cells(named: number | null, samples = 3): MatrixRow["cells"] {
   const entry = { named, samples, failed: false };
-  return { openai: entry, perplexity: entry, gemini: entry, anthropic: entry } as Record<
+  return { openai: entry, gemini: entry, anthropic: entry } as Record<
     EngineId,
     { named: number | null; samples: number; failed: boolean }
   >;
@@ -93,7 +93,7 @@ describe("PromptMatrix", () => {
       <PromptMatrix
         rows={[
           row(0, {
-            cells: { openai: failed, perplexity: thin, gemini: thin, anthropic: thin } as MatrixRow["cells"],
+            cells: { openai: failed, gemini: thin, anthropic: thin } as MatrixRow["cells"],
           }),
         ]}
       />
@@ -107,7 +107,7 @@ describe("PromptMatrix", () => {
     ).toBeInTheDocument();
     expect(
       screen.getByRole("link", {
-        name: "best localization tools 0 — Perplexity Sonar API: fewer than 3 usable answers yet",
+        name: "best localization tools 0 — Gemini API, grounded: fewer than 3 usable answers yet",
       })
     ).toBeInTheDocument();
   });

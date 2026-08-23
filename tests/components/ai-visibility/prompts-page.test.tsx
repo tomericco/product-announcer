@@ -115,7 +115,7 @@ function setup(overrides: Record<string, unknown> = {}) {
     enabled: true,
     cadence: "weekly",
     dayOfWeek: 1,
-    engines: ["openai", "perplexity", "gemini", "anthropic"],
+    engines: ["openai", "gemini", "anthropic"],
     samplesPerPrompt: 3,
     monthlyCapUsd: 20,
     ...((o.settings as object) ?? {}),
@@ -236,7 +236,7 @@ describe("prompts page — what the editor is handed", () => {
           branded: false,
           cells: [
             { engine: "openai", hits: 2, n: 3 },
-            { engine: "perplexity", hits: 1, n: 2 },
+            { engine: "gemini", hits: 1, n: 2 },
           ],
         },
       ],
@@ -245,7 +245,7 @@ describe("prompts page — what the editor is handed", () => {
 
     expect(captured.editor!.rows[0].chips).toEqual([
       { engine: "openai", named: 2, samples: 3 },
-      { engine: "perplexity", named: null, samples: 2 },
+      { engine: "gemini", named: null, samples: 2 },
     ]);
   });
 

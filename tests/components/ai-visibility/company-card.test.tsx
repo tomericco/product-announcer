@@ -71,7 +71,7 @@ describe("AiVisibilityCard", () => {
     // Someone deciding whether to flip it should not have to go and find that
     // out somewhere else.
     card();
-    const intro = screen.getByText(/Asks ChatGPT, Perplexity, Gemini and Claude/);
+    const intro = screen.getByText(/Asks ChatGPT, Gemini and Claude/);
     expect(intro).toHaveTextContent("on a schedule you set in Settings");
     expect(intro).toHaveTextContent("Off means nothing runs and nothing is billed");
     expect(intro).toHaveTextContent("anything already measured is kept");
@@ -125,9 +125,9 @@ describe("AiVisibilityCard", () => {
     // to do with the rule under test.
     card({
       enabled: false,
-      source: source({ status: "disabled", lastError: "Perplexity: 429 rate limited" }),
+      source: source({ status: "disabled", lastError: "Claude: 429 rate limited" }),
     });
-    expect(screen.getByText("Perplexity: 429 rate limited")).toBeInTheDocument();
+    expect(screen.getByText("Claude: 429 rate limited")).toBeInTheDocument();
     // The rest of the health block survives with it — the date and the badge
     // are what tell the operator whether the error is current.
     expect(screen.getByText("Last ran Aug 17, 2026")).toBeInTheDocument();

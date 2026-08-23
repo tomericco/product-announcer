@@ -69,7 +69,7 @@ describe("the settings estimate and the cap gate agree", () => {
       { intent: "brand_check" },
     ]);
     const settings = {
-      engines: ["openai", "perplexity"],
+      engines: ["openai", "gemini"],
       samplesPerPrompt: 3,
       monthlyCapUsd: 20,
     };

@@ -24,13 +24,13 @@ const { generatePromptSet, planRun, runSlice, finalizeRun, afterCallbacks } = vi
   // is a real assertion rather than an index into an empty tuple.
   planRun: vi.fn<
     (tenantId: string, opts: { trigger: string; now: () => Date }) => Promise<{ ok: boolean; runId?: string }>
-  >(async () => ({ ok: true, runId: "run-1", plannedCalls: 360, estimateUsd: 3.12 })),
+  >(async () => ({ ok: true, runId: "run-1", plannedCalls: 270, estimateUsd: 3.12 })),
   runSlice: vi.fn<
     (
       runId: string,
       opts: { budgetMs: number; concurrency: number; now: () => Date }
     ) => Promise<{ processed: number; remaining: number; budgetSpent: boolean; pausedByCap: boolean }>
-  >(async () => ({ processed: 360, remaining: 0, budgetSpent: false, pausedByCap: false })),
+  >(async () => ({ processed: 270, remaining: 0, budgetSpent: false, pausedByCap: false })),
   finalizeRun: vi.fn<(runId: string, opts: { budgetMs: number; now: () => Date }) => Promise<unknown>>(
     async () => ({})
   ),
@@ -483,7 +483,7 @@ describe("runNowAction", () => {
   it("drives the run to complete after the response, without waiting for the daily cron", async () => {
     expect(await runNowAction()).toEqual({ ok: true, runId: "run-1" });
     // Nothing has run yet — `after` defers past the response flush, so the
-    // human is never kept waiting on 360 engine calls.
+    // human is never kept waiting on 270 engine calls.
     expect(runSlice).not.toHaveBeenCalled();
     expect(afterCallbacks).toHaveLength(1);
 
