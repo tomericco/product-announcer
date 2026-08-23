@@ -8,7 +8,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import type { EngineId } from "@/lib/ai-visibility/types";
-import { ENGINE_LABEL, ENGINE_ORDER, ENGINE_SHORT } from "./engine-labels";
+import { ENGINE_LABEL, ENGINE_SHORT } from "./engine-labels";
 
 export type MatrixCell = { named: number | null; samples: number; failed: boolean };
 
@@ -16,8 +16,15 @@ export type MatrixRow = {
   promptId: string;
   text: string;
   branded: boolean;
-  cells: Record<EngineId, MatrixCell>;
+  /**
+   * Keyed by engine, and PARTIAL: the page cuts these to the engines the
+   * tenant actually runs, the same list it passes as `engines`.
+   */
+  cells: Partial<Record<EngineId, MatrixCell>>;
 };
+
+/** An engine with no cut at all — never asked, so never a zero. */
+const NO_CUT: MatrixCell = { named: null, samples: 0, failed: false };
 
 /** The design's floor: below three samples a cell says nothing worth saying. */
 const MIN_CELL_SAMPLES = 3;
@@ -67,8 +74,13 @@ const TONE_CLASS: Record<ReturnType<typeof cellReading>["tone"], string> = {
  * Capped at 20 rows with the rest revealed IN PLACE rather than paginated —
  * the gap you are hunting for is as likely to be prompt 24 as prompt 3, and
  * a second page is a place people do not go.
+ *
+ * The columns are the caller's `engines`, not every engine that exists: a
+ * switched-off engine has no tile for the same reason it gets no column here,
+ * and a permanent column of dashes for something nobody is paying for reads as
+ * a broken engine rather than an unused one.
  */
-export function PromptMatrix({ rows }: { rows: MatrixRow[] }) {
+export function PromptMatrix({ rows, engines }: { rows: MatrixRow[]; engines: readonly EngineId[] }) {
   const [expanded, setExpanded] = useState(false);
   const visible = expanded ? rows : rows.slice(0, MATRIX_INITIAL_ROWS);
 
@@ -78,7 +90,7 @@ export function PromptMatrix({ rows }: { rows: MatrixRow[] }) {
         <TableHeader>
           <TableRow>
             <TableHead className="w-full">Prompt</TableHead>
-            {ENGINE_ORDER.map((engine) => (
+            {engines.map((engine) => (
               <TableHead key={engine} className="text-center">
                 {ENGINE_SHORT[engine]}
               </TableHead>
@@ -98,8 +110,8 @@ export function PromptMatrix({ rows }: { rows: MatrixRow[] }) {
                   </Badge>
                 )}
               </TableCell>
-              {ENGINE_ORDER.map((engine) => {
-                const cell = row.cells[engine];
+              {engines.map((engine) => {
+                const cell = row.cells[engine] ?? NO_CUT;
                 const reading = cellReading(cell);
                 // "GPT –" is the whole accessible name a screen reader gets
                 // from the visible text, and it says nothing: not which

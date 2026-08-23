@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { SovSparkline } from "../../../src/app/(dashboard)/ai-visibility/sov-sparkline";
 // The pure derivations live outside the "use client" module so a Server
 // Component can call them — importing them from here mirrors that.
@@ -157,6 +157,36 @@ describe("CompetitorBars", () => {
     // One accent per region: a competitor bar is a neutral chart tone with no
     // outline at all.
     expect(bars[1].getAttribute("stroke")).toBe("none");
+  });
+
+  it("breaks a share down over the engines it was handed, not every engine that exists", async () => {
+    // A disabled engine has no tile and no matrix column; a permanent "—" row
+    // here reads as a broken engine rather than one nobody is paying for.
+    render(
+      <CompetitorBars
+        n={84}
+        rows={[
+          share({
+            brandId: "us",
+            name: "Versional",
+            isTenant: true,
+            perEngine: [
+              { engine: "openai", sharePct: 40 },
+              { engine: "anthropic", sharePct: null },
+            ],
+          }),
+        ]}
+      />
+    );
+
+    const trigger = screen.getByRole("button", { name: /Versional/ });
+    fireEvent.pointerEnter(trigger, { pointerType: "mouse" });
+    fireEvent.mouseEnter(trigger);
+    await screen.findByText("GPT-5.x API + web search", undefined, { timeout: 2000 });
+    expect(screen.getByText("Claude API + web search")).toBeInTheDocument();
+    expect(screen.queryByText("Gemini API, grounded")).not.toBeInTheDocument();
+    // A brand with no mentions on an engine it DOES run still gets its row.
+    expect(screen.getByText("—")).toBeInTheDocument();
   });
 
   it("labels every row with its share, us first, in the same order as the bars", () => {

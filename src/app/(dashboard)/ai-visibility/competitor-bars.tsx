@@ -4,7 +4,7 @@ import { Bar, BarChart, Cell, XAxis, YAxis } from "recharts";
 import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart";
 import { PreviewCard, PreviewCardContent, PreviewCardTrigger } from "@/components/ui/preview-card";
 import type { EngineId } from "@/lib/ai-visibility/types";
-import { ENGINE_LABEL, ENGINE_ORDER } from "./engine-labels";
+import { ENGINE_LABEL } from "./engine-labels";
 
 export type BrandShare = {
   brandId: string;
@@ -84,16 +84,17 @@ export function CompetitorBars({ rows, n }: { rows: BrandShare[]; n: number }) {
               </PreviewCardTrigger>
               <PreviewCardContent className="max-w-64">
                 <p className="font-medium">{row.name}</p>
+                {/* The rows the page HANDED us, not every engine that exists:
+                    `perEngine` is already cut to the engines the tenant runs
+                    (and in ENGINE_ORDER), so walking the full list instead
+                    drew a permanent "—" for an engine nobody is paying for. */}
                 <ul className="space-y-0.5">
-                  {ENGINE_ORDER.map((engine) => {
-                    const cut = row.perEngine.find((entry) => entry.engine === engine);
-                    return (
-                      <li key={engine} className="flex justify-between gap-3">
-                        <span className="text-muted-foreground">{ENGINE_LABEL[engine]}</span>
-                        <span>{cut && cut.sharePct !== null ? `${cut.sharePct.toFixed(0)}%` : "—"}</span>
-                      </li>
-                    );
-                  })}
+                  {row.perEngine.map((cut) => (
+                    <li key={cut.engine} className="flex justify-between gap-3">
+                      <span className="text-muted-foreground">{ENGINE_LABEL[cut.engine]}</span>
+                      <span>{cut.sharePct === null ? "—" : `${cut.sharePct.toFixed(0)}%`}</span>
+                    </li>
+                  ))}
                 </ul>
               </PreviewCardContent>
             </PreviewCard>

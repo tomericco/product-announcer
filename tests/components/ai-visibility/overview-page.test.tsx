@@ -27,6 +27,7 @@ const captured = {
   tiles: null as EngineTile[] | null,
   bars: null as { rows: BrandShare[]; n: number } | null,
   matrix: null as MatrixRow[] | null,
+  matrixEngines: null as readonly EngineId[] | null,
   domains: null as CitedDomainRow[] | null,
   runNow: null as {
     estimate: RunEstimate;
@@ -50,8 +51,9 @@ vi.mock("@/app/(dashboard)/ai-visibility/competitor-bars", () => ({
   },
 }));
 vi.mock("@/app/(dashboard)/ai-visibility/prompt-matrix", () => ({
-  PromptMatrix: (props: { rows: MatrixRow[] }) => {
+  PromptMatrix: (props: { rows: MatrixRow[]; engines: readonly EngineId[] }) => {
     captured.matrix = props.rows;
+    captured.matrixEngines = props.engines;
     return <div data-testid="prompt-matrix" />;
   },
 }));
@@ -242,6 +244,7 @@ beforeEach(() => {
   captured.tiles = null;
   captured.bars = null;
   captured.matrix = null;
+  captured.matrixEngines = null;
   captured.domains = null;
   captured.runNow = null;
   captured.generate = null;
@@ -609,7 +612,7 @@ describe("overview — what the tiles, the matrix and the domain table are hande
     expect(cells.openai).toEqual({ named: 2, samples: 3, failed: false });
     // Never asked: null, not 0 — 0 would claim we asked and were not named.
     expect(cells.gemini).toEqual({ named: null, samples: 0, failed: false });
-    expect(cells.anthropic.failed).toBe(true);
+    expect(cells.anthropic!.failed).toBe(true);
   });
 
   it("one rate-limited prompt does not blank its engine's other cells", async () => {
@@ -628,7 +631,7 @@ describe("overview — what the tiles, the matrix and the domain table are hande
     await renderPage();
 
     const [first, second] = captured.matrix!;
-    expect(first.cells.gemini.failed).toBe(true);
+    expect(first.cells.gemini!.failed).toBe(true);
     expect(second.cells.gemini).toEqual({ named: 3, samples: 3, failed: false });
   });
 
@@ -644,11 +647,27 @@ describe("overview — what the tiles, the matrix and the domain table are hande
     });
     await renderPage();
 
-    expect(captured.matrix![0].cells.openai.failed).toBe(false);
-    expect(captured.matrix![0].cells.gemini.failed).toBe(true);
+    expect(captured.matrix![0].cells.openai!.failed).toBe(false);
+    expect(captured.matrix![0].cells.gemini!.failed).toBe(true);
     // And the tile agrees: no destructive note for an engine that only refused.
     const byEngine = new Map(captured.tiles!.map((tile) => [tile.engine, tile]));
     expect(byEngine.get("openai")!.failureNote).toBeNull();
+  });
+
+  it("gives the matrix and the benchmark only the engines the tenant runs", async () => {
+    // The tiles already did this. The matrix walked every engine that exists,
+    // so a switched-off engine left a permanent column of dashes that reads as
+    // an outage rather than as something nobody is paying for.
+    setup({
+      settings: { engines: ["openai", "anthropic"] },
+      matrix: [{ promptId: "p1", text: "q", branded: false, cells: [{ engine: "openai", hits: 2, n: 3 }] }],
+      counts: counts({ tenantMentions: 20 }),
+    });
+    await renderPage();
+
+    expect(captured.matrixEngines).toEqual(["openai", "anthropic"]);
+    expect(Object.keys(captured.matrix![0].cells)).toEqual(["openai", "anthropic"]);
+    expect(captured.bars!.rows[0].perEngine.map((cut) => cut.engine)).toEqual(["openai", "anthropic"]);
   });
 
   it("links a third-party domain to the signal that makes Propose brief resolvable, and nothing else", async () => {

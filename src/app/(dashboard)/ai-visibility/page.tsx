@@ -406,8 +406,10 @@ export default async function AiVisibilityPage() {
     promptId: row.promptId,
     text: row.text,
     branded: row.branded,
+    // `shownEngines`, not every engine: a switched-off engine has no tile, and
+    // a column of dashes for one is read as broken rather than unused.
     cells: Object.fromEntries(
-      ENGINE_ORDER.map((engine) => {
+      shownEngines.map((engine) => {
         const cell = row.cells.find((entry) => entry.engine === engine);
         return [
           engine,
@@ -607,7 +609,7 @@ export default async function AiVisibilityPage() {
               {matrixRows.length === 0 ? (
                 <p className="text-sm text-muted-foreground">No prompts have produced an answer yet.</p>
               ) : (
-                <PromptMatrix rows={matrixRows} />
+                <PromptMatrix rows={matrixRows} engines={shownEngines} />
               )}
             </CardContent>
           </Card>

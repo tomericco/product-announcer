@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import type { EngineId } from "../../../src/lib/ai-visibility/types";
+import { ENGINE_ORDER } from "../../../src/app/(dashboard)/ai-visibility/engine-labels";
 import {
   MATRIX_INITIAL_ROWS,
   PromptMatrix,
@@ -66,7 +67,7 @@ describe("cellReading", () => {
 describe("PromptMatrix", () => {
   it("shows 20 rows and offers the rest in place", () => {
     const rows = Array.from({ length: 28 }, (_, index) => row(index));
-    render(<PromptMatrix rows={rows} />);
+    render(<PromptMatrix rows={rows} engines={ENGINE_ORDER} />);
 
     expect(screen.getAllByRole("row")).toHaveLength(MATRIX_INITIAL_ROWS + 1); // + header
     fireEvent.click(screen.getByRole("button", { name: "Show all 28" }));
@@ -74,13 +75,13 @@ describe("PromptMatrix", () => {
   });
 
   it("offers no expander when everything already fits", () => {
-    render(<PromptMatrix rows={[row(0)]} />);
+    render(<PromptMatrix rows={[row(0)]} engines={ENGINE_ORDER} />);
 
     expect(screen.queryByRole("button", { name: /show all/i })).not.toBeInTheDocument();
   });
 
   it("links a cell to that prompt's detail page with the engine tab pre-opened", () => {
-    render(<PromptMatrix rows={[row(0)]} />);
+    render(<PromptMatrix rows={[row(0)]} engines={ENGINE_ORDER} />);
 
     expect(
       screen.getByRole("link", {
@@ -94,6 +95,7 @@ describe("PromptMatrix", () => {
     const thin = { named: 1, samples: 2, failed: false };
     render(
       <PromptMatrix
+        engines={ENGINE_ORDER}
         rows={[
           row(0, {
             cells: { openai: failed, gemini: thin, anthropic: thin } as MatrixRow["cells"],
@@ -117,7 +119,7 @@ describe("PromptMatrix", () => {
   });
 
   it("spells the count out for a screen reader — 'named in 2 of 3', never a tick", () => {
-    render(<PromptMatrix rows={[row(0, { cells: cells(2) })]} />);
+    render(<PromptMatrix rows={[row(0, { cells: cells(2) })]} engines={ENGINE_ORDER} />);
 
     const cell = screen.getAllByRole("link", { name: /named in 2 of 3 answers/ })[0];
     // The visible glyph is the compact form; the accessible name is the sentence.
@@ -128,28 +130,39 @@ describe("PromptMatrix", () => {
   it("fills a 3-of-3 cell with the accent and leaves a 0-of-3 an outline, not an error tone", () => {
     // Named on every sample is state, which is what the accent is for. Being
     // unnamed on one prompt is a gap to work on, not a failure.
-    const { container, rerender } = render(<PromptMatrix rows={[row(0, { cells: cells(3) })]} />);
+    const { container, rerender } = render(<PromptMatrix rows={[row(0, { cells: cells(3) })]} engines={ENGINE_ORDER} />);
     expect(container.querySelector("tbody a[href*='engine=']")!.className).toContain("bg-brand-subtle");
 
-    rerender(<PromptMatrix rows={[row(0, { cells: cells(0) })]} />);
+    rerender(<PromptMatrix rows={[row(0, { cells: cells(0) })]} engines={ENGINE_ORDER} />);
     const absent = container.querySelector("tbody a[href*='engine=']")!.className;
     expect(absent).toContain("border-border");
     expect(absent).not.toContain("bg-brand-subtle");
     expect(absent).not.toContain("destructive");
 
-    rerender(<PromptMatrix rows={[row(0, { cells: cells(1, 2) })]} />);
+    rerender(<PromptMatrix rows={[row(0, { cells: cells(1, 2) })]} engines={ENGINE_ORDER} />);
     const unavailable = container.querySelector("tbody a[href*='engine=']")!.className;
     expect(unavailable).toContain("border-dashed");
   });
 
   it("marks a brand-check row, so its 3/3 is not read as a discovery win", () => {
-    render(<PromptMatrix rows={[row(0, { branded: true })]} />);
+    render(<PromptMatrix rows={[row(0, { branded: true })]} engines={ENGINE_ORDER} />);
 
     expect(screen.getByText("Brand check")).toBeInTheDocument();
   });
 
+  it("draws a column only for the engines it was given, not a dead one for a disabled engine", () => {
+    render(<PromptMatrix rows={[row(0)]} engines={["openai", "anthropic"]} />);
+
+    expect(screen.getAllByRole("columnheader").map((head) => head.textContent)).toEqual([
+      "Prompt",
+      "GPT",
+      "Claude",
+    ]);
+    expect(screen.queryByRole("link", { name: /Gemini/ })).not.toBeInTheDocument();
+  });
+
   it("links the prompt text to the detail page with no engine preselected", () => {
-    render(<PromptMatrix rows={[row(0)]} />);
+    render(<PromptMatrix rows={[row(0)]} engines={ENGINE_ORDER} />);
 
     expect(screen.getByRole("link", { name: "best localization tools 0" })).toHaveAttribute(
       "href",
