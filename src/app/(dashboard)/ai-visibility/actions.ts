@@ -367,6 +367,12 @@ export async function runNowAction(): Promise<ActionResult<{ runId: string }>> {
         // on a `runSlice` that returns immediately until the 240s budget lapsed.
         if (outcome.cancelled) return;
         if (outcome.remaining === 0) break;
+        // Work is left, but the slice handed out nothing — every pending row is
+        // waiting out a retry backoff. Looping would re-query the work list as
+        // fast as this loop can run for the rest of the 240s budget, which is
+        // the outer twin of the hot loop the batch query's backoff filter
+        // stops. The run stays `running`; the sweep resumes it.
+        if (outcome.processed === 0) return;
         if (remainingMs() <= 0) return; // still `running`; the sweep resumes it
       }
 

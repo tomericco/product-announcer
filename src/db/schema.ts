@@ -676,6 +676,20 @@ export const aiVisibilitySamples = pgTable(
     raw: jsonb("raw"),
     costUsd: real("cost_usd").notNull().default(0),
     error: text("error"),
+    // How many times an engine has been ASKED this question and come back with
+    // a retryable failure — a 429, a 5xx, a dropped connection, a timeout.
+    // Deliberately the same shape as `judgeAttempts` below, because it is the
+    // same problem: something transient must not cost a data point outright,
+    // and something permanent must not be re-bought forever. At 5 prompts x 3
+    // samples an engine has n=15 in a run, so three lost samples put it under
+    // the trend chart's display floor and its line disappears for that run.
+    askAttempts: smallint("ask_attempts").notNull().default(0),
+    // Not before this instant may the row be handed to an engine again. NULL is
+    // "now" — every row is planned that way, so a first attempt waits for
+    // nothing. Without it `runSlice`'s batch query re-picks the row it just
+    // failed on the very next batch and hot-loops through the whole slice
+    // budget against a rate limit that has had no time to clear.
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }),
     judged: boolean("judged").notNull().default(false),
     // How many judge calls this row has been part of that came back an error.
     // A chunk that fails is retried on the next tick, and without a ceiling a

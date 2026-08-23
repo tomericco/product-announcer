@@ -186,12 +186,14 @@ describe("askOpenAi", () => {
 
     const rateLimited = vi.fn(async () => new Response("slow down", { status: 429 }));
     const limited = await askOpenAi("x", { fetchImpl: rateLimited as never });
-    expect(limited).toEqual({ kind: "error", message: expect.stringContaining("429") });
+    // Retryable: a rate limit is a moment, and the sample is asked again.
+    expect(limited).toEqual({ kind: "error", message: expect.stringContaining("429"), retryable: true });
 
     const broken = vi.fn(async () => new Response("boom", { status: 503 }));
     expect(await askOpenAi("x", { fetchImpl: broken as never })).toEqual({
       kind: "error",
       message: expect.stringContaining("503"),
+      retryable: true,
     });
 
     const thrower = vi.fn(async () => {
@@ -199,6 +201,7 @@ describe("askOpenAi", () => {
     });
     expect(await askOpenAi("x", { fetchImpl: thrower as never })).toEqual({
       kind: "error",
+      retryable: true,
       message: expect.stringContaining("socket hang up"),
     });
   });

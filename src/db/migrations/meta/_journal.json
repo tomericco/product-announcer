@@ -505,6 +505,13 @@
       "when": 1787481926321,
       "tag": "0071_little_iceman",
       "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1787506417314,
+      "tag": "0072_tidy_squirrel_girl",
+      "breakpoints": true
     }
   ]
 }

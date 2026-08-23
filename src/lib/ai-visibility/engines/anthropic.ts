@@ -1,6 +1,7 @@
 import {
   asArray,
   isRecord,
+  isRetryableStatus,
   ENGINE_REQUEST_TIMEOUT_MS,
 } from "@/lib/ai-visibility/engines/shape";
 import {
@@ -174,12 +175,21 @@ export async function askAnthropic(
       }),
     });
   } catch (error) {
-    return { kind: "error", message: `anthropic request failed: ${String(error)}` };
+    // Transport, or the 60s abort. Nothing reached the model, so nothing was
+    // billed and the next wave may well get through — see `EngineError.retryable`.
+    return { kind: "error", message: `anthropic request failed: ${String(error)}`, retryable: true };
   }
 
   if (!response.ok) {
     const body = await response.text().catch(() => "");
-    return { kind: "error", message: `anthropic ${response.status}: ${body.slice(0, 300)}` };
+    return {
+      kind: "error",
+      message: `anthropic ${response.status}: ${body.slice(0, 300)}`,
+      // Spread rather than `retryable: false`: terminal is the ABSENCE of the
+      // flag everywhere else in this file, and one path saying it a second way
+      // is how a reader concludes the two mean different things.
+      ...(isRetryableStatus(response.status) ? { retryable: true } : {}),
+    };
   }
 
   let raw: AnthropicResponse;

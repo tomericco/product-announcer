@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
 import { isUniqueViolation } from "@/db/errors";
 import {
@@ -56,6 +56,51 @@ const SAMPLE_INSERT_CHUNK = 200;
 
 /** Statuses that mean "a run is already in flight for this tenant". */
 const IN_FLIGHT: string[] = ["pending", "running"];
+
+/**
+ * How many times an engine is asked one question before the sample is written
+ * off as an error.
+ *
+ * DELIBERATELY the same give-up shape as the judge's `MAX_JUDGE_ATTEMPTS`, and
+ * the same number: a counter on the row, a ceiling, and the last message kept.
+ * One idiom for "retry the transient, give up on the permanent" in this
+ * feature, not two — the judge's version is the one this was copied from.
+ *
+ * Three, for the same reasons it gives: a 429 or a provider 5xx clears in
+ * seconds, and anything still failing on the third ask is not transient. Only
+ * retryable failures consume an attempt (see `EngineError.retryable`); a
+ * refusal, a truncated answer or a 401 lands as its final status immediately.
+ */
+export const MAX_SAMPLE_ATTEMPTS = 3;
+
+/**
+ * How long a sample waits after its Nth retryable failure, indexed from 0.
+ *
+ * Measured against the real numbers rather than picked round: the engine
+ * timeout is 60s, a Run-now slice budget is 60s inside a 240s total, and a
+ * sweep source gets 120s.
+ *
+ * 30s then 60s means the whole retry ladder for one sample is 90s of waiting —
+ * comfortably inside the 240s Run-now drive, so on an ordinary run BOTH retries
+ * land in the same invocation the human started. They land in a LATER BATCH,
+ * which is the intent: the other 14 samples of that engine keep the wave busy
+ * for far longer than 30s, so by the time the queue drains the backoff has
+ * elapsed and the row is simply picked up again.
+ *
+ * The alternative — a backoff shorter than a wave — buys nothing, because the
+ * batch query is what re-picks the row and it only runs between waves. A
+ * backoff LONGER than a slice budget would also have been defensible (the retry
+ * lands on the next slice, or on the sweep); it was not chosen because a run
+ * whose last few rows are all in backoff stops driving and then waits for a
+ * human's Resume or the daily cron, and 90s of total wait keeps that rare.
+ */
+const SAMPLE_RETRY_BACKOFF_MS = [30_000, 60_000] as const;
+
+/** The wait after `attempts` retryable failures. Clamped, so a ladder change cannot index off the end. */
+export function sampleBackoffMs(attempts: number): number {
+  const index = Math.min(Math.max(attempts, 1), SAMPLE_RETRY_BACKOFF_MS.length) - 1;
+  return SAMPLE_RETRY_BACKOFF_MS[index];
+}
 
 /**
  * What a stopped run says about itself.
@@ -429,15 +474,37 @@ export async function runSlice(
         id: aiVisibilitySamples.id,
         engine: aiVisibilitySamples.engine,
         promptText: aiVisibilityPrompts.text,
+        askAttempts: aiVisibilitySamples.askAttempts,
       })
       .from(aiVisibilitySamples)
       .innerJoin(aiVisibilityPrompts, eq(aiVisibilitySamples.promptId, aiVisibilityPrompts.id))
-      .where(and(eq(aiVisibilitySamples.runId, runId), eq(aiVisibilitySamples.status, "pending")))
+      .where(
+        and(
+          eq(aiVisibilitySamples.runId, runId),
+          eq(aiVisibilitySamples.status, "pending"),
+          // The backoff filter, and it is load-bearing rather than tidy. A
+          // retryable failure leaves the row `pending`, so without this the
+          // very next batch selects the same row — the identical 429 comes
+          // back, the row goes round again, and the slice hot-loops through
+          // its whole budget on one rate-limited sample while every other
+          // pending row waits behind it. NULL is "no wait": that is how every
+          // row is planned, so a first attempt is never delayed.
+          or(
+            isNull(aiVisibilitySamples.nextAttemptAt),
+            lte(aiVisibilitySamples.nextAttemptAt, opts.now())
+          )
+        )
+      )
       // Stable order so a resumed run is deterministic and a starved tail is a
       // policy rather than an accident of the planner.
       .orderBy(asc(aiVisibilitySamples.id))
       .limit(batchSize(opts.concurrency));
 
+    // Nothing to hand out. Either the work list is finished, or everything left
+    // is waiting out a backoff — in which case the slice ends with
+    // `remaining > 0` and a later driver (the next slice, the sweep, or a
+    // human's Resume) picks the rows up once their timestamps come due. That is
+    // the whole reason this is a `break` and not a spin.
     if (batch.length === 0) break;
 
     // Pushed out per batch rather than held for the whole slice, so a slice
@@ -473,12 +540,32 @@ export async function runSlice(
           // know rather than pretending the sample was free, which is the only
           // direction of error the cap can survive.
           const knownCost = result.costUsd ?? 0;
+
+          // A retryable failure — a 429, a 5xx, a timeout — is a moment, not a
+          // verdict. Written back `pending` with the attempt counted and a
+          // backoff stamped, so the row keeps its place in the work list
+          // instead of costing the engine a data point outright. `error` is
+          // still stored on the way past: if this turns out to be the last
+          // attempt, the message a human reads is the last thing that went
+          // wrong, exactly as it was before.
+          const attempts = row.askAttempts + 1;
+          const retrying = result.retryable === true && attempts < MAX_SAMPLE_ATTEMPTS;
+
           await database
             .update(aiVisibilitySamples)
             .set({
-              status: result.kind === "refused" ? "refused" : "error",
+              status: retrying ? "pending" : result.kind === "refused" ? "refused" : "error",
               error: result.message,
-              costUsd: knownCost,
+              // ACCUMULATED, not assigned. Every attempt the provider billed is
+              // real money, and `reconcileRunCounters` re-derives the run's
+              // total from these rows at finalize — an assignment here would
+              // quietly forget the earlier attempts' spend and under-count the
+              // monthly cap by however many retries happened.
+              costUsd: sql`${aiVisibilitySamples.costUsd} + ${knownCost}`,
+              askAttempts: attempts,
+              nextAttemptAt: retrying
+                ? new Date(opts.now().getTime() + sampleBackoffMs(attempts))
+                : null,
               askedAt: opts.now(),
             })
             .where(eq(aiVisibilitySamples.id, row.id));
@@ -494,8 +581,14 @@ export async function runSlice(
             searchUsed: result.searchUsed,
             searchQueries: result.searchQueries,
             raw: { engine: result.raw, citations: result.citations } as Record<string, unknown>,
-            costUsd: result.costUsd,
+            // Accumulated for the same reason the failure path is: a sample
+            // that 429'd twice before answering was billed for whatever those
+            // attempts cost, and this row is what the run's final spend is
+            // summed from. Identical to an assignment on the ordinary path,
+            // where the row is still at its 0 default.
+            costUsd: sql`${aiVisibilitySamples.costUsd} + ${result.costUsd}`,
             error: null,
+            nextAttemptAt: null,
             askedAt: opts.now(),
           })
           .where(eq(aiVisibilitySamples.id, row.id));
@@ -523,10 +616,16 @@ export async function runSlice(
       } catch (error) {
         // Per-row try/catch: one hostile or broken engine response must not cost
         // the other 359 samples their slice.
+        //
+        // TERMINAL, and not retried. `ask()` promises never to throw, and every
+        // failure it knows how to classify comes back as an `EngineError` — a
+        // throw escaping it is our bug (a shape we read wrong, a TypeError in a
+        // parser), which asking the provider again cannot fix. Retrying it
+        // would pay three times for the same crash.
         try {
           await database
             .update(aiVisibilitySamples)
-            .set({ status: "error", error: String(error), askedAt: opts.now() })
+            .set({ status: "error", error: String(error), nextAttemptAt: null, askedAt: opts.now() })
             .where(eq(aiVisibilitySamples.id, row.id));
         } catch {
           // The row stays pending and is retried next slice. Nothing better to do.

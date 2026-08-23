@@ -93,6 +93,8 @@ describe("askGemini", () => {
     expect(await askGemini("x", { fetchImpl: rateLimited as never })).toEqual({
       kind: "error",
       message: expect.stringContaining("429"),
+      // Retryable: a quota error clears, and the sample is asked again.
+      retryable: true,
     });
 
     const thrower = vi.fn(async () => {
@@ -101,6 +103,7 @@ describe("askGemini", () => {
     expect(await askGemini("x", { fetchImpl: thrower as never })).toEqual({
       kind: "error",
       message: expect.stringContaining("socket hang up"),
+      retryable: true,
     });
   });
 
@@ -218,6 +221,7 @@ describe("askGemini, the remaining error paths and extraction edges", () => {
     expect(await askGemini("x", { fetchImpl: broken as never })).toEqual({
       kind: "error",
       message: expect.stringContaining("500"),
+      retryable: true,
     });
   });
 

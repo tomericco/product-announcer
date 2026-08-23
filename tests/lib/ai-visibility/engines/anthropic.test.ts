@@ -122,6 +122,8 @@ describe("askAnthropic", () => {
     expect(await askAnthropic("x", { fetchImpl: overloaded as never })).toEqual({
       kind: "error",
       message: expect.stringContaining("529"),
+      // Retryable: 529 is "overloaded", which is the definition of a moment.
+      retryable: true,
     });
 
     const thrower = vi.fn(async () => {
@@ -130,6 +132,7 @@ describe("askAnthropic", () => {
     expect(await askAnthropic("x", { fetchImpl: thrower as never })).toEqual({
       kind: "error",
       message: expect.stringContaining("socket hang up"),
+      retryable: true,
     });
   });
 
@@ -301,12 +304,14 @@ describe("askAnthropic, the remaining error paths and extraction edges", () => {
     expect(await askAnthropic("x", { fetchImpl: rateLimited as never })).toEqual({
       kind: "error",
       message: expect.stringContaining("429"),
+      retryable: true,
     });
 
     const broken = vi.fn(async () => new Response("boom", { status: 500 }));
     expect(await askAnthropic("x", { fetchImpl: broken as never })).toEqual({
       kind: "error",
       message: expect.stringContaining("500"),
+      retryable: true,
     });
   });
 

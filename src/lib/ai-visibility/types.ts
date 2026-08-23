@@ -78,6 +78,33 @@ export type EngineError = {
    * callers should treat it as an unmeasured cost, not a zero.
    */
   costUsd?: number;
+  /**
+   * Whether asking this engine the same question again could plausibly work.
+   *
+   * Set by the CLIENT, because the client is the only thing that knows what the
+   * provider actually said. `runSlice` retries a `true` and gives up on
+   * everything else; retrying a terminal failure spends real money to fail
+   * identically, which is worse than the missing sample.
+   *
+   * RETRYABLE — the call never produced an answer and the reason is about the
+   * moment rather than the request:
+   *   - HTTP 429 (rate limited)
+   *   - any 5xx (provider fault)
+   *   - a transport failure, a dropped connection, or the 60s abort timeout
+   *
+   * TERMINAL (leave undefined) — asking again produces the same outcome:
+   *   - 4xx other than 429: 401 (bad or out-of-funds key), 404 (bad model id),
+   *     400 (a request we built wrong)
+   *   - a missing API key
+   *   - `kind: "refused"` — the model read the prompt and declined; that IS the
+   *     measurement, and it is billed
+   *   - a truncated answer (`incomplete_details`, `MAX_TOKENS`, `max_tokens`,
+   *     `pause_turn`) — the most expensive kind of call there is, and it will
+   *     truncate again
+   *   - unparseable or non-object JSON, and Gemini's grounding canary: both
+   *     mean OUR reader is wrong about the shape, which no retry fixes
+   */
+  retryable?: boolean;
 };
 
 export type EngineClient = {

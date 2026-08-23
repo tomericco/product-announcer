@@ -1,6 +1,7 @@
 import {
   asArray,
   isRecord,
+  isRetryableStatus,
   ENGINE_REQUEST_TIMEOUT_MS,
 } from "@/lib/ai-visibility/engines/shape";
 import {
@@ -144,7 +145,9 @@ export async function askOpenAi(
       }),
     });
   } catch (error) {
-    return { kind: "error", message: `openai request failed: ${String(error)}` };
+    // Transport, or the 60s abort. Nothing reached the model, so nothing was
+    // billed and the next wave may well get through — see `EngineError.retryable`.
+    return { kind: "error", message: `openai request failed: ${String(error)}`, retryable: true };
   }
 
   // 429 and 5xx are errors, not misses: the sample is stored with status
@@ -152,7 +155,14 @@ export async function askOpenAi(
   // coverage gap rather than as "they never named you".
   if (!response.ok) {
     const body = await response.text().catch(() => "");
-    return { kind: "error", message: `openai ${response.status}: ${body.slice(0, 300)}` };
+    return {
+      kind: "error",
+      message: `openai ${response.status}: ${body.slice(0, 300)}`,
+      // Spread rather than `retryable: false`: terminal is the ABSENCE of the
+      // flag everywhere else in this file, and one path saying it a second way
+      // is how a reader concludes the two mean different things.
+      ...(isRetryableStatus(response.status) ? { retryable: true } : {}),
+    };
   }
 
   let raw: OpenAiResponse;
