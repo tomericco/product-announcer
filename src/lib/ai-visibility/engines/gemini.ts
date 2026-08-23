@@ -39,7 +39,27 @@ export const GEMINI_DEFAULT_MODEL = "gemini-3.7-flash";
  * per tenant, so budgeting at list price is the only per-tenant estimate that
  * cannot under-count.
  */
-export const GEMINI_COST_PER_CALL_USD = 0.014;
+/**
+ * DERIVED, not measured — no Gemini key was available, so this assumes a call
+ * shaped like the two that were measured (~20k input, ~1.5k output, 2 queries):
+ *
+ *   input   20,000 x $1.50/M = $0.0300
+ *   output   1,500 x $7.50/M = $0.0113
+ *   search       2 x $14/1k  = $0.0280
+ *                              -------
+ *                              $0.0693
+ *
+ * At standard rates rather than the $0.75/$3.75 introductory ones that expire
+ * 2026-12-31, for the reason the Anthropic constant gives. Grounding bills per
+ * SEARCH QUERY, not per request, so a request that searches three times costs
+ * three times the grounding. The first 5,000 grounded prompts a month are free
+ * PER GOOGLE PROJECT — deliberately not modelled here, because that allowance
+ * is shared across every tenant and would make a per-call constant lie for all
+ * but the first.
+ *
+ * Re-measure once a key exists.
+ */
+export const GEMINI_COST_PER_CALL_USD = 0.069;
 
 const GEMINI_MODELS_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models";
 

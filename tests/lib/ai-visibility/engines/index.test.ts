@@ -19,17 +19,34 @@ describe("the engine registry", () => {
     }
   });
 
-  it("prices every engine, and the full weekly run lands near the $20 target", () => {
+  it("prices every engine from a measured call, not a guess", () => {
     for (const id of ENGINE_IDS) {
       expect(engineCost(id)).toBeGreaterThan(0);
-      expect(engineCost(id)).toBeLessThan(0.1);
+      // A grounded call puts the retrieved page text in the INPUT, so these are
+      // tens of cents, not the ~$0.01 a bare completion costs. An entry that
+      // drifts back under a cent means someone priced the answer and forgot the
+      // search results that produced it.
+      expect(engineCost(id)).toBeGreaterThan(0.05);
+      expect(engineCost(id)).toBeLessThan(1);
     }
+  });
 
-    // 30 prompts x 3 samples on all three engines, weekly.
+  it("reports what the DEFAULT run actually costs, which is far above the $20 cap", () => {
+    // 30 prompts x 3 samples on all three engines, weekly. This test does not
+    // assert a target — it pins the real number so that changing the run shape
+    // or a provider's rates has to be a deliberate edit here.
+    //
+    // The default cap is $20/month. This shape costs roughly nine times that,
+    // so a tenant on the defaults pauses partway through their first run. That
+    // is a product decision (fewer prompts, fewer samples, or a higher cap),
+    // NOT something to fix by quietly lowering these constants — the previous
+    // values were ~8-27x too low and made the estimate and the cap both lie.
     const perRun = ENGINE_IDS.reduce((total, id) => total + engineCost(id) * 30 * 3, 0);
     const perMonth = perRun * 4.33;
-    expect(perMonth).toBeGreaterThan(10);
-    expect(perMonth).toBeLessThan(30);
+
+    expect(perRun).toBeCloseTo(43.47, 1);
+    expect(perMonth).toBeGreaterThan(180);
+    expect(perMonth).toBeLessThan(195);
   });
 });
 
@@ -59,16 +76,24 @@ describe("the engine registry, wired to the clients it prices", () => {
     for (const label of labels) expect(label.trim().length).toBeGreaterThan(0);
   });
 
-  it("keeps the default weekly run inside the $20 cap on every engine combination", () => {
-    // The cap is a hard pause, so the worst case — all three engines, the 30
-    // prompt maximum, 5 samples — is the number that decides whether a tenant
-    // on defaults can ever complete a month.
-    const worstCase = ENGINE_IDS.reduce((total, id) => total + engineCost(id) * 30 * 5, 0) * 4.33;
-    expect(worstCase).toBeGreaterThan(20);
+  it("shows which run shapes actually fit the $20 cap, and which do not", () => {
+    const monthly = (prompts: number, samples: number, runsPerMonth: number) =>
+      ENGINE_IDS.reduce((total, id) => total + engineCost(id) * prompts * samples, 0) * runsPerMonth;
 
-    // …whereas the shipped default (3 samples) must fit under it.
-    const defaults = ENGINE_IDS.reduce((total, id) => total + engineCost(id) * 30 * 3, 0) * 4.33;
-    expect(defaults).toBeLessThan(20);
+    const WEEKLY = 4.33;
+    const FORTNIGHTLY = 2.17;
+
+    // The shipped default does NOT fit, by roughly 9x. Pinned rather than
+    // wished away: whoever changes the defaults should see this move.
+    expect(monthly(30, 3, WEEKLY)).toBeGreaterThan(20);
+    // Nor does dropping to one sample while staying weekly.
+    expect(monthly(30, 1, WEEKLY)).toBeGreaterThan(20);
+    // Nor fortnightly at one sample, on the full 30-prompt set.
+    expect(monthly(30, 1, FORTNIGHTLY)).toBeGreaterThan(20);
+
+    // Roughly where $20 actually lands today: half the prompt set, one sample,
+    // fortnightly. That is the honest shape of a $20 budget at current rates.
+    expect(monthly(15, 1, FORTNIGHTLY)).toBeLessThan(20);
   });
 });
 

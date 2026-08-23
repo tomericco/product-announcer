@@ -34,8 +34,23 @@ export const ANTHROPIC_LABEL = "Claude API + web search";
 export const ANTHROPIC_DEFAULT_MODEL = "claude-sonnet-5";
 export const ANTHROPIC_API_VERSION = "2023-06-01";
 
-/** $10 per 1,000 searches plus ~$0.002 of tokens on a short answer. */
-export const ANTHROPIC_COST_PER_CALL_USD = 0.012;
+/**
+ * Measured, not estimated: one live grounded call on 2026-08-23 returned
+ * 18,111 input + 1,293 output tokens and issued 2 searches.
+ *
+ *   input   18,111 x $3/M   = $0.0543
+ *   output   1,293 x $15/M  = $0.0194
+ *   search       2 x $10/1k = $0.0200
+ *                             -------
+ *                             $0.0937
+ *
+ * At Sonnet 5's standard rates, deliberately not the $2/$10 introductory rates
+ * that expire 2026-08-31 — a constant that quietly under-charges the moment an
+ * intro period ends is the failure this replaced. The old $0.012 assumed "a
+ * short answer"; grounded search puts the search RESULTS in the input, which is
+ * where nearly all the money goes.
+ */
+export const ANTHROPIC_COST_PER_CALL_USD = 0.094;
 
 /**
  * Measured, not guessed. A live grounded call at 1,024 with thinking left on

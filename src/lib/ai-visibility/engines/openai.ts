@@ -30,7 +30,21 @@ export const OPENAI_DEFAULT_MODEL = "gpt-5.5";
  * deliberately on the high side: an over-estimate pauses a tenant early, an
  * under-estimate bills them past their cap.
  */
-export const OPENAI_COST_PER_CALL_USD = 0.012;
+/**
+ * Measured: one live grounded call returned 47,398 input + 2,022 output tokens.
+ *
+ *   input   47,398 x $5/M   = $0.2370
+ *   output   2,022 x $30/M  = $0.0607
+ *   search       2 x $10/1k = $0.0200
+ *                             -------
+ *                             $0.3176
+ *
+ * By far the most expensive engine, and the reason is `search_context_size:
+ * "medium"` — 47k of retrieved page text at $5/M input. Dropping it to "low"
+ * is the single biggest cost lever in this feature; it has not been measured
+ * against citation quality, so it is not changed here.
+ */
+export const OPENAI_COST_PER_CALL_USD = 0.32;
 
 type OpenAiAnnotation = { type?: string; url?: string };
 type OpenAiContentPart = {
