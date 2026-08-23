@@ -18,10 +18,10 @@ import { DATE_FORMAT } from "../../../company/source-status";
 import { CitedDomainsTable } from "../../cited-domains-table";
 import { engineGridClass } from "../../engine-grid";
 import { ENGINE_LABEL, ENGINE_ORDER } from "../../engine-labels";
-import { SovSparkline } from "../../sov-sparkline";
-// Not from "../../sov-sparkline": this is a Server Component, and a function
+import { RateSparkline } from "../../rate-sparkline";
+// Not from "../../rate-sparkline": this is a Server Component, and a function
 // imported through a "use client" module is a client reference it cannot call.
-import { publishMarkerRunIds, type SovPoint } from "../../sparkline-points";
+import { publishMarkerRunIds, type RatePoint } from "../../sparkline-points";
 import { INTENT_LABEL } from "../prompts-editor";
 import { EngineTabs, type SampleView } from "./engine-tabs";
 import type { AnswerAlias } from "./highlighted-answer";
@@ -171,10 +171,10 @@ export default async function PromptDetailPage({
           // Each engine's history is its own run list, so the publish→run
           // match is computed per engine, over ITS runs (oldest first).
           const publishRuns = publishMarkerRunIds(history, publishedAts);
-          const points: SovPoint[] = history.map((point, pointIndex) => ({
+          const points: RatePoint[] = history.map((point, pointIndex) => ({
             runId: point.runId,
             label: DATE_FORMAT.format(new Date(point.runDate)),
-            sov: point.n >= MIN_N_PROMPT ? (point.hits / point.n) * 100 : null,
+            rate: point.n >= MIN_N_PROMPT ? (point.hits / point.n) * 100 : null,
             modelChange:
               pointIndex > 0 && point.modelId && point.modelId !== history[pointIndex - 1].modelId
                 ? point.modelId
@@ -193,7 +193,7 @@ export default async function PromptDetailPage({
                 <p className="text-sm">
                   {usable === 0 ? "No usable runs yet" : `Named in ${named} of last ${usable} runs`}
                 </p>
-                <SovSparkline
+                <RateSparkline
                   points={points}
                   ariaLabel={`How often ${ENGINE_LABEL[engine]} named you on this prompt, last ${usable} runs`}
                 />

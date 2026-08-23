@@ -197,13 +197,31 @@ export type EngineMetrics = {
   citationRate: number | null;
   recommendationRate: number | null;
   /**
+   * ± percentage points on MENTION RATE (Wilson 95%) — the tile's band.
+   *
+   * The only band this feature can print without an apology: mention rate is
+   * `tenantMentions / n`, one Bernoulli trial per answer, so the proportion and
+   * the trial count are counted over the same unit and Wilson applies
+   * unmodified. `sovWilsonPp` beside it has to anchor its n by hand.
+   *
+   * Null exactly when `mentionRate` is. Asymmetric like any Wilson half-width:
+   * `mentionRate ± mentionWilsonPp` can leave [0, 100], so render ranges
+   * through `clampBand`.
+   */
+  mentionWilsonPp: number | null;
+  /**
    * ± percentage points on SOV (Wilson 95%).
    *
    * The proportion is share of voice; the trial count is ANSWERS, not brand
-   * mentions — see `toMetrics` in `metrics.ts`. Asymmetric: `sov ± wilsonPp`
+   * mentions — see `toMetrics` in `metrics.ts`. Asymmetric: `sov ± sovWilsonPp`
    * can leave [0, 100], so render ranges through `clampBand`.
+   *
+   * Named for its metric since the tile headline stopped being share of voice.
+   * A field called `wilsonPp` sitting beside a mention-rate headline is how a
+   * band gets printed against the wrong number, which is the whole reason this
+   * rename happened rather than a comment being added.
    */
-  wilsonPp: number | null;
+  sovWilsonPp: number | null;
   /**
    * 30-day delta in pp; null when the earlier window is unknown.
    *

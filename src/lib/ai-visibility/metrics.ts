@@ -235,7 +235,8 @@ function toMetrics(engine: EngineId | "all", counts: WindowCounts, deltaPpValue:
       shareOfVoice: null,
       citationRate,
       recommendationRate: null,
-      wilsonPp: null,
+      mentionWilsonPp: null,
+      sovWilsonPp: null,
       deltaPp: null,
     };
   }
@@ -246,6 +247,12 @@ function toMetrics(engine: EngineId | "all", counts: WindowCounts, deltaPpValue:
     shareOfVoice: shareOfVoicePct(counts),
     citationRate,
     recommendationRate: (counts.recommendations / counts.n) * 100,
+    // The band the tile prints, and the one metric here that needs no
+    // argument: mention rate is successes over trials in the same unit —
+    // answers — so Wilson applies exactly as written. One mention per brand per
+    // sample (design §Metrics) is what makes `tenantMentions` a count of
+    // ANSWERS rather than of occurrences, and therefore <= n.
+    mentionWilsonPp: wilsonPp(counts.tenantMentions, counts.n),
     // The estimand is the SOV proportion; the EVIDENCE is answers.
     //
     // Using total brand mentions as the trial count (the obvious reading of
@@ -260,7 +267,7 @@ function toMetrics(engine: EngineId | "all", counts: WindowCounts, deltaPpValue:
     // Anchoring n to answers fixes both. `min` because the mention total is
     // genuinely smaller than n whenever most answers name nobody, and the band
     // must not claim more evidence than there were brand mentions to observe.
-    wilsonPp: wilsonPpFromProportion(
+    sovWilsonPp: wilsonPpFromProportion(
       (shareOfVoicePct(counts) ?? 0) / 100,
       Math.min(brandMentionTotal(counts), counts.n)
     ),
@@ -514,16 +521,26 @@ export async function promptHistory(
 export type EngineHistoryPoint = {
   runId: string;
   runDate: string;
+  /** The series the tile plots, because it is the series the tile headlines. */
+  mentionPct: number | null;
   sovPct: number | null;
   modelId: string | null;
 };
 
 /**
- * One engine's last 12 runs of share of voice — the tile sparkline.
+ * One engine's last 12 runs — the tile sparkline.
  *
- * `sovPct` is null below MIN_N_AGGREGATE so the line BREAKS rather than
- * dropping to zero. A thin run rendered as 0% is the single most misleading
- * thing this chart could do: it looks exactly like losing every mention.
+ * Both series, from the same counts and under the same rule. The sparkline
+ * draws `mentionPct`: a tile whose big number is mention rate and whose line is
+ * share of voice contradicts itself, and the two genuinely diverge — a tenant
+ * can hold its mention rate while its share halves because a competitor started
+ * appearing beside it. `sovPct` stays because it costs one division over counts
+ * already summed here, and the benchmark card below the tiles is a share
+ * surface with no history of its own yet.
+ *
+ * Both are null below MIN_N_AGGREGATE so the line BREAKS rather than dropping
+ * to zero. A thin run rendered as 0% is the single most misleading thing this
+ * chart could do: it looks exactly like losing every mention.
  */
 export async function engineHistory(
   tenantId: string,
@@ -565,10 +582,12 @@ export async function engineHistory(
 
   return runs.map((run) => {
     const counts = byRun.get(run.id);
+    const publishable = counts !== undefined && counts.n >= MIN_N_AGGREGATE;
     return {
       runId: run.id,
       runDate: run.startedAt.toISOString(),
-      sovPct: counts && counts.n >= MIN_N_AGGREGATE ? shareOfVoicePct(counts) : null,
+      mentionPct: publishable ? (counts.tenantMentions / counts.n) * 100 : null,
+      sovPct: publishable ? shareOfVoicePct(counts) : null,
       modelId: engine === "all" ? null : (run.modelIds[engine] ?? null),
     };
   });

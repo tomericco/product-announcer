@@ -4,6 +4,7 @@ import type { EngineMetrics } from "../../../src/lib/ai-visibility/types";
 import {
   OverviewCards,
   metricsLine,
+  shareReading,
   tileReading,
   type EngineTile,
 } from "../../../src/app/(dashboard)/ai-visibility/overview-cards";
@@ -55,7 +56,8 @@ function metrics(overrides: Partial<EngineMetrics> = {}): EngineMetrics {
     shareOfVoice: 31,
     citationRate: 18,
     recommendationRate: 24,
-    wilsonPp: 5,
+    mentionWilsonPp: 7,
+    sovWilsonPp: 5,
     deltaPp: 3,
     ...overrides,
   };
@@ -74,22 +76,24 @@ function tile(overrides: Partial<EngineTile> = {}): EngineTile {
 }
 
 describe("tileReading", () => {
-  it("reads the headline and the Wilson band, and nothing about a 30-day delta", () => {
-    // `deltaPp` is still on the metrics object — the tile just no longer
-    // prints it. Overlapping windows damp it, and it is null until roughly
-    // eight lifetime runs; the sparkline underneath carries the trend.
+  it("headlines the MENTION rate with its own band, not the share of voice", () => {
+    // Job 1 in the design is "know if we are being named". Share of voice does
+    // not answer it, moves when a competitor is typed into settings, and reads
+    // 100% for a tenant named once in 84 answers with nobody named beside it.
+    // The band is `mentionWilsonPp`, which describes THIS number — a band
+    // computed from the share would be mislabelled sitting here.
     expect(tileReading(metrics())).toEqual({
-      kind: "share",
-      headline: "31%",
-      band: "±5 pp",
+      kind: "rate",
+      headline: "62%",
+      band: "±7 pp",
     });
   });
 
   it("says Collecting baseline below the display threshold, never 0%", () => {
     // The one substitution the whole metrics design exists to prevent: an
-    // engine with 11 answers reading as a real 0% share. Below the threshold
-    // EVERY rate is null, `mentionRate` included — which is what makes it the
-    // field to test.
+    // engine with 11 answers reading as a real 0%. Below the threshold EVERY
+    // rate is null, `mentionRate` included — which is what makes it the field
+    // to test.
     expect(
       tileReading(
         metrics({
@@ -98,45 +102,75 @@ describe("tileReading", () => {
           shareOfVoice: null,
           citationRate: null,
           recommendationRate: null,
-          wilsonPp: null,
+          mentionWilsonPp: null,
+          sovWilsonPp: null,
           deltaPp: null,
         })
       )
     ).toEqual({ kind: "baseline", headline: "Collecting baseline", band: null });
   });
 
-  it("distinguishes a MEASURED zero from a thin cut — 84 answers naming nobody is a finding, not missing data", () => {
-    // `shareOfVoice === null` means two things: below the threshold, and
-    // "n >= 30 but no tracked brand was named at all". Branching on it would
-    // tell a tenant with 84 collected answers that their data is still coming
-    // in, which is false and hides the most actionable state on the page.
-    expect(tileReading(metrics({ mentionRate: 0, shareOfVoice: null, wilsonPp: null, deltaPp: null }))).toEqual({
-      kind: "measured-zero",
-      headline: "No brands named",
-      band: null,
-    });
+  it("prints a measured zero as a rate with a band, because 0 of 84 is a reading", () => {
+    // The old headline had to say "No brands named" here, because a share with
+    // no denominator has no number at all. A mention rate always has one.
+    expect(
+      tileReading(metrics({ mentionRate: 0, shareOfVoice: null, mentionWilsonPp: 4, sovWilsonPp: null }))
+    ).toEqual({ kind: "rate", headline: "0%", band: "±4 pp" });
   });
 
   it("keeps the band, which is the reading the number cannot be checked without", () => {
-    expect(tileReading(metrics({ wilsonPp: 9 })).band).toBe("±9 pp");
-    expect(tileReading(metrics({ wilsonPp: null })).band).toBeNull();
-  });
-});
-
-describe("metricsLine", () => {
-  it("carries the other three metrics on one line", () => {
-    expect(metricsLine(metrics())).toBe("Mentioned 62% · Cited 18% · Recommended 24%");
+    expect(tileReading(metrics({ mentionWilsonPp: 9 })).band).toBe("±9 pp");
+    expect(tileReading(metrics({ mentionWilsonPp: null })).band).toBeNull();
   });
 
-  it("dashes a metric that is below threshold rather than printing a zero", () => {
-    expect(metricsLine(metrics({ citationRate: null }))).toBe("Mentioned 62% · Cited — · Recommended 24%");
+  it("never prints the share band beside the mention headline", () => {
+    // The failure this rename exists to prevent: ±5 pp is the width of the
+    // SHARE, and printing it next to a mention rate labels the wrong number.
+    expect(tileReading(metrics({ mentionWilsonPp: 7, sovWilsonPp: 5 })).band).toBe("±7 pp");
   });
 
   it("does not multiply an already-percentage rate", () => {
     // `engineMetrics` hands these over as 0..100. A stray ×100 here reads as
-    // "Mentioned 6200%", which is obvious — and as "Mentioned 0%" for a rate
-    // of 0.4, which is not.
-    expect(metricsLine(metrics({ mentionRate: 0.4 }))).toContain("Mentioned 0%");
+    // "6200%", which is obvious — and as "0%" for a rate of 0.4, which is not.
+    expect(tileReading(metrics({ mentionRate: 0.4 })).headline).toBe("0%");
+  });
+});
+
+describe("shareReading", () => {
+  it("keeps share of voice, demoted to the small line", () => {
+    expect(shareReading(metrics())).toEqual({ kind: "share", text: "Share of voice 31%" });
+  });
+
+  it("keeps 'No brands named' as a finding, not as a zero", () => {
+    // `shareOfVoice === null` still means two things, and they are still
+    // different facts. With a known mentionRate the window IS fat enough and
+    // nobody — us or a rival — was named: strictly more than the 0% headline
+    // above it, which reports only that WE were not named.
+    expect(shareReading(metrics({ mentionRate: 0, shareOfVoice: null }))).toEqual({
+      kind: "none-named",
+      text: "No brands named",
+    });
+  });
+
+  it("dashes the share below the threshold rather than claiming nobody was named", () => {
+    expect(shareReading(metrics({ mentionRate: null, shareOfVoice: null }))).toEqual({
+      kind: "baseline",
+      text: "Share of voice —",
+    });
+  });
+});
+
+describe("metricsLine", () => {
+  it("carries what the headline and the share line did not take", () => {
+    expect(metricsLine(metrics())).toBe("Cited 18% · Recommended 24%");
+  });
+
+  it("dashes a metric that is below threshold rather than printing a zero", () => {
+    expect(metricsLine(metrics({ citationRate: null }))).toBe("Cited — · Recommended 24%");
+  });
+
+  it("no longer repeats the mention rate, which is now the big number", () => {
+    expect(metricsLine(metrics())).not.toContain("Mentioned");
   });
 });
 
@@ -158,7 +192,8 @@ describe("OverviewCards", () => {
               shareOfVoice: null,
               citationRate: null,
               recommendationRate: null,
-              wilsonPp: null,
+              mentionWilsonPp: null,
+          sovWilsonPp: null,
               deltaPp: null,
             }),
           }),
@@ -171,21 +206,24 @@ describe("OverviewCards", () => {
     expect(screen.queryByText(/pp$/)).not.toBeInTheDocument();
   });
 
-  it("renders a measured zero differently from a thin cut — both are bandless, only one is a finding", () => {
+  it("renders 'No brands named' as a finding, at full contrast, beside a real 0% headline", () => {
     const baseline = metrics({
       n: 11,
       mentionRate: null,
       shareOfVoice: null,
       citationRate: null,
       recommendationRate: null,
-      wilsonPp: null,
+      mentionWilsonPp: null,
+      sovWilsonPp: null,
       deltaPp: null,
     });
-    const measuredZero = metrics({ mentionRate: 0, shareOfVoice: null, wilsonPp: null, deltaPp: null });
+    const noneNamed = metrics({ mentionRate: 0, shareOfVoice: null, mentionWilsonPp: 4, sovWilsonPp: null });
     const { rerender } = render(<OverviewCards tiles={[tile({ metrics: baseline })]} />);
     const baselineClass = screen.getByText("Collecting baseline").className;
 
-    rerender(<OverviewCards tiles={[tile({ metrics: measuredZero })]} />);
+    rerender(<OverviewCards tiles={[tile({ metrics: noneNamed })]} />);
+    // The headline is a measured rate; the FINDING is on the line beneath it.
+    expect(screen.getByText("0%")).toBeInTheDocument();
     const findingClass = screen.getByText("No brands named").className;
 
     expect(baselineClass).toContain("text-muted-foreground");
@@ -198,8 +236,9 @@ describe("OverviewCards", () => {
 
     expect(screen.queryByText(/30 days ago/)).not.toBeInTheDocument();
     // The band survives the cut — it is the one number that qualifies the
-    // headline rather than narrating it.
-    expect(screen.getByText("±5 pp")).toBeInTheDocument();
+    // headline rather than narrating it, and it is the MENTION band.
+    expect(screen.getByText("±7 pp")).toBeInTheDocument();
+    expect(screen.queryByText("±5 pp")).not.toBeInTheDocument();
   });
 
   it("lays the row out for the tiles it actually has", () => {

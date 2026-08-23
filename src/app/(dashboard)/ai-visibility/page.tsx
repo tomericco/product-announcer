@@ -40,7 +40,7 @@ import { GeneratePromptSetButton } from "./generate-prompt-set-button";
 import { OverviewCards, type EngineTile } from "./overview-cards";
 import { PromptMatrix, type MatrixRow } from "./prompt-matrix";
 import { RunNowButton, type RunEstimate } from "./run-now-button";
-import type { SovPoint } from "./sparkline-points";
+import type { RatePoint } from "./sparkline-points";
 
 const DAY_LABEL = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"] as const;
 
@@ -283,10 +283,14 @@ export default async function AiVisibilityPage() {
     const history = series[index];
     // Both the note and the tick come from the SAME comparison, so a tile can
     // never claim a model change its own sparkline does not show.
-    const points: SovPoint[] = history.map((point, pointIndex) => ({
+    const points: RatePoint[] = history.map((point, pointIndex) => ({
       runId: point.runId,
       label: DATE_FORMAT.format(new Date(point.runDate)),
-      sov: point.sovPct,
+      // Mention rate, matching the tile's headline. `engineHistory` returns
+      // `sovPct` from the same counts for a share surface that wants a history;
+      // plotting it under a mention-rate number would make the tile argue with
+      // its own chart.
+      rate: point.mentionPct,
       modelChange:
         pointIndex > 0 && point.modelId && point.modelId !== history[pointIndex - 1].modelId
           ? point.modelId

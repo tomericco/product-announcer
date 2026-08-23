@@ -1,12 +1,12 @@
 import { describe, it, expect } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
-import { SovSparkline } from "../../../src/app/(dashboard)/ai-visibility/sov-sparkline";
+import { RateSparkline } from "../../../src/app/(dashboard)/ai-visibility/rate-sparkline";
 // The pure derivations live outside the "use client" module so a Server
 // Component can call them — importing them from here mirrors that.
 import {
   publishMarkerRunIds,
   sparklineMarkers,
-  type SovPoint,
+  type RatePoint,
 } from "../../../src/app/(dashboard)/ai-visibility/sparkline-points";
 import {
   CompetitorBars,
@@ -14,8 +14,8 @@ import {
   type BrandShare,
 } from "../../../src/app/(dashboard)/ai-visibility/competitor-bars";
 
-function point(overrides: Partial<SovPoint> = {}): SovPoint {
-  return { runId: "r1", label: "Jun 3", sov: 40, modelChange: null, publishedLabel: null, ...overrides };
+function point(overrides: Partial<RatePoint> = {}): RatePoint {
+  return { runId: "r1", label: "Jun 3", rate: 40, modelChange: null, publishedLabel: null, ...overrides };
 }
 
 function share(overrides: Partial<BrandShare> = {}): BrandShare {
@@ -37,7 +37,7 @@ describe("sparklineMarkers", () => {
       point({ runId: "r2", modelChange: "gpt-5.2-2026-07-01" }),
     ]);
 
-    expect(markers).toEqual([{ runId: "r2", sov: 40, kind: "model", label: "gpt-5.2-2026-07-01" }]);
+    expect(markers).toEqual([{ runId: "r2", rate: 40, kind: "model", label: "gpt-5.2-2026-07-01" }]);
   });
 
   it("marks a publish on the same run as a model change without dropping either", () => {
@@ -50,9 +50,9 @@ describe("sparklineMarkers", () => {
 
   it("drops a marker whose run has no plottable value — there is no y to pin it to", () => {
     // A week below the n>=30 threshold reads "Collecting baseline" and has
-    // no SOV. A ReferenceDot with y=null renders at zero, which would read
-    // as "SOV collapsed to nothing that week".
-    expect(sparklineMarkers([point({ sov: null, modelChange: "claude-4.7" })])).toEqual([]);
+    // no rate. A ReferenceDot with y=null renders at zero, which would read
+    // as "we lost every mention that week".
+    expect(sparklineMarkers([point({ rate: null, modelChange: "claude-4.7" })])).toEqual([]);
   });
 });
 
@@ -93,15 +93,15 @@ describe("publishMarkerRunIds", () => {
   });
 });
 
-describe("SovSparkline", () => {
+describe("RateSparkline", () => {
   it("carries its meaning in an accessible name, since the drawing is decorative to a screen reader", () => {
-    render(<SovSparkline points={[point()]} ariaLabel="Share of voice, last 12 weeks, GPT" />);
+    render(<RateSparkline points={[point()]} ariaLabel="Mention rate, last 12 weeks, GPT" />);
 
-    expect(screen.getByRole("img", { name: "Share of voice, last 12 weeks, GPT" })).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "Mention rate, last 12 weeks, GPT" })).toBeInTheDocument();
   });
 
   it("renders the empty shape rather than a chart when there is nothing to plot", () => {
-    render(<SovSparkline points={[]} ariaLabel="Share of voice, last 12 weeks, GPT" />);
+    render(<RateSparkline points={[]} ariaLabel="Mention rate, last 12 weeks, GPT" />);
 
     expect(screen.getByText("No runs yet")).toBeInTheDocument();
   });
@@ -210,12 +210,12 @@ describe("chart theming", () => {
   it("draws the sparkline in --brand-ink, never in --chart-1", () => {
     // --chart-1 is byte-identical to --brand in globals.css. A 1.5px stroke of
     // it sits at ~1.4:1 against the card and the whole trend line vanishes.
-    const { container } = render(<SovSparkline points={[point()]} ariaLabel="Share of voice" />);
+    const { container } = render(<RateSparkline points={[point()]} ariaLabel="Mention rate" />);
 
     const theme = container.querySelector("style")!.textContent!;
-    expect(theme).toContain("--color-sov: var(--brand-ink);");
+    expect(theme).toContain("--color-rate: var(--brand-ink);");
     expect(theme).not.toContain("var(--chart-1)");
-    expect(theme).not.toContain("--color-sov: var(--brand);");
+    expect(theme).not.toContain("--color-rate: var(--brand);");
   });
 
   it("keeps the benchmark's series token off the raw accent too", () => {

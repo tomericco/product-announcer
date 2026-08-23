@@ -5,7 +5,7 @@ import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } f
 // The pure derivations live in a non-client module, because a Server Component
 // has to call them and anything re-exported THROUGH this file would still be a
 // client reference. Import them from "./sparkline-points" directly.
-import { sparklineMarkers, type SovPoint } from "./sparkline-points";
+import { sparklineMarkers, type RatePoint } from "./sparkline-points";
 
 // Themed through ChartConfig against existing tokens rather than a literal
 // colour, so the line follows the warm palette in both modes.
@@ -17,7 +17,11 @@ import { sparklineMarkers, type SovPoint } from "./sparkline-points";
 // The markers stay on --chart-4 so they read as annotation, not as a second
 // series.
 const CHART_CONFIG = {
-  sov: { label: "Share of voice", color: "var(--brand-ink)" },
+  // The key names the series, and the tooltip prints the label beside the
+  // value: both callers plot how often we were NAMED — the engine's mention
+  // rate on the overview tile, this prompt's on the detail card — so the
+  // label says that rather than the share it used to say.
+  rate: { label: "Named in", color: "var(--brand-ink)" },
 } satisfies ChartConfig;
 
 /**
@@ -27,7 +31,7 @@ const CHART_CONFIG = {
  * emits no readable structure), so without this the trend is unavailable
  * to anyone not looking at it.
  */
-export function SovSparkline({ points, ariaLabel }: { points: SovPoint[]; ariaLabel: string }) {
+export function RateSparkline({ points, ariaLabel }: { points: RatePoint[]; ariaLabel: string }) {
   if (points.length === 0) {
     return (
       <div role="img" aria-label={ariaLabel} className="flex h-16 items-center text-xs text-muted-foreground">
@@ -46,9 +50,9 @@ export function SovSparkline({ points, ariaLabel }: { points: SovPoint[]; ariaLa
           <YAxis hide domain={[0, 100]} />
           <ChartTooltip content={<ChartTooltipContent labelKey="label" />} />
           <Line
-            dataKey="sov"
+            dataKey="rate"
             type="monotone"
-            stroke="var(--color-sov)"
+            stroke="var(--color-rate)"
             strokeWidth={1.5}
             dot={false}
             isAnimationActive={false}
@@ -63,10 +67,10 @@ export function SovSparkline({ points, ariaLabel }: { points: SovPoint[]; ariaLa
               <ReferenceDot
                 key={`${marker.runId}-${marker.kind}`}
                 x={markerPoint.label}
-                y={marker.sov}
+                y={marker.rate}
                 r={3}
                 // Theme tokens directly: `--color-*` variables exist only for
-                // ChartConfig series keys (here, `--color-sov`).
+                // ChartConfig series keys (here, `--color-rate`).
                 fill="var(--chart-4)"
                 stroke="var(--background)"
                 strokeWidth={1}

@@ -159,7 +159,8 @@ function metrics(engine: EngineId | "all", overrides: Partial<EngineMetrics> = {
     shareOfVoice: 31,
     citationRate: 18,
     recommendationRate: 24,
-    wilsonPp: 5,
+    mentionWilsonPp: 7,
+    sovWilsonPp: 5,
     deltaPp: 3,
     ...overrides,
   };
@@ -406,13 +407,16 @@ describe("overview — the nine states, and that they are mutually exclusive", (
   it("Model changed: the note and the sparkline tick come from the same comparison", async () => {
     setup({
       history: [
-        { runId: "r1", runDate: "2026-08-03T09:00:00Z", sovPct: 30, modelId: "gpt-5.1" },
-        { runId: "r2", runDate: "2026-08-10T09:00:00Z", sovPct: 34, modelId: "gpt-5.2" },
+        { runId: "r1", runDate: "2026-08-03T09:00:00Z", mentionPct: 55, sovPct: 30, modelId: "gpt-5.1" },
+        { runId: "r2", runDate: "2026-08-10T09:00:00Z", mentionPct: 61, sovPct: 34, modelId: "gpt-5.2" },
       ],
     });
     await renderPage();
 
     const tile = captured.tiles![0];
+    // The sparkline plots the metric the tile headlines — mention rate — and
+    // not the share of voice returned beside it in the same history rows.
+    expect(tile.points.map((point) => point.rate)).toEqual([55, 61]);
     expect(tile.modelChangeNote).toBe("Model changed to gpt-5.2 this run");
     expect(tile.points.map((point) => point.modelChange)).toEqual([null, "gpt-5.2"]);
     // The first point has nothing to compare against, so it is never a change.
@@ -439,7 +443,14 @@ describe("overview — the benchmark's three readings", () => {
     setup({
       metrics: [
         ...ALL_ENGINES.map((e) => metrics(e)),
-        metrics("all", { n: 12, mentionRate: null, shareOfVoice: null, wilsonPp: null, deltaPp: null }),
+        metrics("all", {
+          n: 12,
+          mentionRate: null,
+          shareOfVoice: null,
+          mentionWilsonPp: null,
+          sovWilsonPp: null,
+          deltaPp: null,
+        }),
       ],
       counts: counts({ n: 12, tenantMentions: 5 }),
     });

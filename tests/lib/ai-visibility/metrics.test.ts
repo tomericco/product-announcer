@@ -202,7 +202,7 @@ describe("engineMetrics", () => {
     expect(openai.shareOfVoice).toBeNull();
     expect(openai.citationRate).toBeNull();
     expect(openai.recommendationRate).toBeNull();
-    expect(openai.wilsonPp).toBeNull();
+    expect(openai.sovWilsonPp).toBeNull();
   });
 
   it("computes all four rates as percentages once n reaches the threshold", async () => {
@@ -224,7 +224,7 @@ describe("engineMetrics", () => {
     expect(openai.shareOfVoice).toBeCloseTo(25, 4); // 15 / (15 + 45)
     expect(openai.citationRate).toBeCloseTo(20, 4);
     expect(openai.recommendationRate).toBeCloseTo(10, 4);
-    expect(openai.wilsonPp).not.toBeNull();
+    expect(openai.sovWilsonPp).not.toBeNull();
   });
 
   it("divides citation rate by the grounded samples, and every other rate by n", async () => {
@@ -414,7 +414,7 @@ describe("promptHistory", () => {
 });
 
 describe("engineHistory", () => {
-  it("plots share of voice per run and breaks the line below the threshold", async () => {
+  it("plots both series per run and breaks the line below the threshold", async () => {
     const tenant = await seedTenant(TENANT);
     const thin = await seedRun(tenant.id, "2026-01-05T09:00:00Z", "complete", { openai: "gpt-5.0" });
     const fat = await seedRun(tenant.id, "2026-01-12T09:00:00Z", "complete", { openai: "gpt-5.1" });
@@ -424,10 +424,38 @@ describe("engineHistory", () => {
     const points = await engineHistory(tenant.id, "openai");
 
     expect(points).toHaveLength(2);
+    // Below n >= 30 NEITHER series has a number: a thin run drawn at 0% is
+    // indistinguishable from losing every mention.
     expect(points[0].sovPct).toBeNull();
+    expect(points[0].mentionPct).toBeNull();
     expect(points[0].modelId).toBe("gpt-5.0");
     expect(points[1].sovPct).toBeCloseTo(25, 4);
+    // 20 of 30 answers named us — the series the tile plots, and deliberately
+    // not the same number as the share beside it.
+    expect(points[1].mentionPct).toBeCloseTo((20 / 30) * 100, 4);
     expect(points[1].modelId).toBe("gpt-5.1");
+  });
+
+  it("moves the two series independently — a share can fall while the mention rate holds", async () => {
+    // The reason the tile may not plot one and headline the other. Same 30
+    // answers naming us in both runs; in the second a rival starts appearing
+    // beside us, which halves the share and leaves the mention rate untouched.
+    const tenant = await seedTenant(TENANT);
+    const before = await seedRun(tenant.id, "2026-01-05T09:00:00Z", "complete", { openai: "gpt-5.0" });
+    const after = await seedRun(tenant.id, "2026-01-12T09:00:00Z", "complete", { openai: "gpt-5.0" });
+    await seedAggregate({ runId: before.id, tenantId: tenant.id, engine: "openai", n: 30, tenantMentions: 30 });
+    await seedAggregate({
+      runId: after.id,
+      tenantId: tenant.id,
+      engine: "openai",
+      n: 30,
+      tenantMentions: 30,
+      competitorMentions: { rival: 30 },
+    });
+
+    const points = await engineHistory(tenant.id, "openai");
+    expect(points.map((point) => point.mentionPct)).toEqual([100, 100]);
+    expect(points.map((point) => point.sovPct)).toEqual([100, 50]);
   });
 
   it("pools every engine for \"all\" and carries no model id", async () => {
@@ -438,6 +466,7 @@ describe("engineHistory", () => {
 
     const points = await engineHistory(tenant.id, "all");
     expect(points[0].sovPct).toBeCloseTo((20 / 60) * 100, 4);
+    expect(points[0].mentionPct).toBeCloseTo((20 / 40) * 100, 4);
     expect(points[0].modelId).toBeNull();
   });
 });
@@ -608,7 +637,7 @@ describe("wilson band responds to evidence, not to the competitor roster", () =>
     // answers. Anchored to mentions this reads 9.53 pp; anchored to the 84
     // independent answers it is 9.64.
     const two = await withCompetitors({ a: 30, b: 30 });
-    expect(two.wilsonPp).toBeCloseTo(9.643, 2);
+    expect(two.sovWilsonPp).toBeCloseTo(9.643, 2);
   });
 
   it("does not shrink the band when competitors are added to the roster", async () => {
@@ -619,8 +648,8 @@ describe("wilson band responds to evidence, not to the competitor roster", () =>
     // double the precision. Anchored to answers it WIDENS, which is correct:
     // the tenant's share fell, so 26 hits say less about it than before.
     const six = await withCompetitors({ a: 30, b: 30, c: 30, d: 30, e: 30, f: 30 });
-    expect(six.wilsonPp).toBeCloseTo(7.134, 2);
-    expect(six.wilsonPp!).toBeGreaterThan(4.6);
+    expect(six.sovWilsonPp).toBeCloseTo(7.134, 2);
+    expect(six.sovWilsonPp!).toBeGreaterThan(4.6);
   });
 
   it("is unchanged when the same mentions are split across more competitors", async () => {
@@ -630,7 +659,7 @@ describe("wilson band responds to evidence, not to the competitor roster", () =>
     // Identical evidence, differently attributed. The band is a property of the
     // answers and the share, so nothing about it may move.
     expect(split.shareOfVoice).toBeCloseTo(lumped.shareOfVoice!, 10);
-    expect(split.wilsonPp).toBeCloseTo(lumped.wilsonPp!, 10);
+    expect(split.sovWilsonPp).toBeCloseTo(lumped.sovWilsonPp!, 10);
   });
 
   it("never claims more trials than there were brand mentions", async () => {
@@ -640,7 +669,75 @@ describe("wilson band responds to evidence, not to the competitor roster", () =>
     const run = await seedRun(tenant.id, "2026-03-01T09:00:00Z");
     await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "openai", n: 40, tenantMentions: 4, competitorMentions: { a: 1 } });
     const openai = (await engineMetrics(tenant.id, db, CLOCK)).find((r) => r.engine === "openai")!;
-    expect(openai.wilsonPp).toBeCloseTo(wilsonPp(4, 5)!, 10);
+    expect(openai.sovWilsonPp).toBeCloseTo(wilsonPp(4, 5)!, 10);
+  });
+});
+
+describe("the mention-rate band is a plain binomial over answers", () => {
+  const CLOCK = () => new Date("2026-03-30T00:00:00Z");
+
+  it("is the Wilson half-width for tenantMentions out of n", async () => {
+    // The band the TILE prints, now that mention rate is the headline. Unlike
+    // the SOV band beside it, this one needs no anchoring argument: successes
+    // and trials are both counted in answers.
+    const tenant = await seedTenant(TENANT);
+    const run = await seedRun(tenant.id, "2026-03-01T09:00:00Z");
+    await seedAggregate({
+      runId: run.id,
+      tenantId: tenant.id,
+      engine: "openai",
+      n: 84,
+      tenantMentions: 26,
+      competitorMentions: { a: 30, b: 30 },
+    });
+
+    const openai = (await engineMetrics(tenant.id, db, CLOCK)).find((r) => r.engine === "openai")!;
+    expect(openai.mentionWilsonPp!).toBeCloseTo(wilsonPp(26, 84)!, 10);
+    // And it is NOT the share band: the two describe different numbers, which
+    // is the whole reason the tile stopped printing one beside the other.
+    expect(openai.mentionWilsonPp).not.toBeCloseTo(openai.sovWilsonPp!, 3);
+  });
+
+  it("does not move when a competitor is added to the roster", async () => {
+    // The SOV band had to be hand-anchored to answers to achieve this. The
+    // mention band gets it for free — no competitor appears in its arithmetic.
+    const tenant = await seedTenant(TENANT);
+    const run = await seedRun(tenant.id, "2026-03-01T09:00:00Z");
+    await seedAggregate({
+      runId: run.id,
+      tenantId: tenant.id,
+      engine: "openai",
+      n: 84,
+      tenantMentions: 26,
+      competitorMentions: { a: 30, b: 30, c: 30, d: 30 },
+    });
+
+    const openai = (await engineMetrics(tenant.id, db, CLOCK)).find((r) => r.engine === "openai")!;
+    expect(openai.mentionWilsonPp!).toBeCloseTo(wilsonPp(26, 84)!, 10);
+  });
+
+  it("is a real band at a measured zero, where the share band is null", async () => {
+    // 0 of 84, nobody else named either. The share has no denominator and no
+    // band; the headline still has both a rate and a width, which is what the
+    // tile needs in order to be honest about a zero.
+    const tenant = await seedTenant(TENANT);
+    const run = await seedRun(tenant.id, "2026-03-01T09:00:00Z");
+    await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "openai", n: 84, tenantMentions: 0 });
+
+    const openai = (await engineMetrics(tenant.id, db, CLOCK)).find((r) => r.engine === "openai")!;
+    expect(openai.mentionRate).toBe(0);
+    expect(openai.sovWilsonPp).toBeNull();
+    expect(openai.mentionWilsonPp!).toBeCloseTo(wilsonPp(0, 84)!, 10);
+  });
+
+  it("is null below the display threshold, exactly when mentionRate is", async () => {
+    const tenant = await seedTenant(TENANT);
+    const run = await seedRun(tenant.id, "2026-03-01T09:00:00Z");
+    await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "openai", n: 29, tenantMentions: 20 });
+
+    const openai = (await engineMetrics(tenant.id, db, CLOCK)).find((r) => r.engine === "openai")!;
+    expect(openai.mentionRate).toBeNull();
+    expect(openai.mentionWilsonPp).toBeNull();
   });
 });
 
@@ -658,7 +755,7 @@ describe("a null share of voice is discriminated by mentionRate", () => {
     expect(openai.shareOfVoice).toBeNull();
     expect(openai.n).toBe(84);
     // No brand mentions at all, so there is no proportion to put a band on.
-    expect(openai.wilsonPp).toBeNull();
+    expect(openai.sovWilsonPp).toBeNull();
   });
 
   it("reports unknown when the window is thin, with mentionRate null", async () => {
@@ -887,7 +984,7 @@ describe("the aggregate display threshold, at the boundary", () => {
     expect(below.shareOfVoice).toBeNull();
     expect(below.citationRate).toBeNull();
     expect(below.recommendationRate).toBeNull();
-    expect(below.wilsonPp).toBeNull();
+    expect(below.sovWilsonPp).toBeNull();
     expect(below.deltaPp).toBeNull();
 
     // The threshold is `>= MIN_N_AGGREGATE`, so 30 itself is shown.
@@ -897,7 +994,7 @@ describe("the aggregate display threshold, at the boundary", () => {
     expect(at.shareOfVoice).toBeCloseTo(50, 6);
     expect(at.citationRate).toBeCloseTo((4 / 30) * 100, 6);
     expect(at.recommendationRate).toBeCloseTo((2 / 30) * 100, 6);
-    expect(at.wilsonPp).not.toBeNull();
+    expect(at.sovWilsonPp).not.toBeNull();
 
     const above = await rowAt(MIN_N_AGGREGATE + 1);
     expect(above.n).toBe(31);
@@ -947,7 +1044,7 @@ describe("the known-zero row and the unknown row are different shapes", () => {
     expect(openai.recommendationRate).toBe(0);
     // No brand mentions at all, so there is no proportion and no band.
     expect(openai.shareOfVoice).toBeNull();
-    expect(openai.wilsonPp).toBeNull();
+    expect(openai.sovWilsonPp).toBeNull();
     expect(openai.deltaPp).toBeNull();
   });
 
@@ -971,7 +1068,7 @@ describe("the known-zero row and the unknown row are different shapes", () => {
     expect(openai.shareOfVoice).toBeNull();
     expect(openai.citationRate).toBeNull();
     expect(openai.recommendationRate).toBeNull();
-    expect(openai.wilsonPp).toBeNull();
+    expect(openai.sovWilsonPp).toBeNull();
     expect(openai.deltaPp).toBeNull();
   });
 
@@ -995,7 +1092,7 @@ describe("the known-zero row and the unknown row are different shapes", () => {
     expect(openai.recommendationRate).toBe(100);
     expect(openai.shareOfVoice).toBe(100);
     // p = 1 over 30 trials: the band is the one-sided Wilson width, not zero.
-    expect(openai.wilsonPp!).toBeCloseTo(5.675670, 5);
+    expect(openai.sovWilsonPp!).toBeCloseTo(5.675670, 5);
   });
 });
 

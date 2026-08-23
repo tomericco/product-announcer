@@ -3,7 +3,7 @@ import { render, screen } from "@testing-library/react";
 import type { EngineId } from "../../../src/lib/ai-visibility/types";
 import type { SampleView } from "../../../src/app/(dashboard)/ai-visibility/prompts/[promptId]/engine-tabs";
 import type { AnswerAlias } from "../../../src/app/(dashboard)/ai-visibility/prompts/[promptId]/highlighted-answer";
-import type { SovPoint } from "../../../src/app/(dashboard)/ai-visibility/sparkline-points";
+import type { RatePoint } from "../../../src/app/(dashboard)/ai-visibility/sparkline-points";
 import type { CitedDomainRow } from "../../../src/app/(dashboard)/ai-visibility/cited-domains-table";
 
 /**
@@ -17,7 +17,7 @@ import type { CitedDomainRow } from "../../../src/app/(dashboard)/ai-visibility/
 
 const captured = {
   tabs: null as { engines: EngineId[]; samples: SampleView[]; aliases: AnswerAlias[]; initialEngine: EngineId } | null,
-  sparklines: [] as { points: SovPoint[]; ariaLabel: string }[],
+  sparklines: [] as { points: RatePoint[]; ariaLabel: string }[],
   domains: null as CitedDomainRow[] | null,
 };
 
@@ -27,11 +27,11 @@ vi.mock("@/app/(dashboard)/ai-visibility/prompts/[promptId]/engine-tabs", () => 
     return <div data-testid="engine-tabs" />;
   },
 }));
-vi.mock("@/app/(dashboard)/ai-visibility/sov-sparkline", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/app/(dashboard)/ai-visibility/sov-sparkline")>();
+vi.mock("@/app/(dashboard)/ai-visibility/rate-sparkline", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/app/(dashboard)/ai-visibility/rate-sparkline")>();
   return {
     ...actual,
-    SovSparkline: (props: { points: SovPoint[]; ariaLabel: string }) => {
+    RateSparkline: (props: { points: RatePoint[]; ariaLabel: string }) => {
       captured.sparklines.push(props);
       return <div data-testid="sparkline" />;
     },
@@ -275,7 +275,7 @@ describe("prompt detail — the per-engine cards", () => {
     // r1 is neither a hit nor a usable run — it is not evidence of anything.
     expect(screen.getByText("Named in 1 of last 2 runs")).toBeInTheDocument();
     const points = captured.sparklines[0].points;
-    expect(points.map((point) => point.sov)).toEqual([null, (2 / 3) * 100, 0]);
+    expect(points.map((point) => point.rate)).toEqual([null, (2 / 3) * 100, 0]);
     // A model change is a tick, computed against the previous point only.
     expect(points.map((point) => point.modelChange)).toEqual([null, null, "gpt-5.2"]);
   });
