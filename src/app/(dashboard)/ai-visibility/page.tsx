@@ -36,7 +36,7 @@ import type { EngineId, WindowCounts } from "@/lib/ai-visibility/types";
 import { DATE_FORMAT } from "../company/source-status";
 import { CitedDomainsTable } from "./cited-domains-table";
 import { CompetitorBars, type BrandShare } from "./competitor-bars";
-import { ENGINE_LABEL, ENGINE_ORDER, ENGINE_SHORT } from "./engine-labels";
+import { ENGINE_LABEL, ENGINE_ORDER, ENGINE_NAME } from "./engine-labels";
 import { ratePct } from "./format";
 import { GeneratePromptSetButton } from "./generate-prompt-set-button";
 import { AiVisibilityOffEmptyState } from "./off-empty-state";
@@ -319,7 +319,7 @@ export default async function AiVisibilityPage() {
       // the header carries the proxy caveat once, with the tooltip that
       // explains it. The full name is still what the card's `title`, the
       // sparkline's accessible name and the failure note below use.
-      label: key === "all" ? "All engines" : ENGINE_SHORT[key],
+      label: key === "all" ? "All engines" : ENGINE_NAME[key],
       // Pooled, not averaged: `engineMetrics` returns the "all" row summed over
       // samples, and averaging three rates would weight a 12-sample engine like
       // an 84-sample one.

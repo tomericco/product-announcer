@@ -19,7 +19,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { PROMPT_INTENTS, type EngineId, type PromptIntent } from "@/lib/ai-visibility/types";
-import { ENGINE_ORDER, ENGINE_SHORT } from "../engine-labels";
+import { ENGINE_ORDER, ENGINE_NAME } from "../engine-labels";
 import { deletePromptAction, savePromptAction, togglePromptAction } from "../actions";
 import {
   PROMPTS_FILTER_DEFAULTS,
@@ -76,7 +76,7 @@ export function engineChipLine(chips: PromptRowData["chips"]): string {
     .map((engine) => {
       const chip = byEngine.get(engine)!;
       const value = chip.named === null || chip.samples === 0 ? "–" : `${chip.named}/${chip.samples}`;
-      return `${ENGINE_SHORT[engine]} ${value}`;
+      return `${ENGINE_NAME[engine]} ${value}`;
     })
     .join(" · ");
 }

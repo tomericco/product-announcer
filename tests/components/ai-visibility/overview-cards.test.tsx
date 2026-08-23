@@ -65,7 +65,7 @@ function metrics(overrides: Partial<EngineMetrics> = {}): EngineMetrics {
 function tile(overrides: Partial<EngineTile> = {}): EngineTile {
   return {
     engine: "openai",
-    label: "GPT-5.x API + web search",
+    label: "ChatGPT API + web search",
     metrics: metrics(),
     points: [],
     failureNote: null,
@@ -175,14 +175,14 @@ describe("OverviewCards", () => {
   });
 
   it("titles the tile with the short engine name and keeps the full one as its tooltip", () => {
-    // "GPT-5.x API + web search" is ~180px of methodology in a header that
+    // "ChatGPT API + web search" is ~180px of methodology in a header that
     // truncates at about half that. The "API-observed" badge in the page
     // header carries the proxy caveat once, with the tooltip that explains it.
-    render(<OverviewCards tiles={[tile({ label: "GPT" })]} />);
+    render(<OverviewCards tiles={[tile({ label: "ChatGPT" })]} />);
 
-    expect(screen.getByText("GPT")).toHaveAttribute("title", "GPT-5.x API + web search");
+    expect(screen.getByText("ChatGPT")).toHaveAttribute("title", "ChatGPT API + web search");
     expect(
-      screen.getByRole("img", { name: "Mention rate over the last 12 weeks, GPT-5.x API + web search" })
+      screen.getByRole("img", { name: "Mention rate over the last 12 weeks, ChatGPT API + web search" })
     ).toBeInTheDocument();
   });
 

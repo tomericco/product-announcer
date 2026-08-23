@@ -213,7 +213,7 @@ describe("CompetitorBars", () => {
     const trigger = screen.getByRole("button", { name: /Versional/ });
     fireEvent.pointerEnter(trigger, { pointerType: "mouse" });
     fireEvent.mouseEnter(trigger);
-    await screen.findByText("GPT-5.x API + web search", undefined, { timeout: 2000 });
+    await screen.findByText("ChatGPT API + web search", undefined, { timeout: 2000 });
     expect(screen.getByText("Claude API + web search")).toBeInTheDocument();
     expect(screen.queryByText("Gemini API, grounded")).not.toBeInTheDocument();
     // A brand with no mentions on an engine it DOES run still gets its row.

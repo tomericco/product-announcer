@@ -11,7 +11,7 @@ import { AiVisibilityEvidence } from "../../../src/app/(dashboard)/signals/ai-vi
 const VIEW = {
   promptId: "p1",
   promptText: "best localization tools for design teams",
-  engineLabel: "GPT-5.x API + web search",
+  engineLabel: "ChatGPT API + web search",
   modelId: "gpt-5.2-2026-07-01",
   runDateLabel: "Aug 17, 2026",
   samples: "0 of 3, two runs",
@@ -52,7 +52,7 @@ describe("AiVisibilityEvidence", () => {
 
   it("shows the whole methodology line: engine, model, date, samples", async () => {
     const dialog = await open();
-    expect(within(dialog).getByText("GPT-5.x API + web search")).toBeInTheDocument();
+    expect(within(dialog).getByText("ChatGPT API + web search")).toBeInTheDocument();
     expect(within(dialog).getByText("gpt-5.2-2026-07-01")).toBeInTheDocument();
     expect(within(dialog).getByText("Aug 17, 2026")).toBeInTheDocument();
     expect(within(dialog).getByText("0 of 3, two runs")).toBeInTheDocument();
@@ -130,7 +130,7 @@ describe("AiVisibilityEvidence", () => {
     loadAiVisibilityEvidence.mockResolvedValue({ ...VIEW, excerpt: null, citedUrls: [] });
     const dialog = await open();
 
-    expect(within(dialog).getByText("GPT-5.x API + web search")).toBeInTheDocument();
+    expect(within(dialog).getByText("ChatGPT API + web search")).toBeInTheDocument();
     expect(within(dialog).queryByText(/Cited sources/)).not.toBeInTheDocument();
     expect(within(dialog).queryAllByRole("listitem")).toHaveLength(0);
   });
@@ -141,7 +141,7 @@ describe("AiVisibilityEvidence", () => {
     loadAiVisibilityEvidence.mockResolvedValue({ ...VIEW, modelId: null });
     const dialog = await open();
 
-    expect(within(dialog).getByText("GPT-5.x API + web search")).toBeInTheDocument();
+    expect(within(dialog).getByText("ChatGPT API + web search")).toBeInTheDocument();
     expect(within(dialog).queryByText("gpt-5.2-2026-07-01")).not.toBeInTheDocument();
   });
 

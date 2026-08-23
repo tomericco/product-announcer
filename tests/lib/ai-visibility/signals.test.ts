@@ -85,7 +85,7 @@ function input(overrides: Partial<TriggerInput> = {}): TriggerInput {
     engines: [engineWindow()],
     domains: [],
     competitorNames: { "c-1": "Rival", "c-2": "Beta" },
-    engineLabels: { openai: "GPT-5.x API + web search", gemini: "Gemini API, grounded" },
+    engineLabels: { openai: "ChatGPT API + web search", gemini: "Gemini API, grounded" },
     ...overrides,
   };
 }
@@ -1163,7 +1163,7 @@ describe("dedupe key and materiality cap", () => {
     expect(out[0].payload).toMatchObject({
       signalType: "gap_vs_competitor",
       promptText: "best issue tracker for startups",
-      engineLabel: "GPT-5.x API + web search",
+      engineLabel: "ChatGPT API + web search",
       modelId: "gpt-5.1",
       runId: RUN_ID,
       runDate: RUN_DATE.toISOString(),

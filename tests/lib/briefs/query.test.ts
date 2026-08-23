@@ -108,7 +108,7 @@ describe("listBriefSignals", () => {
     const payload = {
       signalType: "gap_vs_competitor" as const,
       promptText: "best localization tools for design teams",
-      engineLabel: "GPT-5.x API + web search",
+      engineLabel: "ChatGPT API + web search",
       runId: "44444444-4444-4444-8444-444444444444",
       runDate: "2026-08-17T00:00:00.000Z",
       samples: "0 of 3, two runs",

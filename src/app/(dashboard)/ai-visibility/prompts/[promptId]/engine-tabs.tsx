@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import type { EngineId } from "@/lib/ai-visibility/types";
-import { ENGINE_LABEL, ENGINE_SHORT } from "../../engine-labels";
+import { ENGINE_LABEL, ENGINE_NAME } from "../../engine-labels";
 import { HighlightedAnswer, type AnswerAlias } from "./highlighted-answer";
 
 export type SampleView = {
@@ -150,7 +150,7 @@ export function EngineTabs({
       <TabsList>
         {engines.map((engine) => (
           <TabsTrigger key={engine} value={engine} title={ENGINE_LABEL[engine]}>
-            {ENGINE_SHORT[engine]}
+            {ENGINE_NAME[engine]}
           </TabsTrigger>
         ))}
       </TabsList>

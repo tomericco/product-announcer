@@ -13,7 +13,7 @@ import { cn } from "@/lib/utils";
 // browser bundle.
 import { MIN_N_PROMPT } from "@/lib/ai-visibility/thresholds";
 import type { EngineId } from "@/lib/ai-visibility/types";
-import { ENGINE_LABEL, ENGINE_SHORT } from "./engine-labels";
+import { ENGINE_LABEL, ENGINE_NAME } from "./engine-labels";
 
 export type MatrixCell = {
   named: number | null;
@@ -209,7 +209,7 @@ export function PromptMatrix({ rows, engines }: { rows: MatrixRow[]; engines: re
               <TableHead className="w-full">Prompt</TableHead>
               {engines.map((engine) => (
                 <TableHead key={engine} className="text-center">
-                  {ENGINE_SHORT[engine]}
+                  {ENGINE_NAME[engine]}
                 </TableHead>
               ))}
             </TableRow>

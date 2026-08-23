@@ -46,15 +46,15 @@ describe("EngineTabs — the tab strip", () => {
   it("shows one tab per engine the tenant runs, short label with the full one on hover", () => {
     tabs([], ["openai", "anthropic"], "openai");
 
-    expect(screen.getByRole("tab", { name: "GPT" })).toHaveAttribute("title", "GPT-5.x API + web search");
+    expect(screen.getByRole("tab", { name: "ChatGPT" })).toHaveAttribute("title", "ChatGPT API + web search");
     expect(screen.getByRole("tab", { name: "Claude" })).toHaveAttribute("title", "Claude API + web search");
-    expect(screen.queryByRole("tab", { name: "Gem" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Gemini" })).not.toBeInTheDocument();
   });
 
   it("names the engine in the empty message rather than saying 'no answers' with no subject", () => {
     tabs([], ["openai"], "openai");
 
-    expect(screen.getByText("No answers from GPT-5.x API + web search yet.")).toBeInTheDocument();
+    expect(screen.getByText("No answers from ChatGPT API + web search yet.")).toBeInTheDocument();
   });
 
   it("keeps each engine's answers in its own tab", () => {

@@ -341,7 +341,7 @@ describe("ai_visibility schema", () => {
       promptId: prompt.id,
       promptText: prompt.text,
       engine: "openai",
-      engineLabel: "GPT-5.x API + web search",
+      engineLabel: "ChatGPT API + web search",
       modelId: "gpt-5.1-2026-01-01",
       runId: run.id,
       runDate: new Date().toISOString(),

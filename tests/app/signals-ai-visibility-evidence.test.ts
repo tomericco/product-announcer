@@ -27,7 +27,7 @@ const PAYLOAD: AiVisibilityPayload = {
   promptId: "11111111-1111-4111-8111-111111111111",
   promptText: "best localization tools for design teams",
   engine: "openai",
-  engineLabel: "GPT-5.x API + web search",
+  engineLabel: "ChatGPT API + web search",
   modelId: "gpt-5.2-2026-07-01",
   runId: "22222222-2222-4222-8222-222222222222",
   runDate: "2026-08-17T00:00:00.000Z",
@@ -82,7 +82,7 @@ describe("loadAiVisibilityEvidence", () => {
     expect(view).not.toBeNull();
     expect(view!.promptId).toBe(PAYLOAD.promptId);
     expect(view!.promptText).toBe("best localization tools for design teams");
-    expect(view!.engineLabel).toBe("GPT-5.x API + web search");
+    expect(view!.engineLabel).toBe("ChatGPT API + web search");
     expect(view!.modelId).toBe("gpt-5.2-2026-07-01");
     // Pinned locale + UTC, so the dialog reads the same on every machine.
     expect(view!.runDateLabel).toBe("Aug 17, 2026");

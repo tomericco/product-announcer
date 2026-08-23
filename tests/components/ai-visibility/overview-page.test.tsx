@@ -600,7 +600,7 @@ describe("overview — what the tiles, the matrix and the domain table are hande
     // ENGINE_ORDER, filtered — not the settings array's own order. The titles
     // are the SHORT names; the methodology name is the card's tooltip.
     expect(captured.tiles!.map((tile) => tile.engine)).toEqual(["openai", "gemini", "all"]);
-    expect(captured.tiles!.map((tile) => tile.label)).toEqual(["GPT", "Gem", "All engines"]);
+    expect(captured.tiles!.map((tile) => tile.label)).toEqual(["ChatGPT", "Gemini", "All engines"]);
   });
 
   it("draws no pooled tile for a one-engine tenant, where it would be the same numbers twice", async () => {

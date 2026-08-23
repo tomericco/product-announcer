@@ -14,7 +14,7 @@ function cited(overrides: Partial<CitedSignal> = {}): CitedSignal {
       promptId: "p1",
       promptText: "best localization tools for design teams",
       engine: "openai",
-      engineLabel: "GPT-5.x API + web search",
+      engineLabel: "ChatGPT API + web search",
       runId: "r1",
       runDate: "2026-08-17T00:00:00.000Z",
       samples: "0 of 3, two runs",
@@ -102,7 +102,7 @@ describe("BriefEvidence with an ai_visibility signal", () => {
     const popover = screen.getByRole("dialog");
     expect(
       within(popover).getByText(
-        "best localization tools for design teams · GPT-5.x API + web search · 0 of 3, two runs"
+        "best localization tools for design teams · ChatGPT API + web search · 0 of 3, two runs"
       )
     ).toBeInTheDocument();
   });

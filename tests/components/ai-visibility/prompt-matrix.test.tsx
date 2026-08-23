@@ -203,7 +203,7 @@ describe("PromptMatrix", () => {
 
     expect(
       screen.getByRole("link", {
-        name: "best localization tools 0 — GPT-5.x API + web search: named in 2 of 3 answers; no competitor named",
+        name: "best localization tools 0 — ChatGPT API + web search: named in 2 of 3 answers; no competitor named",
       })
     ).toHaveAttribute("href", "/ai-visibility/prompts/p0?engine=openai");
   });
@@ -226,7 +226,7 @@ describe("PromptMatrix", () => {
     // health row, so it can name this prompt rather than the whole column.
     expect(
       screen.getByRole("link", {
-        name: "best localization tools 0 — GPT-5.x API + web search: no usable answers; the last run errored on this prompt",
+        name: "best localization tools 0 — ChatGPT API + web search: no usable answers; the last run errored on this prompt",
       })
     ).toBeInTheDocument();
     expect(
@@ -289,7 +289,7 @@ describe("PromptMatrix", () => {
 
     expect(
       screen.getByRole("link", {
-        name: "best localization tools 0 — GPT-5.x API + web search: named in 0 of 3 answers; 2 competitors named",
+        name: "best localization tools 0 — ChatGPT API + web search: named in 0 of 3 answers; 2 competitors named",
       })
     ).toBeInTheDocument();
   });
@@ -299,7 +299,7 @@ describe("PromptMatrix", () => {
 
     expect(
       screen.getByRole("link", {
-        name: "best localization tools 0 — GPT-5.x API + web search: named in 0 of 3 answers; no competitor named",
+        name: "best localization tools 0 — ChatGPT API + web search: named in 0 of 3 answers; no competitor named",
       })
     ).toBeInTheDocument();
   });
@@ -337,7 +337,7 @@ describe("PromptMatrix", () => {
 
     expect(screen.getAllByRole("columnheader").map((head) => head.textContent)).toEqual([
       "Prompt",
-      "GPT",
+      "ChatGPT",
       "Claude",
     ]);
     expect(screen.queryByRole("link", { name: /Gemini/ })).not.toBeInTheDocument();

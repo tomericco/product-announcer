@@ -7,7 +7,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import type { DomainClass } from "@/lib/ai-visibility/domains";
 import type { EngineId } from "@/lib/ai-visibility/types";
-import { ENGINE_SHORT } from "./engine-labels";
+import { ENGINE_NAME } from "./engine-labels";
 import { ratePct } from "./format";
 
 export type CitedDomainRow = {
@@ -136,7 +136,7 @@ export function CitedDomainsTable({ rows }: { rows: CitedDomainRow[] }) {
                   {row.citations} ({ratePct(row.answerSharePct)} of searched answers)
                 </TableCell>
                 <TableCell className="text-muted-foreground">
-                  {row.engines.map((engine) => ENGINE_SHORT[engine]).join(" · ")}
+                  {row.engines.map((engine) => ENGINE_NAME[engine]).join(" · ")}
                 </TableCell>
                 <TableCell>
                   <Badge variant={classification.variant}>{classification.label}</Badge>

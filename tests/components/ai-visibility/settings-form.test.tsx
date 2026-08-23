@@ -148,7 +148,7 @@ describe("AiVisibilityForm", () => {
   it("groups the three engine switches under one named group", () => {
     form();
     // They were three bare switches under a <Label> with no control and no
-    // labelable descendant, so a screen-reader user met "GPT-5.x API + web
+    // labelable descendant, so a screen-reader user met "ChatGPT API + web
     // search" with nothing saying it was one of a set of engines.
     const engines = screen.getByRole("group", { name: "Engines" });
     expect(within(engines).getAllByRole("switch")).toHaveLength(3);

@@ -106,11 +106,11 @@ async function click(element: HTMLElement) {
 
 describe("engineChipLine", () => {
   it("reads as counts per engine, in a fixed order", () => {
-    expect(engineChipLine(row().chips)).toBe("GPT 2/3 · Gem 3/3 · Claude 1/3");
+    expect(engineChipLine(row().chips)).toBe("ChatGPT 2/3 · Gemini 3/3 · Claude 1/3");
   });
 
   it("dashes an engine with no usable samples rather than printing 0/0", () => {
-    expect(engineChipLine([{ engine: "openai", named: null, samples: 0 }])).toBe("GPT –");
+    expect(engineChipLine([{ engine: "openai", named: null, samples: 0 }])).toBe("ChatGPT –");
   });
 });
 
