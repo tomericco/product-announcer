@@ -283,10 +283,10 @@ function deltaPp(current: WindowCounts, previous: WindowCounts): number | null {
 }
 
 /**
- * The four engine tiles plus the pooled "All engines" tile.
+ * The three engine tiles plus the pooled "All engines" tile.
  *
  * The pooled row is summed samples, NOT an average of engine rates (design
- * §Metrics). With four engines whose `n` differ by an order of magnitude — they
+ * §Metrics). With three engines whose `n` differ by an order of magnitude — they
  * do, because engines fail unevenly — an average of rates is a number that
  * describes no population.
  */
@@ -434,7 +434,7 @@ export type PromptHistoryPoint = {
 /**
  * One prompt's last 12 runs — the sparkline on the prompt detail page.
  *
- * `modelId` is null for `"all"`: four engines do not share a model, and
+ * `modelId` is null for `"all"`: three engines do not share a model, and
  * inventing one would put a false tick mark on the chart.
  *
  * `tenantId` is in the WHERE clause, not merely validated by the caller.
@@ -581,7 +581,7 @@ export type RunEngineHealth = {
  * `pending` rows are not counted at all — not as total, and not as a failure.
  * `planRun` inserts the entire grid up front, so a run one slice in has
  * hundreds of pending rows, and counting them would render an in-flight run as
- * "3 of 360 answered": a catastrophe line for a healthy run. Coverage here
+ * "3 of 270 answered": a catastrophe line for a healthy run. Coverage here
  * means coverage of what has been ATTEMPTED.
  *
  * `tenantId` is in the WHERE clause for the same reason as `promptSamples`:
@@ -669,7 +669,7 @@ const DEFAULT_PROMPT_SAMPLE_LIMIT = 12;
  * validated: `promptId` arrives from the URL, and a tenant-less query would
  * hand any logged-in user any other tenant's raw answers.
  *
- * The limit applies PER ENGINE when no engine is given, so a four-tab strip
+ * The limit applies PER ENGINE when no engine is given, so a three-tab strip
  * gets a full set for each tab rather than twelve rows that all belong to
  * whichever engine answered most recently.
  *
@@ -678,7 +678,7 @@ const DEFAULT_PROMPT_SAMPLE_LIMIT = 12;
  * owns more than its quarter of the newest rows — which is the normal case, not
  * a pathological one: at `samplesPerPrompt: 5` over several runs, one engine's
  * recent answers alone exceed the ceiling and the quieter engines come back
- * empty even though their rows exist. Four small indexed reads issued together
+ * empty even though their rows exist. Three small indexed reads issued together
  * cost less than the one over-fetch did, and cannot lie.
  */
 export async function promptSamples(

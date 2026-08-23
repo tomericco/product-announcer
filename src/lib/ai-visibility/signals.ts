@@ -860,7 +860,7 @@ export async function emitSignals(
   }
 
   // Own-domain citations older than the window, per (prompt, engine). One
-  // grouped query rather than one per pair: a 30-prompt tenant on four engines
+  // grouped query rather than one per pair: a 30-prompt tenant on three engines
   // is 120 sequential round-trips inside a lease budget, which is the kind of
   // cost that only shows up in production.
   const ownCitationsBeforeBy = new Map<string, number>();

@@ -161,7 +161,7 @@ export default async function CompanyPage({
         <CardHeader>
           <CardTitle>AI visibility</CardTitle>
           <CardDescription>
-            Measures how often ChatGPT, Perplexity, Gemini and Claude name you when buyers ask about your
+            Measures how often ChatGPT, Gemini and Claude name you when buyers ask about your
             category. Costs a few dollars a month per workspace, so it&apos;s off until you turn it on.
           </CardDescription>
         </CardHeader>

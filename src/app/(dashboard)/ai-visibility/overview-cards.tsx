@@ -90,9 +90,9 @@ export type EngineTile = {
 /**
  * Row 1 of the overview: one card per engine plus "All engines".
  *
- * "All engines" is POOLED samples, not an average of the four rates — the
+ * "All engines" is POOLED samples, not an average of the three rates — the
  * page hands it down already computed that way; this component only renders
- * what it is given. Averaging four rates would weight a 12-sample engine
+ * what it is given. Averaging three rates would weight a 12-sample engine
  * equally with an 84-sample one.
  */
 export function OverviewCards({ tiles }: { tiles: EngineTile[] }) {

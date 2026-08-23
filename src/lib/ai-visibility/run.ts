@@ -44,8 +44,8 @@ export type PlanRunResult =
 
 /**
  * Sample rows are inserted in chunks so one plan cannot exceed the driver's
- * bind-parameter ceiling. 30 prompts x 4 engines x 3 samples is 360 rows and
- * roughly a dozen columns each — comfortably over 5,000 parameters in one
+ * bind-parameter ceiling. 30 prompts x 3 engines x 3 samples is 270 rows and
+ * roughly a dozen columns each — comfortably over 3,000 parameters in one
  * statement, which is the wrong thing to discover on a tenant's first run.
  */
 const SAMPLE_INSERT_CHUNK = 200;
@@ -186,7 +186,7 @@ export async function planRun(
   // substitutes the full engine list for one that filters down to nothing, and
   // `saveAiVisibilitySettings` refuses to write an empty list in the first
   // place — so the only way to reach this line with zero engines is a
-  // hand-written row, and Phase A's ruling is that measuring all four beats
+  // hand-written row, and Phase A's ruling is that measuring all three beats
   // measuring none. A refusal arm for it would be a state the UI must branch
   // on and can never see.
   const engines = settings.engines;
@@ -215,7 +215,7 @@ export async function planRun(
   }
 
   // Built before the run row so `plannedCalls` is exact at insert time rather
-  // than patched in afterwards — the header reads "41 / 360 calls" off it, and a
+  // than patched in afterwards — the header reads "41 / 270 calls" off it, and a
   // run that briefly claims 0 planned calls renders as finished.
   const rows: (typeof aiVisibilitySamples.$inferInsert)[] = [];
   for (const prompt of prompts) {
@@ -234,7 +234,7 @@ export async function planRun(
   try {
     // One transaction for the run row AND its whole work list. A plan is not
     // useful in halves: a run row whose sample grid was only partly inserted
-    // reports `plannedCalls: 360`, is driven to "completion" against however
+    // reports `plannedCalls: 270`, is driven to "completion" against however
     // many rows landed, and freezes that short count into the permanent
     // aggregates. The in-flight re-check joins the transaction so the read and
     // the insert cannot be separated by another driver's insert.
@@ -297,7 +297,7 @@ function batchSize(concurrency: number): number {
  * Spends part of a run's work list, bounded by wall clock.
  *
  * The whole point of slicing is that one cron tick has a deadline and a run has
- * up to 360 engine calls in it. Everything survivable is recorded rather than
+ * up to 270 engine calls in it. Everything survivable is recorded rather than
  * thrown: an engine that refuses, errors, or hangs up costs its own sample row
  * a status and nothing else. The slice returns what it did so the caller can
  * decide whether to finalize now or come back next tick.
@@ -343,7 +343,7 @@ export async function runSlice(
   const extract = deps.extract ?? extractSample;
   // Loaded ONCE per slice: extraction needs the same brand aliases for every
   // row, and re-reading three tables per sample would be ~1,400 identical
-  // queries on a 360-call run. `extractSample`'s standalone default still
+  // queries on a 270-call run. `extractSample`'s standalone default still
   // re-reads, for the operator "re-extract after an alias fix" path.
   const brandContext = await loadBrandTargets(run.tenantId, database);
   // Shared across the slice: a Gemini grounding handle cited by many samples
@@ -576,7 +576,7 @@ export type FinalizeDeps = RunDeps & {
  * Per-engine failure summary for the source row's `lastError`.
  *
  * Reads like the news agent's partial-failure line, and for the same reason: a
- * run where Perplexity rate-limited nine prompts did its job, and the operator
+ * run where Gemini rate-limited nine prompts did its job, and the operator
  * needs the sentence rather than a red badge.
  */
 async function engineFailureSummary(
@@ -787,7 +787,7 @@ export async function finalizeRun(
       .where(eq(aiVisibilityRuns.id, runId));
 
     // Productive = the run got at least one usable answer. A run where every
-    // engine failed is genuinely `failing`; one where three of four answered is
+    // engine failed is genuinely `failing`; one where two of three answered is
     // not, however loud its lastError.
     await finish(database, run.sourceId, opts.now(), errorText, summary.okSamples > 0);
     await releaseSliceLease(database, runId, lease);
@@ -812,7 +812,7 @@ export async function finalizeRun(
 /**
  * The tenant's most recent run, whatever its status.
  *
- * Any status on purpose: the overview header has to render "Running… 41 / 360
+ * Any status on purpose: the overview header has to render "Running… 41 / 270
  * calls" and "Paused — monthly cap reached" off this row, and filtering to
  * `complete` would make both states invisible on the one page that exists to
  * show them.

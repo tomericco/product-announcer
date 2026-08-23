@@ -101,7 +101,7 @@ export function AiVisibilityCard({
         Track AI visibility
       </Label>
       <p className="text-xs text-muted-foreground">
-        Asks ChatGPT, Perplexity, Gemini and Claude the questions your buyers ask, on a schedule you set
+        Asks ChatGPT, Gemini and Claude the questions your buyers ask, on a schedule you set
         in Settings. Off means nothing runs and nothing is billed; anything already measured is kept.
       </p>
 

@@ -1,0 +1,1 @@
+ALTER TABLE "ai_visibility_settings" ALTER COLUMN "engines" SET DEFAULT '{"openai","gemini","anthropic"}';

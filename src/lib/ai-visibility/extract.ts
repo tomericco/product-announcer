@@ -167,7 +167,7 @@ export type ExtractSampleDeps = {
   fetchImpl?: typeof fetch;
   /**
    * Injected by `runSlice`, which loads it ONCE per slice — extraction needs
-   * the same aliases for every row, and a 360-call run re-reading three
+   * the same aliases for every row, and a 270-call run re-reading three
    * tables per sample would be ~1,400 identical queries. The standalone
    * default re-reads, so an operator can re-extract after an alias fix.
    */

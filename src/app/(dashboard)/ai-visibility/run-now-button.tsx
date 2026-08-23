@@ -47,7 +47,7 @@ export function RunNowButton({
   /**
    * The tone of the reason line. `--destructive` owns warnings and errors, and
    * the cap is one; a run being in progress is not, and painting "Running…
-   * 41 / 360 calls" red reports a healthy run as a failure.
+   * 41 / 270 calls" red reports a healthy run as a failure.
    */
   disabledTone?: "muted" | "destructive";
   label?: string;
@@ -75,7 +75,7 @@ export function RunNowButton({
       if (result.ok) {
         setOpen(false);
         // The overview reads run state on the server; refreshing is what
-        // swaps the header into "Running… 41 / 360 calls".
+        // swaps the header into "Running… 41 / 270 calls".
         router.refresh();
         toast.success("Run started");
       } else {

@@ -36,8 +36,8 @@ export default async function SettingsPage() {
   const aiVisibilitySettings = await getAiVisibilitySettings(session.user.tenantId);
   const aiVisibilityPrompts = await listPrompts(session.user.tenantId, { status: "active" });
   // Read here, in the Server Component, and handed down as plain numbers:
-  // `engineCost` lives with the four fetch-based API clients, so importing it
-  // from the form would pull all four into the browser bundle.
+  // `engineCost` lives with the three fetch-based API clients, so importing it
+  // from the form would pull all three into the browser bundle.
   const engineCosts = Object.fromEntries(
     ENGINE_ORDER.map((engine) => [engine, engineCost(engine)])
   ) as Record<EngineId, number>;

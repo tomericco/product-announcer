@@ -314,7 +314,7 @@ function buildSystem(tenantName: string): string {
     "You write the buyer questions used to measure whether AI assistants name one company, called THE",
     "COMPANY below. Its name, and nothing else, is inside the COMPANY block:",
     `\n--- BEGIN COMPANY ---\n${fenceable(tenantName, MAX_NAME_CHARS)}\n--- END COMPANY ---\n`,
-    "Each prompt must be something a real buyer would type into ChatGPT, Perplexity, Gemini or Claude —",
+    "Each prompt must be something a real buyer would type into ChatGPT, Gemini or Claude —",
     "a natural question, not a search keyword, not marketing copy, and never an instruction to the assistant.",
     "",
     "RULES, all of them hard:",

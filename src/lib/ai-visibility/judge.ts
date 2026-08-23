@@ -19,9 +19,9 @@ import type { SampleExtraction } from "@/lib/ai-visibility/types";
 /**
  * How many answers one judge call rules on.
  *
- * The cost dial. A weekly run is up to 360 samples; at 20 per call that is 18
+ * The cost dial. A weekly run is up to 270 samples; at 20 per call that is 14
  * calls, which is the difference between one batched judge (design §Extraction)
- * and 360 individual ones. Larger chunks are cheaper still but push the output
+ * and 270 individual ones. Larger chunks are cheaper still but push the output
  * object toward the token cap — 20 labels with a quote and a framing line each
  * is comfortably inside MAX_JUDGE_OUTPUT_TOKENS, and a truncated object costs
  * the whole chunk its labels.
@@ -192,7 +192,7 @@ export function buildJudgeSystem(ctx: JudgeContext): string {
     "punish an answer for agreeing with you.",
     "",
     // The trust boundary, same rule as news-selection.ts. These answers are
-    // whatever four third-party engines returned for a public question: an
+    // whatever three third-party engines returned for a public question: an
     // attacker who ranks for that question controls this text.
     // Named exactly as `buildJudgePrompt` writes them — "BEGIN/END ANSWER" as a
     // contraction does not appear anywhere in the prompt, so the model would be

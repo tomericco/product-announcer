@@ -134,7 +134,7 @@ export function toRegistrableDomain(url: string): string | null {
   // Only the two schemes a citation can honestly have. Every URL that survives
   // this function is stored and later rendered as an `href` — on the prompt
   // detail page's engine tabs and in the signals evidence dialog — and the URLs
-  // themselves are whatever four third-party engines returned.
+  // themselves are whatever three third-party engines returned.
   //
   // `javascript://evil.com/%0aalert(1)` parses as a perfectly ordinary URL with
   // hostname `evil.com`, so without this the scheme is dropped on the floor and

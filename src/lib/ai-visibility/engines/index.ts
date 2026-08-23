@@ -1,9 +1,5 @@
 import type { EngineClient, EngineId } from "@/lib/ai-visibility/types";
 import { openaiEngine, OPENAI_COST_PER_CALL_USD } from "@/lib/ai-visibility/engines/openai";
-import {
-  perplexityEngine,
-  PERPLEXITY_COST_PER_CALL_USD,
-} from "@/lib/ai-visibility/engines/perplexity";
 import { geminiEngine, GEMINI_COST_PER_CALL_USD } from "@/lib/ai-visibility/engines/gemini";
 import {
   anthropicEngine,
@@ -14,17 +10,16 @@ import {
  * Every engine a run can ask, keyed by the id stored on
  * `ai_visibility_settings.engines` and `ai_visibility_samples.engine`.
  *
- * A `Record<EngineId, …>` rather than an array, so adding a fifth id to
+ * A `Record<EngineId, …>` rather than an array, so adding a fourth id to
  * `ENGINE_IDS` fails the typecheck here until a client exists for it — the
  * alternative is a run that silently skips an engine a tenant switched on.
  *
  * This module imports the clients; nothing in a client may import this module
- * back. The one thing all four share, `engineSystemPrompt()`, therefore lives
+ * back. The one thing all three share, `engineSystemPrompt()`, therefore lives
  * in `types.ts`.
  */
 export const ENGINE_CLIENTS: Record<EngineId, EngineClient> = {
   openai: openaiEngine,
-  perplexity: perplexityEngine,
   gemini: geminiEngine,
   anthropic: anthropicEngine,
 };
@@ -39,7 +34,6 @@ export const ENGINE_CLIENTS: Record<EngineId, EngineClient> = {
  */
 const ENGINE_COSTS: Record<EngineId, number> = {
   openai: OPENAI_COST_PER_CALL_USD,
-  perplexity: PERPLEXITY_COST_PER_CALL_USD,
   gemini: GEMINI_COST_PER_CALL_USD,
   anthropic: ANTHROPIC_COST_PER_CALL_USD,
 };

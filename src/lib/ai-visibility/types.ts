@@ -7,7 +7,7 @@
  * cycle back through `@/db`.
  */
 
-export const ENGINE_IDS = ["openai", "perplexity", "gemini", "anthropic"] as const;
+export const ENGINE_IDS = ["openai", "gemini", "anthropic"] as const;
 export type EngineId = (typeof ENGINE_IDS)[number];
 
 export const PROMPT_INTENTS = [
@@ -21,7 +21,7 @@ export const PROMPT_INTENTS = [
 export type PromptIntent = (typeof PROMPT_INTENTS)[number];
 
 /**
- * The one instruction every engine is given, identical across all four.
+ * The one instruction every engine is given, identical across all three.
  *
  * Neutral by design: the run measures the natural distribution of answers, so
  * anything that nudges the model toward listing brands, or toward citing,
@@ -29,7 +29,7 @@ export type PromptIntent = (typeof PROMPT_INTENTS)[number];
  * each provider's default for the same reason (spec, "Engines & run
  * mechanics").
  *
- * Lives here rather than in `engines/index.ts` because all four clients need
+ * Lives here rather than in `engines/index.ts` because all three clients need
  * it and `engines/index.ts` imports them — putting it there would cycle.
  */
 /**

@@ -66,7 +66,7 @@ type OpenAiResponse = {
  * Reasoning items carry a base64 `encrypted_content` that is nothing but a
  * continuation handle — unreadable, useless once the call is over, and large:
  * it was the bulk of a 24 KB response in a live check. `raw` is stored as jsonb
- * on every sample, so at ~360 samples a run this is the difference between a
+ * on every sample, so at ~270 samples a run this is the difference between a
  * few MB and a few hundred.
  */
 function sanitizeRaw(raw: OpenAiResponse): OpenAiResponse {

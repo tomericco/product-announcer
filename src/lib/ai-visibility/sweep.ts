@@ -11,7 +11,7 @@ import { planRun, runSlice, finalizeRun, type Clock, type PlanRunRefusal } from 
  * `Number(undefined)` is NaN and so is `Number("12s")`; an unset variable in a
  * `??` chain is the only case the plain form gets right. NaN here is not a
  * loud failure — `Math.max(5_000, NaN)` is NaN, and `elapsed >= NaN` is false
- * forever, so the budget silently ceases to exist and one slice runs a 360-call
+ * forever, so the budget silently ceases to exist and one slice runs a 270-call
  * work list inside a single invocation until the platform kills it. An empty
  * string is worse than useless in the other direction: `Number("")` is 0.
  */
@@ -38,8 +38,8 @@ export const SWEEP_BUDGET_MS = positiveNumberFromEnv(
 /**
  * Engine calls in flight at once, per source.
  *
- * Contract decision 3 targets 360 calls in one tick at concurrency 12–20. Held
- * at the low end of that: four different providers' rate limits are in play and
+ * Contract decision 3 targets 270 calls in one tick at concurrency 12–20. Held
+ * at the low end of that: three different providers' rate limits are in play and
  * a 429 costs a sample outright, since there is no retry helper in this repo.
  */
 export const SWEEP_CONCURRENCY = positiveNumberFromEnv(process.env.AI_VISIBILITY_CONCURRENCY, 12);

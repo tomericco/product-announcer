@@ -104,8 +104,8 @@ function callsPerRun(promptCount: number, brandCheckCount: number, samplesPerPro
  *
  * The per-call costs arrive as a plain record from the page rather than being
  * read here: `engineCost` lives in `@/lib/ai-visibility/engines`, which is the
- * four fetch-based API clients, and importing a runtime value from it into a
- * client file would pull all four into the browser bundle.
+ * three fetch-based API clients, and importing a runtime value from it into a
+ * client file would pull all three into the browser bundle.
  */
 export function AiVisibilityForm({
   defaults,

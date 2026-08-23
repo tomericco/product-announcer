@@ -77,7 +77,7 @@ type AnthropicResponse = { model?: string; stop_reason?: string; content?: Anthr
  *
  * `web_search_tool_result[].content[].encrypted_content` is a base64 blob per
  * search hit — a live call returned 17 hits and weighed 47 KB, of which 38 KB
- * was blobs. `raw` is stored as jsonb on every sample, so across ~360 samples a
+ * was blobs. `raw` is stored as jsonb on every sample, so across ~270 samples a
  * run that is the difference between ~3 MB and ~17 MB a week, for bytes nothing
  * can read. `cited_text` and `encrypted_index` go the same way: the quote shown
  * in the UI comes from the judge, not from here.

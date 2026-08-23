@@ -7,8 +7,8 @@ import { PROMPT_INTENTS, type PromptIntent } from "@/lib/ai-visibility/types";
 /**
  * The hard ceiling on prompts a run may ask.
  *
- * This is the cost dial, not a tidiness rule: 30 prompts × 4 engines × 3
- * samples is ~360 calls a week, which is the $20/tenant/month target. Raising
+ * This is the cost dial, not a tidiness rule: 30 prompts × 3 engines × 3
+ * samples is ~270 calls a week, which is the $20/tenant/month target. Raising
  * it raises the bill linearly. Proposals and paused prompts do NOT count —
  * neither costs anything until a human activates it.
  */

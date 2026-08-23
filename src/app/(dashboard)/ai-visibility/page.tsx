@@ -289,7 +289,7 @@ export default async function AiVisibilityPage() {
       engine: key,
       label: key === "all" ? "All engines" : ENGINE_LABEL[key],
       // Pooled, not averaged: `engineMetrics` returns the "all" row summed over
-      // samples, and averaging four rates would weight a 12-sample engine like
+      // samples, and averaging three rates would weight a 12-sample engine like
       // an 84-sample one.
       metrics: metricsByEngine.get(key)!,
       points,
@@ -486,7 +486,7 @@ export default async function AiVisibilityPage() {
 
       {lastRun === null ? (
         // ---- State: No run yet ----------------------------------------------
-        // One empty state naming the next scheduled run, rather than four
+        // One empty state naming the next scheduled run, rather than three
         // empty tables that look broken.
         <EmptyState>
           <EmptyStateIcon>

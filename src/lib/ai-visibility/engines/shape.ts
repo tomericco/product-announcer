@@ -7,7 +7,7 @@
  * TypeError out of `ask()` instead, which is a broken contract and, in a run
  * slice with no try/catch above it, a dead slice.
  *
- * That is not a hypothetical: two of the four engine shapes here were written
+ * That is not a hypothetical: two of the three engine shapes here were written
  * from documentation rather than from a verified live call, and "the list is
  * nested one level deeper" is the single most ordinary way such a guess is
  * wrong.

@@ -490,7 +490,7 @@ export type Signal = typeof signals.$inferSelect;
 // The vocabularies here — cadence, intent, status, trigger, engine id,
 // domain class — are all `text()` and not pgEnum, matching the repo rule for
 // growing vocabularies: Postgres has no DROP VALUE, and every one of these is
-// expected to gain entries (a fifth engine, a v2 intent). The TypeScript
+// expected to gain entries (a fourth engine, a v2 intent). The TypeScript
 // unions in `src/lib/ai-visibility/types.ts` are the real contract.
 
 export const aiVisibilitySettings = pgTable("ai_visibility_settings", {
@@ -508,7 +508,7 @@ export const aiVisibilitySettings = pgTable("ai_visibility_settings", {
   engines: text("engines")
     .array()
     .notNull()
-    .default(["openai", "perplexity", "gemini", "anthropic"]),
+    .default(["openai", "gemini", "anthropic"]),
   samplesPerPrompt: smallint("samples_per_prompt").notNull().default(3),
   monthlyCapUsd: real("monthly_cap_usd").notNull().default(20),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
