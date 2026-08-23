@@ -10,7 +10,7 @@
 ## Summary
 
 A fourth source agent. Versional generates a buyer-intent prompt set from the
-company profile, runs it weekly against ChatGPT, Perplexity, Gemini and Claude
+company profile, runs it weekly against ChatGPT, Gemini and Claude
 through their APIs, measures how often the tenant and its competitors are
 named and cited, and turns material gaps and changes into `ai_visibility`
 signals with the raw answer as evidence. The brief agent joins those with
@@ -55,9 +55,10 @@ The content marketer on a 2–5 person team (pivot spec). Weekly:
 
 - Prompt generation from company context; review → approve; edit/pause/add;
   monthly suggestion refresh as proposals; hard cap 30 active prompts.
-- Four engines via API: OpenAI Responses + web search, Perplexity Sonar,
-  Gemini + Google Search grounding, Claude + web search. Per-tenant engine
-  toggles; all on by default.
+- Three engines via API: OpenAI Responses + web search, Gemini + Google
+  Search grounding, Claude + web search. Per-tenant engine toggles; all on by
+  default. (Perplexity was specced and built as a fourth, then removed before
+  launch — see "Engines & run mechanics".)
 - Weekly run, 3 samples per prompt × engine (brand-check prompts 1×),
   "Run now", hard monthly cost cap.
 - Deterministic extraction + one batched Claude judge call; four metrics;
@@ -81,8 +82,7 @@ The content marketer on a 2–5 person team (pivot spec). Weekly:
 
 **Out**
 
-- Scraping consumer ChatGPT/Gemini/Perplexity UIs (OpenAI ToS;
-  irreproducible).
+- Scraping consumer ChatGPT/Gemini/Claude UIs (OpenAI ToS; irreproducible).
 - Daily runs; >30 active prompts; >6 tracked competitors per tenant.
 - A composite 0–100 score; prompt-volume estimates; AI-referral traffic
   attribution.
@@ -162,14 +162,13 @@ v2 metrics are listed under Scope.
 | Engine | Call | Label in UI | Cost basis |
 | --- | --- | --- | --- |
 | ChatGPT | Responses API, `web_search` tool, `search_context_size: medium` | "GPT-5.x API + web search" | $10/1k searches + tokens (https://developers.openai.com/api/docs/pricing) |
-| Perplexity | Sonar chat completions | "Perplexity Sonar API" | $1/M tokens + $5–14/1k requests (https://docs.perplexity.ai/docs/getting-started/pricing) |
 | Gemini | Gemini 3.x, `google_search` grounding; resolve redirect URIs | "Gemini API, grounded" | 5k grounded prompts/month free, then $14/1k (https://ai.google.dev/gemini-api/docs/pricing) |
 | Claude | `web_search` tool, Messages API | "Claude API + web search" | $10/1k searches + tokens |
 
 - Neutral fixed system prompt; default temperature (we want the natural
   distribution); no `user_location` in v1 (locale is v2); English.
-- **3 samples** per prompt × engine per run; brand-check prompts 1×. 30 × 4 ×
-  3 ≈ 360 calls per run, weekly → ~1,560 calls/month ≈ **$15–45/tenant/month**
+- **3 samples** per prompt × engine per run; brand-check prompts 1×. 30 × 3 ×
+  3 ≈ 270 calls per run, weekly → ~1,170 calls/month ≈ **$12–35/tenant/month**
   at list prices (parent research), less with Gemini's 5k/month free grounded
   tier. **Target: $20/tenant/month.** Samples per prompt is a setting (1 / 3 /
   5) with "3 recommended — single samples are noisy"; if the estimate exceeds
@@ -372,9 +371,9 @@ error, "Edit prompts" / "View results".
 | No prompts | Generate CTA | Generate CTA |
 | Generating | — | inline "Drafting prompts…", retry on error |
 | No run yet | tiles "—", rows 2–4 `EmptyState` "First audit Mon — or run it now" | chips empty |
-| Running | header "Running… 41 / 360 calls", tiles keep last values | — |
+| Running | header "Running… 41 / 270 calls", tiles keep last values | — |
 | Collecting baseline (n<30) | tiles "Collecting baseline", sparkline grows | — |
-| Partial failure | destructive line "Perplexity failed on 9 prompts — rate limited"; cells "–" | — |
+| Partial failure | destructive line "Gemini failed on 9 prompts — rate limited"; cells "–" | — |
 | Paused by cap | destructive `Badge` "Paused — monthly cap reached" → settings; Run now disabled with reason | — |
 | Model changed | tick on sparkline with model name; note under tile | — |
 
@@ -476,7 +475,7 @@ current settings" next to the cap and in the Run-now dialog — no credits.
     - Given settings, then "≈ $X/month at current settings" recomputes as I
       toggle engines or samples.
 14. *(v1)* As a content marketer I want partial failures visible, not silent.
-    - Given Perplexity rate-limits 9 prompts, then the header says so and the
+    - Given Gemini rate-limits 9 prompts, then the header says so and the
       matrix shows "–" with a tooltip for those cells; rates exclude them.
 
 **Results**
@@ -584,7 +583,7 @@ current settings" next to the cap and in the Run-now dialog — no credits.
 - **Cost creep** — hard cap, 30-prompt cap, per-tenant engine/sample toggles,
   estimate before every run, Gemini free tier, Claude via Batches.
 - **API ≠ consumer UI** — "API-observed" labelling, engine names carry "API",
-  tooltip explains the proxy; Perplexity is the closest to consumer.
+  tooltip explains the proxy.
 - **Attribution lag** — 30-day muted deltas, "60–90 days" copy, "Collecting
   baseline" for four weeks; publish markers without causal claims.
 - **Brand-name matching** — alias table, word boundaries, judge confirmation

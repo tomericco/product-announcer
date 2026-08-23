@@ -61,6 +61,27 @@ intact as the record of what was originally planned.
 - **Gemini and Perplexity request/response shapes are documentation-derived only** —
   no API key was available to verify them. Their tests prove safe degradation, not
   contract correctness.
+- **The Perplexity engine was removed entirely before launch.** Task C4 built it and
+  the registry wired it up; the whole of that work is reverted. The product's users
+  are on Claude, ChatGPT and Gemini, and Perplexity was costing a quarter of every
+  run to measure an engine nobody had asked about. `ENGINE_IDS` is now
+  `["openai", "gemini", "anthropic"]`, which is what actually enforces the removal —
+  both `Record<EngineId, …>` maps in `engines/index.ts` stop compiling until the
+  client and its cost entry go. Task C4, and every `perplexity` in the task bodies
+  below, is superseded.
+
+  The run shape moves with it: 30 prompts × 3 engines × 3 samples is **270 calls per
+  run**, not 360, and ~1,170 a month rather than ~1,560. Every comment quoting the
+  old figure was updated with it.
+
+  No data migration. `ai_visibility_samples.engine` and
+  `ai_visibility_aggregates.engine` are `text` and not an enum, so historical
+  Perplexity rows stay exactly where they are and simply stop being read — every
+  metric iterates `ENGINE_IDS`. Deleting them would throw away the only record of
+  what those runs cost. A stored `ai_visibility_settings.engines` row still holding
+  `"perplexity"` needs no migration either: `getAiVisibilitySettings` already coerces
+  away an engine id the code no longer recognises, and there is now a test pinning
+  that for this specific id. Migration 0070 resets only the column DEFAULT.
 - **Phase E signatures gained a leading `tenantId`:** `promptHistory(tenantId,
   promptId, engine, db?)` and `runEngineHealth(tenantId, runId, db?)`, mirroring
   `promptSamples`. Task E1's Interfaces block still shows the old arity. Without the
