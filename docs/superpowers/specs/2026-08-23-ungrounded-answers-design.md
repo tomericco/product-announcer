@@ -1,7 +1,7 @@
 # Ungrounded Answers — Design
 
 **Date:** 2026-08-23
-**Status:** Draft
+**Status:** Approved (simplified after review)
 **Amends:** `2026-08-19-ai-visibility-design.md` ("Metrics", "Signals & briefs")
 
 ## Summary
@@ -10,143 +10,150 @@ An engine that answers without searching is currently discarded. It should
 count toward the metrics that measure **what the engine said**, and be excluded
 only from the metrics that measure **what the engine cited**.
 
+Deliberately the smallest honest change: one column, one guard, five small
+edits. Accuracy work that this makes possible is listed under "Deferred" and
+none of it is harder to add later for being skipped now.
+
 ## Why now
 
 The first live Gemini calls (2026-08-23, after billing was enabled) showed
 Gemini decides per question whether to ground, and it declines on exactly the
-prompts the feature exists to answer:
+prompts the feature exists to answer. Measured against the real 30-prompt
+allocation (`allocateMix(30)`):
 
-| Intent | Searched? | Share of the generated 30-prompt set |
+| Intent | Prompts | Searched? |
 | --- | --- | --- |
-| discovery ("best X for Y") | **no** | 12 |
-| alternatives | **no** | 6 |
-| how_to | **no** | 6 |
-| comparison ("X vs Y") | yes | 8 |
-| brand_check | yes | 4 |
-| pricing | yes | 4 |
+| discovery ("best X for Y") | 9 | **no** |
+| alternatives | 5 | **no** |
+| how_to | 4 | **no** |
+| comparison ("X vs Y") | 6 | yes |
+| brand_check | 3 | yes |
+| pricing | 3 | yes |
 
-Verified as a property of the model, not our request: an identical body returns
-9–10 `groundingChunks` with real `webSearchQueries` on a current-events or
-comparison question, and no `groundingMetadata` at all on a discovery question.
-`google_search` and `googleSearch` behave identically, so it is not a field-name
-problem. The parser is correct.
+**18 of 30.** Verified as a property of the model, not our request: an identical
+body returns 9–10 `groundingChunks` with real `webSearchQueries` on a
+comparison question and no `groundingMetadata` at all on a discovery one.
+`google_search` and `googleSearch` behave identically, so it is not a
+field-name problem. The parser is correct.
 
-Today `engines/gemini.ts:227` maps that to `{ kind: "refused" }`, `planRun`
-stores the sample as `status: "refused"`, and `isEligible`
-(`aggregate.ts:25`) drops anything that is not `ok`. So on **18 of 30 prompts
-Gemini contributes nothing**: its `n` never reaches the n ≥ 30 display floor,
-the tile reads "Collecting baseline" indefinitely, and we pay $0.069 a call for
-answers we throw away.
+Today the clients map that to `{ kind: "refused" }`
+(`gemini.ts:224-230`, and the same branch in `openai.ts:231-238`,
+`anthropic.ts:252-259`), the sample is stored `status: "refused"`, and
+`isEligible` (`aggregate.ts:25`) drops anything that is not `ok`.
+
+**The harm is per-prompt, not per-engine.** Gemini's engine-level `n` does
+clear the n ≥ 30 floor on its grounded intents alone (9 eligible prompts × 3
+samples × a 4-run window = 108), so the tile is fine. What breaks is the cell:
+on each of the 18 ungrounded prompts Gemini's `n` is 0, never reaches
+`MIN_N_PROMPT = 3`, so `band()` returns null and **no Gemini signal can ever
+fire on discovery, alternatives or how_to** — the intents the feature exists
+for. We also pay $0.069 a call for answers we then throw away, and
+`engineFailureSummary` counts every one as a failure, so each run stamps
+"gemini failed on N calls" onto the source row and can flip it to `failing`.
 
 That is the wrong call, because **a buyer asking Gemini "best content design
 tools" also gets an ungrounded answer.** If Gemini names three competitors from
-memory and not us, that is the visibility reality — arguably the most important
-reading on the page. Grounding is a precondition for *citations*, not for
-*mentions*.
+memory and not us, that is the visibility reality. Grounding is a precondition
+for *citations*, not for *mentions*.
 
 ## The distinction
 
-Two different questions are being conflated:
-
 - **What did the engine say?** — mention rate, share of voice, recommendation
-  rate, and the judge's framing. An ungrounded answer answers this fully.
-- **Where did the engine get it?** — citation rate, the cited-domain
-  leaderboard, `own_page_cited`, `new_cited_domain`. An ungrounded answer
-  cannot answer this at all, and counting it as a zero would be a lie: it is
-  not "we were not cited", it is "nothing was cited".
+  rate. An ungrounded answer answers this fully.
+- **Where did the engine get it?** — citation rate and the cited-domain
+  leaderboard. An ungrounded answer cannot answer this, and counting it as a
+  zero would be a lie: it is not "we were not cited", it is "nothing was cited".
 
 ## Decisions
 
-1. **A no-search answer is a successful sample.** `status: "ok"`, plus a new
-   boolean `grounded` on `ai_visibility_samples`. It keeps its answer text, its
-   deterministic extraction and its judge pass.
-2. **`refused` returns to meaning what it says** — the model declined to answer.
-   Today it conflates a refusal with an ungrounded answer, which a Phase C
-   review already flagged as indistinguishable except by message string. The
-   engine clients stop returning `refused` for a missing search; they return a
-   normal answer with `searchUsed: false`, which they already compute.
-3. **Mention-family metrics count ungrounded samples; citation-family metrics do
-   not.** This means an engine has **two denominators**, and they must be stored
-   and displayed separately — see "Data model" and "Display".
-4. **`n` on a tile means the mention denominator.** It is the larger number and
-   the one the headline share of voice is built on. Citation rate carries its
-   own, smaller `n`.
-5. **Signals split along the same line.** `gap_vs_competitor`, `lost_mention`,
-   `gained_mention`, `competitor_gained` and `misdescription` read the mention
-   denominator. `own_page_cited`, `new_cited_domain` and `recommended_not_cited`
-   read the grounded one. `recommended_not_cited` is the subtle case: it asserts
-   "recommended but never cited", which is only meaningful where citations were
-   possible — it must use the grounded denominator or it will fire on engines
-   that never cite anyone.
-6. **No backfill.** Existing `refused` rows stay as they are. They carry no
-   answer text worth recovering (the clients discarded it), and a backfill would
-   silently move published numbers. The change takes effect from the next run;
-   the first window after it will show Gemini's `n` climbing, which is correct
-   and should not be read as a spike in visibility.
+1. **A no-search answer is a successful sample.** Delete the three
+   `!searchUsed → refused` branches; return the answer with
+   `searchUsed: false`. All three clients already build `text` and `citations`
+   before that check, so this is a deletion, not a restructure.
+2. **No new per-sample column.** `ai_visibility_samples.search_used` already
+   exists (`schema.ts:667`), is already written from the engine result
+   (`run.ts:440`), and is read nowhere in `src`. It is exactly the flag needed.
+3. **`refused` returns to meaning the model declined.** It currently conflates a
+   refusal with an ungrounded answer, which a Phase C review already flagged as
+   distinguishable only by message string.
+4. **One new aggregate column: `n_grounded`.** Counts eligible samples where
+   `search_used` is true. Aggregates already store counts, so it sums across a
+   window for free.
+5. **`citationRate = ownCitations / nGrounded`; every other rate keeps `n`.**
+   Null below `MIN_N_AGGREGATE`, which already renders as `—` rather than `0%`.
+6. **The cited-domain leaderboard uses the grounded denominator too.**
+   `cited-domains.ts:222` currently sets `denominator = eligible.size`, so
+   `answerShare` — a citation-family rate — is built on the mention
+   denominator. Uncorrected, every domain's "% of answers" deflates by the
+   ungrounded share. This is the surface the first draft missed.
+7. **One signal guard, not a five-versus-three split.** `own_page_cited` and
+   `new_cited_domain` are event-driven off citation rows, which only exist on
+   grounded answers, so they cannot misfire. Only `recommended_not_cited` needs
+   a guard, and the first draft had the mechanism backwards: ungrounded samples
+   enter both sides of its ratio, so dilution makes it fire *less*. The misfire
+   comes from its two zero-citation conditions, which are trivially true on a
+   prompt the engine never searched. Require at least one citation row for that
+   (prompt, engine) in the window — which is the trigger's own stated meaning.
+8. **Enforce `ownCitations ≤ nGrounded` rather than asserting it.** OpenAI and
+   Anthropic collect citations independently of the flag that sets
+   `searchUsed`, so a citation without a search flag would push citation rate
+   over 100%. Set `searchUsed ||= citations.length > 0` in those two; Gemini
+   already does this.
+9. **Keep the pooled "all engines" tile, pooling raw counts, unchanged.** The
+   first draft worried this change would hurt comparability. It is the reverse:
+   *today* Gemini contributes only comparison and pricing answers to the pool,
+   so the pooled mention numbers are skewed toward two intents. Afterwards every
+   engine contributes across the whole prompt set. Pooled citation rate falls
+   out of decision 5 for free.
+10. **No backfill** — but this is a choice, not a one-way door: samples live 180
+    days, so `n_grounded` is recomputable for historical runs by re-running
+    `computeAggregates`. Existing `refused` rows keep no answer text (the
+    clients discarded it), so those specific rows are unrecoverable regardless.
 
-## Data model
+## Consequences worth stating
 
-`ai_visibility_samples` gains `grounded boolean not null default false`.
-Set from the engine's existing `searchUsed`.
+- **`refused` changes meaning across the cutover.** Historical rows mean
+  "refusal *or* no-search"; new ones mean refusal. Distinguishable only by the
+  error string. This surfaces solely in `runEngineHealth.refusedSamples`, which
+  nothing renders today.
+- **Judge cost rises.** `judgeRun` only sends `status = 'ok'` rows, so Gemini's
+  judged samples go from ~27 to ~81 per run — roughly +25–30% judge tokens
+  run-wide. Small, but this spec argues from money, and the engine cost
+  constants were only just corrected upward.
+- **The `EngineMetrics` doc block becomes wrong.** `types.ts:150-157` states
+  that `mentionRate === null` iff the window is too thin and that every other
+  rate is null with it. A per-denominator floor makes `citationRate` null while
+  `mentionRate` is a number. Nothing in `src` relies on the invariant, so the
+  code cost is zero — but the comment must be rewritten or it is a trap.
+- **Ungrounded answers are staler.** They come from training data, so they
+  under-represent recent entrants. True of what buyers see; worth one sentence
+  of UI copy whenever the copy is next touched.
 
-`ai_visibility_aggregates` gains `n_grounded integer not null default 0`
-alongside the existing `n`. Aggregates already store counts rather than rates,
-so both denominators sum across a window for free.
+## Deferred — all additive, none expensive later
 
-- `n` — eligible samples, grounded or not. Denominator for mention rate, share
-  of voice, recommendation rate.
-- `nGrounded` — eligible samples where `grounded` is true. Denominator for
-  citation rate.
-- `ownCitations` — unchanged, but now only ever incremented on grounded samples.
-
-`isEligible` keeps its existing rules (status `ok`, not flagged, not a branded
-or brand-check prompt) and gains nothing — the grounded split happens in the
-bucket, not the gate.
-
-## Display
-
-- **Tiles.** Share of voice, mention rate and recommendation rate read `n`.
-  Citation rate reads `nGrounded` and renders `—` when `nGrounded` is below the
-  per-cut floor, with the tooltip "this engine answered without searching on N
-  of these". Silence is better than a zero that reads as "nobody cites you".
-- **The n ≥ 30 floor applies per denominator**, not once per engine. An engine
-  can legitimately be past the floor on mentions and below it on citations.
-- **The prompt × engine matrix** shows an ungrounded cell as a mention result
-  with a marker, not as a gap. A cell that says "2 of 3" where none were
-  grounded is honest about mentions and must not imply citations.
-- **Engine cards** carry a line when the ratio is material: "Gemini answered
-  without searching on 18 of 30 prompts". That is a finding about how Gemini
-  behaves, not an error state, so it is muted, never `--destructive`.
-
-## Risks
-
-- **Cross-engine comparability drops.** OpenAI grounds far more often than
-  Gemini, so their share-of-voice numbers now rest on differently-composed
-  denominators. The pooled "all engines" row is the one most affected. Mitigate
-  by surfacing the grounded ratio per engine rather than hiding it; do not
-  attempt to normalise it away.
-- **Ungrounded answers are staler.** They come from training data, so they will
-  under-represent recent entrants and over-represent whoever was prominent at
-  training time. That is a true fact about what buyers see, but it should be
-  said plainly in the UI copy rather than left for someone to infer from a
-  surprising number.
-- **The judge sees no sources on an ungrounded answer**, so `positioningClaims`
-  and `hallucinations` are judged against the model's assertions alone. This is
-  the same job it already does; no change, but worth knowing when reading a
-  `misdescription` signal that came from an ungrounded sample.
+- A matrix marker distinguishing grounded from ungrounded cells. `MatrixCell` is
+  `{named, samples, failed}` and makes no citation claim, so an ungrounded cell
+  simply starts rendering "2/3" instead of "–" with no code change.
+- The engine-card "answered without searching on N of 30" line. Needs a grounded
+  count on the card; note that `runEngineHealth.refusedSamples` will *not* be
+  reusable for it after this change.
+- A citation-rate tooltip explaining the smaller denominator.
+- Generalising the per-denominator floor beyond citation rate.
+- UI copy about ungrounded answers being staler.
 
 ## Out of scope
 
 - Forcing grounding (`tool_choice`-style). It would measure our instruction
-  rather than the engine, which is the mistake the system-prompt removal just
-  corrected.
+  rather than the engine — the mistake the system-prompt removal just corrected.
 - Changing which engines run, or the run shape. Separate open decision.
-- Backfilling historical `refused` rows.
 
-## Open question for the reviewer
+## Build order
 
-Whether the pooled "all engines" tile should keep pooling raw counts across
-engines with very different grounding rates, or should be dropped in favour of
-per-engine rows only. Pooling is currently defended as "summed samples, not an
-average of rates"; that defence is weaker when the samples are not like each
-other.
+1. Delete the three `refused` branches; add `searchUsed ||= citations.length > 0`
+   to OpenAI and Anthropic. (Engine tests assert the current behaviour.)
+2. Migration: `n_grounded` on `ai_visibility_aggregates`.
+3. `aggregate.ts` — select `searchUsed`, one `if` in the bucket loop.
+4. `metrics.ts` — `citationRate` over `nGrounded`; rewrite the `EngineMetrics`
+   doc block.
+5. `cited-domains.ts` — grounded denominator.
+6. `signals.ts` — the one `recommended_not_cited` guard.
