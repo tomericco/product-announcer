@@ -305,6 +305,27 @@ function deltaPp(current: WindowCounts, previous: WindowCounts): number | null {
   return now - then;
 }
 
+export type EngineMetricsResult = {
+  /** One row per engine, then the pooled `"all"` row, in `ENGINE_IDS` order. */
+  metrics: EngineMetrics[];
+  /**
+   * The CURRENT-window cuts those rows were computed from, keyed by engine plus
+   * `"all"`.
+   *
+   * Handed back rather than discarded because the overview needs the raw counts
+   * as well as the rates: `competitorMentions` is keyed by competitor id and is
+   * what the benchmark card's bars are built from, and it survives nowhere on
+   * `EngineMetrics` (share of voice is already collapsed to one number). The
+   * page used to re-issue the same four cuts — eight queries, on the critical
+   * path, for rows this function had already read.
+   *
+   * The delta cuts are deliberately NOT returned: nothing outside this module
+   * has a use for a window that ends 30 days ago, and half a cache is worse
+   * than none.
+   */
+  counts: Record<EngineId | "all", WindowCounts>;
+};
+
 /**
  * The three engine tiles plus the pooled "All engines" tile.
  *
@@ -321,7 +342,7 @@ export async function engineMetrics(
   // body would make every delta test rot as the calendar advances (the repo
   // has been bitten by exactly this class of flake before).
   now: () => Date = () => new Date()
-): Promise<EngineMetrics[]> {
+): Promise<EngineMetricsResult> {
   const deltaBefore = new Date(now().getTime() - DELTA_DAYS * 24 * 60 * 60 * 1000);
 
   // Ten independent reads, issued together. Serially this is twenty round trips
@@ -338,9 +359,14 @@ export async function engineMetrics(
     ]),
   ]);
 
-  return [...ENGINE_IDS, "all" as const].map((engine, i) =>
-    toMetrics(engine, current[i], deltaPp(current[i], previous[i]))
-  );
+  const keys = [...ENGINE_IDS, "all" as const];
+  return {
+    metrics: keys.map((engine, i) => toMetrics(engine, current[i], deltaPp(current[i], previous[i]))),
+    counts: Object.fromEntries(keys.map((engine, i) => [engine, current[i]])) as Record<
+      EngineId | "all",
+      WindowCounts
+    >,
+  };
 }
 
 export type PromptMatrixCell = {

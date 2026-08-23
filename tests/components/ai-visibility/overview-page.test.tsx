@@ -93,7 +93,6 @@ const {
   engineHistory,
   promptMatrix,
   runEngineHealth,
-  windowCounts,
   citedDomains,
   everSignalledDomains,
   listSignals,
@@ -110,7 +109,6 @@ const {
   engineHistory: vi.fn(),
   promptMatrix: vi.fn(),
   runEngineHealth: vi.fn(),
-  windowCounts: vi.fn(),
   citedDomains: vi.fn(),
   everSignalledDomains: vi.fn(),
   listSignals: vi.fn(),
@@ -139,7 +137,6 @@ vi.mock("@/lib/ai-visibility/metrics", async (importOriginal) => {
     engineHistory,
     promptMatrix,
     runEngineHealth,
-    windowCounts,
   };
 });
 vi.mock("@/lib/ai-visibility/cost", async (importOriginal) => {
@@ -176,6 +173,27 @@ function counts(overrides: Partial<WindowCounts> = {}): WindowCounts {
     recommendations: 6,
     ...overrides,
   };
+}
+
+/**
+ * The cuts `engineMetrics` hands back beside the rates.
+ *
+ * The page reads the benchmark card's `competitorMentions` straight off these
+ * rather than re-issuing the same four `windowCounts` queries, so a test that
+ * wants a particular per-engine cut states it here by NAME. It used to be
+ * stated by call order through a `windowCounts.mockImplementation` counting to
+ * three, which was one reordered `await` away from silently testing the wrong
+ * engine.
+ */
+function cuts(overrides: Partial<Record<EngineId | "all", WindowCounts>> = {}) {
+  const base = overrides.all ?? counts();
+  return {
+    openai: base,
+    gemini: base,
+    anthropic: base,
+    all: base,
+    ...overrides,
+  } as Record<EngineId | "all", WindowCounts>;
 }
 
 function run(overrides: Record<string, unknown> = {}) {
@@ -226,13 +244,14 @@ function setup(overrides: Record<string, unknown> = {}) {
     reached: false,
     ...((o.cap as object) ?? {}),
   });
-  engineMetrics.mockResolvedValue(
-    (o.metrics as unknown[]) ?? [...ALL_ENGINES.map((e) => metrics(e)), metrics("all")]
-  );
+  engineMetrics.mockResolvedValue({
+    metrics: (o.metrics as unknown[]) ?? [...ALL_ENGINES.map((e) => metrics(e)), metrics("all")],
+    // `counts` sets every cut at once; `cuts` names them individually.
+    counts: (o.cuts as Record<string, WindowCounts>) ?? cuts({ all: (o.counts as WindowCounts) ?? counts() }),
+  });
   engineHistory.mockImplementation(async () => (o.history as unknown[]) ?? []);
   promptMatrix.mockResolvedValue((o.matrix as unknown[]) ?? []);
   runEngineHealth.mockResolvedValue((o.health as unknown[]) ?? []);
-  windowCounts.mockImplementation(async () => (o.counts as WindowCounts) ?? counts());
   citedDomains.mockResolvedValue((o.domains as unknown[]) ?? []);
   everSignalledDomains.mockResolvedValue(new Set((o.everSignalled as string[]) ?? []));
   listSignals.mockResolvedValue((o.signals as unknown[]) ?? []);
@@ -430,11 +449,15 @@ describe("overview — the nine states, and that they are mutually exclusive", (
     expect(screen.getByText("Last run Aug 17, 2026 — failed")).toBeInTheDocument();
   });
 
-  it("A complete run prints the date, the answer count and the spend", async () => {
+  it("A complete run prints the date, the CALL count and the spend", async () => {
+    // "calls", not "answers". `completedCalls` counts every call the run made,
+    // errors included; the tiles below say "84 answers read" about `n`, which
+    // is eligible samples after exclusions. Two different numbers under one
+    // word, two hundred pixels apart.
     setup();
     await renderPage();
 
-    expect(screen.getByText("Last run Aug 17, 2026 · 252 answers · $3.12")).toBeInTheDocument();
+    expect(screen.getByText("Last run Aug 17, 2026 · 252 calls · $3.12")).toBeInTheDocument();
   });
 });
 
@@ -534,17 +557,15 @@ describe("overview — the deleted-competitor remainder", () => {
   });
 
   it("leaves a per-engine cut of the remainder blank when that engine has none", async () => {
-    let call = 0;
+    // Only Gemini carries the deleted competitor's mentions.
     setup({
       competitors: [{ id: "c1", name: "Acme", createdAt: new Date("2026-01-01") }],
-    });
-    // Pooled first, then one cut per engine: only the second engine carries
-    // the deleted competitor's mentions.
-    windowCounts.mockImplementation(async () => {
-      call += 1;
-      if (call === 1) return counts({ tenantMentions: 20, competitorMentions: { c1: 30, c2: 50 } });
-      if (call === 3) return counts({ n: 21, tenantMentions: 5, competitorMentions: { c1: 5, c2: 50 } });
-      return counts({ n: 21, tenantMentions: 5, competitorMentions: { c1: 5 } });
+      cuts: cuts({
+        all: counts({ tenantMentions: 20, competitorMentions: { c1: 30, c2: 50 } }),
+        openai: counts({ n: 21, tenantMentions: 5, competitorMentions: { c1: 5 } }),
+        gemini: counts({ n: 21, tenantMentions: 5, competitorMentions: { c1: 5, c2: 50 } }),
+        anthropic: counts({ n: 21, tenantMentions: 5, competitorMentions: { c1: 5 } }),
+      }),
     });
     await renderPage();
 
@@ -555,12 +576,12 @@ describe("overview — the deleted-competitor remainder", () => {
   });
 
   it("blanks a per-engine share when that engine named nobody, instead of dividing by zero", async () => {
-    let call = 0;
-    setup({ competitors: [{ id: "c1", name: "Acme", createdAt: new Date("2026-01-01") }] });
-    windowCounts.mockImplementation(async () => {
-      call += 1;
-      if (call === 1) return counts({ tenantMentions: 20, competitorMentions: { c1: 30 } });
-      return counts({ n: 21, tenantMentions: 0, competitorMentions: {} });
+    setup({
+      competitors: [{ id: "c1", name: "Acme", createdAt: new Date("2026-01-01") }],
+      cuts: {
+        ...cuts({ all: counts({ n: 21, tenantMentions: 0, competitorMentions: {} }) }),
+        all: counts({ tenantMentions: 20, competitorMentions: { c1: 30 } }),
+      },
     });
     await renderPage();
 
@@ -576,13 +597,60 @@ describe("overview — what the tiles, the matrix and the domain table are hande
     });
     await renderPage();
 
-    // ENGINE_ORDER, filtered — not the settings array's own order.
+    // ENGINE_ORDER, filtered — not the settings array's own order. The titles
+    // are the SHORT names; the methodology name is the card's tooltip.
     expect(captured.tiles!.map((tile) => tile.engine)).toEqual(["openai", "gemini", "all"]);
-    expect(captured.tiles!.map((tile) => tile.label)).toEqual([
-      "GPT-5.x API + web search",
-      "Gemini API, grounded",
-      "All engines",
-    ]);
+    expect(captured.tiles!.map((tile) => tile.label)).toEqual(["GPT", "Gem", "All engines"]);
+  });
+
+  it("draws no pooled tile for a one-engine tenant, where it would be the same numbers twice", async () => {
+    // `shownEngines` filters to the enabled engines; "all" used to be appended
+    // unconditionally, so a tenant running one engine got that engine's cut
+    // rendered side by side with itself under a second name.
+    setup({
+      settings: { engines: ["anthropic"] },
+      metrics: [metrics("anthropic"), metrics("all")],
+    });
+    await renderPage();
+
+    expect(captured.tiles!.map((tile) => tile.engine)).toEqual(["anthropic"]);
+  });
+
+  it("still pools the benchmark off the 'all' row when the pooled TILE is suppressed", async () => {
+    // The tile is dropped, the pooled metrics row is not: the benchmark card
+    // reads `n` and the display threshold off it, and losing that would make
+    // the card contradict the tile above it.
+    setup({
+      settings: { engines: ["anthropic"] },
+      metrics: [metrics("anthropic"), metrics("all", { n: 41 })],
+    });
+    await renderPage();
+
+    expect(captured.bars!.n).toBe(41);
+  });
+
+  it("states the pooled citation rate on the Cited-sources card, where its denominator is", async () => {
+    // Citation rate is measured over GROUNDED answers, the same cut this
+    // card's own "% of searched answers" column divides by. On the tiles it
+    // was an unexplained "Cited 18%" beside metrics with a different
+    // denominator — and an unexplained "Cited —" whenever it was null.
+    setup({ domains: [{ domain: "g2.com", citations: 9, answerShare: 17, engines: ["openai"], domainClass: "third_party" }] });
+    await renderPage();
+
+    expect(
+      screen.getByText(/A searched answer is one the engine ran a web search for — 18% of them cited a page of yours\./)
+    ).toBeInTheDocument();
+  });
+
+  it("says so in words rather than dashing the citation rate when too little was searched", async () => {
+    setup({
+      metrics: [...ALL_ENGINES.map((e) => metrics(e)), metrics("all", { citationRate: null })],
+      domains: [{ domain: "g2.com", citations: 9, answerShare: 17, engines: ["openai"], domainClass: "third_party" }],
+    });
+    await renderPage();
+
+    expect(screen.getByText(/too few of them yet to say how often they cite a page of yours\./)).toBeInTheDocument();
+    expect(screen.queryByText(/Cited —/)).not.toBeInTheDocument();
   });
 
   it("quotes the gate's own dollar estimate, not a second computation of it", async () => {

@@ -187,7 +187,7 @@ describe("engineMetrics", () => {
 
   it("returns the three engines plus a pooled all row, in order", async () => {
     const tenant = await seedTenant(TENANT);
-    const rows = await engineMetrics(tenant.id, db, CLOCK);
+    const rows = (await engineMetrics(tenant.id, db, CLOCK)).metrics;
     expect(rows.map((r) => r.engine)).toEqual(["openai", "gemini", "anthropic", "all"]);
   });
 
@@ -196,7 +196,7 @@ describe("engineMetrics", () => {
     const run = await seedRun(tenant.id, "2026-03-01T09:00:00Z");
     await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "openai", n: 10, tenantMentions: 5, competitorMentions: { x: 5 } });
 
-    const openai = (await engineMetrics(tenant.id, db, CLOCK)).find((r) => r.engine === "openai")!;
+    const openai = (await engineMetrics(tenant.id, db, CLOCK)).metrics.find((r) => r.engine === "openai")!;
     expect(openai.n).toBe(10);
     expect(openai.mentionRate).toBeNull();
     expect(openai.shareOfVoice).toBeNull();
@@ -219,7 +219,7 @@ describe("engineMetrics", () => {
       recommendations: 3,
     });
 
-    const openai = (await engineMetrics(tenant.id, db, CLOCK)).find((r) => r.engine === "openai")!;
+    const openai = (await engineMetrics(tenant.id, db, CLOCK)).metrics.find((r) => r.engine === "openai")!;
     expect(openai.mentionRate).toBeCloseTo(50, 4);
     expect(openai.shareOfVoice).toBeCloseTo(25, 4); // 15 / (15 + 45)
     expect(openai.citationRate).toBeCloseTo(20, 4);
@@ -246,7 +246,7 @@ describe("engineMetrics", () => {
       recommendations: 12,
     });
 
-    const gemini = (await engineMetrics(tenant.id, db, CLOCK)).find((r) => r.engine === "gemini")!;
+    const gemini = (await engineMetrics(tenant.id, db, CLOCK)).metrics.find((r) => r.engine === "gemini")!;
     expect(gemini.n).toBe(60);
     expect(gemini.citationRate).toBeCloseTo(15, 4);
     expect(gemini.mentionRate).toBeCloseTo(50, 4);
@@ -272,7 +272,7 @@ describe("engineMetrics", () => {
       recommendations: 9,
     });
 
-    const gemini = (await engineMetrics(tenant.id, db, CLOCK)).find((r) => r.engine === "gemini")!;
+    const gemini = (await engineMetrics(tenant.id, db, CLOCK)).metrics.find((r) => r.engine === "gemini")!;
     expect(gemini.mentionRate).toBeCloseTo(50, 4);
     expect(gemini.citationRate).toBeNull();
   });
@@ -285,7 +285,7 @@ describe("engineMetrics", () => {
     await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "openai", n: 40, nGrounded: 20, tenantMentions: 10, ownCitations: 4 });
     await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "gemini", n: 40, nGrounded: 20, tenantMentions: 10, ownCitations: 4 });
 
-    const rows = await engineMetrics(tenant.id, db, CLOCK);
+    const rows = (await engineMetrics(tenant.id, db, CLOCK)).metrics;
     expect(rows.find((r) => r.engine === "openai")!.citationRate).toBeNull();
     expect(rows.find((r) => r.engine === "all")!.citationRate).toBeCloseTo(20, 4);
   });
@@ -298,7 +298,7 @@ describe("engineMetrics", () => {
     await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "openai", n: 10, tenantMentions: 9, competitorMentions: { r: 1 } });
     await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "gemini", n: 90, tenantMentions: 9, competitorMentions: { r: 81 } });
 
-    const all = (await engineMetrics(tenant.id, db, CLOCK)).find((r) => r.engine === "all")!;
+    const all = (await engineMetrics(tenant.id, db, CLOCK)).metrics.find((r) => r.engine === "all")!;
     expect(all.n).toBe(100);
     expect(all.shareOfVoice).toBeCloseTo(18, 4); // 18 / (18 + 82)
   });
@@ -308,7 +308,7 @@ describe("engineMetrics", () => {
     const run = await seedRun(tenant.id, "2026-03-01T09:00:00Z");
     await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "openai", n: MIN_N_AGGREGATE, tenantMentions: 0 });
 
-    const openai = (await engineMetrics(tenant.id, db, CLOCK)).find((r) => r.engine === "openai")!;
+    const openai = (await engineMetrics(tenant.id, db, CLOCK)).metrics.find((r) => r.engine === "openai")!;
     expect(openai.mentionRate).toBe(0);
     expect(openai.shareOfVoice).toBeNull();
   });
@@ -320,7 +320,7 @@ describe("engineMetrics", () => {
     await seedAggregate({ runId: then.id, tenantId: tenant.id, engine: "openai", n: MIN_N_AGGREGATE, tenantMentions: 10, competitorMentions: { r: 90 } });
     await seedAggregate({ runId: now.id, tenantId: tenant.id, engine: "openai", n: MIN_N_AGGREGATE, tenantMentions: 30, competitorMentions: { r: 70 } });
 
-    const openai = (await engineMetrics(tenant.id, db, CLOCK)).find((r) => r.engine === "openai")!;
+    const openai = (await engineMetrics(tenant.id, db, CLOCK)).metrics.find((r) => r.engine === "openai")!;
     // At the frozen clock (2026-03-30) the delta cut is 2026-02-28: the
     // current window includes BOTH runs (40 / 200 = 20%); the 30-day-ago
     // window includes only the January one (10 / 100 = 10%).
@@ -332,7 +332,7 @@ describe("engineMetrics", () => {
     const run = await seedRun(tenant.id, "2026-03-05T09:00:00Z");
     await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "openai", n: MIN_N_AGGREGATE, tenantMentions: 15, competitorMentions: { r: 15 } });
 
-    const openai = (await engineMetrics(tenant.id, db, CLOCK)).find((r) => r.engine === "openai")!;
+    const openai = (await engineMetrics(tenant.id, db, CLOCK)).metrics.find((r) => r.engine === "openai")!;
     expect(openai.deltaPp).toBeNull();
   });
 });
@@ -701,7 +701,7 @@ describe("wilson band responds to evidence, not to the competitor roster", () =>
       tenantMentions: 26,
       competitorMentions,
     });
-    return (await engineMetrics(tenant.id, db, CLOCK)).find((r) => r.engine === "openai")!;
+    return (await engineMetrics(tenant.id, db, CLOCK)).metrics.find((r) => r.engine === "openai")!;
   }
 
   it("anchors the interval to answers, not to total brand mentions", async () => {
@@ -740,7 +740,7 @@ describe("wilson band responds to evidence, not to the competitor roster", () =>
     const tenant = await seedTenant(TENANT);
     const run = await seedRun(tenant.id, "2026-03-01T09:00:00Z");
     await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "openai", n: 40, tenantMentions: 4, competitorMentions: { a: 1 } });
-    const openai = (await engineMetrics(tenant.id, db, CLOCK)).find((r) => r.engine === "openai")!;
+    const openai = (await engineMetrics(tenant.id, db, CLOCK)).metrics.find((r) => r.engine === "openai")!;
     expect(openai.sovWilsonPp).toBeCloseTo(wilsonPp(4, 5)!, 10);
   });
 });
@@ -763,7 +763,7 @@ describe("the mention-rate band is a plain binomial over answers", () => {
       competitorMentions: { a: 30, b: 30 },
     });
 
-    const openai = (await engineMetrics(tenant.id, db, CLOCK)).find((r) => r.engine === "openai")!;
+    const openai = (await engineMetrics(tenant.id, db, CLOCK)).metrics.find((r) => r.engine === "openai")!;
     expect(openai.mentionWilsonPp!).toBeCloseTo(wilsonPp(26, 84)!, 10);
     // And it is NOT the share band: the two describe different numbers, which
     // is the whole reason the tile stopped printing one beside the other.
@@ -784,7 +784,7 @@ describe("the mention-rate band is a plain binomial over answers", () => {
       competitorMentions: { a: 30, b: 30, c: 30, d: 30 },
     });
 
-    const openai = (await engineMetrics(tenant.id, db, CLOCK)).find((r) => r.engine === "openai")!;
+    const openai = (await engineMetrics(tenant.id, db, CLOCK)).metrics.find((r) => r.engine === "openai")!;
     expect(openai.mentionWilsonPp!).toBeCloseTo(wilsonPp(26, 84)!, 10);
   });
 
@@ -796,7 +796,7 @@ describe("the mention-rate band is a plain binomial over answers", () => {
     const run = await seedRun(tenant.id, "2026-03-01T09:00:00Z");
     await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "openai", n: 84, tenantMentions: 0 });
 
-    const openai = (await engineMetrics(tenant.id, db, CLOCK)).find((r) => r.engine === "openai")!;
+    const openai = (await engineMetrics(tenant.id, db, CLOCK)).metrics.find((r) => r.engine === "openai")!;
     expect(openai.mentionRate).toBe(0);
     expect(openai.sovWilsonPp).toBeNull();
     expect(openai.mentionWilsonPp!).toBeCloseTo(wilsonPp(0, 84)!, 10);
@@ -807,7 +807,7 @@ describe("the mention-rate band is a plain binomial over answers", () => {
     const run = await seedRun(tenant.id, "2026-03-01T09:00:00Z");
     await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "openai", n: 29, tenantMentions: 20 });
 
-    const openai = (await engineMetrics(tenant.id, db, CLOCK)).find((r) => r.engine === "openai")!;
+    const openai = (await engineMetrics(tenant.id, db, CLOCK)).metrics.find((r) => r.engine === "openai")!;
     expect(openai.mentionRate).toBeNull();
     expect(openai.mentionWilsonPp).toBeNull();
   });
@@ -821,7 +821,7 @@ describe("a null share of voice is discriminated by mentionRate", () => {
     const run = await seedRun(tenant.id, "2026-03-01T09:00:00Z");
     await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "openai", n: 84, tenantMentions: 0 });
 
-    const openai = (await engineMetrics(tenant.id, db, CLOCK)).find((r) => r.engine === "openai")!;
+    const openai = (await engineMetrics(tenant.id, db, CLOCK)).metrics.find((r) => r.engine === "openai")!;
     // The discriminator: a measured zero, so mentionRate is a NUMBER.
     expect(openai.mentionRate).toBe(0);
     expect(openai.shareOfVoice).toBeNull();
@@ -835,7 +835,7 @@ describe("a null share of voice is discriminated by mentionRate", () => {
     const run = await seedRun(tenant.id, "2026-03-01T09:00:00Z");
     await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "openai", n: 10, tenantMentions: 0 });
 
-    const openai = (await engineMetrics(tenant.id, db, CLOCK)).find((r) => r.engine === "openai")!;
+    const openai = (await engineMetrics(tenant.id, db, CLOCK)).metrics.find((r) => r.engine === "openai")!;
     expect(openai.mentionRate).toBeNull();
     expect(openai.shareOfVoice).toBeNull();
   });
@@ -1042,7 +1042,7 @@ describe("the aggregate display threshold, at the boundary", () => {
       ownCitations: 4,
       recommendations: 2,
     });
-    const row = (await engineMetrics(tenant.id, db, CLOCK)).find((r) => r.engine === "openai")!;
+    const row = (await engineMetrics(tenant.id, db, CLOCK)).metrics.find((r) => r.engine === "openai")!;
     await dropTenant(TENANT);
     return row;
   }
@@ -1108,7 +1108,7 @@ describe("the known-zero row and the unknown row are different shapes", () => {
     // 84 answers, nobody named, nothing cited, nothing recommended.
     await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "openai", n: 84, tenantMentions: 0 });
 
-    const openai = (await engineMetrics(tenant.id, db, CLOCK)).find((r) => r.engine === "openai")!;
+    const openai = (await engineMetrics(tenant.id, db, CLOCK)).metrics.find((r) => r.engine === "openai")!;
     expect(openai.n).toBe(84);
     // `mentionRate` is the discriminator, and it is a number: we measured this.
     expect(openai.mentionRate).toBe(0);
@@ -1134,7 +1134,7 @@ describe("the known-zero row and the unknown row are different shapes", () => {
       recommendations: 5,
     });
 
-    const openai = (await engineMetrics(tenant.id, db, CLOCK)).find((r) => r.engine === "openai")!;
+    const openai = (await engineMetrics(tenant.id, db, CLOCK)).metrics.find((r) => r.engine === "openai")!;
     expect(openai.n).toBe(29);
     expect(openai.mentionRate).toBeNull();
     expect(openai.shareOfVoice).toBeNull();
@@ -1158,7 +1158,7 @@ describe("the known-zero row and the unknown row are different shapes", () => {
       recommendations: 30,
     });
 
-    const openai = (await engineMetrics(tenant.id, db, CLOCK)).find((r) => r.engine === "openai")!;
+    const openai = (await engineMetrics(tenant.id, db, CLOCK)).metrics.find((r) => r.engine === "openai")!;
     expect(openai.mentionRate).toBe(100);
     expect(openai.citationRate).toBe(100);
     expect(openai.recommendationRate).toBe(100);
@@ -1183,7 +1183,7 @@ describe("deltaPp needs both windows to be readable", () => {
     const newer = await seedRun(tenant.id, "2026-03-05T09:00:00Z");
     await seedAggregate({ runId: older.id, tenantId: tenant.id, engine: "openai", ...then });
     await seedAggregate({ runId: newer.id, tenantId: tenant.id, engine: "openai", ...now });
-    const row = (await engineMetrics(tenant.id, db, CLOCK)).find((r) => r.engine === "openai")!;
+    const row = (await engineMetrics(tenant.id, db, CLOCK)).metrics.find((r) => r.engine === "openai")!;
     await dropTenant(TENANT);
     return row;
   }
@@ -1333,7 +1333,7 @@ describe("a deleted competitor keeps its place in the denominator", () => {
     expect(counts.competitorMentions[rival.id]).toBe(30);
     expect(brandMentionTotal(counts)).toBe(40);
 
-    const openai = (await engineMetrics(tenant.id, db, CLOCK)).find((r) => r.engine === "openai")!;
+    const openai = (await engineMetrics(tenant.id, db, CLOCK)).metrics.find((r) => r.engine === "openai")!;
     expect(openai.shareOfVoice).toBeCloseTo(25, 6);
   });
 });
@@ -1445,7 +1445,7 @@ describe("every read is scoped to the tenant it was asked for", () => {
 
     // The fixture is real for its owner...
     expect((await windowCounts(tenant.id, {})).n).toBe(40);
-    expect((await engineMetrics(tenant.id, db, CLOCK)).find((r) => r.engine === "openai")!.shareOfVoice).toBeCloseTo(50, 6);
+    expect((await engineMetrics(tenant.id, db, CLOCK)).metrics.find((r) => r.engine === "openai")!.shareOfVoice).toBeCloseTo(50, 6);
     expect(await promptMatrix(tenant.id)).toHaveLength(1);
     expect(await engineHistory(tenant.id, "openai")).toHaveLength(1);
     expect(await promptHistory(tenant.id, prompt.id, "openai")).toHaveLength(1);
@@ -1457,7 +1457,7 @@ describe("every read is scoped to the tenant it was asked for", () => {
     expect(await windowCounts(other.id, {})).toEqual({
       n: 0, nGrounded: 0, tenantMentions: 0, ownCitations: 0, recommendations: 0, competitorMentions: {},
     });
-    const foreign = await engineMetrics(other.id, db, CLOCK);
+    const foreign = (await engineMetrics(other.id, db, CLOCK)).metrics;
     expect(foreign.map((r) => r.n)).toEqual([0, 0, 0, 0]);
     expect(foreign.every((r) => r.mentionRate === null && r.shareOfVoice === null)).toBe(true);
     expect(await promptMatrix(other.id)).toEqual([]);

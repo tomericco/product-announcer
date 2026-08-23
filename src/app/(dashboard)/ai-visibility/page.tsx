@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import Link from "next/link";
 import { eq } from "drizzle-orm";
 import { ScanSearch } from "lucide-react";
@@ -19,6 +20,7 @@ import { getOrCreateCompanyProfile } from "@/lib/workspace/company-profile";
 import { listCompetitors } from "@/lib/workspace/competitors";
 import { getAiVisibilitySettings } from "@/lib/ai-visibility/settings";
 import { listPrompts } from "@/lib/ai-visibility/prompts";
+import { plannedCallsForPrompts } from "@/lib/ai-visibility/planned-calls";
 import { latestRun } from "@/lib/ai-visibility/run";
 import {
   brandMentionTotal,
@@ -26,7 +28,6 @@ import {
   engineMetrics,
   promptMatrix,
   runEngineHealth,
-  windowCounts,
 } from "@/lib/ai-visibility/metrics";
 import { citedDomains, everSignalledDomains } from "@/lib/ai-visibility/cited-domains";
 import { capExceeded, capPausedMessage } from "@/lib/ai-visibility/cost";
@@ -35,8 +36,10 @@ import type { EngineId, WindowCounts } from "@/lib/ai-visibility/types";
 import { DATE_FORMAT } from "../company/source-status";
 import { CitedDomainsTable } from "./cited-domains-table";
 import { CompetitorBars, type BrandShare } from "./competitor-bars";
-import { ENGINE_LABEL, ENGINE_ORDER } from "./engine-labels";
+import { ENGINE_LABEL, ENGINE_ORDER, ENGINE_SHORT } from "./engine-labels";
+import { ratePct } from "./format";
 import { GeneratePromptSetButton } from "./generate-prompt-set-button";
+import { AiVisibilityOffEmptyState } from "./off-empty-state";
 import { OverviewCards, type EngineTile } from "./overview-cards";
 import { PromptMatrix, type MatrixRow } from "./prompt-matrix";
 import { RunNowButton, type RunEstimate } from "./run-now-button";
@@ -45,15 +48,20 @@ import type { RatePoint } from "./sparkline-points";
 const DAY_LABEL = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"] as const;
 
 /**
- * The page title and its trust badge, shared by the Off and No-prompts
- * branches. The full header (last-run line, cap warning, Run now) is inline
- * in the main return instead of going through this, because every one of
- * those parts needs data the early branches deliberately never load.
+ * The page title and its trust badge — every branch's, including the main one.
+ *
+ * It takes CHILDREN rather than the one line the early branches happen to
+ * need. The data under the title differs per branch (the Off and No-prompts
+ * branches deliberately load none of it), but the title, the badge and the
+ * tooltip copy do not, and the previous split had them written out twice —
+ * verbatim, tooltip sentence included — so a wording fix could land on one
+ * copy and not the other.
  */
-function Header({ lastRunLine }: { lastRunLine: string | null }) {
+function Header({ children }: { children?: ReactNode }) {
   return (
     <div className="space-y-1">
       <div className="flex items-center gap-2">
+        {/* The only font-heading on this page. */}
         <h1 className="font-heading text-3xl leading-[1.15] tracking-[0.015em]">AI visibility</h1>
         <TooltipProvider>
           <Tooltip>
@@ -70,7 +78,7 @@ function Header({ lastRunLine }: { lastRunLine: string | null }) {
           </Tooltip>
         </TooltipProvider>
       </div>
-      {lastRunLine && <p className="text-sm text-muted-foreground">{lastRunLine}</p>}
+      {children}
     </div>
   );
 }
@@ -105,25 +113,8 @@ export default async function AiVisibilityPage() {
   if (!settings.enabled) {
     return (
       <div className="space-y-4">
-        <Header lastRunLine={null} />
-        <EmptyState>
-          <EmptyStateIcon>
-            <ScanSearch />
-          </EmptyStateIcon>
-          <EmptyStateTitle>AI visibility is off</EmptyStateTitle>
-          <EmptyStateDescription>
-            Turn it on in Company to start measuring how often engines name you. Anything already measured is
-            kept.
-          </EmptyStateDescription>
-          <EmptyStateActions>
-            {/* A styled Link, not `Button render={<Link/>}`: Base UI's Button
-                stamps role="button" on whatever it renders, and this only
-                navigates. */}
-            <Link href="/company#ai-visibility" className={buttonVariants({ variant: "outline" })}>
-              Open Company
-            </Link>
-          </EmptyStateActions>
-        </EmptyState>
+        <Header />
+        <AiVisibilityOffEmptyState kept="Anything already measured is kept." />
       </div>
     );
   }
@@ -139,7 +130,7 @@ export default async function AiVisibilityPage() {
     const missing = !profile.category || !profile.positioning;
     return (
       <div className="space-y-4">
-        <Header lastRunLine={null} />
+        <Header />
         <EmptyState>
           <EmptyStateIcon>
             <ScanSearch />
@@ -212,11 +203,12 @@ export default async function AiVisibilityPage() {
   // from the rest, so its estimate is the one the gate itself used. Recomputing
   // it here with a flat `prompts × engines × samples` would quote the human a
   // number the enforcement disagrees with — always higher, and higher on the
-  // one screen whose job is to be trusted about money.
-  const brandedPrompts = activePrompts.filter((prompt) => prompt.intent === "brand_check").length;
-  const plannedCalls =
-    (activePrompts.length - brandedPrompts) * settings.engines.length * settings.samplesPerPrompt +
-    brandedPrompts * settings.engines.length;
+  // one screen whose job is to be trusted about money. `plannedCallsForPrompts`
+  // is that split, written once.
+  const plannedCalls = plannedCallsForPrompts(activePrompts, {
+    engineCount: settings.engines.length,
+    samplesPerPrompt: settings.samplesPerPrompt,
+  });
 
   // Both gates the design names, in the order it names them. `runNowAction`
   // re-checks each one — this is the visible reason, not the enforcement.
@@ -242,25 +234,37 @@ export default async function AiVisibilityPage() {
 
   const shownEngines = ENGINE_ORDER.filter((engine) => settings.engines.includes(engine));
 
-  const [allMetrics, matrix, domains, competitors, health, pooledCounts, tenantRows] = await Promise.all([
+  const [engineCuts, matrix, domains, competitors, health, tenantRows] = await Promise.all([
     engineMetrics(tenantId),
     promptMatrix(tenantId),
     citedDomains(tenantId, { runs: 12, limit: 15 }),
     listCompetitors(tenantId),
     lastRun ? runEngineHealth(tenantId, lastRun.id) : Promise.resolve([]),
-    windowCounts(tenantId, {}),
     db.select({ name: tenants.name }).from(tenants).where(eq(tenants.id, tenantId)),
   ]);
 
-  // One series per shown engine plus the pooled one, in the same order the
-  // tiles render, so a tile and its sparkline can never be mismatched.
-  const seriesKeys: (EngineId | "all")[] = [...shownEngines, "all"];
-  const series = await Promise.all(seriesKeys.map((key) => engineHistory(tenantId, key)));
-
+  // The raw counts come back WITH the rates, from the same read.
+  //
+  // `engineMetrics` already queries every one of these cuts to compute the
+  // tiles; the page used to re-issue the pooled cut and one per engine — eight
+  // more queries on the critical path — purely because it needs
+  // `competitorMentions`, which the collapsed `EngineMetrics` row does not
+  // carry.
+  const allMetrics = engineCuts.metrics;
+  const pooledCounts = engineCuts.counts.all;
   // Per-engine cuts for the benchmark card's PreviewCard breakdown.
-  const perEngineCounts = await Promise.all(
-    shownEngines.map(async (engine) => ({ engine, counts: await windowCounts(tenantId, { engine }) }))
-  );
+  const perEngineCounts = shownEngines.map((engine) => ({ engine, counts: engineCuts.counts[engine] }));
+
+  // One series per tile, in the same order the tiles render, so a tile and its
+  // sparkline can never be mismatched.
+  //
+  // The pooled series only when there is something to pool. With ONE engine
+  // enabled the pooled cut IS that engine's cut, so appending "all"
+  // unconditionally printed the same numbers twice, side by side, under two
+  // different names.
+  const seriesKeys: (EngineId | "all")[] =
+    shownEngines.length > 1 ? [...shownEngines, "all"] : [...shownEngines];
+  const series = await Promise.all(seriesKeys.map((key) => engineHistory(tenantId, key)));
 
   const tenantName = tenantRows[0]?.name ?? "You";
 
@@ -309,7 +313,13 @@ export default async function AiVisibilityPage() {
 
     return {
       engine: key,
-      label: key === "all" ? "All engines" : ENGINE_LABEL[key],
+      // The SHORT name. `ENGINE_LABEL` is ~180px of methodology in a card
+      // header that truncates at about half that, so the only part a reader
+      // ever saw was the part "GPT" already says; the "API-observed" badge in
+      // the header carries the proxy caveat once, with the tooltip that
+      // explains it. The full name is still what the card's `title`, the
+      // sparkline's accessible name and the failure note below use.
+      label: key === "all" ? "All engines" : ENGINE_SHORT[key],
       // Pooled, not averaged: `engineMetrics` returns the "all" row summed over
       // samples, and averaging three rates would weight a 12-sample engine like
       // an 84-sample one.
@@ -449,6 +459,20 @@ export default async function AiVisibilityPage() {
       .map((signal) => [signal.payload!.domain as string, signal.id])
   );
 
+  // Pooled citation rate, stated once, where its denominator is already the
+  // subject: a "searched" answer is a grounded one, the cut this table's own
+  // "% of searched answers" column divides by (ungrounded-answers design,
+  // decision 5). `citationRate` is null on its OWN floor, independently of the
+  // mention floor — an engine can answer plenty and search on too few of them
+  // to report where it got its answers — so the null branch says that in words
+  // rather than leaving a dash.
+  const citationLine =
+    pooled.citationRate === null
+      ? "A searched answer is one the engine ran a web search for; too few of them yet to say how often they cite a page of yours."
+      : `A searched answer is one the engine ran a web search for — ${ratePct(
+          pooled.citationRate
+        )} of them cited a page of yours.`;
+
   const citedDomainRows = domains.map((row) => ({
     domain: row.domain,
     citations: row.citations,
@@ -464,34 +488,24 @@ export default async function AiVisibilityPage() {
   // reports a half-finished run as a finished one. The spec's Running state
   // belongs here, in the muted header, rather than only as destructive text
   // under the disabled button.
+  //
+  // "calls", not "answers". `completedCalls` counts every call the run made,
+  // errors included; the tiles two hundred pixels below say "84 answers read"
+  // about `n`, which is eligible samples after errors, refusals and brand-check
+  // prompts are excluded. Two different numbers under one word, on the surface
+  // whose whole claim is that you can check its arithmetic.
   const lastRunLine = runningLine
     ? runningLine
     : lastRun
     ? lastRun.status === "failed"
       ? `Last run ${DATE_FORMAT.format(lastRun.startedAt)} — failed`
-      : `Last run ${DATE_FORMAT.format(lastRun.startedAt)} · ${lastRun.completedCalls} answers · $${lastRun.costUsd.toFixed(2)}`
+      : `Last run ${DATE_FORMAT.format(lastRun.startedAt)} · ${lastRun.completedCalls} calls · $${lastRun.costUsd.toFixed(2)}`
     : "No run yet";
 
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="space-y-1">
-          <div className="flex items-center gap-2">
-            {/* The only font-heading on this page. */}
-            <h1 className="font-heading text-3xl leading-[1.15] tracking-[0.015em]">AI visibility</h1>
-            <TooltipProvider>
-              <Tooltip>
-                {/* A button, not a span — see the note in `Header`. */}
-                <TooltipTrigger render={<button type="button" className="inline-flex" />}>
-                  <Badge variant="outline">API-observed</Badge>
-                </TooltipTrigger>
-                <TooltipContent>
-                  Measured through each engine&apos;s API with web search on — a close proxy for what a buyer
-                  sees in the consumer app, not the same thing.
-                </TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
-          </div>
+        <Header>
           <p className="text-sm text-muted-foreground">{lastRunLine}</p>
           {/* The two routes out of this page, which it otherwise had none of:
               every existing link to the prompt set and to the signals these
@@ -524,7 +538,7 @@ export default async function AiVisibilityPage() {
               not an error, and the error tone over a spend figure from a month
               that has ended reads as a live problem. */}
           {capResolvedNote && <p className="text-sm text-muted-foreground">{capResolvedNote}</p>}
-        </div>
+        </Header>
         <RunNowButton
           estimate={runEstimate}
           disabledReason={runDisabledReason}
@@ -570,7 +584,29 @@ export default async function AiVisibilityPage() {
               noise, not honesty. */}
           <OverviewCards tiles={tiles} />
 
-          {/* Row 2 — the competitor benchmark. */}
+          {/* Row 2 — the gap-hunting grid, promoted above the benchmark.
+              This is the row that does job 2 in the design ("find the gaps that
+              are worth content"), and it is the only row on the page a reader
+              can act on without leaving it. It sat fourth, under two cards that
+              answer "how are we doing" — which job 1 has already answered in
+              the tiles above. */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Prompts by engine</CardTitle>
+              <CardDescription>
+                Where each engine names you, and where it names your rivals instead — gaps sort first.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {matrixRows.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No prompts have produced an answer yet.</p>
+              ) : (
+                <PromptMatrix rows={matrixRows} engines={shownEngines} />
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Row 3 — the competitor benchmark. */}
           <Card>
             <CardHeader>
               <CardTitle>Competitor benchmark</CardTitle>
@@ -593,15 +629,22 @@ export default async function AiVisibilityPage() {
             </CardContent>
           </Card>
 
-          {/* Row 3 — where the answers come from. Twelve runs, not four: a
+          {/* Row 4 — where the answers come from. Twelve runs, not four: a
               domain cited once a quarter still belongs on this list, and the
-              description says which span it covers. */}
+              description says which span it covers.
+
+              The description is also the one place citation rate is stated. It
+              belongs HERE and nowhere else: its denominator is grounded answers,
+              the same "searched answers" this table's own column divides by, so
+              the phrase gets defined once against the number it describes. On
+              the tiles it was an unexplained "Cited 18%" sitting beside three
+              metrics measured over a different denominator — and an unexplained
+              "Cited —" whenever the engines had searched too little to say. */}
           <Card>
             <CardHeader>
               <CardTitle>Cited sources</CardTitle>
               <CardDescription>
-                The domains these engines cited over the last 12 runs. Two thirds of brand recommendations cite
-                no page of the brand&apos;s own — these are the pages that answered instead.
+                The domains these engines cited over the last 12 runs. {citationLine}
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -609,25 +652,6 @@ export default async function AiVisibilityPage() {
                 <p className="text-sm text-muted-foreground">No citations recorded yet.</p>
               ) : (
                 <CitedDomainsTable rows={citedDomainRows} />
-              )}
-            </CardContent>
-          </Card>
-
-          {/* Row 4 — the gap-hunting grid. */}
-          <Card>
-            <CardHeader>
-              <CardTitle>Prompts by engine</CardTitle>
-              <CardDescription>
-                How many of the last answers named you, per prompt and engine, and how many tracked competitors
-                were named in them. Gaps — rivals named, you absent — sort first. A cell opens that prompt on
-                that engine.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              {matrixRows.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No prompts have produced an answer yet.</p>
-              ) : (
-                <PromptMatrix rows={matrixRows} engines={shownEngines} />
               )}
             </CardContent>
           </Card>

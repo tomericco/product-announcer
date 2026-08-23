@@ -506,7 +506,7 @@ describe("runSlice", () => {
 
     // And the window has to admit the paused run, or the aggregates are written
     // to a row nothing reads.
-    const metrics = await engineMetrics(tenant.id, db, () => new Date("2026-03-02T10:00:00Z"));
+    const metrics = (await engineMetrics(tenant.id, db, () => new Date("2026-03-02T10:00:00Z"))).metrics;
     expect(metrics.find((m) => m.engine === "openai")?.n).toBe(ok.length);
     expect(metrics.find((m) => m.engine === "all")?.n).toBe(ok.length);
   });
