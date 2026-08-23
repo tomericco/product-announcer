@@ -334,6 +334,10 @@ describe("prompt detail — samples, sources and related pieces", () => {
     await renderPage();
 
     expect(captured.domains![0].signalId).toBeNull();
+    // And no note explaining the absence: this table never asked the signals
+    // table anything, so "aged out" and "no signal yet" are both claims it
+    // cannot make.
+    expect(captured.domains![0].everSignalled).toBeNull();
   });
 
   it("says so rather than rendering an empty table when this prompt has no citations", async () => {

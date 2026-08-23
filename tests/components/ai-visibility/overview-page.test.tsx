@@ -95,6 +95,7 @@ const {
   runEngineHealth,
   windowCounts,
   citedDomains,
+  everSignalledDomains,
   listSignals,
   tenantRows,
 } = vi.hoisted(() => ({
@@ -111,6 +112,7 @@ const {
   runEngineHealth: vi.fn(),
   windowCounts: vi.fn(),
   citedDomains: vi.fn(),
+  everSignalledDomains: vi.fn(),
   listSignals: vi.fn(),
   tenantRows: { value: [{ name: "Versional" }] as { name: string }[] },
 }));
@@ -124,7 +126,7 @@ vi.mock("@/lib/workspace/competitors", () => ({ listCompetitors }));
 vi.mock("@/lib/ai-visibility/settings", () => ({ getAiVisibilitySettings }));
 vi.mock("@/lib/ai-visibility/prompts", () => ({ listPrompts, MAX_ACTIVE_PROMPTS: 30 }));
 vi.mock("@/lib/ai-visibility/run", () => ({ latestRun }));
-vi.mock("@/lib/ai-visibility/cited-domains", () => ({ citedDomains }));
+vi.mock("@/lib/ai-visibility/cited-domains", () => ({ citedDomains, everSignalledDomains }));
 vi.mock("@/lib/signals/query", () => ({ listSignals }));
 // `brandMentionTotal` stays REAL — it is the denominator the remainder row is
 // derived against, and stubbing it would make the remainder assertions test
@@ -231,6 +233,7 @@ function setup(overrides: Record<string, unknown> = {}) {
   runEngineHealth.mockResolvedValue((o.health as unknown[]) ?? []);
   windowCounts.mockImplementation(async () => (o.counts as WindowCounts) ?? counts());
   citedDomains.mockResolvedValue((o.domains as unknown[]) ?? []);
+  everSignalledDomains.mockResolvedValue(new Set((o.everSignalled as string[]) ?? []));
   listSignals.mockResolvedValue((o.signals as unknown[]) ?? []);
   tenantRows.value = (o.tenant as { name: string }[]) ?? [{ name: "Versional" }];
 }
@@ -683,12 +686,34 @@ describe("overview — what the tiles, the matrix and the domain table are hande
         { id: "sig-2", payload: { signalType: "competitor_gained", domain: "acme.com" } },
         { id: "sig-3", payload: { signalType: "new_cited_domain", domain: null } },
       ],
+      everSignalled: ["g2.com"],
     });
     await renderPage();
 
     expect(captured.domains).toEqual([
-      { domain: "g2.com", citations: 9, answerSharePct: 17, engines: ["openai"], domainClass: "third_party", signalId: "sig-1" },
-      { domain: "acme.com", citations: 3, answerSharePct: 5, engines: ["gemini"], domainClass: "competitor", signalId: null },
+      { domain: "g2.com", citations: 9, answerSharePct: 17, engines: ["openai"], domainClass: "third_party", signalId: "sig-1", everSignalled: true },
+      { domain: "acme.com", citations: 3, answerSharePct: 5, engines: ["gemini"], domainClass: "competitor", signalId: null, everSignalled: false },
+    ]);
+  });
+
+  it("separates a domain whose signal expired from one that never had a signal at all", async () => {
+    // Both rows come back from `listSignals` with nothing, because the 60-day
+    // window hides the difference. The unwindowed read is the only thing that
+    // knows which of the two silences the row is in, and the table says
+    // opposite sentences for them.
+    setup({
+      domains: [
+        { domain: "expired.com", citations: 9, answerShare: 17, engines: ["openai"], domainClass: "third_party" },
+        { domain: "steady.com", citations: 40, answerShare: 48, engines: ["openai"], domainClass: "third_party" },
+      ],
+      signals: [],
+      everSignalled: ["expired.com"],
+    });
+    await renderPage();
+
+    expect(captured.domains!.map((row) => [row.domain, row.signalId, row.everSignalled])).toEqual([
+      ["expired.com", null, true],
+      ["steady.com", null, false],
     ]);
   });
 

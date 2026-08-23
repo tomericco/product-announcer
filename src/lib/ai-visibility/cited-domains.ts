@@ -1,10 +1,11 @@
-import { and, asc, desc, eq, inArray, or } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
 import {
   aiVisibilityCitations,
   aiVisibilityPrompts,
   aiVisibilityRuns,
   aiVisibilitySamples,
+  signals,
 } from "@/db/schema";
 import { isEligible } from "@/lib/ai-visibility/aggregate";
 import { WINDOW_RUNS } from "@/lib/ai-visibility/metrics";
@@ -254,4 +255,50 @@ export async function citedDomains(
     }))
     .sort((a, b) => b.answers - a.answers || b.citations - a.citations || a.domain.localeCompare(b.domain))
     .slice(0, opts.limit ?? DEFAULT_LIMIT);
+}
+
+/**
+ * Every domain that has EVER had a `new_cited_domain` signal, window or not.
+ *
+ * The leaderboard has to tell two silences apart, and they are opposite. A row
+ * offers "Propose brief" only while a signal is still resolvable through
+ * `listSignals`; when there is none the cell has to say why, and saying the
+ * wrong why invents an event. `new_cited_domain` fires on ENTRY — a domain new
+ * to the top ten, or newly cited on three prompts where the tenant is absent
+ * (rule 8 in `rankTriggers`, gated on `seenBefore`) — so for a source the
+ * engines have leaned on steadily for months, the ordinary case is that no
+ * signal ever existed. Only a domain that once had one has anything to expire.
+ *
+ * Deliberately NOT filtered by `signalWindowCondition()`, which is the one
+ * question it exists to answer: the 60-day read window is exactly what hides
+ * the difference between "expired" and "never happened". Nothing deletes
+ * signals today. When the retention job in `lib/signals/window.ts` lands, an
+ * aged-out row will eventually disappear from here too and the cell will fall
+ * back to the "no signal yet" reading — wrong only in the direction of
+ * claiming less than we know.
+ */
+export async function everSignalledDomains(
+  tenantId: string,
+  database: typeof defaultDb = defaultDb
+): Promise<Set<string>> {
+  // Matched on `payload->>'domain'`, never on `externalId`: the key's subject
+  // slot holds a promptId on most kinds and a domain on this one, so a prefix
+  // match there would be reading a different column's meaning by position
+  // (the same reasoning `lib/briefs/query.ts` spells out for `promptId`).
+  const rows = await database
+    .select({ domain: sql<string | null>`${signals.payload}->>'domain'` })
+    .from(signals)
+    .where(
+      and(
+        eq(signals.tenantId, tenantId),
+        eq(signals.kind, "ai_visibility"),
+        sql`${signals.payload}->>'signalType' = 'new_cited_domain'`
+      )
+    );
+
+  const domains = new Set<string>();
+  for (const row of rows) {
+    if (row.domain) domains.add(row.domain);
+  }
+  return domains;
 }

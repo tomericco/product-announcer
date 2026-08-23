@@ -4,6 +4,7 @@ import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import type { DomainClass } from "@/lib/ai-visibility/domains";
 import type { EngineId } from "@/lib/ai-visibility/types";
 import { ENGINE_SHORT } from "./engine-labels";
@@ -15,6 +16,19 @@ export type CitedDomainRow = {
   engines: EngineId[];
   domainClass: DomainClass;
   signalId: string | null;
+  /**
+   * Whether a `new_cited_domain` signal for this domain has ever existed,
+   * inside the 60-day window or long outside it (`everSignalledDomains`).
+   *
+   * Separate from `signalId` because the absence of an id has two causes and
+   * only one of them is an expiry — see `evidenceNote`.
+   *
+   * `null` is a third thing: this table was never joined to signals at all, as
+   * on the per-prompt sources table, where every row's `signalId` is null by
+   * construction. Such a row knows nothing about signals and says nothing —
+   * neither "aged out" nor "no signal yet" would be a claim it could support.
+   */
+  everSignalled: boolean | null;
 };
 
 /**
@@ -32,6 +46,29 @@ export function domainClassLabel(row: CitedDomainRow): {
 }
 
 /**
+ * What to say in place of "Propose brief", and why.
+ *
+ * The two cases are not variants of one another. `new_cited_domain` fires on
+ * ENTRY — a domain new to the top ten, or newly cited on three prompts where we
+ * are absent — and never again while it keeps being cited, so the leaderboard's
+ * steadiest rows are precisely the ones that never raised a signal. Telling
+ * that reader "Evidence aged out" asserts an expiry that never happened, and
+ * sends them looking for a signal on a page where none was ever written.
+ */
+export function evidenceNote(row: CitedDomainRow): { label: string; hint: string } | null {
+  if (row.everSignalled === null) return null;
+  return row.everSignalled
+    ? {
+        label: "Evidence aged out",
+        hint: "This domain's signal is older than the 60-day window. Propose a brief from the Signals page, or wait for the next run to raise a new one.",
+      }
+    : {
+        label: "No signal yet",
+        hint: "A signal fires when a domain first reaches the top 10 or first appears on 3 prompts where you are absent — a source cited steadily for months may never raise one. Propose a brief from the Signals page.",
+      };
+}
+
+/**
  * Row 3 of the overview: where the engines actually get their answers.
  *
  * "Propose brief" is offered only on a third-party row that already has a
@@ -40,6 +77,33 @@ export function domainClassLabel(row: CitedDomainRow): {
  * with the evidence silently dropped. Our own domain gets no such action:
  * being cited on our own page is the outcome, not a gap.
  */
+/**
+ * The note, and the reason it is a `Tooltip` on a real button rather than the
+ * `title` attribute it used to be.
+ *
+ * `title` is mouse-only in practice: it never opens on keyboard focus, and
+ * screen readers announce it inconsistently — so the sentence that explains why
+ * a whole column of actions is missing was reachable only by hovering. This is
+ * the `Badge` trigger pattern from the page header, for the same reason it was
+ * chosen there. `DisabledHint` is deliberately not reused: it exists to wrap a
+ * DISABLED control, and its span trigger plus `pointer-events-none` is
+ * focusable by nothing at all — there is no control here to disable.
+ */
+function EvidenceNote({ row }: { row: CitedDomainRow }) {
+  const note = evidenceNote(row);
+  if (note === null) return null;
+  return (
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger render={<button type="button" className="inline-flex text-left" />}>
+          <span className="text-xs text-muted-foreground">{note.label}</span>
+        </TooltipTrigger>
+        <TooltipContent>{note.hint}</TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
+
 export function CitedDomainsTable({ rows }: { rows: CitedDomainRow[] }) {
   return (
     <Table>
@@ -86,18 +150,10 @@ export function CitedDomainsTable({ rows }: { rows: CitedDomainRow[] }) {
                   </Link>
                 ) : (
                   // A third-party row with no signal is the one case where the
-                  // action's ABSENCE needs explaining: signals age out of the
-                  // 60-day window, and a row that offered "Propose brief" last
-                  // month and offers nothing now looks broken rather than
-                  // expired. Our own domain gets no note — it is not a gap.
-                  classification.label === "Third-party" && (
-                    <span
-                      className="text-xs text-muted-foreground"
-                      title="Signals age out after 60 days. Propose a brief from the Signals page, or wait for this domain to be cited again."
-                    >
-                      Evidence aged out
-                    </span>
-                  )
+                  // action's ABSENCE needs explaining: without a note, a row
+                  // that offers nothing where its neighbours offer a brief
+                  // looks broken. Our own domain gets no note — it is not a gap.
+                  classification.label === "Third-party" && <EvidenceNote row={row} />
                 )}
               </TableCell>
             </TableRow>

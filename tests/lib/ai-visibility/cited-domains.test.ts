@@ -2,12 +2,13 @@ import { describe, it, expect, afterEach } from "vitest";
 import { db } from "../../../src/db";
 import {
   competitors,
+  signals,
   aiVisibilityCitations,
   aiVisibilityPrompts,
   aiVisibilityRuns,
   aiVisibilitySamples,
 } from "../../../src/db/schema";
-import { citedDomains } from "../../../src/lib/ai-visibility/cited-domains";
+import { citedDomains, everSignalledDomains } from "../../../src/lib/ai-visibility/cited-domains";
 import { seedTenant, dropTenant } from "../../helpers/fixtures";
 
 const TENANT = "AI Visibility Cited Domains Test Tenant";
@@ -421,5 +422,51 @@ describe("citedDomains tenant scoping", () => {
     expect(await citedDomains(other.id, {})).toEqual([]);
     expect(await citedDomains(other.id, { promptId: prompt.id })).toEqual([]);
     expect(await citedDomains(other.id, { runs: 12 })).toEqual([]);
+  });
+});
+
+describe("everSignalledDomains", () => {
+  /** A signal row as `emitSignals` writes one, with a chosen age. */
+  async function signal(
+    tenantId: string,
+    a: { signalType: string; domain: string | null; daysAgo: number }
+  ) {
+    const at = new Date(Date.now() - a.daysAgo * 24 * 60 * 60 * 1000);
+    await db.insert(signals).values({
+      tenantId,
+      kind: "ai_visibility",
+      externalId: `${a.signalType}:${a.domain ?? "all"}:all:${a.daysAgo}`,
+      title: `${a.domain ?? "something"} moved`,
+      occurredAt: at,
+      createdAt: at,
+      payload: { signalType: a.signalType, domain: a.domain },
+    } as typeof signals.$inferInsert);
+  }
+
+  it("sees a signal that has aged out of the 60-day read window — that is the question it answers", async () => {
+    // `listSignals` cannot answer this: its window would return nothing for
+    // either domain, and the leaderboard would then tell a reader that a
+    // domain which never raised a signal had one expire.
+    const tenant = await seedTenant(TENANT);
+    await signal(tenant.id, { signalType: "new_cited_domain", domain: "expired.com", daysAgo: 200 });
+    await signal(tenant.id, { signalType: "new_cited_domain", domain: "fresh.com", daysAgo: 3 });
+
+    const domains = await everSignalledDomains(tenant.id);
+    expect(domains.has("expired.com")).toBe(true);
+    expect(domains.has("fresh.com")).toBe(true);
+    expect(domains.has("never.com")).toBe(false);
+  });
+
+  it("counts only new_cited_domain rows, and only this tenant's", async () => {
+    const tenant = await seedTenant(TENANT);
+    const other = await seedTenant(TENANT);
+    // Carries a domain, but says nothing about whether that domain was ever
+    // proposable — a brief built on it would attach the wrong evidence.
+    await signal(tenant.id, { signalType: "competitor_gained", domain: "rival.com", daysAgo: 10 });
+    await signal(tenant.id, { signalType: "new_cited_domain", domain: null, daysAgo: 10 });
+    await signal(other.id, { signalType: "new_cited_domain", domain: "theirs.com", daysAgo: 10 });
+
+    expect(await everSignalledDomains(tenant.id)).toEqual(new Set());
+    expect(await everSignalledDomains(other.id)).toEqual(new Set(["theirs.com"]));
   });
 });

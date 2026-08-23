@@ -28,7 +28,7 @@ import {
   runEngineHealth,
   windowCounts,
 } from "@/lib/ai-visibility/metrics";
-import { citedDomains } from "@/lib/ai-visibility/cited-domains";
+import { citedDomains, everSignalledDomains } from "@/lib/ai-visibility/cited-domains";
 import { capExceeded, capPausedMessage } from "@/lib/ai-visibility/cost";
 import { listSignals } from "@/lib/signals/query";
 import type { EngineId, WindowCounts } from "@/lib/ai-visibility/types";
@@ -426,7 +426,15 @@ export default async function AiVisibilityPage() {
   // Joined to the `new_cited_domain` signal that makes "Propose brief"
   // resolvable: a link with no signal id lands on an empty /briefs/new and
   // drops the evidence silently.
-  const domainSignals = await listSignals(tenantId, { kind: "ai_visibility" });
+  //
+  // The second query answers a different question, which is why it is not the
+  // same one narrowed: `listSignals` is bounded by the 60-day window, and a row
+  // with no id inside it has either lost a signal or never had one. Those two
+  // need opposite sentences, and only an unwindowed read can tell them apart.
+  const [domainSignals, everSignalled] = await Promise.all([
+    listSignals(tenantId, { kind: "ai_visibility" }),
+    everSignalledDomains(tenantId),
+  ]);
   const signalByDomain = new Map(
     domainSignals
       .filter((signal) => signal.payload?.signalType === "new_cited_domain" && signal.payload.domain)
@@ -440,6 +448,7 @@ export default async function AiVisibilityPage() {
     engines: row.engines,
     domainClass: row.domainClass,
     signalId: signalByDomain.get(row.domain) ?? null,
+    everSignalled: everSignalled.has(row.domain),
   }));
 
   // An in-flight run is NOT "Last run": its `completedCalls` and `costUsd` are

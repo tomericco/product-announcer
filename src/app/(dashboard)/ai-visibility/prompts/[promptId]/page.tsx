@@ -241,6 +241,11 @@ export default async function PromptDetailPage({
                 // there is no signal id to link, and passing null is what makes
                 // the action absent rather than broken. Do not synthesize one.
                 signalId: null,
+                // And nothing was looked up, so the cell must not explain the
+                // absence either: this table never asked the signals table a
+                // question, so it cannot say whether one expired or never
+                // fired. Silence is the only honest reading here.
+                everSignalled: null,
               }))}
             />
           )}
