@@ -324,6 +324,11 @@ export async function planRun(
           samplesPerPrompt: settings.samplesPerPrompt,
           plannedCalls: rows.length,
           startedAt: now,
+          // Stamped at plan time so a run is never stale by construction: the
+          // window between this insert and the driver's first slice is the one
+          // a lease-presence test used to report as "Stalled" to the very
+          // person who had just pressed Run now.
+          lastActivityAt: now,
         })
         .returning();
 
@@ -418,9 +423,16 @@ export async function runSlice(
     return { processed: 0, remaining: 0, budgetSpent: false, pausedByCap: false, cancelled: false };
   }
 
-  if (run.status === "pending") {
-    await database.update(aiVisibilityRuns).set({ status: "running" }).where(eq(aiVisibilityRuns.id, runId));
-  }
+  // Claiming the run IS activity, and stamping it here is what keeps a driver
+  // that is still inside its first wave from looking abandoned: the first batch
+  // UPDATE is up to a full `ENGINE_REQUEST_TIMEOUT_MS` away, and on a resumed
+  // run the previous stamp may already be arbitrarily old. Folded into the
+  // pending -> running flip so this costs no extra statement on the first slice
+  // and one cheap one on later slices.
+  await database
+    .update(aiVisibilityRuns)
+    .set({ lastActivityAt: opts.now(), ...(run.status === "pending" ? { status: "running" as const } : {}) })
+    .where(eq(aiVisibilityRuns.id, runId));
 
   const settings = await getAiVisibilitySettings(run.tenantId, database);
   const extract = deps.extract ?? extractSample;
@@ -647,6 +659,11 @@ export async function runSlice(
         // engine actually answered with, so a jump can be annotated rather than
         // mistaken for a change in visibility.
         modelIds,
+        // Folded into the batch counters rather than written separately: this
+        // statement already marks the one moment in the slice where real work
+        // demonstrably landed, and a second UPDATE per batch would be a second
+        // round trip saying the same thing.
+        lastActivityAt: opts.now(),
       })
       .where(eq(aiVisibilityRuns.id, runId));
   }
@@ -903,6 +920,15 @@ export async function finalizeRun(
     return { status: "running", judged: 0, signals: 0 };
   }
 
+  // Finalizing is progress too, and the judge pass below can run for minutes
+  // without touching the run row. A run left `running` because the judge budget
+  // ran out is genuinely stalled and should surface as such — but only from
+  // when the judge stopped, not from the last sample batch before it.
+  await database
+    .update(aiVisibilityRuns)
+    .set({ lastActivityAt: opts.now() })
+    .where(eq(aiVisibilityRuns.id, runId));
+
   try {
     const judged = await judge(runId, { budgetMs: opts.budgetMs, now: opts.now }, { database });
     if (judged.remaining > 0) {
@@ -1069,40 +1095,67 @@ async function settleCancelledRun(
 }
 
 /**
- * How long after a run is planned it may first be called stalled.
+ * How long a run may go without writing progress before it is called stalled.
  *
- * There is one legitimate window in which an in-flight run holds no lease and
- * is nevertheless perfectly healthy: between `planRun` inserting the row and
- * the driver's first `acquireSliceLease` a moment later. Without this grace the
- * header would flash "Stalled" at the very human who just pressed Run now, and
- * a Resume control would appear beside a run that is about to start on its own.
+ * It has to exceed the longest quiet stretch a HEALTHY run can legitimately
+ * have, and the two candidates are measured, not guessed:
  *
- * A minute is far longer than that window and far shorter than the daily cron
- * that used to be the only way out — so the diagnosis this change comes from
- * ("frozen for up to 24 hours") is answered either way.
+ *  - ONE WAVE OF TIMEOUTS. `lastActivityAt` is stamped at slice start and then
+ *    once per batch, so the widest healthy gap is a whole concurrency wave in
+ *    which every engine burns the full `ENGINE_REQUEST_TIMEOUT_MS` — 60s — plus
+ *    the extraction and the batch UPDATE that follow it.
+ *  - A BACKOFF. When the last pending rows are waiting out a retry, the batch
+ *    query hands out nothing, `driveRun` returns on `processed === 0`, and the
+ *    run goes genuinely quiet with nobody driving it. The longest single step
+ *    of `SAMPLE_RETRY_BACKOFF_MS` is 60s. The LADDER does not accumulate here:
+ *    each retry that fires is itself a batch, and writes a new stamp — so the
+ *    quiet window is one step, not 30s + 60s.
+ *
+ * Both are 60s, and they are alternatives rather than a sum (the batch UPDATE
+ * that ends a wave of timeouts is the same write that starts the backoff's
+ * quiet window). 180s is therefore three times the requirement: 60s of wave,
+ * 60s of backoff added anyway as if they stacked, and 60s of slack for
+ * extraction's redirect resolution, DB round trips and clock skew.
+ *
+ * Erring long is the safe direction. Too long only delays how quickly a stall
+ * surfaces — and 3 minutes against the 24-hour cron this feature replaced is
+ * noise. Too short is the bug being fixed: Resume offered on a healthy run.
+ *
+ * The number also has to be long enough that a Resume, once offered, can
+ * actually do something. It clears the 60s backoff step, so by the time the
+ * button appears the rows that went quiet are due to be picked up again.
  */
-export const STALL_GRACE_MS = 60_000;
+export const STALL_AFTER_MS = 180_000;
 
 /**
  * Whether a run is in flight with nobody driving it.
  *
- * A live `sliceLeaseUntil` means a driver holds this run right now and is
- * working through its batches; it must be left alone, because a second driver
- * would claim samples the first is already paying for. A lease that is null or
- * lapsed means the opposite: every driver has either released it (a Run-now
- * that spent its 240s with work remaining does exactly that) or died holding
- * it, and until the next daily sweep nothing will touch the run again.
+ * Two conjuncts, and both are load-bearing:
+ *
+ *  - NO PROGRESS SINCE `STALL_AFTER_MS`. This is the honest signal — a
+ *    timestamp of work actually done. It replaced a lease-presence test, which
+ *    reported "Stalled" in the sub-second window between every pair of slices
+ *    of a perfectly healthy Run-now, because `releaseSliceLease` hands the run
+ *    back at the end of each one.
+ *  - NO LIVE LEASE. A live `sliceLeaseUntil` means a driver holds this run
+ *    right now, and it VETOES "stalled" whatever the timestamp says: a wave
+ *    slower than the threshold is slow, not abandoned, and a second driver
+ *    would claim samples the first is already paying for.
+ *
+ * A driver that dies mid-wave therefore surfaces as stalled once BOTH pass —
+ * its lease outlives it by `LEASE_GRACE_MS` on top of its slice budget, which
+ * is the price of not resuming over the top of a driver that is merely slow.
  *
  * Exported because the page and the resume action must agree on the word
  * "stalled" — the button appears under precisely the condition the action
  * enforces, so the control cannot be offered for a run that then refuses it.
  */
 export function runIsStalled(
-  run: { status: string; sliceLeaseUntil: Date | null; startedAt: Date },
+  run: { status: string; sliceLeaseUntil: Date | null; lastActivityAt: Date },
   now: Date
 ): boolean {
   if (!IN_FLIGHT.includes(run.status)) return false;
-  if (now.getTime() - run.startedAt.getTime() < STALL_GRACE_MS) return false;
+  if (now.getTime() - run.lastActivityAt.getTime() < STALL_AFTER_MS) return false;
   return run.sliceLeaseUntil === null || run.sliceLeaseUntil.getTime() <= now.getTime();
 }
 
@@ -1141,7 +1194,7 @@ export async function findResumableRun(
       id: aiVisibilityRuns.id,
       status: aiVisibilityRuns.status,
       sliceLeaseUntil: aiVisibilityRuns.sliceLeaseUntil,
-      startedAt: aiVisibilityRuns.startedAt,
+      lastActivityAt: aiVisibilityRuns.lastActivityAt,
     })
     .from(aiVisibilityRuns)
     .where(and(eq(aiVisibilityRuns.tenantId, tenantId), inArray(aiVisibilityRuns.status, IN_FLIGHT)))
@@ -1257,6 +1310,11 @@ export type CancelRunResult =
  * lease on a run that will never resume, and it has a second effect worth
  * having: a driver still mid-slice fails its next `renewSliceLease` and stops
  * even if it somehow misses the status check.
+ *
+ * `lastActivityAt` is deliberately NOT stamped, here or in
+ * `settleCancelledRun`. `cancelled` is terminal and outside `IN_FLIGHT`, so
+ * `runIsStalled` is already false for this run whatever the timestamp says —
+ * writing one would only invite a reader to believe it is load-bearing.
  */
 export async function cancelRun(
   tenantId: string,

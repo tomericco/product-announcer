@@ -7,9 +7,10 @@ import { Button } from "@/components/ui/button";
 import { resumeRunAction } from "./actions";
 
 /**
- * "Resume" — shown only while a run is stalled: in flight, and holding no live
- * slice lease. That is exactly the condition `resumeRunAction` enforces, so the
- * button is never offered for a run that would then refuse it.
+ * "Resume" — shown only while a run is stalled: in flight, nothing written to
+ * it for `STALL_AFTER_MS`, and holding no live slice lease. That is exactly the
+ * condition `resumeRunAction` enforces, so the button is never offered for a
+ * run that would then refuse it.
  *
  * The plain `outline` variant, and the choice is about the two controls it sits
  * with. "Run now" is the only filled button in this header and stays the

@@ -1,0 +1,1 @@
+ALTER TABLE "ai_visibility_runs" ADD COLUMN "last_activity_at" timestamp with time zone DEFAULT now() NOT NULL;

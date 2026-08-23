@@ -180,11 +180,12 @@ export default async function AiVisibilityPage() {
   // A run "in flight" is just the latest one not yet finished — there is one
   // per tenant at a time by construction, so this needs no second query.
   const inFlight = lastRun && (lastRun.status === "pending" || lastRun.status === "running") ? lastRun : null;
-  // In flight, but nobody is driving it: the driver spent its budget with work
-  // left, or died holding the lease. Until "Resume" existed the only thing that
-  // picked such a run back up was tomorrow's 09:00 UTC sweep — so this state
-  // looked exactly like a working run for up to a day, while every attempt to
-  // start a new one was refused with "A run is already in progress."
+  // In flight, but nothing has been written to it for `STALL_AFTER_MS` and no
+  // driver holds the lease: whoever was driving spent its budget with work
+  // left, or died. Until "Resume" existed the only thing that picked such a run
+  // back up was tomorrow's 09:00 UTC sweep — so this state looked exactly like
+  // a working run for up to a day, while every attempt to start a new one was
+  // refused with "A run is already in progress."
   const stalled = inFlight !== null && runIsStalled(inFlight, now);
 
   // ---- State: Paused by cap ------------------------------------------------

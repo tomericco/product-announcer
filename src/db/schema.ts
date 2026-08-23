@@ -633,6 +633,16 @@ export const aiVisibilityRuns = pgTable(
     // cannot renew over the top of the successor that took it — or release a
     // claim that is no longer its own.
     sliceLeaseOwner: uuid("slice_lease_owner"),
+    // The last moment this run demonstrably made progress: planned, a slice
+    // claimed it, a batch of samples landed, or finalize took it on. This — not
+    // the presence of a lease — is what `runIsStalled` reads. A lease is
+    // released at the END of every healthy slice, so lease-presence made a
+    // perfectly live run look abandoned for the sub-second gap between slices;
+    // a timestamp of real work done says nothing about how the driver is
+    // implemented. Always written from the caller's injected clock, never the
+    // DB's, so a test can move it; the `defaultNow()` exists only so the
+    // migration can backfill rows that predate the column.
+    lastActivityAt: timestamp("last_activity_at", { withTimezone: true }).notNull().defaultNow(),
     startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
   },

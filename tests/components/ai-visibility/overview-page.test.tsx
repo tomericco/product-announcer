@@ -240,16 +240,21 @@ function run(overrides: Record<string, unknown> = {}) {
     plannedCalls: 252,
     costUsd: 3.12,
     error: null,
-    // No driver holds this run. Every in-flight fixture that means "somebody is
-    // working on it" says so explicitly with `LIVE_LEASE`, because a lapsed or
-    // absent lease on an in-flight run IS the stalled state.
+    // No driver holds this run, and nothing has been written to it for hours.
+    // Both halves matter: `runIsStalled` wants a stale `lastActivityAt` AND no
+    // live lease, so an in-flight fixture that means "somebody is working on
+    // it" says so with `LIVE_LEASE` or with `FRESH_ACTIVITY`.
     sliceLeaseUntil: null,
+    lastActivityAt: new Date("2026-08-17T09:00:00Z"),
     ...overrides,
   };
 }
 
-/** A lease a driver is currently holding — the difference between Running and Stalled. */
+/** A lease a driver is currently holding — one of the two ways to not be Stalled. */
 const LIVE_LEASE = () => new Date(Date.now() + 60_000);
+
+/** Progress written a moment ago — the other way, and the one between two slices. */
+const FRESH_ACTIVITY = () => new Date(Date.now() - 1_000);
 
 function prompt(overrides: Record<string, unknown> = {}) {
   return { id: "p1", text: "best localization tools", status: "active", intent: "discovery", ...overrides };
@@ -435,6 +440,27 @@ describe("overview — the nine states, and that they are mutually exclusive", (
     // Stop stays offered — a stalled run is still in flight, and abandoning it
     // is a different decision from finishing it.
     expect(screen.getByTestId("stop-run")).toBeInTheDocument();
+  });
+
+  it("Running between slices: fresh progress and no lease is still Running, not Stalled", async () => {
+    // The regression this predicate exists for. `releaseSliceLease` hands the
+    // run back at the END of every slice, so a healthy Run-now spends sub-second
+    // windows with no lease at all — and the old lease-presence test flashed
+    // "Stalled" and a Resume button into each of them.
+    setup({
+      run: run({
+        status: "running",
+        completedCalls: 41,
+        plannedCalls: 270,
+        sliceLeaseUntil: null,
+        lastActivityAt: FRESH_ACTIVITY(),
+      }),
+    });
+    await renderPage();
+
+    expect(screen.getByText("Running… 41 / 270 calls")).toBeInTheDocument();
+    expect(screen.queryByText(/Stalled/)).not.toBeInTheDocument();
+    expect(screen.queryByTestId("resume-run")).not.toBeInTheDocument();
   });
 
   it("Resume is offered only for a stalled run, never for a finished one", async () => {
