@@ -23,7 +23,12 @@ export const WINDOW_RUNS = 4;
 // them without pulling `@/db` into the browser bundle. Re-exported here because
 // this is where every server-side caller already imports them from.
 export { MIN_N_AGGREGATE, MIN_N_PROMPT };
-/** How many runs a sparkline plots. Design §UX: "12-week sparkline". */
+/**
+ * How many runs a trend plots. Design §UX calls it a "12-week sparkline", but
+ * the unit is RUNS: cadence is a tenant setting and can be fortnightly, so
+ * twelve of them is six months for some tenants. Anything that names this
+ * number to a reader says "runs".
+ */
 export const HISTORY_RUNS = 12;
 /** Design §Metrics: "Deltas are 30-day only". */
 export const DELTA_DAYS = 30;
@@ -106,7 +111,28 @@ const emptyCounts = (): WindowCounts => ({
   competitorMentions: {},
 });
 
-/** The ids of the last `runs` complete runs, newest first. */
+/**
+ * The run statuses every window on this page reads — the SETTLED ones.
+ *
+ * One list, used by both `windowRunIds` (the metrics window the tiles and the
+ * benchmark sum) and `historyRuns` (the trend window the chart plots), because
+ * they drifted apart once already and the result was a page arguing with
+ * itself: `historyRuns` filtered `status = "complete"` alone, so a tenant whose
+ * only run stopped at the cost cap read real numbers on every tile above a
+ * chart that said "No runs yet".
+ *
+ * - No run still IN FLIGHT (`pending`, `running`): it has partial aggregates or
+ *   none, and letting one in would make every number wobble for as long as the
+ *   cron takes.
+ * - `paused_by_cap` IS in, on both. It is terminal, not in flight — `runSlice`
+ *   aggregates what it bought before the cap tripped and nothing ever resumes
+ *   it — so excluding it throws away every answer the tenant paid for, which is
+ *   the one outcome a cost cap must not have.
+ * - `failed` is out: a run that never produced aggregates has nothing to plot.
+ */
+const SETTLED_RUN_STATUSES = ["complete", "paused_by_cap"] as const;
+
+/** The ids of the last `runs` settled runs, newest first. */
 async function windowRunIds(
   tenantId: string,
   runs: number,
@@ -119,15 +145,8 @@ async function windowRunIds(
     .where(
       and(
         eq(aiVisibilityRuns.tenantId, tenantId),
-        // No run still IN FLIGHT: it has partial aggregates or none, and
-        // letting one in would make every number wobble for as long as the
-        // cron takes.
-        //
-        // `paused_by_cap` is not in flight — it is terminal, its aggregates are
-        // final, and `runSlice` writes them at the moment it pauses. Excluding
-        // it would throw away every answer the tenant paid for before the cap
-        // tripped, which is the one outcome a cost cap must not have.
-        inArray(aiVisibilityRuns.status, ["complete", "paused_by_cap"]),
+        // See SETTLED_RUN_STATUSES: in flight is out, cap-paused is in.
+        inArray(aiVisibilityRuns.status, [...SETTLED_RUN_STATUSES]),
         ...(before ? [lt(aiVisibilityRuns.startedAt, before)] : [])
       )
     )
@@ -490,7 +509,14 @@ export async function promptMatrix(
   }));
 }
 
-/** Complete runs for a tenant, oldest first, most recent `HISTORY_RUNS` of them. */
+/**
+ * Settled runs for a tenant, oldest first, most recent `HISTORY_RUNS` of them.
+ *
+ * The SAME status filter the metrics window uses — see `SETTLED_RUN_STATUSES`.
+ * This used to read `status = "complete"` alone while `windowRunIds` also took
+ * `paused_by_cap`, so the two windows could disagree about whether a tenant had
+ * any runs at all.
+ */
 async function historyRuns(
   tenantId: string,
   database: typeof defaultDb
@@ -502,7 +528,12 @@ async function historyRuns(
       modelIds: aiVisibilityRuns.modelIds,
     })
     .from(aiVisibilityRuns)
-    .where(and(eq(aiVisibilityRuns.tenantId, tenantId), eq(aiVisibilityRuns.status, "complete")))
+    .where(
+      and(
+        eq(aiVisibilityRuns.tenantId, tenantId),
+        inArray(aiVisibilityRuns.status, [...SETTLED_RUN_STATUSES])
+      )
+    )
     .orderBy(desc(aiVisibilityRuns.startedAt))
     .limit(HISTORY_RUNS);
   // Newest-first for the LIMIT, oldest-first for the chart. Reversing here is

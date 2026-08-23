@@ -530,6 +530,57 @@ describe("engineHistory", () => {
     expect(points.map((point) => point.sovPct)).toEqual([100, 50]);
   });
 
+  it("plots a cap-paused run, so the chart cannot say \"No runs yet\" over tiles full of numbers", async () => {
+    // The bug this fixes: `historyRuns` filtered `status = "complete"` while
+    // `windowRunIds` deliberately also takes `paused_by_cap`. A tenant whose
+    // ONLY run stopped at the cost cap got real numbers on every tile above a
+    // trend chart claiming there had never been a run.
+    const tenant = await seedTenant(TENANT);
+    const prompt = await seedPromptRow(tenant.id);
+    const paused = await seedRun(tenant.id, "2026-01-05T09:00:00Z", "paused_by_cap", { openai: "gpt-5.1" });
+    await seedAggregate({
+      runId: paused.id,
+      tenantId: tenant.id,
+      engine: "openai",
+      n: MIN_N_AGGREGATE,
+      tenantMentions: 15,
+    });
+    await seedAggregate({
+      runId: paused.id,
+      tenantId: tenant.id,
+      engine: "openai",
+      promptId: prompt.id,
+      n: MIN_N_PROMPT,
+      tenantMentions: 2,
+    });
+
+    // The metrics window already counted it...
+    expect((await windowCounts(tenant.id, { engine: "openai" })).n).toBe(MIN_N_AGGREGATE);
+    // ...and now the history window agrees, for the pooled series and the
+    // per-prompt one, both of which read the same run list.
+    const points = await engineHistory(tenant.id, "openai");
+    expect(points).toHaveLength(1);
+    expect(points[0].runId).toBe(paused.id);
+    expect(points[0].mentionPct).toBeCloseTo((15 / MIN_N_AGGREGATE) * 100, 4);
+    expect(await engineHistory(tenant.id, "all")).toHaveLength(1);
+    expect(await promptHistory(tenant.id, prompt.id, "openai")).toHaveLength(1);
+  });
+
+  it("still leaves an in-flight run out of the history, whose aggregates are partial", async () => {
+    const tenant = await seedTenant(TENANT);
+    const done = await seedRun(tenant.id, "2026-01-05T09:00:00Z", "complete");
+    await seedAggregate({ runId: done.id, tenantId: tenant.id, engine: "openai", n: 30, tenantMentions: 15 });
+    // One in-flight run per tenant at a time — a unique index enforces it — so
+    // `running` stands for the whole in-flight family here.
+    for (const [day, status] of [["12", "failed"], ["19", "running"]] as const) {
+      const other = await seedRun(tenant.id, `2026-01-${day}T09:00:00Z`, status);
+      await seedAggregate({ runId: other.id, tenantId: tenant.id, engine: "openai", n: 30, tenantMentions: 30 });
+    }
+
+    const points = await engineHistory(tenant.id, "openai");
+    expect(points.map((point) => point.runId)).toEqual([done.id]);
+  });
+
   it("pools every engine for \"all\" and carries no model id", async () => {
     const tenant = await seedTenant(TENANT);
     const run = await seedRun(tenant.id, "2026-01-05T09:00:00Z", "complete", { openai: "gpt-5.0" });
