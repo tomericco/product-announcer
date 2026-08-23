@@ -135,8 +135,16 @@ const emptyCounts = (): WindowCounts => ({
  *   refused ones, so what is left is real. Excluding them would charge the
  *   tenant for measurements and then refuse to show them.
  * - `failed` is out: a run that never produced aggregates has nothing to plot.
+ *
+ * EXPORTED because it is the feature's single answer to "which runs' data is
+ * admitted", not this module's private opinion. `cited-domains.ts` and
+ * `signals.ts` each hand-rolled `status = "complete"` instead, which is how the
+ * tiles came to count a cap-paused run's answers while the cited-domains
+ * leaderboard and the two "first ever" triggers silently did not. Every new
+ * window over runs joins this list; `tests/lib/ai-visibility/settled-run-statuses.test.ts`
+ * fails if one is hand-rolled again.
  */
-const SETTLED_RUN_STATUSES = ["complete", "paused_by_cap", "cancelled"] as const;
+export const SETTLED_RUN_STATUSES = ["complete", "paused_by_cap", "cancelled"] as const;
 
 /** The ids of the last `runs` settled runs, newest first. */
 async function windowRunIds(

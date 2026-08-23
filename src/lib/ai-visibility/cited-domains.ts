@@ -8,7 +8,7 @@ import {
   signals,
 } from "@/db/schema";
 import { isEligible } from "@/lib/ai-visibility/aggregate";
-import { WINDOW_RUNS } from "@/lib/ai-visibility/metrics";
+import { SETTLED_RUN_STATUSES, WINDOW_RUNS } from "@/lib/ai-visibility/metrics";
 import type { DomainClass } from "@/lib/ai-visibility/domains";
 import { ENGINE_IDS, type EngineId } from "@/lib/ai-visibility/types";
 
@@ -116,14 +116,24 @@ export async function citedDomains(
     .where(
       and(
         eq(aiVisibilityRuns.tenantId, tenantId),
-        // `includeRunId` admits one named run whatever its status. `emitSignals`
-        // runs inside `finalizeRun`, before the run it is closing is marked
-        // complete; without this its citations are invisible to the leaderboard
-        // and every domain it introduced looks a week old by the time it shows
-        // up. Only the named run is admitted — a stray `failed` run never is.
+        // `SETTLED_RUN_STATUSES` — the same window the tiles, the trend chart
+        // and the benchmark read. This used to filter `status = "complete"` by
+        // hand, so a cap-paused or stopped run's answers counted everywhere on
+        // the page EXCEPT here: the tenant paid for those citations and the one
+        // table built out of citations refused to show them.
+        //
+        // `includeRunId` additionally admits one named run whatever its status.
+        // `emitSignals` runs inside `finalizeRun`, before the run it is closing
+        // is marked terminal; without this its citations are invisible to the
+        // leaderboard and every domain it introduced looks a week old by the
+        // time it shows up. Only the named run gets that exemption — a stray
+        // `failed` run never does — so the shape stays `or(id, settled)`.
         opts.includeRunId
-          ? or(eq(aiVisibilityRuns.id, opts.includeRunId), eq(aiVisibilityRuns.status, "complete"))
-          : eq(aiVisibilityRuns.status, "complete")
+          ? or(
+              eq(aiVisibilityRuns.id, opts.includeRunId),
+              inArray(aiVisibilityRuns.status, [...SETTLED_RUN_STATUSES])
+            )
+          : inArray(aiVisibilityRuns.status, [...SETTLED_RUN_STATUSES])
       )
     )
     .orderBy(desc(aiVisibilityRuns.startedAt))

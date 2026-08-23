@@ -13,7 +13,13 @@ import { isEligible } from "@/lib/ai-visibility/aggregate";
 import { citedDomains } from "@/lib/ai-visibility/cited-domains";
 import { engineLabel as labelFor } from "@/lib/ai-visibility/engines";
 import type { Clock } from "@/lib/ai-visibility/run";
-import { HISTORY_RUNS, MIN_N_AGGREGATE, MIN_N_PROMPT, WINDOW_RUNS } from "@/lib/ai-visibility/metrics";
+import {
+  HISTORY_RUNS,
+  MIN_N_AGGREGATE,
+  MIN_N_PROMPT,
+  SETTLED_RUN_STATUSES,
+  WINDOW_RUNS,
+} from "@/lib/ai-visibility/metrics";
 import { ENGINE_IDS } from "@/lib/ai-visibility/types";
 import type {
   AiVisibilityPayload,
@@ -715,12 +721,15 @@ export async function emitSignals(
         // the whole input here. A short window is what the n >= 30 thresholds
         // exist for.
         //
-        // The right arm is still `complete` only, so a cap-paused run is
-        // evidence for its OWN signals but does not silently shorten the
-        // history a later run compares itself against.
+        // The right arm is `SETTLED_RUN_STATUSES`, the same list `windowRunIds`
+        // reads. It was `complete` alone, on the argument that a cap-paused run
+        // should be evidence for its own signals without shortening the history
+        // a later run compares itself against — but the tiles above these
+        // signals already count that run, so the narrow arm only bought a page
+        // whose numbers and whose signals disagreed about which runs happened.
         or(
           and(eq(aiVisibilityRuns.id, runId), inArray(aiVisibilityRuns.status, EMITTABLE_STATUSES)),
-          eq(aiVisibilityRuns.status, "complete")
+          inArray(aiVisibilityRuns.status, [...SETTLED_RUN_STATUSES])
         ),
         // `<=` this run's start, so a run finalized late cannot pick up a newer
         // one as if it were history.
@@ -759,13 +768,18 @@ export async function emitSignals(
   // cannot see. Bounded at HISTORY_RUNS (12) rather than unbounded: a signal
   // about something that last happened a quarter ago is not news, and an
   // unbounded scan grows without limit as a tenant accumulates runs.
+  //
+  // `SETTLED_RUN_STATUSES`, not `status = "complete"`: a cap-paused or stopped
+  // run's citations are real history. Filtering them out made both rules fire
+  // "first ever" on a domain the tenant had already been cited on — and paid to
+  // find out about — in a run the cost cap happened to cut short.
   const historyRuns = await database
     .select({ id: aiVisibilityRuns.id })
     .from(aiVisibilityRuns)
     .where(
       and(
         eq(aiVisibilityRuns.tenantId, tenantId),
-        eq(aiVisibilityRuns.status, "complete"),
+        inArray(aiVisibilityRuns.status, [...SETTLED_RUN_STATUSES]),
         lt(aiVisibilityRuns.startedAt, run.startedAt),
         ne(aiVisibilityRuns.id, runId)
       )
@@ -989,13 +1003,17 @@ export async function emitSignals(
   }
 
   // ── Per engine windows: this run's window vs the one before it ──────────
+  // The SAME admission rule as the current window above and as `windowRunIds`.
+  // Two windows compared against each other must agree about which runs exist,
+  // or the "moved 10 pp" rule is measuring the status filter as much as the
+  // engine.
   const previousRuns = await database
     .select({ id: aiVisibilityRuns.id })
     .from(aiVisibilityRuns)
     .where(
       and(
         eq(aiVisibilityRuns.tenantId, tenantId),
-        eq(aiVisibilityRuns.status, "complete"),
+        inArray(aiVisibilityRuns.status, [...SETTLED_RUN_STATUSES]),
         lt(aiVisibilityRuns.startedAt, windowRuns[windowRuns.length - 1].startedAt)
       )
     )

@@ -346,9 +346,15 @@ describe("the citedDomains window", () => {
     expect(rows[0].answerShare).toBeCloseTo(20, 6);
   });
 
-  it("ignores runs that never completed, and does not let them take a window slot", async () => {
+  it("admits every SETTLED run and no in-flight or failed one", async () => {
     const { tenant, prompt } = await fixture();
-    for (const [day, status] of [["01", "complete"], ["02", "running"], ["03", "failed"], ["04", "paused_by_cap"]] as const) {
+    for (const [day, status] of [
+      ["01", "complete"],
+      ["02", "running"],
+      ["03", "failed"],
+      ["04", "paused_by_cap"],
+      ["05", "cancelled"],
+    ] as const) {
       const run = await seedRun(tenant.id, `2026-04-${day}T09:00:00Z`, status);
       await answer({
         tenantId: tenant.id,
@@ -361,9 +367,17 @@ describe("the citedDomains window", () => {
       });
     }
 
+    // `SETTLED_RUN_STATUSES`, the same list the tiles read: a cap-paused or
+    // stopped run bought these citations and the leaderboard shows them.
+    // `running` is still in flight and `failed` never aggregated anything.
     const rows = await citedDomains(tenant.id, {});
-    expect(rows.map((r) => r.domain)).toEqual(["complete.com"]);
-    expect(rows[0].answerShare).toBeCloseTo(100, 6);
+    expect(rows.map((r) => r.domain).sort()).toEqual([
+      "cancelled.com",
+      "complete.com",
+      "paused_by_cap.com",
+    ]);
+    // Three eligible grounded answers now, one per settled run.
+    expect(rows[0].answerShare).toBeCloseTo(100 / 3, 6);
   });
 });
 
