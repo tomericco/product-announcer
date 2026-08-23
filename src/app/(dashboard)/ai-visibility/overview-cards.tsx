@@ -2,6 +2,7 @@
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { EngineId, EngineMetrics } from "@/lib/ai-visibility/types";
+import { engineGridClass } from "./engine-grid";
 import { SovSparkline } from "./sov-sparkline";
 import type { SovPoint } from "./sparkline-points";
 
@@ -101,7 +102,10 @@ export type EngineTile = {
  */
 export function OverviewCards({ tiles }: { tiles: EngineTile[] }) {
   return (
-    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+    // One tile per ENABLED engine plus the pooled one, so this row is 2, 3 or
+    // 4 cards long depending on the tenant's settings — never the five columns
+    // it used to reserve.
+    <div className={engineGridClass(tiles.length)}>
       {tiles.map((tile) => {
         const reading = tileReading(tile.metrics);
         return (

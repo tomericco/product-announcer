@@ -20,7 +20,15 @@ export const ENGINE_LABEL: Record<EngineId, string> = {
   anthropic: "Claude API + web search",
 };
 
-/** The matrix and the per-prompt chips have room for four characters. */
+/**
+ * Short names for the matrix columns and the per-prompt chips.
+ *
+ * Abbreviated only where the abbreviation is the reading — "Claude" is already
+ * short, and clipping it to four characters to match "GPT" and "Gem" would
+ * shorten nothing a reader has to scan. Keep these under about six characters:
+ * the matrix header is one column per engine, and the chip line puts all three
+ * on one row.
+ */
 export const ENGINE_SHORT: Record<EngineId, string> = {
   openai: "GPT",
   gemini: "Gem",

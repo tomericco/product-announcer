@@ -7,6 +7,7 @@ import {
   tileReading,
   type EngineTile,
 } from "../../../src/app/(dashboard)/ai-visibility/overview-cards";
+import { engineGridClass } from "../../../src/app/(dashboard)/ai-visibility/engine-grid";
 import { RunNowButton, estimateSentence } from "../../../src/app/(dashboard)/ai-visibility/run-now-button";
 import { GeneratePromptSetButton } from "../../../src/app/(dashboard)/ai-visibility/generate-prompt-set-button";
 
@@ -201,6 +202,25 @@ describe("OverviewCards", () => {
     expect(screen.getByText("±5 pp")).toBeInTheDocument();
   });
 
+  it("lays the row out for the tiles it actually has", () => {
+    const { container, rerender } = render(
+      <OverviewCards tiles={[tile(), tile({ engine: "all", label: "All engines" })]} />
+    );
+    expect(container.firstElementChild!.className).toBe("grid gap-3 sm:grid-cols-2");
+
+    rerender(
+      <OverviewCards
+        tiles={[
+          tile(),
+          tile({ engine: "gemini", label: "Gemini API, grounded" }),
+          tile({ engine: "anthropic", label: "Claude API + web search" }),
+          tile({ engine: "all", label: "All engines" }),
+        ]}
+      />
+    );
+    expect(container.firstElementChild!.className).toBe("grid gap-3 sm:grid-cols-2 xl:grid-cols-4");
+  });
+
   it("prints a partial failure in the destructive tone, not as a muted aside", () => {
     render(<OverviewCards tiles={[tile({ failureNote: "Gemini API, grounded failed on 9 prompts — rate limited" })]} />);
 
@@ -212,6 +232,23 @@ describe("OverviewCards", () => {
     render(<OverviewCards tiles={[tile({ modelChangeNote: "Model changed to gpt-5.2-2026-07-01 this run" })]} />);
 
     expect(screen.getByText("Model changed to gpt-5.2-2026-07-01 this run")).toBeInTheDocument();
+  });
+});
+
+describe("engineGridClass", () => {
+  it("sizes for the row it is given, not for the most engines anyone could enable", () => {
+    // A tenant with one engine on shows two tiles and one with three shows
+    // four; the old `xl:grid-cols-5` was cut for a four-engine world that
+    // ended when Perplexity was removed, and left every tenant an empty
+    // trailing column.
+    expect(engineGridClass(2)).toBe("grid gap-3 sm:grid-cols-2");
+    expect(engineGridClass(3)).toBe("grid gap-3 sm:grid-cols-2 xl:grid-cols-3");
+    expect(engineGridClass(4)).toBe("grid gap-3 sm:grid-cols-2 xl:grid-cols-4");
+  });
+
+  it("gives a lone card the full row, and an unexpected count the widest one", () => {
+    expect(engineGridClass(1)).toBe("grid gap-3");
+    expect(engineGridClass(7)).toBe("grid gap-3 sm:grid-cols-2 xl:grid-cols-4");
   });
 });
 

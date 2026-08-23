@@ -16,6 +16,7 @@ import type { PromptIntent } from "@/lib/ai-visibility/types";
 import { relatedPieces } from "@/lib/briefs/query";
 import { DATE_FORMAT } from "../../../company/source-status";
 import { CitedDomainsTable } from "../../cited-domains-table";
+import { engineGridClass } from "../../engine-grid";
 import { ENGINE_LABEL, ENGINE_ORDER } from "../../engine-labels";
 import { SovSparkline } from "../../sov-sparkline";
 // Not from "../../sov-sparkline": this is a Server Component, and a function
@@ -160,8 +161,9 @@ export default async function PromptDetailPage({
         )}
       </div>
 
-      {/* Section 1 — per-engine cards. */}
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      {/* Section 1 — per-engine cards, one per ENABLED engine: 1 to 3 of them,
+          not the four columns this row used to reserve. */}
+      <div className={engineGridClass(engines.length)}>
         {engines.map((engine, index) => {
           const history = histories[index];
           const named = history.filter((point) => point.n >= MIN_N_PROMPT && point.hits > 0).length;

@@ -65,10 +65,10 @@ function labelFor(options: { value: string; label: string }[], value: string) {
 }
 
 /**
- * "GPT 2/3 · Pplx 0/3 · Gem 3/3 · Claude 1/3" — the per-engine counts on a
- * row, in the fixed engine order so two rows can be compared by eye. An
- * engine with nothing usable reads "–", never "0/0", which would claim we
- * asked and were not named.
+ * "GPT 2/3 · Gem 3/3 · Claude 1/3" — the per-engine counts on a row, in the
+ * fixed engine order so two rows can be compared by eye. An engine with
+ * nothing usable reads "–", never "0/0", which would claim we asked and were
+ * not named.
  */
 export function engineChipLine(chips: PromptRowData["chips"]): string {
   const byEngine = new Map(chips.map((chip) => [chip.engine, chip]));
