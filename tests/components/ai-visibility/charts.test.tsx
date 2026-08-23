@@ -19,6 +19,7 @@ import { VisibilityTrend } from "../../../src/app/(dashboard)/ai-visibility/visi
 // mirrors that.
 import {
   hasPlottablePoint,
+  MIN_LABEL_GAP_PX,
   trendEndLabels,
   trendRows,
   trendTicks,
@@ -379,6 +380,51 @@ describe("trendTicks", () => {
 });
 
 describe("trendEndLabels", () => {
+  it("pushes converging names apart, because converging is the normal late case", () => {
+    // Measured in the DOM before this existed: 60% and 62% put "ChatGPT" and
+    // "Claude" 3.2px apart, which at 11px type is one smear exactly where the
+    // reader most needs to tell the two lines apart. Three engines answering
+    // one prompt set tend toward each other, so this is the common ending, not
+    // an edge case.
+    const series = [
+      line("openai", "ChatGPT", [50, 60]),
+      line("anthropic", "Claude", [50, 62]),
+    ];
+    const rows = trendRows(series);
+    const labels = trendEndLabels(rows, series, 150);
+
+    const chatgpt = labels.find((l) => l.key === "openai")!;
+    const claude = labels.find((l) => l.key === "anthropic")!;
+
+    // Claude is higher (62), so it keeps its true position and ChatGPT gives way.
+    expect(claude.dy).toBe(0);
+    expect(chatgpt.dy).toBeGreaterThan(0);
+
+    // Whatever the offsets, the drawn names end up at least a readable gap apart.
+    const drawnY = (rate: number, dy: number) => ((100 - rate) / 100) * 150 + dy;
+    expect(drawnY(chatgpt.rate, chatgpt.dy) - drawnY(claude.rate, claude.dy)).toBeGreaterThanOrEqual(
+      MIN_LABEL_GAP_PX
+    );
+    // The line itself is untouched — only the name moved.
+    expect(chatgpt.rate).toBe(60);
+  });
+
+  it("leaves well-separated names exactly where their lines end", () => {
+    const series = [line("openai", "ChatGPT", [10]), line("anthropic", "Claude", [90])];
+    const rows = trendRows(series);
+
+    for (const label of trendEndLabels(rows, series, 150)) expect(label.dy).toBe(0);
+  });
+
+  it("returns labels in series order, so render order does not follow the data", () => {
+    // Placement walks top-down by value; the output must not, or the DOM order
+    // of the names would change every time the numbers crossed.
+    const series = [line("openai", "ChatGPT", [10]), line("all", "All engines", [90])];
+    const rows = trendRows(series);
+
+    expect(trendEndLabels(rows, series, 150).map((l) => l.key)).toEqual(["openai", "all"]);
+  });
+
   it("pins each name to its line's LAST PLOTTABLE point, not to the last run", () => {
     // A series whose newest runs fell below the floor ends mid-chart. A label
     // at a null has no y to sit at — the same reason `sparklineMarkers` drops a
@@ -387,8 +433,8 @@ describe("trendEndLabels", () => {
     const rows = trendRows(series);
 
     expect(trendEndLabels(rows, series)).toEqual([
-      { key: "openai", name: "ChatGPT", label: "Jun 8", rate: 20 },
-      { key: "all", name: "All engines", label: "Jun 22", rate: 41 },
+      { key: "openai", name: "ChatGPT", label: "Jun 8", rate: 20, dy: 0 },
+      { key: "all", name: "All engines", label: "Jun 22", rate: 41, dy: 0 },
     ]);
   });
 
@@ -400,7 +446,7 @@ describe("trendEndLabels", () => {
   it("labels a line whose only reading is a measured zero", () => {
     const series = [line("all", "All engines", [0])];
     expect(trendEndLabels(trendRows(series), series)).toEqual([
-      { key: "all", name: "All engines", label: "Jun 1", rate: 0 },
+      { key: "all", name: "All engines", label: "Jun 1", rate: 0, dy: 0 },
     ]);
   });
 });

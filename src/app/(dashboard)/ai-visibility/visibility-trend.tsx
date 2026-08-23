@@ -34,6 +34,20 @@ const BACKDROP_DASH: Record<EngineId, string | undefined> = {
 };
 
 const HERO_COLOR = "var(--brand-ink)";
+
+/**
+ * The chart's drawing area, for placing the end-of-line names.
+ *
+ * `h-48` is 192px; the LineChart's own top margin and the x-axis strip take
+ * roughly 42 of it. Only the label spacing depends on this, so an estimate a
+ * few pixels out shifts a name slightly and breaks nothing.
+ */
+const PLOT_HEIGHT_PX = 150;
+
+/** A lone series is its own hero — see the note at the call site. */
+function isHeroKey(key: string, seriesCount: number): boolean {
+  return key === "all" || seriesCount === 1;
+}
 const BACKDROP_COLOR = "var(--muted-foreground)";
 
 /**
@@ -73,12 +87,16 @@ export function VisibilityTrend({ series }: { series: TrendSeries[] }) {
   const config: ChartConfig = Object.fromEntries(
     series.map((line) => [
       line.key,
-      { label: line.name, color: line.key === "all" ? HERO_COLOR : BACKDROP_COLOR },
+      { label: line.name, color: isHeroKey(line.key, series.length) ? HERO_COLOR : BACKDROP_COLOR },
     ])
   );
 
   const ticks = trendTicks(rows);
-  const endLabels = trendEndLabels(rows, series);
+  // A one-engine tenant has no pooled series, so keying the hero off "all"
+  // alone would leave their ONLY line drawn as 1px backdrop grey — a chart
+  // whose every mark says "this is context for something else".
+  const isHero = (key: string) => isHeroKey(key, series.length);
+  const endLabels = trendEndLabels(rows, series, PLOT_HEIGHT_PX);
   const runWord = rows.length === 1 ? "run" : "runs";
   // "runs", not "weeks": cadence is a tenant setting and can be fortnightly, so
   // twelve of these is six months for some tenants. The sparkline this replaces
@@ -112,7 +130,7 @@ export function VisibilityTrend({ series }: { series: TrendSeries[] }) {
             width={38}
           />
           {series.map((line) => {
-            const hero = line.key === "all";
+            const hero = isHero(line.key);
             return (
               <Line
                 key={line.key}
@@ -150,7 +168,10 @@ export function VisibilityTrend({ series }: { series: TrendSeries[] }) {
                 value: end.name,
                 position: "right",
                 fontSize: 11,
-                fill: end.key === "all" ? HERO_COLOR : BACKDROP_COLOR,
+                fill: isHero(end.key) ? HERO_COLOR : BACKDROP_COLOR,
+                // Pushed clear of the label above it where two lines converge —
+                // the line still ends on its own value, only the name moves.
+                dy: end.dy,
               }}
             />
           ))}

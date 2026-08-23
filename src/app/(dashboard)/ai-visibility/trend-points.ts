@@ -97,7 +97,14 @@ export function trendTicks(rows: readonly TrendRow[], max = 4): string[] {
 }
 
 /** Where a line's name is drawn: at its last plottable point. */
-export type TrendEndLabel = { key: TrendKey; name: string; label: string; rate: number };
+export type TrendEndLabel = {
+  key: TrendKey;
+  name: string;
+  label: string;
+  rate: number;
+  /** Pixels to shift the NAME by, so two converging lines do not share a label position. */
+  dy: number;
+};
 
 /**
  * The end-of-line labels, one per series that has anything to label.
@@ -108,17 +115,61 @@ export type TrendEndLabel = { key: TrendKey; name: string; label: string; rate: 
  * Labelling in place is what lets the three backdrop engines be told apart by
  * dash pattern alone, with no legend swatches to map back to lines.
  */
+/**
+ * Vertical breathing room between two end-of-line labels, in pixels.
+ *
+ * 11px text needs about this much before two names read as one smear.
+ */
+export const MIN_LABEL_GAP_PX = 13;
+
+/**
+ * Where the labels actually sit, after pushing apart the ones that would overlap.
+ *
+ * Placing each name at its own line's last value is correct until two lines
+ * converge — and converging is the NORMAL late-window case, not an edge one:
+ * three engines answering the same prompt set tend toward each other. Measured
+ * in the DOM at 60% and 62%, two labels landed 3.2px apart, which at 11px text
+ * is one unreadable smear where the reader most needs to tell the lines apart.
+ *
+ * So this walks them top-down and pushes any label that is too close to its
+ * neighbour further down, returning a `dy` in pixels for the renderer to apply.
+ * The line still ends where its data ends; only the NAME moves, which is the
+ * honest trade — a label a few pixels off its line is readable and unambiguous,
+ * two labels on top of each other are neither.
+ *
+ * `plotHeightPx` is the drawing area, not the chart box; the caller subtracts
+ * its own margins. Rates are 0..100 with 0 at the bottom, so a higher rate is
+ * a SMALLER y.
+ */
 export function trendEndLabels(
   rows: readonly TrendRow[],
-  series: readonly TrendSeries[]
+  series: readonly TrendSeries[],
+  plotHeightPx = 150
 ): TrendEndLabel[] {
-  return series.flatMap((line) => {
+  const found = series.flatMap((line) => {
     for (let i = rows.length - 1; i >= 0; i--) {
       const rate = rows[i][line.key];
       if (typeof rate === "number") {
-        return [{ key: line.key, name: line.name, label: rows[i].label, rate }];
+        return [{ key: line.key, name: line.name, label: rows[i].label, rate, dy: 0 }];
       }
     }
     return [];
   });
+
+  // Top-down, so the highest line keeps its true position and the ones below
+  // give way. The alternative — nudging both halves of a pair — moves labels
+  // that had no collision.
+  const byHeight = [...found].sort((a, b) => b.rate - a.rate);
+  const toY = (rate: number) => ((100 - rate) / 100) * plotHeightPx;
+
+  let lastY = Number.NEGATIVE_INFINITY;
+  for (const label of byHeight) {
+    const naturalY = toY(label.rate);
+    const placedY = Math.max(naturalY, lastY + MIN_LABEL_GAP_PX);
+    label.dy = Math.round(placedY - naturalY);
+    lastY = placedY;
+  }
+
+  // Back to series order, so the render order does not depend on the data.
+  return found;
 }
