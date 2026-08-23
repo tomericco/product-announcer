@@ -9,9 +9,10 @@ import {
 import { ratePct } from "../../../src/app/(dashboard)/ai-visibility/format";
 import { engineGridClass } from "../../../src/app/(dashboard)/ai-visibility/engine-grid";
 import { RunNowButton, estimateSentence } from "../../../src/app/(dashboard)/ai-visibility/run-now-button";
+import { StopRunButton } from "../../../src/app/(dashboard)/ai-visibility/stop-run-button";
 import { GeneratePromptSetButton } from "../../../src/app/(dashboard)/ai-visibility/generate-prompt-set-button";
 
-const { refresh, push, toast, runNowAction, generatePromptSetAction } = vi.hoisted(() => ({
+const { refresh, push, toast, runNowAction, cancelRunAction, generatePromptSetAction } = vi.hoisted(() => ({
   refresh: vi.fn(),
   push: vi.fn(),
   toast: { success: vi.fn(), error: vi.fn() },
@@ -19,6 +20,7 @@ const { refresh, push, toast, runNowAction, generatePromptSetAction } = vi.hoist
     ok: true,
     runId: "run-1",
   })),
+  cancelRunAction: vi.fn<() => Promise<{ ok: boolean; error?: string }>>(async () => ({ ok: true })),
   generatePromptSetAction: vi.fn<() => Promise<{ ok: boolean; proposed?: number; error?: string }>>(async () => ({
     ok: true,
     proposed: 30,
@@ -32,6 +34,7 @@ vi.mock("next/navigation", () => ({ useRouter: () => router }));
 vi.mock("sonner", () => ({ toast }));
 vi.mock("../../../src/app/(dashboard)/ai-visibility/actions", () => ({
   runNowAction,
+  cancelRunAction,
   generatePromptSetAction,
 }));
 
@@ -439,5 +442,42 @@ describe("GeneratePromptSetButton", () => {
 
     const button = screen.getByRole("button", { name: "Suggest more" });
     expect(button.className).not.toContain("bg-primary");
+  });
+});
+
+describe("StopRunButton", () => {
+  it("is outlined, never filled — Run now is the primary action and Stop must not out-shout it", () => {
+    // Two filled buttons side by side in the header put the destructive one
+    // first in the reader's eye. The `--destructive` hue is still right (this
+    // is money that does not come back), so it moves to the border and the
+    // text and the fill stays with the primary.
+    render(<StopRunButton completedCalls={41} plannedCalls={270} />);
+
+    const classes = screen.getByRole("button", { name: "Stop" }).className.split(/\s+/);
+    // The `outline` variant, hue-shifted — not a hand-rolled button.
+    expect(classes).toContain("bg-background");
+    expect(classes).toContain("text-destructive");
+    expect(classes).toContain("border-destructive/40");
+    // The filled destructive variant's own background, which is the thing
+    // being removed. `hover:bg-destructive/10` is a different token and stays.
+    expect(classes).not.toContain("bg-destructive/10");
+    expect(classes).not.toContain("bg-destructive/20");
+  });
+
+  it("still confirms before stopping, stating all three consequences", async () => {
+    render(<StopRunButton completedCalls={41} plannedCalls={270} />);
+
+    await click(screen.getByRole("button", { name: "Stop" }));
+
+    expect(cancelRunAction).not.toHaveBeenCalled();
+    expect(screen.getByText(/41 of 270 calls already made are kept/)).toBeInTheDocument();
+    expect(screen.getByText(/remaining 229 are not run and not/)).toBeInTheDocument();
+    expect(screen.getByText(/can.t be undone/)).toBeInTheDocument();
+
+    await click(screen.getByRole("button", { name: "Stop run" }));
+
+    expect(cancelRunAction).toHaveBeenCalledTimes(1);
+    expect(refresh).toHaveBeenCalled();
+    expect(toast.success).toHaveBeenCalledWith("Run stopped");
   });
 });

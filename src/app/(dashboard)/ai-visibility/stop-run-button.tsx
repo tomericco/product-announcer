@@ -19,11 +19,16 @@ import { cancelRunAction } from "./actions";
 /**
  * "Stop" — beside "Run now", and only while a run is in flight.
  *
- * Destructive tone, unlike the in-progress line next to it: this is money and
- * it does not come back. A run is ~270 calls and a few dollars; the calls
- * already made are paid for whatever happens next, and the ones this cancels
- * are the ones the operator has decided not to buy. `--destructive` is for real
- * errors and genuinely irreversible actions, and this is the second.
+ * Destructive COLOUR on the `outline` variant, not the filled `destructive`
+ * one. This is money and it does not come back — a run is ~270 calls and a few
+ * dollars, the calls already made are paid for whatever happens next, and the
+ * ones this cancels are the ones the operator has decided not to buy — so the
+ * `--destructive` hue is right. The FILL was not: it sat beside "Run now",
+ * which is the primary action here and the only filled control in the header,
+ * and two filled buttons side by side put the destructive one first in the
+ * reader's eye. Border and text carry the tone; the fill stays with the
+ * primary. The overrides are only hue — `outline` supplies the shape, the
+ * unfilled treatment and the focus behaviour.
  *
  * Confirmed, like "Run now" is, and for the mirror-image reason: the same click
  * that must not spend $18 by accident must not throw away a run in progress by
@@ -60,7 +65,16 @@ export function StopRunButton({
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger render={<Button variant="destructive">Stop</Button>} />
+      <DialogTrigger
+        render={
+          <Button
+            variant="outline"
+            className="border-destructive/40 text-destructive hover:border-destructive/60 hover:bg-destructive/10 hover:text-destructive dark:border-destructive/50 dark:hover:bg-destructive/20"
+          >
+            Stop
+          </Button>
+        }
+      />
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>Stop this run?</DialogTitle>
