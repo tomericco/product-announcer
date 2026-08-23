@@ -138,6 +138,17 @@ export type PromptEngineWindow = {
   nWindow: number;
   recommendationsWindow: number;
   ownCitationsWindow: number;
+  /**
+   * Citation rows of ANY domain on this (prompt, engine) inside the window —
+   * the proof that the engine searched here at all.
+   *
+   * `recommended_not_cited` says "it advises you and cites someone else". Both
+   * of its zero-citation conditions are trivially true on a prompt the engine
+   * answered from memory, where it cited NOBODY — so without this the trigger
+   * fires on every ungrounded recommendation and briefs the tenant to go win a
+   * citation on an answer that has none to win.
+   */
+  citationsWindow: number;
   /** Own-domain citations in any run OLDER than the window — the "first ever" test. */
   ownCitationsBefore: number;
   contradictionSamples: number;
@@ -462,6 +473,11 @@ export function rankTriggers(input: TriggerInput): SignalCandidate[] {
     if (
       p.nWindow >= MIN_N_PROMPT &&
       p.recommendationsWindow / p.nWindow >= STRONG &&
+      // "Cites someone else" is part of the claim, not a side effect of it. On
+      // a prompt the engine never searched there is no citation to have won,
+      // and the two conditions below are true for a reason that has nothing to
+      // do with the tenant's pages.
+      p.citationsWindow > 0 &&
       p.ownCitationsWindow === 0 &&
       // The spec's rule is "no own-domain citation", not "none lately": a page
       // cited five runs ago is cited, and telling the tenant to go write one is
@@ -887,6 +903,37 @@ export async function emitSignals(
     }
   }
 
+  // Citation rows of any domain per (prompt, engine) inside the window — the
+  // `recommended_not_cited` grounding guard. One grouped query, for the same
+  // reason as the one above: a 30-prompt tenant on three engines is 90 pairs.
+  //
+  // Counted over the same cut as the rates: an errored or flagged row is not
+  // evidence of anything, and neither is a branded prompt, which has no
+  // aggregate rows and so never reaches the trigger anyway.
+  const citationsInWindowBy = new Map<string, number>();
+  {
+    const citationRows = await database
+      .select({
+        promptId: aiVisibilitySamples.promptId,
+        engine: aiVisibilitySamples.engine,
+        total: sql<number>`count(*)::int`,
+      })
+      .from(aiVisibilityCitations)
+      .innerJoin(aiVisibilitySamples, eq(aiVisibilityCitations.sampleId, aiVisibilitySamples.id))
+      .where(
+        and(
+          eq(aiVisibilityCitations.tenantId, tenantId),
+          inArray(aiVisibilityCitations.runId, windowIds),
+          eq(aiVisibilitySamples.status, "ok"),
+          eq(aiVisibilitySamples.flagged, false)
+        )
+      )
+      .groupBy(aiVisibilitySamples.promptId, aiVisibilitySamples.engine);
+    for (const row of citationRows) {
+      citationsInWindowBy.set(`${row.promptId} ${row.engine}`, row.total ?? 0);
+    }
+  }
+
   // ── Per prompt x engine windows ────────────────────────────────────────
   const promptWindows: PromptEngineWindow[] = [];
   const promptRows = aggregates.filter((row) => row.promptId !== null);
@@ -928,6 +975,7 @@ export async function emitSignals(
       nWindow,
       recommendationsWindow,
       ownCitationsWindow,
+      citationsWindow: citationsInWindowBy.get(key) ?? 0,
       // History outside the window: an own citation four runs ago means this
       // one is not the first.
       ownCitationsBefore: ownCitationsBeforeBy.get(key) ?? 0,

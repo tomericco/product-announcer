@@ -54,6 +54,9 @@ function promptWindow(overrides: Partial<PromptEngineWindow> = {}): PromptEngine
     nWindow: 12,
     recommendationsWindow: 0,
     ownCitationsWindow: 0,
+    // The engine searched on this prompt and cited somebody — the grounded
+    // default. Tests that want an ungrounded prompt set this to 0.
+    citationsWindow: 6,
     ownCitationsBefore: 0,
     contradictionSamples: 0,
     evidence: { excerpt: "Rival is strongest.", modelId: "gpt-5.1", citedUrls: [] },
@@ -430,6 +433,27 @@ describe("own_page_cited, recommended_not_cited, misdescription", () => {
       input({ prompts: [promptWindow({ nWindow: 12, recommendationsWindow: 8, ownCitationsWindow: 1, ownCitationsBefore: 1 })] })
     );
     expect(out.map((c) => c.signalType)).not.toContain("recommended_not_cited");
+  });
+
+  it("does not fire recommended_not_cited on a prompt the engine never searched", () => {
+    // No citation row of ANY domain in the window means the engine answered
+    // from memory. Both zero-citation conditions are then trivially true, and
+    // the signal would tell the tenant to go win a citation on an answer that
+    // cites nobody at all.
+    expect(
+      typesOf(
+        input({
+          prompts: [
+            promptWindow({
+              nWindow: 12,
+              recommendationsWindow: 8,
+              ownCitationsWindow: 0,
+              citationsWindow: 0,
+            }),
+          ],
+        })
+      )
+    ).not.toContain("recommended_not_cited");
   });
 
   it("does not fire recommended_not_cited below the two-thirds rate", () => {
@@ -2303,5 +2327,122 @@ describe("emitSignals", () => {
     const out = await emitSignals(latest, { now: clock("2026-03-02T10:00:00Z") });
     expect(out.considered).toBeGreaterThan(MAX_SIGNALS_PER_RUN);
     expect(out.written).toBe(MAX_SIGNALS_PER_RUN);
+  });
+});
+
+describe("recommended_not_cited against a real window", () => {
+  /**
+   * One prompt, one engine, two runs, recommended in every sample and no page
+   * of ours ever cited. The only variable is whether the engine cited ANYTHING
+   * — i.e. whether it searched at all.
+   */
+  async function seedRecommended(citesSomeone: boolean) {
+    const tenant = await seedTenant(DB_TENANT);
+    const [prompt] = await db
+      .insert(aiVisibilityPrompts)
+      .values({ tenantId: tenant.id, text: "best issue tracker for startups", intent: "discovery", origin: "generated", status: "active" })
+      .returning();
+
+    let latestRunId = "";
+    for (const startedAt of ["2026-02-23T09:00:00Z", "2026-03-02T09:00:00Z"]) {
+      const [run] = await db
+        .insert(aiVisibilityRuns)
+        .values({
+          tenantId: tenant.id,
+          trigger: "scheduled",
+          engines: ["gemini"],
+          samplesPerPrompt: 3,
+          status: "complete",
+          modelIds: { gemini: "gemini-3.7-flash" },
+          startedAt: new Date(startedAt),
+        })
+        .returning();
+      latestRunId = run.id;
+
+      await db.insert(aiVisibilityAggregates).values({
+        runId: run.id,
+        tenantId: tenant.id,
+        engine: "gemini",
+        promptId: prompt.id,
+        n: 3,
+        // Ungrounded when nobody is cited — the whole point of the case.
+        nGrounded: citesSomeone ? 3 : 0,
+        tenantMentions: 3,
+        competitorMentions: {},
+        ownCitations: 0,
+        recommendations: 3,
+      });
+
+      for (let s = 0; s < 3; s++) {
+        const [sample] = await db
+          .insert(aiVisibilitySamples)
+          .values({
+            runId: run.id,
+            tenantId: tenant.id,
+            promptId: prompt.id,
+            engine: "gemini",
+            sampleIndex: s,
+            status: "ok",
+            searchUsed: citesSomeone,
+            judged: true,
+            answerText: "We would recommend them.",
+            modelId: "gemini-3.7-flash",
+            askedAt: new Date(startedAt),
+            extraction: {
+              deterministic: { tenantMentioned: true, competitorIds: [], ownDomainCited: false },
+              judged: {
+                orderedBrands: ["Us"],
+                level: "recommended",
+                framing: "top pick",
+                quote: "We would recommend them.",
+                positioningClaims: [],
+                hallucinations: [],
+                answerType: "list",
+              },
+            } satisfies SampleExtraction,
+          })
+          .returning();
+        if (citesSomeone) {
+          await db.insert(aiVisibilityCitations).values({
+            sampleId: sample.id,
+            tenantId: tenant.id,
+            runId: run.id,
+            url: "https://g2.com/categories/issue-tracking",
+            domain: "g2.com",
+            position: 1,
+            domainClass: "review",
+          });
+        }
+      }
+    }
+    return { tenant, latestRunId };
+  }
+
+  const typesFor = async (tenantId: string) => {
+    const rows = await db
+      .select()
+      .from(signals)
+      .where(and(eq(signals.tenantId, tenantId), eq(signals.kind, "ai_visibility")));
+    return rows.map((r) => (r.payload as AiVisibilityPayload).signalType);
+  };
+
+  it("stays silent when the engine answered from memory and cited nobody", async () => {
+    const { tenant, latestRunId } = await seedRecommended(false);
+
+    await emitSignals(latestRunId, { now: clock("2026-03-02T10:00:00Z") });
+
+    // Recommended 6 of 6 with no own citation anywhere — every arithmetic
+    // condition of the trigger is met. It must still not fire: the engine never
+    // searched, so "cites someone else" is false and there is no citation to
+    // go and win.
+    expect(await typesFor(tenant.id)).not.toContain("recommended_not_cited");
+  });
+
+  it("fires on the same window once the engine cites someone else", async () => {
+    const { tenant, latestRunId } = await seedRecommended(true);
+
+    await emitSignals(latestRunId, { now: clock("2026-03-02T10:00:00Z") });
+
+    expect(await typesFor(tenant.id)).toContain("recommended_not_cited");
   });
 });
