@@ -255,7 +255,13 @@ export default async function AiVisibilityPage() {
   // An engine that ERRORED is a coverage failure worth reporting; a refusal is
   // an answer that declined to search, which the spec keeps as a coverage gap
   // excluded from rates rather than as an engine failure.
-  const failedEngines = new Set(health.filter((row) => row.erroredPrompts > 0).map((row) => row.engine));
+  //
+  // Per (prompt, engine), not per engine: the spec asks for "–" on THOSE
+  // cells, and stamping the whole column erased 21 good readings to report 9
+  // bad ones. `erroredPromptIds` is the same fact `erroredPrompts` counts.
+  const failedCells = new Set(
+    health.flatMap((row) => row.erroredPromptIds.map((promptId) => `${promptId} ${row.engine}`))
+  );
   const healthByEngine = new Map(health.map((row) => [row.engine, row]));
 
   const metricsByEngine = new Map(allMetrics.map((row) => [row.engine, row]));
@@ -396,7 +402,7 @@ export default async function AiVisibilityPage() {
           {
             named: cell ? cell.hits : null,
             samples: cell ? cell.n : 0,
-            failed: failedEngines.has(engine),
+            failed: failedCells.has(`${row.promptId} ${engine}`),
           },
         ];
       })

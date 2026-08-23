@@ -578,6 +578,17 @@ export type RunEngineHealth = {
   refusedSamples: number;
   /** Distinct prompts with at least one errored sample — the number in "failed on 9 prompts". */
   erroredPrompts: number;
+  /**
+   * WHICH prompts those were.
+   *
+   * The count alone forced the matrix to dash a whole engine column: knowing
+   * that Gemini failed on 9 of 30 prompts says nothing about which 9, so every
+   * cell had to be treated as suspect and 21 good readings were erased with
+   * them. The ids are already in hand here — `erroredPrompts` is this list's
+   * length — so carrying them costs nothing and is the difference between
+   * "this cell has no answer" and "this engine had a bad run".
+   */
+  erroredPromptIds: string[];
   lastError: string | null;
 };
 
@@ -646,6 +657,7 @@ export async function runEngineHealth(
       erroredSamples: entry.errored,
       refusedSamples: entry.refused,
       erroredPrompts: entry.prompts.size,
+      erroredPromptIds: [...entry.prompts],
       lastError: entry.lastError,
     };
   });

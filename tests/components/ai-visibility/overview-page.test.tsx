@@ -368,8 +368,8 @@ describe("overview — the nine states, and that they are mutually exclusive", (
   it("Partial failure: the failing engine's tile carries the destructive note, the others do not", async () => {
     setup({
       health: [
-        { engine: "gemini", erroredPrompts: 9, lastError: "rate limited", totalSamples: 30, okSamples: 3, erroredSamples: 27, refusedSamples: 0 },
-        { engine: "openai", erroredPrompts: 0, lastError: null, totalSamples: 84, okSamples: 84, erroredSamples: 0, refusedSamples: 0 },
+        { engine: "gemini", erroredPrompts: 9, erroredPromptIds: ["p1"], lastError: "rate limited", totalSamples: 30, okSamples: 3, erroredSamples: 27, refusedSamples: 0 },
+        { engine: "openai", erroredPrompts: 0, erroredPromptIds: [], lastError: null, totalSamples: 84, okSamples: 84, erroredSamples: 0, refusedSamples: 0 },
       ],
     });
     await renderPage();
@@ -577,9 +577,9 @@ describe("overview — what the tiles, the matrix and the domain table are hande
     expect(captured.runNow!.estimate.prompts).toBe(3);
   });
 
-  it("marks a matrix cell as failed per ENGINE, and a missing cut as no samples rather than zero", async () => {
+  it("marks a matrix cell as failed per PROMPT AND ENGINE, and a missing cut as no samples rather than zero", async () => {
     setup({
-      health: [{ engine: "anthropic", erroredPrompts: 4, lastError: "429", totalSamples: 12, okSamples: 0, erroredSamples: 12, refusedSamples: 0 }],
+      health: [{ engine: "anthropic", erroredPrompts: 4, erroredPromptIds: ["p1"], lastError: "429", totalSamples: 12, okSamples: 0, erroredSamples: 12, refusedSamples: 0 }],
       matrix: [
         {
           promptId: "p1",
@@ -598,13 +598,33 @@ describe("overview — what the tiles, the matrix and the domain table are hande
     expect(cells.anthropic.failed).toBe(true);
   });
 
+  it("one rate-limited prompt does not blank its engine's other cells", async () => {
+    // The regression this whole per-cell carry exists for: `erroredPrompts > 0`
+    // used to stamp `failed` onto every cell of the column, so one bad call out
+    // of thirty erased twenty-nine readings that were fine.
+    setup({
+      health: [
+        { engine: "gemini", erroredPrompts: 1, erroredPromptIds: ["p1"], lastError: "429", totalSamples: 6, okSamples: 3, erroredSamples: 3, refusedSamples: 0 },
+      ],
+      matrix: [
+        { promptId: "p1", text: "one", branded: false, cells: [{ engine: "gemini", hits: 0, n: 0 }] },
+        { promptId: "p2", text: "two", branded: false, cells: [{ engine: "gemini", hits: 3, n: 3 }] },
+      ],
+    });
+    await renderPage();
+
+    const [first, second] = captured.matrix!;
+    expect(first.cells.gemini.failed).toBe(true);
+    expect(second.cells.gemini).toEqual({ named: 3, samples: 3, failed: false });
+  });
+
   it("does not mark an engine failed for REFUSING — a refusal is an answer, not an outage", async () => {
     // A refusal is a coverage gap excluded from every rate; an error is a
     // broken engine worth reporting. Only the second one dashes the cells.
     setup({
       health: [
-        { engine: "openai", erroredPrompts: 0, lastError: null, totalSamples: 12, okSamples: 4, erroredSamples: 0, refusedSamples: 8 },
-        { engine: "gemini", erroredPrompts: 2, lastError: "500", totalSamples: 12, okSamples: 0, erroredSamples: 12, refusedSamples: 0 },
+        { engine: "openai", erroredPrompts: 0, erroredPromptIds: [], lastError: null, totalSamples: 12, okSamples: 4, erroredSamples: 0, refusedSamples: 8 },
+        { engine: "gemini", erroredPrompts: 2, erroredPromptIds: ["p1"], lastError: "500", totalSamples: 12, okSamples: 0, erroredSamples: 12, refusedSamples: 0 },
       ],
       matrix: [{ promptId: "p1", text: "q", branded: false, cells: [{ engine: "openai", hits: 1, n: 4 }] }],
     });

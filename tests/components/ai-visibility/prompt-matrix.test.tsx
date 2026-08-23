@@ -35,7 +35,7 @@ describe("cellReading", () => {
     expect(cellReading({ named: 0, samples: 3, failed: false })).toEqual({ text: "0/3", tone: "absent" });
   });
 
-  it("shows a dash for an engine that failed, so the gap is not read as a zero", () => {
+  it("shows a dash for a cell whose engine failed and left nothing, so the gap is not read as a zero", () => {
     expect(cellReading({ named: null, samples: 0, failed: true })).toEqual({
       text: "–",
       tone: "unavailable",
@@ -55,8 +55,11 @@ describe("cellReading", () => {
     });
   });
 
-  it("dashes a failed engine even when a countable cut exists — the run is not trustworthy", () => {
-    expect(cellReading({ named: 3, samples: 3, failed: true }).tone).toBe("unavailable");
+  it("keeps a countable cut when the last run errored on it — three earlier answers are still three answers", () => {
+    // The window is four runs deep. Dashing this threw away readings the run
+    // that failed never touched, which is how one rate-limited prompt used to
+    // blank thirty cells.
+    expect(cellReading({ named: 3, samples: 3, failed: true })).toEqual({ text: "3/3", tone: "full" });
   });
 });
 
@@ -99,10 +102,11 @@ describe("PromptMatrix", () => {
       />
     );
 
-    // Engine scope, not prompt scope: `failed` comes from per-engine health.
+    // Cell scope: `failed` comes from the errored prompt ids on this engine's
+    // health row, so it can name this prompt rather than the whole column.
     expect(
       screen.getByRole("link", {
-        name: "best localization tools 0 — GPT-5.x API + web search: no usable answers; this engine failed during the last run",
+        name: "best localization tools 0 — GPT-5.x API + web search: no usable answers; the last run errored on this prompt",
       })
     ).toBeInTheDocument();
     expect(

@@ -477,6 +477,10 @@ describe("runEngineHealth", () => {
       erroredPrompts: 2,
     });
     expect(gem.lastError).toContain("429");
+    // The ids, not only the count: the matrix dashes the cells that actually
+    // failed, and a count cannot tell it which those are.
+    expect([...gem.erroredPromptIds].sort()).toEqual([p1.id, p2.id].sort());
+    expect(health.find((h) => h.engine === "openai")!.erroredPromptIds).toEqual([]);
     expect(health.find((h) => h.engine === "openai")).toMatchObject({ okSamples: 1, erroredSamples: 0, erroredPrompts: 0 });
   });
 

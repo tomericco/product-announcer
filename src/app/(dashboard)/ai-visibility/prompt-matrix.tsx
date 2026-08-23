@@ -30,15 +30,19 @@ export const MATRIX_INITIAL_ROWS = 20;
  * names us every time and one that names us on a coin flip, which is the
  * difference the whole three-sample design is paying for.
  *
- * A failed engine and an under-sampled cell both read "–". They are not the
- * same thing, and the tooltip distinguishes them; what matters at a glance is
- * that neither is a zero.
+ * `failed` does NOT dash a cell on its own. It says the last run errored on
+ * this prompt for this engine; the window is four runs deep, so a cell can
+ * carry three earlier runs' answers and still be worth reading. Only the
+ * sample floor decides the dash — a failure that left nothing behind fails the
+ * floor by itself, and one that did not has no business hiding real readings.
+ * The tooltip is where `failed` earns its keep, naming WHICH of the two
+ * reasons a dash has.
  */
 export function cellReading(cell: MatrixCell): {
   text: string;
   tone: "full" | "partial" | "absent" | "unavailable";
 } {
-  if (cell.failed || cell.named === null || cell.samples < MIN_CELL_SAMPLES) {
+  if (cell.named === null || cell.samples < MIN_CELL_SAMPLES) {
     return { text: "–", tone: "unavailable" };
   }
   const text = `${cell.named}/${cell.samples}`;
@@ -100,15 +104,18 @@ export function PromptMatrix({ rows }: { rows: MatrixRow[] }) {
                 // "GPT –" is the whole accessible name a screen reader gets
                 // from the visible text, and it says nothing: not which
                 // question, not which engine, not why there is a dash. The
-                // label carries all three. The failure wording stays at ENGINE
-                // scope — `failed` is set from `runEngineHealth`, which counts
-                // errored prompts per engine, and claiming THIS prompt failed
-                // is a fact the data does not contain.
-                const description = reading.tone !== "unavailable"
-                  ? `named in ${cell.named} of ${cell.samples} answers`
-                  : cell.failed
-                    ? "no usable answers; this engine failed during the last run"
-                    : `fewer than ${MIN_CELL_SAMPLES} usable answers yet`;
+                // label carries all three. The failure wording is now at CELL
+                // scope, because `erroredPromptIds` says exactly which prompts
+                // an engine errored on rather than only how many.
+                const staleNote = cell.failed
+                  ? "; the last run errored here, so this reads the earlier answers in the window"
+                  : "";
+                const description =
+                  reading.tone !== "unavailable"
+                    ? `named in ${cell.named} of ${cell.samples} answers${staleNote}`
+                    : cell.failed
+                      ? "no usable answers; the last run errored on this prompt"
+                      : `fewer than ${MIN_CELL_SAMPLES} usable answers yet`;
                 return (
                   <TableCell key={engine} className="text-center">
                     <TooltipProvider>
@@ -126,11 +133,18 @@ export function PromptMatrix({ rows }: { rows: MatrixRow[] }) {
                           </Link>
                         </TooltipTrigger>
                         <TooltipContent>
+                          {/* Never "excluded from every rate": the rates are
+                              computed from the answers that DID come back, and
+                              an errored call contributes nothing to exclude.
+                              The old wording told the reader the tile beside
+                              this cell was computed some other way. */}
                           {reading.tone === "unavailable"
                             ? cell.failed
-                              ? `${ENGINE_LABEL[engine]} failed during the last run — its cells are excluded from every rate.`
+                              ? `${ENGINE_LABEL[engine]} errored on this prompt in the last run and has fewer than ${MIN_CELL_SAMPLES} answers in the window to read instead.`
                               : `Fewer than ${MIN_CELL_SAMPLES} usable answers yet.`
-                            : `Named in ${cell.named} of ${cell.samples} answers on ${ENGINE_LABEL[engine]}.`}
+                            : cell.failed
+                              ? `Named in ${cell.named} of ${cell.samples} answers on ${ENGINE_LABEL[engine]}. The last run errored on this prompt, so this is the earlier answers in the window.`
+                              : `Named in ${cell.named} of ${cell.samples} answers on ${ENGINE_LABEL[engine]}.`}
                         </TooltipContent>
                       </Tooltip>
                     </TooltipProvider>
