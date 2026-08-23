@@ -28,7 +28,12 @@ const captured = {
   bars: null as { rows: BrandShare[]; n: number } | null,
   matrix: null as MatrixRow[] | null,
   domains: null as CitedDomainRow[] | null,
-  runNow: null as { estimate: RunEstimate; disabledReason: string | null; disabledTone?: string } | null,
+  runNow: null as {
+    estimate: RunEstimate;
+    disabledReason: string | null;
+    disabledTone?: string;
+    label?: string;
+  } | null,
   generate: null as { disabledReason: string | null } | null,
 };
 
@@ -57,7 +62,12 @@ vi.mock("@/app/(dashboard)/ai-visibility/cited-domains-table", () => ({
   },
 }));
 vi.mock("@/app/(dashboard)/ai-visibility/run-now-button", () => ({
-  RunNowButton: (props: { estimate: RunEstimate; disabledReason: string | null; disabledTone?: string }) => {
+  RunNowButton: (props: {
+    estimate: RunEstimate;
+    disabledReason: string | null;
+    disabledTone?: string;
+    label?: string;
+  }) => {
     captured.runNow = props;
     return <div data-testid="run-now" />;
   },
@@ -294,6 +304,10 @@ describe("overview — the nine states, and that they are mutually exclusive", (
     expect(screen.queryByTestId("prompt-matrix")).not.toBeInTheDocument();
     // Run now is still offered — it is the way out of this state.
     expect(captured.runNow?.disabledReason).toBeNull();
+    // And it is offered NEXT TO the sentence that offers it, not only in the
+    // opposite corner of the page.
+    expect(screen.getAllByTestId("run-now")).toHaveLength(2);
+    expect(captured.runNow?.label).toBe("Run first audit now");
   });
 
   it("No run yet with cadence off: says scheduling is off rather than naming a day that will never come", async () => {
@@ -667,6 +681,23 @@ describe("overview — what the tiles, the matrix and the domain table are hande
     expect(screen.getByText("No prompts have produced an answer yet.")).toBeInTheDocument();
     expect(screen.queryByTestId("cited-domains")).not.toBeInTheDocument();
     expect(screen.queryByTestId("prompt-matrix")).not.toBeInTheDocument();
+  });
+
+  it("routes to the prompt set and to the signals these runs produce", async () => {
+    // Both links previously existed only inside early-return branches, so the
+    // state anyone actually reads weekly was a dead end — including for the
+    // gap → signal → brief path this feature exists to claim.
+    setup({ prompts: [prompt(), prompt({ id: "p2" })] });
+    await renderPage();
+
+    expect(screen.getByRole("link", { name: "2 prompts" })).toHaveAttribute(
+      "href",
+      "/ai-visibility/prompts"
+    );
+    expect(screen.getByRole("link", { name: "Signals from these runs" })).toHaveAttribute(
+      "href",
+      "/signals?kind=ai_visibility"
+    );
   });
 
   it("keeps the API-observed trust cue reachable from the keyboard", async () => {

@@ -3,6 +3,7 @@ import { render, screen } from "@testing-library/react";
 import type { PromptRowData } from "../../../src/app/(dashboard)/ai-visibility/prompts/prompts-editor";
 import type { ProposalRow } from "../../../src/app/(dashboard)/ai-visibility/prompts/suggestions-section";
 import type { PromptsFilterState } from "../../../src/app/(dashboard)/ai-visibility/prompts/filter-params";
+import type { RunEstimate } from "../../../src/app/(dashboard)/ai-visibility/run-now-button";
 
 /**
  * `/ai-visibility/prompts` — the prompt-set Server Component.
@@ -30,6 +31,7 @@ const captured = {
     suggestMoreReason: string | null;
   } | null,
   generate: null as { disabledReason: string | null } | null,
+  runNow: null as { label?: string; estimate: RunEstimate; disabledReason: string | null } | null,
 };
 
 vi.mock("@/app/(dashboard)/ai-visibility/prompts/prompts-editor", async (importOriginal) => {
@@ -50,6 +52,12 @@ vi.mock("@/app/(dashboard)/ai-visibility/prompts/suggestions-section", () => ({
     return <div data-testid="suggestions" />;
   },
 }));
+vi.mock("@/app/(dashboard)/ai-visibility/run-now-button", () => ({
+  RunNowButton: (props: NonNullable<typeof captured.runNow>) => {
+    captured.runNow = props;
+    return <div data-testid="run-now">{props.label}</div>;
+  },
+}));
 vi.mock("@/app/(dashboard)/ai-visibility/generate-prompt-set-button", () => ({
   GeneratePromptSetButton: (props: { disabledReason: string | null }) => {
     captured.generate = props;
@@ -64,6 +72,8 @@ const {
   listPrompts,
   listCompetitors,
   promptMatrix,
+  latestRun,
+  capExceeded,
   personaRows,
 } = vi.hoisted(() => ({
   requireSession: vi.fn(),
@@ -72,6 +82,8 @@ const {
   listPrompts: vi.fn(),
   listCompetitors: vi.fn(),
   promptMatrix: vi.fn(),
+  latestRun: vi.fn(),
+  capExceeded: vi.fn(),
   personaRows: { value: [] as { key: string; name: string; brief: string }[] },
 }));
 
@@ -86,6 +98,11 @@ vi.mock("@/lib/ai-visibility/prompts", () => ({ listPrompts, MAX_ACTIVE_PROMPTS:
 vi.mock("@/lib/ai-visibility/metrics", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/ai-visibility/metrics")>();
   return { ...actual, promptMatrix };
+});
+vi.mock("@/lib/ai-visibility/run", () => ({ latestRun }));
+vi.mock("@/lib/ai-visibility/cost", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/ai-visibility/cost")>();
+  return { ...actual, capExceeded };
 });
 
 const PromptsPage = (await import("@/app/(dashboard)/ai-visibility/prompts/page")).default;
@@ -130,6 +147,17 @@ function setup(overrides: Record<string, unknown> = {}) {
   listPrompts.mockResolvedValue((o.prompts as unknown[]) ?? [prompt()]);
   listCompetitors.mockResolvedValue((o.competitors as unknown[]) ?? []);
   promptMatrix.mockResolvedValue((o.matrix as unknown[]) ?? []);
+  // A tenant that has already run is the default, so only the tests that ask
+  // for the activation moment see the first-audit CTA.
+  latestRun.mockResolvedValue("run" in overrides ? o.run : { id: "run-1", status: "complete" });
+  capExceeded.mockResolvedValue({
+    spentUsd: 0,
+    estimateUsd: 3.12,
+    capUsd: 20,
+    exceeded: false,
+    reached: false,
+    ...((o.cap as object) ?? {}),
+  });
   personaRows.value = (o.personaCatalog as { key: string; name: string; brief: string }[]) ?? [];
 }
 
@@ -142,6 +170,7 @@ beforeEach(() => {
   captured.editor = null;
   captured.suggestions = null;
   captured.generate = null;
+  captured.runNow = null;
 });
 
 describe("prompts page — states", () => {
@@ -340,5 +369,52 @@ describe("prompts page — the suggestions section's gates", () => {
     await renderPage();
 
     expect(captured.suggestions!.profileChangedNote).toBeNull();
+  });
+});
+
+describe("prompts page — the first-audit CTA", () => {
+  it("offers the first audit once a set is approved and nothing has ever run", async () => {
+    setup({ run: null });
+    await renderPage();
+
+    expect(screen.getByTestId("run-now")).toHaveTextContent("Run first audit now");
+    expect(captured.runNow!.disabledReason).toBeNull();
+    expect(captured.runNow!.estimate.usd).toBe(3.12);
+    expect(captured.runNow!.estimate.prompts).toBe(1);
+  });
+
+  it("counts a brand-check prompt as one call per engine, the way the cap gate counts it", async () => {
+    setup({
+      run: null,
+      prompts: [
+        prompt({ id: "11111111-1111-4111-8111-111111111111" }),
+        prompt({ id: "22222222-2222-4222-8222-222222222222", intent: "brand_check", branded: true }),
+      ],
+    });
+    await renderPage();
+
+    // 1 discovery × 3 engines × 3 samples + 1 brand check × 3 engines.
+    expect(captured.runNow!.estimate.calls).toBe(12);
+  });
+
+  it("drops the CTA once a run exists — the overview's Run now owns it from then on", async () => {
+    setup();
+    await renderPage();
+
+    expect(screen.queryByTestId("run-now")).not.toBeInTheDocument();
+  });
+
+  it("offers nothing to run when there is no approved prompt to run", async () => {
+    setup({ run: null, prompts: [prompt({ status: "proposed" })] });
+    await renderPage();
+
+    expect(screen.queryByTestId("run-now")).not.toBeInTheDocument();
+  });
+
+  it("disables it with the cap's own sentence rather than spending past the cap", async () => {
+    setup({ run: null, cap: { spentUsd: 20, exceeded: true, reached: true } });
+    await renderPage();
+
+    expect(captured.runNow!.disabledReason).toBe("Paused — monthly cap reached ($20.00 of $20.00).");
   });
 });

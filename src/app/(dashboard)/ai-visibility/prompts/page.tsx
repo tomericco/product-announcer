@@ -15,8 +15,11 @@ import { listCompetitors } from "@/lib/workspace/competitors";
 import { MAX_ACTIVE_PROMPTS, listPrompts } from "@/lib/ai-visibility/prompts";
 import { getAiVisibilitySettings } from "@/lib/ai-visibility/settings";
 import { MIN_N_PROMPT, promptMatrix } from "@/lib/ai-visibility/metrics";
+import { latestRun } from "@/lib/ai-visibility/run";
+import { capExceeded, capPausedMessage } from "@/lib/ai-visibility/cost";
 import { buttonVariants } from "@/components/ui/button";
 import { GeneratePromptSetButton } from "../generate-prompt-set-button";
+import { RunNowButton } from "../run-now-button";
 import { personaFilterOptions, readPromptsFilters } from "./filter-params";
 import { PromptsEditor, type PromptRowData } from "./prompts-editor";
 import { SuggestionsSection, type ProposalRow } from "./suggestions-section";
@@ -144,6 +147,35 @@ export default async function PromptsPage({
 
   const activeCount = allPrompts.filter((prompt) => prompt.status === "active").length;
 
+  /**
+   * The design's activation moment: "After approval the header gains **Run
+   * first audit now**" (§Screens, and user story 3 — "numbers shortly after
+   * approving so that the feature does not look broken for a week").
+   *
+   * Offered only until the first run exists. Afterwards the overview's own
+   * Run now is the control, and a second copy of it here would be two buttons
+   * that spend money for the same reason on two pages. Both queries are behind
+   * `activeCount > 0`, so the empty and proposals-only states pay for neither.
+   */
+  const neverRun = activeCount > 0 && (await latestRun(tenantId)) === null;
+  const firstAuditCap = neverRun
+    ? await capExceeded(
+        tenantId,
+        {
+          engines: settings.engines,
+          samplesPerPrompt: settings.samplesPerPrompt,
+          monthlyCapUsd: settings.monthlyCapUsd,
+        },
+        new Date()
+      )
+    : null;
+  // Counted the way the cap gate counts it: a brand-check prompt is one call
+  // per engine, not `samplesPerPrompt` of them. A flat product here would quote
+  // a number the enforcement disagrees with, on the control that spends money.
+  const brandedActive = allPrompts.filter(
+    (prompt) => prompt.status === "active" && prompt.intent === "brand_check"
+  ).length;
+
   // The current query, re-serialised, so the filter bar MERGES into it rather
   // than rebuilding from empty and dropping every unrelated key.
   const baseQuery = new URLSearchParams();
@@ -192,6 +224,26 @@ export default async function PromptsPage({
             The questions we ask each engine on your behalf. Paused prompts keep their history but are not run.
           </p>
         </div>
+        {firstAuditCap && (
+          <RunNowButton
+            label="Run first audit now"
+            estimate={{
+              prompts: activeCount,
+              engines: settings.engines.length,
+              samples: settings.samplesPerPrompt,
+              calls:
+                (activeCount - brandedActive) * settings.engines.length * settings.samplesPerPrompt +
+                brandedActive * settings.engines.length,
+              usd: firstAuditCap.estimateUsd,
+            }}
+            disabledReason={
+              firstAuditCap.exceeded
+                ? capPausedMessage(firstAuditCap.spentUsd, firstAuditCap.capUsd)
+                : null
+            }
+            disabledTone="destructive"
+          />
+        )}
       </div>
 
       <SuggestionsSection

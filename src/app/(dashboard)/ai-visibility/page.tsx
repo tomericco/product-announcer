@@ -39,7 +39,7 @@ import { ENGINE_LABEL, ENGINE_ORDER } from "./engine-labels";
 import { GeneratePromptSetButton } from "./generate-prompt-set-button";
 import { OverviewCards, type EngineTile } from "./overview-cards";
 import { PromptMatrix, type MatrixRow } from "./prompt-matrix";
-import { RunNowButton } from "./run-now-button";
+import { RunNowButton, type RunEstimate } from "./run-now-button";
 import type { SovPoint } from "./sparkline-points";
 
 const DAY_LABEL = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"] as const;
@@ -227,6 +227,18 @@ export default async function AiVisibilityPage() {
     ? `Running… ${inFlight.completedCalls} / ${inFlight.plannedCalls} calls`
     : null;
   const runDisabledReason = runningLine ?? capBlocking;
+
+  // One estimate object for both places a run can be started from — the header
+  // and the No-run-yet empty state — so the two can never quote different
+  // money for the same click.
+  const runEstimate: RunEstimate = {
+    prompts: activePrompts.length,
+    engines: settings.engines.length,
+    samples: settings.samplesPerPrompt,
+    calls: plannedCalls,
+    // The gate's own number, not a second computation of it.
+    usd: cap.estimateUsd,
+  };
 
   const shownEngines = ENGINE_ORDER.filter((engine) => settings.engines.includes(engine));
 
@@ -462,6 +474,24 @@ export default async function AiVisibilityPage() {
             </TooltipProvider>
           </div>
           <p className="text-sm text-muted-foreground">{lastRunLine}</p>
+          {/* The two routes out of this page, which it otherwise had none of:
+              every existing link to the prompt set and to the signals these
+              runs produce lives inside an early-return branch, so the normal
+              state — the one anyone reads weekly — was a dead end. The signal
+              link is the feature's own claim (gap → signal → brief) made
+              walkable. */}
+          <p className="text-sm text-muted-foreground">
+            <Link href="/ai-visibility/prompts" className="underline underline-offset-2 hover:text-foreground">
+              {activePrompts.length} {activePrompts.length === 1 ? "prompt" : "prompts"}
+            </Link>{" "}
+            ·{" "}
+            <Link
+              href="/signals?kind=ai_visibility"
+              className="underline underline-offset-2 hover:text-foreground"
+            >
+              Signals from these runs
+            </Link>
+          </p>
           {capBlocking && (
             <p className="text-sm text-destructive">
               {capBlocking}{" "}
@@ -477,14 +507,7 @@ export default async function AiVisibilityPage() {
           {capResolvedNote && <p className="text-sm text-muted-foreground">{capResolvedNote}</p>}
         </div>
         <RunNowButton
-          estimate={{
-            prompts: activePrompts.length,
-            engines: settings.engines.length,
-            samples: settings.samplesPerPrompt,
-            calls: plannedCalls,
-            // The gate's own number, not a second computation of it.
-            usd: cap.estimateUsd,
-          }}
+          estimate={runEstimate}
           disabledReason={runDisabledReason}
           disabledTone={runningLine ? "muted" : "destructive"}
         />
@@ -507,6 +530,18 @@ export default async function AiVisibilityPage() {
                 // find out that ever stopped being true.
                 `First audit ${DAY_LABEL[settings.dayOfWeek] ?? "on the scheduled day"} — or run it now.`}
           </EmptyStateDescription>
+          {/* "or run it now" pointed at a button in the opposite corner of the
+              page. Same control, same dialog, same estimate — put where the
+              sentence that offers it is, and labelled as the first audit,
+              because that is what a run is when there has never been one. */}
+          <EmptyStateActions>
+            <RunNowButton
+              label="Run first audit now"
+              estimate={runEstimate}
+              disabledReason={runDisabledReason}
+              disabledTone={runningLine ? "muted" : "destructive"}
+            />
+          </EmptyStateActions>
         </EmptyState>
       ) : (
         <>
