@@ -59,6 +59,6 @@ describe("CitedDomainsTable", () => {
   it("shows the count and the share of answers, not one without the other", () => {
     render(<CitedDomainsTable rows={[domain()]} />);
 
-    expect(screen.getByText("14 (17% of answers)")).toBeInTheDocument();
+    expect(screen.getByText("14 (17% of searched answers)")).toBeInTheDocument();
   });
 });

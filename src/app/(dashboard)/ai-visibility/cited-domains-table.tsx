@@ -60,7 +60,10 @@ export function CitedDomainsTable({ rows }: { rows: CitedDomainRow[] }) {
             <TableRow key={row.domain}>
               <TableCell className="max-w-0 truncate">{row.domain}</TableCell>
               <TableCell className="tabular-nums">
-                {row.citations} ({Math.round(row.answerSharePct)}% of answers)
+                {/* "searched", not "answers": the denominator is grounded
+                    answers only, since an engine that answered from memory
+                    cited nothing and cannot be part of a share of citations. */}
+                {row.citations} ({Math.round(row.answerSharePct)}% of searched answers)
               </TableCell>
               <TableCell className="text-muted-foreground">
                 {row.engines.map((engine) => ENGINE_SHORT[engine]).join(" · ")}

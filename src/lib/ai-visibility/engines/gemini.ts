@@ -227,6 +227,27 @@ export async function askGemini(
   // metrics exclude it downstream. See the ungrounded-answers design.
   const searchUsed = searchQueries.length > 0 || citations.length > 0;
 
+  // The canary that the `refused` branch used to be.
+  //
+  // Before ungrounded answers became valid samples, a shape we could not parse
+  // surfaced as a refusal — visibly wrong, and visibly OUR problem. Now an
+  // unparsed shape is indistinguishable from Gemini choosing not to search,
+  // which is a legitimate and common outcome. Gemini's response shape is the
+  // least verified of the three engines, so a field rename would otherwise
+  // degrade in silence into "the engine answered from memory" and quietly
+  // zero out its citation rate.
+  //
+  // A genuinely grounded answer always carries at least one query or one chunk.
+  // Grounding metadata that yields neither means we are reading the wrong
+  // keys, not that the model stayed in its own memory — so fail loudly.
+  if (!searchUsed && isRecord(grounding) && Object.keys(grounding).length > 0) {
+    return {
+      kind: "error",
+      message: `gemini returned grounding metadata we could not read (keys: ${Object.keys(grounding).sort().join(", ")})`,
+      costUsd: GEMINI_COST_PER_CALL_USD,
+    };
+  }
+
   return {
     text,
     // `modelVersion` is the resolved, dated id — the whole point of recording

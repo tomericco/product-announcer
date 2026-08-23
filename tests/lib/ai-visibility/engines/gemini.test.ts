@@ -480,7 +480,7 @@ describe("askGemini, shapes that are not what the docs describe", () => {
     });
   });
 
-  it("does not throw when groundingChunks is an object", async () => {
+  it("reports a grounding shape it cannot read as an error, not as an ungrounded answer", async () => {
     vi.stubEnv("GEMINI_API_KEY", "gem-test");
     const fetchImpl = vi.fn(async () =>
       json({
@@ -496,12 +496,17 @@ describe("askGemini, shapes that are not what the docs describe", () => {
 
     const result = await askGemini("x", { fetchImpl: fetchImpl as never });
 
-    // The text read fine; nothing citable could be found, so it comes back as
-    // an ungrounded answer rather than blowing up the slice.
-    expect("kind" in result).toBe(false);
-    if ("kind" in result) return;
-    expect(result.searchUsed).toBe(false);
-    expect(result.citations).toEqual([]);
+    // Still does not throw — but it must not pass as "answered from memory"
+    // either. Gemini legitimately declines to search on most discovery
+    // prompts, so a shape we misread would hide inside that and silently zero
+    // this engine's citation rate. Grounding metadata that yields neither a
+    // query nor a chunk means we are reading the wrong keys.
+    expect("kind" in result).toBe(true);
+    if (!("kind" in result)) return;
+    expect(result.kind).toBe("error");
+    expect(result.message).toMatch(/could not read/i);
+    // The keys are named so the fix does not need a repro.
+    expect(result.message).toContain("groundingChunks");
   });
 
   it("does not throw when candidates or the body itself is the wrong type", async () => {
