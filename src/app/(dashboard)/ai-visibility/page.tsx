@@ -578,10 +578,10 @@ export default async function AiVisibilityPage() {
         </EmptyState>
       ) : (
         <>
-          {/* Row 1 — the engines the tenant runs, plus the pooled "All engines".
-              An engine switched off gets no tile: one permanently reading
-              "Collecting baseline" for something nobody is paying for is
-              noise, not honesty. */}
+          {/* Row 1 — the engines the tenant runs, plus the pooled "All engines"
+              when there is more than one to pool. An engine switched off gets
+              no tile: one permanently reading "Collecting baseline" for
+              something nobody is paying for is noise, not honesty. */}
           <OverviewCards tiles={tiles} />
 
           {/* Row 2 — the gap-hunting grid, promoted above the benchmark.
