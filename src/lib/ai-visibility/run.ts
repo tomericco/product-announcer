@@ -1068,6 +1068,175 @@ async function settleCancelledRun(
   }
 }
 
+/**
+ * How long after a run is planned it may first be called stalled.
+ *
+ * There is one legitimate window in which an in-flight run holds no lease and
+ * is nevertheless perfectly healthy: between `planRun` inserting the row and
+ * the driver's first `acquireSliceLease` a moment later. Without this grace the
+ * header would flash "Stalled" at the very human who just pressed Run now, and
+ * a Resume control would appear beside a run that is about to start on its own.
+ *
+ * A minute is far longer than that window and far shorter than the daily cron
+ * that used to be the only way out — so the diagnosis this change comes from
+ * ("frozen for up to 24 hours") is answered either way.
+ */
+export const STALL_GRACE_MS = 60_000;
+
+/**
+ * Whether a run is in flight with nobody driving it.
+ *
+ * A live `sliceLeaseUntil` means a driver holds this run right now and is
+ * working through its batches; it must be left alone, because a second driver
+ * would claim samples the first is already paying for. A lease that is null or
+ * lapsed means the opposite: every driver has either released it (a Run-now
+ * that spent its 240s with work remaining does exactly that) or died holding
+ * it, and until the next daily sweep nothing will touch the run again.
+ *
+ * Exported because the page and the resume action must agree on the word
+ * "stalled" — the button appears under precisely the condition the action
+ * enforces, so the control cannot be offered for a run that then refuses it.
+ */
+export function runIsStalled(
+  run: { status: string; sliceLeaseUntil: Date | null; startedAt: Date },
+  now: Date
+): boolean {
+  if (!IN_FLIGHT.includes(run.status)) return false;
+  if (now.getTime() - run.startedAt.getTime() < STALL_GRACE_MS) return false;
+  return run.sliceLeaseUntil === null || run.sliceLeaseUntil.getTime() <= now.getTime();
+}
+
+export type ResumeRunTarget =
+  | { ok: true; runId: string }
+  | { ok: false; reason: "not_in_flight" }
+  | { ok: false; reason: "lease_held" };
+
+/**
+ * The tenant's in-flight run, if it is stalled and nobody else is driving it.
+ *
+ * Takes a TENANT, never a run id, for the reason `cancelRun` and `runNowAction`
+ * do: the partial unique index guarantees at most one in-flight run per tenant,
+ * so the target is derivable server-side and there is nothing a client could
+ * substitute for somebody else's run.
+ *
+ * Two refusals rather than one because they are two different sentences for the
+ * operator: nothing is running, versus something is running and does not need
+ * help. Neither is an error.
+ *
+ * This is advisory, not the enforcement: nothing holds a lock between this read
+ * and the driver that follows it. The enforcement is `runSlice`'s lease CAS,
+ * which lets exactly one driver win and makes the loser a no-op. What this
+ * buys is a clean answer instead of a second driver quietly doing nothing.
+ */
+export async function findResumableRun(
+  tenantId: string,
+  opts: { now: Clock },
+  deps: RunDeps = {}
+): Promise<ResumeRunTarget> {
+  const database = deps.database ?? defaultDb;
+  const now = opts.now();
+
+  const [row] = await database
+    .select({
+      id: aiVisibilityRuns.id,
+      status: aiVisibilityRuns.status,
+      sliceLeaseUntil: aiVisibilityRuns.sliceLeaseUntil,
+      startedAt: aiVisibilityRuns.startedAt,
+    })
+    .from(aiVisibilityRuns)
+    .where(and(eq(aiVisibilityRuns.tenantId, tenantId), inArray(aiVisibilityRuns.status, IN_FLIGHT)))
+    .limit(1);
+
+  if (!row) return { ok: false, reason: "not_in_flight" };
+  if (!runIsStalled(row, now)) return { ok: false, reason: "lease_held" };
+  return { ok: true, runId: row.id };
+}
+
+export type DriveRunOptions = {
+  /** Wall clock for the whole drive, slices and finalize together. */
+  totalBudgetMs: number;
+  /** Ceiling on any one slice, so the lease and the cap are re-checked regularly. */
+  sliceBudgetMs: number;
+  /** Floor handed to `finalizeRun` when the total is nearly gone — it is resumable anyway. */
+  finalizeMinBudgetMs: number;
+  concurrency: number;
+  now: Clock;
+};
+
+export type DriveRunDeps = FinalizeDeps & {
+  slice?: typeof runSlice;
+  finalize?: typeof finalizeRun;
+};
+
+/**
+ * Slices a run until it is finished, stopped, paused, or out of budget.
+ *
+ * ONE copy of this loop, called by "Run now" and by "Resume". It was extracted
+ * rather than copied the second time it was needed: every branch below is a
+ * rule about money or about concurrency — a cap pause is terminal, a stop must
+ * not be finalized, a lost lease must not be driven over — and two versions of
+ * those rules would be one version and one bug.
+ *
+ * Never throws, like the sweep's per-source arm: `runSlice` and `finalizeRun`
+ * both record their own expected failures on the run row, so anything reaching
+ * the catch is exceptional. Callers run it inside `after()`, where a rejection
+ * has nowhere to go.
+ */
+export async function driveRun(
+  runId: string,
+  opts: DriveRunOptions,
+  deps: DriveRunDeps = {}
+): Promise<void> {
+  const slice = deps.slice ?? runSlice;
+  const finalize = deps.finalize ?? finalizeRun;
+  const { now } = opts;
+
+  try {
+    const startedAt = now().getTime();
+    const remainingMs = () => opts.totalBudgetMs - (now().getTime() - startedAt);
+
+    for (;;) {
+      const outcome = await slice(
+        runId,
+        {
+          budgetMs: Math.min(opts.sliceBudgetMs, Math.max(remainingMs(), 1)),
+          concurrency: opts.concurrency,
+          now,
+        },
+        deps
+      );
+      // The cap gate already set `paused_by_cap` and the source's lastError;
+      // finalizing here would judge and aggregate a half-run.
+      if (outcome.pausedByCap) return;
+      // Somebody pressed Stop. `cancelRun` has already settled the run, so
+      // there is nothing left to drive OR to finalize — and this must be
+      // checked before `remaining`, because a stopped run's pending samples
+      // stay pending, so `remaining` never reaches 0 and the loop would spin on
+      // a `runSlice` that returns immediately until the budget lapsed.
+      if (outcome.cancelled) return;
+      if (outcome.remaining === 0) break;
+      // Work is left, but the slice handed out nothing: every pending row is
+      // waiting out a retry backoff (or another driver holds the lease).
+      // Looping would re-query the work list as fast as this loop can run for
+      // the rest of the budget — the outer twin of the hot loop the batch
+      // query's backoff filter stops. The run stays `running`, and the sweep or
+      // a human's Resume picks it up.
+      if (outcome.processed === 0) return;
+      if (remainingMs() <= 0) return; // still `running`; the sweep resumes it
+    }
+
+    // `finalizeRun` is itself resumable, so a short remainder is fine — it
+    // leaves the run `running` for the sweep rather than half-marking it.
+    await finalize(
+      runId,
+      { budgetMs: Math.max(remainingMs(), opts.finalizeMinBudgetMs), now },
+      deps
+    );
+  } catch (error) {
+    console.error(`[ai-visibility] driving run ${runId} failed:`, error);
+  }
+}
+
 export type CancelRunResult =
   | { ok: true; runId: string; completedCalls: number; plannedCalls: number }
   | { ok: false; reason: "not_in_flight" };

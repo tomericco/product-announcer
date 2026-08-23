@@ -16,7 +16,7 @@ import {
 // lives inside the core call that would breach it, so this file cannot
 // check-then-write across an await and let two tabs both squeeze past 30.
 import { generatePromptSet } from "@/lib/ai-visibility/generate-prompts";
-import { cancelRun, finalizeRun, planRun, runSlice } from "@/lib/ai-visibility/run";
+import { cancelRun, driveRun, findResumableRun, planRun } from "@/lib/ai-visibility/run";
 import { PROMPT_INTENTS, type PromptIntent } from "@/lib/ai-visibility/types";
 
 /**
@@ -341,48 +341,20 @@ export async function runNowAction(): Promise<ActionResult<{ runId: string }>> {
 
   const runId = planned.runId;
 
-  // Drive the run AFTER the response. Same never-throw discipline as the
-  // sweep: the three run functions record their own expected failures on
-  // the run row, so a throw reaching the catch is exceptional — logged,
-  // swallowed, and the daily sweep resumes whatever is left `running`.
-  after(async () => {
-    try {
-      const now = () => new Date();
-      const startedAt = now().getTime();
-      const remainingMs = () => RUN_NOW_TOTAL_BUDGET_MS - (now().getTime() - startedAt);
-
-      for (;;) {
-        const outcome = await runSlice(runId, {
-          budgetMs: Math.min(RUN_NOW_SLICE_BUDGET_MS, Math.max(remainingMs(), 1)),
-          concurrency: RUN_NOW_CONCURRENCY,
-          now,
-        });
-        // The cap gate already set `paused_by_cap` and the source's
-        // lastError; finalizing here would judge and aggregate a half-run.
-        if (outcome.pausedByCap) return;
-        // Somebody pressed Stop. `cancelRun` has already settled the run, so
-        // there is nothing left to drive OR to finalize — and this must be
-        // checked before `remaining`, because a stopped run's pending samples
-        // stay pending, so `remaining` never reaches 0 and the loop would spin
-        // on a `runSlice` that returns immediately until the 240s budget lapsed.
-        if (outcome.cancelled) return;
-        if (outcome.remaining === 0) break;
-        // Work is left, but the slice handed out nothing — every pending row is
-        // waiting out a retry backoff. Looping would re-query the work list as
-        // fast as this loop can run for the rest of the 240s budget, which is
-        // the outer twin of the hot loop the batch query's backoff filter
-        // stops. The run stays `running`; the sweep resumes it.
-        if (outcome.processed === 0) return;
-        if (remainingMs() <= 0) return; // still `running`; the sweep resumes it
-      }
-
-      // `finalizeRun` is itself resumable, so a short remainder is fine —
-      // it leaves the run `running` for the sweep rather than half-marking.
-      await finalizeRun(runId, { budgetMs: Math.max(remainingMs(), RUN_NOW_FINALIZE_MIN_MS), now });
-    } catch (error) {
-      console.error(`[ai-visibility] run-now processing failed for run ${runId}:`, error);
-    }
-  });
+  // Drive the run AFTER the response, through the one drive loop "Resume"
+  // also uses. `driveRun` never throws: the three run functions record their
+  // own expected failures on the run row, so anything reaching its catch is
+  // exceptional — logged, swallowed, and the daily sweep resumes whatever is
+  // left `running`.
+  after(() =>
+    driveRun(runId, {
+      totalBudgetMs: RUN_NOW_TOTAL_BUDGET_MS,
+      sliceBudgetMs: RUN_NOW_SLICE_BUDGET_MS,
+      finalizeMinBudgetMs: RUN_NOW_FINALIZE_MIN_MS,
+      concurrency: RUN_NOW_CONCURRENCY,
+      now: () => new Date(),
+    })
+  );
 
   // Both surfaces show run state: the overview's header and the Company
   // card's "last ran" line.
@@ -420,4 +392,57 @@ export async function cancelRunAction(): Promise<ActionResult<{ runId: string; c
   revalidatePath("/ai-visibility");
   revalidatePath("/company");
   return { ok: true, runId: result.runId, completedCalls: result.completedCalls };
+}
+
+/**
+ * "Resume" — picks a stalled run back up.
+ *
+ * A run whose driver ran out of budget with samples still pending stays
+ * `running`, which is correct, and until this existed the ONLY thing that
+ * resumed it was the 09:00 UTC sweep. So the page could show "Running…" for up
+ * to a day while the partial unique index refused every new run with "A run is
+ * already in progress." — indistinguishable, to the person looking at it, from
+ * a run that was working.
+ *
+ * Takes no argument, like the other two: the run is derived from the session's
+ * tenant server-side. Guarded by `findResumableRun`, which refuses a run that
+ * still holds a live slice lease — a driver is already working through it, and
+ * a second one would claim samples the first is paying for. That guard is the
+ * same predicate the header uses to decide whether to show this button at all,
+ * so the control is never offered for a run that would refuse it.
+ *
+ * Nothing here spends money on its own account: the work was already planned
+ * and authorised, and the cap is re-checked between batches like every other
+ * slice. There is no confirmation dialog for that reason.
+ */
+export async function resumeRunAction(): Promise<ActionResult<{ runId: string }>> {
+  const session = await requireSession();
+
+  const target = await findResumableRun(session.user.tenantId, { now: () => new Date() });
+  if (!target.ok) {
+    return {
+      ok: false,
+      error:
+        target.reason === "not_in_flight"
+          ? "No run is in progress."
+          : // Not an error, and worth saying plainly: the run has a driver, and
+            // starting a second one would buy the same samples twice.
+            "This run is already being worked on — give it a minute.",
+    };
+  }
+
+  const runId = target.runId;
+  after(() =>
+    driveRun(runId, {
+      totalBudgetMs: RUN_NOW_TOTAL_BUDGET_MS,
+      sliceBudgetMs: RUN_NOW_SLICE_BUDGET_MS,
+      finalizeMinBudgetMs: RUN_NOW_FINALIZE_MIN_MS,
+      concurrency: RUN_NOW_CONCURRENCY,
+      now: () => new Date(),
+    })
+  );
+
+  revalidatePath("/ai-visibility");
+  revalidatePath("/company");
+  return { ok: true, runId };
 }

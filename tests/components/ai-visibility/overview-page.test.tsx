@@ -39,6 +39,7 @@ const captured = {
   } | null,
   generate: null as { disabledReason: string | null } | null,
   stop: null as { completedCalls: number; plannedCalls: number } | null,
+  resume: false,
 };
 
 vi.mock("@/app/(dashboard)/ai-visibility/overview-cards", () => ({
@@ -81,6 +82,12 @@ vi.mock("@/app/(dashboard)/ai-visibility/run-now-button", () => ({
   }) => {
     captured.runNow = props;
     return <div data-testid="run-now" />;
+  },
+}));
+vi.mock("@/app/(dashboard)/ai-visibility/resume-run-button", () => ({
+  ResumeRunButton: () => {
+    captured.resume = true;
+    return <div data-testid="resume-run" />;
   },
 }));
 vi.mock("@/app/(dashboard)/ai-visibility/stop-run-button", () => ({
@@ -145,7 +152,13 @@ vi.mock("@/lib/ai-visibility/prompts", () => ({
   MAX_ACTIVE_PROMPTS: 5,
   runnablePrompts: <T,>(prompts: readonly T[]): T[] => prompts.slice(0, 5),
 }));
-vi.mock("@/lib/ai-visibility/run", () => ({ latestRun }));
+// `runIsStalled` stays REAL: the header and `resumeRunAction` share that one
+// predicate, and stubbing it here would let the page offer a Resume button
+// under a condition the action does not recognise.
+vi.mock("@/lib/ai-visibility/run", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/ai-visibility/run")>();
+  return { ...actual, latestRun };
+});
 vi.mock("@/lib/ai-visibility/cited-domains", () => ({ citedDomains, everSignalledDomains }));
 vi.mock("@/lib/signals/query", () => ({ listSignals }));
 // `brandMentionTotal` stays REAL — it is the denominator the remainder row is
@@ -227,9 +240,16 @@ function run(overrides: Record<string, unknown> = {}) {
     plannedCalls: 252,
     costUsd: 3.12,
     error: null,
+    // No driver holds this run. Every in-flight fixture that means "somebody is
+    // working on it" says so explicitly with `LIVE_LEASE`, because a lapsed or
+    // absent lease on an in-flight run IS the stalled state.
+    sliceLeaseUntil: null,
     ...overrides,
   };
 }
+
+/** A lease a driver is currently holding — the difference between Running and Stalled. */
+const LIVE_LEASE = () => new Date(Date.now() + 60_000);
 
 function prompt(overrides: Record<string, unknown> = {}) {
   return { id: "p1", text: "best localization tools", status: "active", intent: "discovery", ...overrides };
@@ -295,6 +315,7 @@ beforeEach(() => {
   captured.runNow = null;
   captured.generate = null;
   captured.stop = null;
+  captured.resume = false;
 });
 
 describe("overview — the nine states, and that they are mutually exclusive", () => {
@@ -368,7 +389,9 @@ describe("overview — the nine states, and that they are mutually exclusive", (
   });
 
   it("Running: the header reports progress and never calls a half-finished run 'Last run'", async () => {
-    setup({ run: run({ status: "running", completedCalls: 41, plannedCalls: 270, costUsd: 0.4 }) });
+    setup({
+      run: run({ status: "running", completedCalls: 41, plannedCalls: 270, costUsd: 0.4, sliceLeaseUntil: LIVE_LEASE() }),
+    });
     await renderPage();
 
     expect(screen.getByText("Running… 41 / 270 calls")).toBeInTheDocument();
@@ -380,7 +403,7 @@ describe("overview — the nine states, and that they are mutually exclusive", (
   });
 
   it("Running: the button's reason is muted — an in-flight run is not a failure", async () => {
-    setup({ run: run({ status: "pending", completedCalls: 0, plannedCalls: 270 }) });
+    setup({ run: run({ status: "pending", completedCalls: 0, plannedCalls: 270, sliceLeaseUntil: LIVE_LEASE() }) });
     await renderPage();
 
     expect(captured.runNow?.disabledReason).toBe("Running… 0 / 270 calls");
@@ -388,11 +411,37 @@ describe("overview — the nine states, and that they are mutually exclusive", (
   });
 
   it("Running: Stop is offered, and carries the same counts the progress line does", async () => {
-    setup({ run: run({ status: "running", completedCalls: 41, plannedCalls: 270, costUsd: 0.4 }) });
+    setup({
+      run: run({ status: "running", completedCalls: 41, plannedCalls: 270, costUsd: 0.4, sliceLeaseUntil: LIVE_LEASE() }),
+    });
     await renderPage();
 
     expect(screen.getByTestId("stop-run")).toBeInTheDocument();
     expect(captured.stop).toEqual({ completedCalls: 41, plannedCalls: 270 });
+    // Nothing to resume: this run has a driver.
+    expect(screen.queryByTestId("resume-run")).not.toBeInTheDocument();
+  });
+
+  it("Stalled: says so, and offers Resume — a run nobody is driving must not read as one that is", async () => {
+    // In flight with no live lease. Before "Resume" existed this state looked
+    // identical to a working run for up to a day, while every attempt to start
+    // a new one was refused with "A run is already in progress."
+    setup({ run: run({ status: "running", completedCalls: 41, plannedCalls: 270, sliceLeaseUntil: null }) });
+    await renderPage();
+
+    expect(screen.getByText("Stalled at 41 / 270 calls — resume to finish it")).toBeInTheDocument();
+    expect(screen.queryByText(/Running…/)).not.toBeInTheDocument();
+    expect(screen.getByTestId("resume-run")).toBeInTheDocument();
+    // Stop stays offered — a stalled run is still in flight, and abandoning it
+    // is a different decision from finishing it.
+    expect(screen.getByTestId("stop-run")).toBeInTheDocument();
+  });
+
+  it("Resume is offered only for a stalled run, never for a finished one", async () => {
+    setup({ run: run({ status: "complete", sliceLeaseUntil: null }) });
+    await renderPage();
+
+    expect(screen.queryByTestId("resume-run")).not.toBeInTheDocument();
   });
 
   it("Stop is offered only while a run is in flight", async () => {

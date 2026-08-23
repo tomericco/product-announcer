@@ -21,7 +21,7 @@ import { listCompetitors } from "@/lib/workspace/competitors";
 import { getAiVisibilitySettings } from "@/lib/ai-visibility/settings";
 import { listPrompts, runnablePrompts } from "@/lib/ai-visibility/prompts";
 import { plannedCallsForPrompts } from "@/lib/ai-visibility/planned-calls";
-import { latestRun } from "@/lib/ai-visibility/run";
+import { latestRun, runIsStalled } from "@/lib/ai-visibility/run";
 import {
   brandMentionTotal,
   engineHistory,
@@ -43,6 +43,7 @@ import { AiVisibilityOffEmptyState } from "./off-empty-state";
 import { OverviewCards, type EngineTile } from "./overview-cards";
 import { PromptMatrix, type MatrixRow } from "./prompt-matrix";
 import { RunNowButton, type RunEstimate } from "./run-now-button";
+import { ResumeRunButton } from "./resume-run-button";
 import { StopRunButton } from "./stop-run-button";
 import type { TrendSeries } from "./trend-points";
 import { VisibilityTrend } from "./visibility-trend";
@@ -179,6 +180,12 @@ export default async function AiVisibilityPage() {
   // A run "in flight" is just the latest one not yet finished — there is one
   // per tenant at a time by construction, so this needs no second query.
   const inFlight = lastRun && (lastRun.status === "pending" || lastRun.status === "running") ? lastRun : null;
+  // In flight, but nobody is driving it: the driver spent its budget with work
+  // left, or died holding the lease. Until "Resume" existed the only thing that
+  // picked such a run back up was tomorrow's 09:00 UTC sweep — so this state
+  // looked exactly like a working run for up to a day, while every attempt to
+  // start a new one was refused with "A run is already in progress."
+  const stalled = inFlight !== null && runIsStalled(inFlight, now);
 
   // ---- State: Paused by cap ------------------------------------------------
   // Read off the RUN, not off the source badge: `sources.status` has no
@@ -225,8 +232,14 @@ export default async function AiVisibilityPage() {
   // `exceeded`, not `reached`: the pre-run gate is spend PLUS the next run's
   // estimate, which is the number that decides whether starting is allowed. A
   // run the cap paused LAST month does not disable the button this month.
+  // Two different states, two different sentences. A reader looking at a
+  // stalled run had no way at all to tell it from a working one, which is half
+  // of what made the 24-hour freeze feel like a bug in the numbers rather than
+  // a run waiting for a driver.
   const runningLine = inFlight
-    ? `Running… ${inFlight.completedCalls} / ${inFlight.plannedCalls} calls`
+    ? stalled
+      ? `Stalled at ${inFlight.completedCalls} / ${inFlight.plannedCalls} calls — resume to finish it`
+      : `Running… ${inFlight.completedCalls} / ${inFlight.plannedCalls} calls`
     : null;
   const runDisabledReason = runningLine ?? capBlocking;
 
@@ -589,6 +602,7 @@ export default async function AiVisibilityPage() {
             read against. It appears only in flight — there is nothing to stop
             otherwise, and a permanently disabled Stop would be noise. */}
         <div className="flex items-start gap-2">
+          {stalled && <ResumeRunButton />}
           {inFlight && (
             <StopRunButton
               completedCalls={inFlight.completedCalls}

@@ -19,28 +19,38 @@ vi.mock("../../src/lib/workspace/session", () => ({
 }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 
-const { generatePromptSet, planRun, runSlice, finalizeRun, cancelRun, afterCallbacks } = vi.hoisted(() => ({
+const { generatePromptSet, planRun, driveRun, findResumableRun, cancelRun, afterCallbacks } = vi.hoisted(() => ({
   generatePromptSet: vi.fn(async () => ({ ok: true as const, proposals: [] as unknown[] })),
   // Declared with their call signatures, so `mock.calls[0][1].budgetMs` below
   // is a real assertion rather than an index into an empty tuple.
   planRun: vi.fn<
     (tenantId: string, opts: { trigger: string; now: () => Date }) => Promise<{ ok: boolean; runId?: string }>
   >(async () => ({ ok: true, runId: "run-1", plannedCalls: 270, estimateUsd: 3.12 })),
-  runSlice: vi.fn<
+  // The slice loop itself is `driveRun`'s, and is tested against the real
+  // thing in tests/lib/ai-visibility/resume.test.ts — cap pause, stop, budget,
+  // backoff and its never-throws contract. What these tests own is the ACTION:
+  // that it defers the drive past the response, and hands it the right run and
+  // the right budgets.
+  driveRun: vi.fn<
     (
       runId: string,
-      opts: { budgetMs: number; concurrency: number; now: () => Date }
-    ) => Promise<{
-      processed: number;
-      remaining: number;
-      budgetSpent: boolean;
-      pausedByCap: boolean;
-      cancelled: boolean;
-    }>
-  >(async () => ({ processed: 270, remaining: 0, budgetSpent: false, pausedByCap: false, cancelled: false })),
-  finalizeRun: vi.fn<(runId: string, opts: { budgetMs: number; now: () => Date }) => Promise<unknown>>(
-    async () => ({})
-  ),
+      opts: {
+        totalBudgetMs: number;
+        sliceBudgetMs: number;
+        finalizeMinBudgetMs: number;
+        concurrency: number;
+        now: () => Date;
+      }
+    ) => Promise<void>
+  >(async () => {}),
+  findResumableRun: vi.fn<
+    (
+      tenantId: string,
+      opts: { now: () => Date }
+    ) => Promise<
+      { ok: true; runId: string } | { ok: false; reason: "not_in_flight" | "lease_held" }
+    >
+  >(async () => ({ ok: true, runId: "run-1" })),
   cancelRun: vi.fn<
     (
       tenantId: string,
@@ -53,7 +63,7 @@ const { generatePromptSet, planRun, runSlice, finalizeRun, cancelRun, afterCallb
   afterCallbacks: [] as (() => Promise<void>)[],
 }));
 vi.mock("../../src/lib/ai-visibility/generate-prompts", () => ({ generatePromptSet }));
-vi.mock("../../src/lib/ai-visibility/run", () => ({ planRun, runSlice, finalizeRun, cancelRun }));
+vi.mock("../../src/lib/ai-visibility/run", () => ({ planRun, driveRun, findResumableRun, cancelRun }));
 // `after` is captured, never auto-run: the tests invoke the callback by hand,
 // which is exactly the "response already flushed" timing being pinned.
 vi.mock("next/server", () => ({
@@ -65,6 +75,7 @@ vi.mock("next/server", () => ({
 import {
   approveProposalsAction,
   cancelRunAction,
+  resumeRunAction,
   deletePromptAction,
   generatePromptSetAction,
   runNowAction,
@@ -497,58 +508,24 @@ describe("runNowAction", () => {
     expect(revalidatePath).toHaveBeenCalledWith("/company");
   });
 
-  it("drives the run to complete after the response, without waiting for the daily cron", async () => {
+  it("drives the run after the response, without waiting for the daily cron", async () => {
     expect(await runNowAction()).toEqual({ ok: true, runId: "run-1" });
     // Nothing has run yet — `after` defers past the response flush, so the
     // human is never kept waiting on 270 engine calls.
-    expect(runSlice).not.toHaveBeenCalled();
+    expect(driveRun).not.toHaveBeenCalled();
     expect(afterCallbacks).toHaveLength(1);
 
     await afterCallbacks[0]();
 
-    expect(runSlice).toHaveBeenCalled();
-    expect(runSlice.mock.calls[0][0]).toBe("run-1");
-    expect(typeof runSlice.mock.calls[0][1].budgetMs).toBe("number");
-    expect(typeof runSlice.mock.calls[0][1].concurrency).toBe("number");
-    expect(finalizeRun).toHaveBeenCalledTimes(1);
-    expect(finalizeRun.mock.calls[0][0]).toBe("run-1");
-  });
-
-  it("keeps slicing until no pending samples remain, then finalizes once", async () => {
-    runSlice
-      .mockResolvedValueOnce({ processed: 200, remaining: 160, budgetSpent: true, pausedByCap: false, cancelled: false })
-      .mockResolvedValueOnce({ processed: 160, remaining: 0, budgetSpent: false, pausedByCap: false, cancelled: false });
-
-    await runNowAction();
-    await afterCallbacks[0]();
-
-    expect(runSlice).toHaveBeenCalledTimes(2);
-    expect(finalizeRun).toHaveBeenCalledTimes(1);
-  });
-
-  it("stops without finalizing when the cap pauses the run mid-slice", async () => {
-    runSlice.mockResolvedValueOnce({ processed: 12, remaining: 300, budgetSpent: false, pausedByCap: true, cancelled: false });
-
-    await runNowAction();
-    await afterCallbacks[0]();
-
-    // `runSlice` already set `paused_by_cap` and the source's lastError;
-    // finalizing a capped run would judge and aggregate a half-run.
-    expect(finalizeRun).not.toHaveBeenCalled();
-  });
-
-  it("stops driving when somebody cancels the run mid-slice", async () => {
-    // Checked BEFORE `remaining`, because a stopped run keeps its un-asked
-    // samples pending forever: on `remaining` alone this loop would spin on a
-    // `runSlice` that returns instantly until the 240s budget lapsed.
-    runSlice.mockResolvedValue({ processed: 12, remaining: 258, budgetSpent: false, pausedByCap: false, cancelled: true });
-
-    await runNowAction();
-    await afterCallbacks[0]();
-
-    expect(runSlice).toHaveBeenCalledTimes(1);
-    // `cancelRun` already settled it — aggregates written, signals emitted.
-    expect(finalizeRun).not.toHaveBeenCalled();
+    expect(driveRun).toHaveBeenCalledTimes(1);
+    expect(driveRun.mock.calls[0][0]).toBe("run-1");
+    const opts = driveRun.mock.calls[0][1];
+    // The slice ceiling has to sit under the total, or the loop gets one slice
+    // and a finalize instead of the four it is budgeted for.
+    expect(opts.sliceBudgetMs).toBeLessThan(opts.totalBudgetMs);
+    expect(opts.finalizeMinBudgetMs).toBeGreaterThan(0);
+    expect(typeof opts.concurrency).toBe("number");
+    expect(typeof opts.now).toBe("function");
   });
 
   it("schedules no background work for a refused run", async () => {
@@ -557,11 +534,40 @@ describe("runNowAction", () => {
     expect(afterCallbacks).toHaveLength(0);
   });
 
-  it("never lets the background callback throw — the daily sweep resumes whatever is left", async () => {
-    runSlice.mockRejectedValueOnce(new Error("engine down"));
-    await runNowAction();
-    await expect(afterCallbacks[0]()).resolves.toBeUndefined();
-    expect(finalizeRun).not.toHaveBeenCalled();
+  // "the background callback never throws" moved with the loop: `driveRun`
+  // swallows and logs, and resume.test.ts asserts it against the real function
+  // rather than against a mock that could only ever prove itself.
+});
+
+describe("resumeRunAction", () => {
+  it("drives the stalled run the guard handed back, and revalidates both surfaces", async () => {
+    expect(await resumeRunAction()).toEqual({ ok: true, runId: "run-1" });
+    // Derived server-side from the session's tenant — no run id from a client,
+    // for the same reason "Run now" and "Stop" take none.
+    expect(findResumableRun.mock.calls[0][0]).toBe(currentTenantId);
+    expect(revalidatePath).toHaveBeenCalledWith("/ai-visibility");
+    expect(revalidatePath).toHaveBeenCalledWith("/company");
+
+    expect(driveRun).not.toHaveBeenCalled();
+    await afterCallbacks[0]();
+    expect(driveRun.mock.calls[0][0]).toBe("run-1");
+  });
+
+  it("refuses when nothing is in flight, and schedules no work", async () => {
+    findResumableRun.mockResolvedValueOnce({ ok: false, reason: "not_in_flight" });
+
+    expect(await resumeRunAction()).toEqual({ ok: false, error: "No run is in progress." });
+    expect(afterCallbacks).toHaveLength(0);
+  });
+
+  it("refuses a run somebody is already driving — a second driver buys the same samples twice", async () => {
+    findResumableRun.mockResolvedValueOnce({ ok: false, reason: "lease_held" });
+
+    expect(await resumeRunAction()).toEqual({
+      ok: false,
+      error: "This run is already being worked on — give it a minute.",
+    });
+    expect(afterCallbacks).toHaveLength(0);
   });
 });
 
