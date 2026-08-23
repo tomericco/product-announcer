@@ -73,12 +73,14 @@ function tile(overrides: Partial<EngineTile> = {}): EngineTile {
 }
 
 describe("tileReading", () => {
-  it("reads the headline, the Wilson band and the muted 30-day delta", () => {
+  it("reads the headline and the Wilson band, and nothing about a 30-day delta", () => {
+    // `deltaPp` is still on the metrics object — the tile just no longer
+    // prints it. Overlapping windows damp it, and it is null until roughly
+    // eight lifetime runs; the sparkline underneath carries the trend.
     expect(tileReading(metrics())).toEqual({
       kind: "share",
       headline: "31%",
       band: "±5 pp",
-      delta: "+3 pp vs 30 days ago",
     });
   });
 
@@ -99,7 +101,7 @@ describe("tileReading", () => {
           deltaPp: null,
         })
       )
-    ).toEqual({ kind: "baseline", headline: "Collecting baseline", band: null, delta: null });
+    ).toEqual({ kind: "baseline", headline: "Collecting baseline", band: null });
   });
 
   it("distinguishes a MEASURED zero from a thin cut — 84 answers naming nobody is a finding, not missing data", () => {
@@ -111,16 +113,12 @@ describe("tileReading", () => {
       kind: "measured-zero",
       headline: "No brands named",
       band: null,
-      delta: null,
     });
   });
 
-  it("omits the delta when there is no 30-day-ago window to compare against", () => {
-    expect(tileReading(metrics({ deltaPp: null })).delta).toBeNull();
-  });
-
-  it("writes a fall with a real minus sign, not a hyphen", () => {
-    expect(tileReading(metrics({ deltaPp: -2 })).delta).toBe("−2 pp vs 30 days ago");
+  it("keeps the band, which is the reading the number cannot be checked without", () => {
+    expect(tileReading(metrics({ wilsonPp: 9 })).band).toBe("±9 pp");
+    expect(tileReading(metrics({ wilsonPp: null })).band).toBeNull();
   });
 });
 
@@ -194,13 +192,13 @@ describe("OverviewCards", () => {
     expect(findingClass).toContain("text-foreground");
   });
 
-  it("keeps the delta muted and uncoloured, per the attribution-lag rule", () => {
-    render(<OverviewCards tiles={[tile()]} />);
+  it("prints no 30-day delta line, whatever deltaPp says", () => {
+    render(<OverviewCards tiles={[tile({ metrics: metrics({ deltaPp: 3 }) })]} />);
 
-    const delta = screen.getByText("+3 pp vs 30 days ago");
-    expect(delta.className).toContain("text-muted-foreground");
-    expect(delta.className).not.toContain("text-destructive");
-    expect(delta.className).not.toContain("brand");
+    expect(screen.queryByText(/30 days ago/)).not.toBeInTheDocument();
+    // The band survives the cut — it is the one number that qualifies the
+    // headline rather than narrating it.
+    expect(screen.getByText("±5 pp")).toBeInTheDocument();
   });
 
   it("prints a partial failure in the destructive tone, not as a muted aside", () => {

@@ -204,6 +204,13 @@ export type EngineMetrics = {
    * can leave [0, 100], so render ranges through `clampBand`.
    */
   wilsonPp: number | null;
-  /** 30-day delta in pp; null when the earlier window is unknown. */
+  /**
+   * 30-day delta in pp; null when the earlier window is unknown.
+   *
+   * Computed but not rendered anywhere today — the overview tile dropped it
+   * because its two windows overlap (see `deltaPp` in `metrics.ts`) and the
+   * sparkline beside it tells the same story unhedged. Kept for a surface that
+   * can give it context.
+   */
   deltaPp: number | null;
 };

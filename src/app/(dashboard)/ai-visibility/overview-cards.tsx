@@ -16,7 +16,6 @@ export type TileReading = {
   kind: "share" | "baseline" | "measured-zero";
   headline: string;
   band: string | null;
-  delta: string | null;
 };
 
 /**
@@ -46,26 +45,31 @@ function percent(rate: number | null): string {
  *   a denominator, and here nobody won the mentions.
  * - otherwise — a real share, with its band.
  *
- * The delta is 30 days, muted, and never coloured — effects take 60–90 days,
- * so a green arrow on a week's movement would be a claim we cannot support.
- * The fall case uses U+2212 MINUS, not a hyphen, so "−2" lines up with "+3"
- * in a tabular column.
+ * `metrics.deltaPp` is deliberately NOT read here, though the tile printed it
+ * until now. It is damped by construction — `deltaPp` in `metrics.ts` documents
+ * that both of its windows are "the last four complete runs as of their own cut
+ * date", so they overlap, and below eight lifetime runs they share almost every
+ * run — and it stays null until roughly eight runs have accumulated, which is
+ * two months of a weekly cadence. What it was there to answer, "which way is
+ * this going", the 12-week sparkline directly beneath answers with the whole
+ * shape instead of one damped number. The field stays on `EngineMetrics`: a
+ * later surface that can draw it in context (a hover on the sparkline, a
+ * period-over-period view) should not have to recompute it.
+ *
+ * The band and `n` stay. They are the trust cues, not decoration: a share
+ * without either is a number nobody can check.
  */
 export function tileReading(metrics: EngineMetrics): TileReading {
   if (metrics.mentionRate === null) {
-    return { kind: "baseline", headline: "Collecting baseline", band: null, delta: null };
+    return { kind: "baseline", headline: "Collecting baseline", band: null };
   }
   if (metrics.shareOfVoice === null) {
-    return { kind: "measured-zero", headline: "No brands named", band: null, delta: null };
+    return { kind: "measured-zero", headline: "No brands named", band: null };
   }
   return {
     kind: "share",
     headline: `${Math.round(metrics.shareOfVoice)}%`,
     band: metrics.wilsonPp === null ? null : `±${Math.round(metrics.wilsonPp)} pp`,
-    delta:
-      metrics.deltaPp === null
-        ? null
-        : `${metrics.deltaPp < 0 ? "−" : "+"}${Math.abs(Math.round(metrics.deltaPp))} pp vs 30 days ago`,
   };
 }
 
@@ -124,8 +128,6 @@ export function OverviewCards({ tiles }: { tiles: EngineTile[] }) {
                 </span>
                 {reading.band && <span className="text-xs text-muted-foreground tabular-nums">{reading.band}</span>}
               </div>
-
-              {reading.delta && <p className="text-xs text-muted-foreground">{reading.delta}</p>}
 
               <SovSparkline
                 points={tile.points}

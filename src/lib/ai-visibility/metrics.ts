@@ -271,7 +271,11 @@ function toMetrics(engine: EngineId | "all", counts: WindowCounts, deltaPpValue:
 /**
  * 30-day share-of-voice movement, in percentage points.
  *
- * Read it as "versus what this tile said 30 days ago", NOT as "this period
+ * Computed, and currently rendered nowhere: the overview tile printed it until
+ * the damping described below was judged to outweigh what one number could add
+ * beside a 12-week sparkline. Kept for a surface that can give it context.
+ *
+ * Read it as "versus what the window said 30 days ago", NOT as "this period
  * versus the previous period". The two windows are both the last four complete
  * runs as of their own cut date, so they OVERLAP: at fortnightly cadence a
  * 30-day-old window shares two of its four runs with the current one, and below
