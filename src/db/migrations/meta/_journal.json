@@ -498,6 +498,13 @@
       "when": 1787471452819,
       "tag": "0070_smooth_mole_man",
       "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "7",
+      "when": 1787481926321,
+      "tag": "0071_little_iceman",
+      "breakpoints": true
     }
   ]
 }

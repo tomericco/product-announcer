@@ -749,6 +749,14 @@ export const aiVisibilityAggregates = pgTable(
     // samples the same as one with 30. Every rate in the UI is computed from
     // these at read time.
     n: integer("n").notNull(),
+    // Of those `n` samples, how many were GROUNDED — the engine ran a web
+    // search. The denominator for the citation-family metrics only: an engine
+    // that answered from memory cited nothing, so scoring it as "we were not
+    // cited" would be a lie about a sample where nothing at all was cited.
+    // Every other rate keeps `n` (ungrounded-answers design, decisions 4-5).
+    // Default 0 so historical rows read as "no grounded samples" rather than
+    // null; they are recomputable by re-running `computeAggregates`.
+    nGrounded: integer("n_grounded").notNull().default(0),
     tenantMentions: integer("tenant_mentions").notNull(),
     competitorMentions: jsonb("competitor_mentions").$type<Record<string, number>>().notNull().default({}),
     ownCitations: integer("own_citations").notNull(),
