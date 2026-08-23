@@ -11,7 +11,11 @@ import {
   MAX_PROMPT_SET_OUTPUT_TOKENS,
   PromptSetSchema,
 } from "../../../src/lib/ai-visibility/generate-prompts";
-import { countActivePrompts, listPrompts } from "../../../src/lib/ai-visibility/prompts";
+import {
+  MAX_ACTIVE_PROMPTS,
+  countActivePrompts,
+  listPrompts,
+} from "../../../src/lib/ai-visibility/prompts";
 import { seedTenant, dropTenant, seedCompanyProfile } from "../../helpers/fixtures";
 
 const CONTEXT = { tenantName: "Acme", aliases: ["Acme Inc"] };
@@ -106,6 +110,22 @@ describe("allocateMix", () => {
     }
   });
 
+  it("spends a full empty-set offer at the active cap on four of the six intents", () => {
+    // `MAX_ACTIVE_PROMPTS` is 5, so this is the mix a tenant with an empty
+    // prompt set is actually generated — not a hypothetical slot count. Pinned
+    // because the docstring on `allocateMix` quotes it and because two intents
+    // going to zero is a deliberate cost of the cut, not a regression to fix by
+    // reweighting INTENT_MIX.
+    expect(allocateMix(MAX_ACTIVE_PROMPTS)).toEqual({
+      discovery: 2,
+      comparison: 1,
+      alternatives: 1,
+      how_to: 1,
+      brand_check: 0,
+      pricing: 0,
+    });
+  });
+
   it("is deterministic and never negative", () => {
     expect(allocateMix(30)).toEqual(allocateMix(30));
     expect(Object.values(allocateMix(7)).reduce((a, b) => a + b, 0)).toBe(7);
@@ -151,7 +171,7 @@ async function seedProfile(overrides: Record<string, unknown> = {}) {
 }
 
 describe("generatePromptSet", () => {
-  it("writes proposals across every intent, none of them active", async () => {
+  it("writes proposals across every intent the cap has room for, none of them active", async () => {
     const tenant = await seedProfile();
     const generate = generateAll();
 
@@ -159,15 +179,17 @@ describe("generatePromptSet", () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.proposals).toHaveLength(30);
+    expect(result.proposals).toHaveLength(MAX_ACTIVE_PROMPTS);
     expect(result.proposals.every((p) => p.status === "proposed")).toBe(true);
     expect(result.proposals.every((p) => p.origin === "generated")).toBe(true);
     expect(await countActivePrompts(tenant.id)).toBe(0);
 
+    // FOUR intents, not six. `allocateMix(5)` cannot cover six intents and
+    // leaves brand_check and pricing on zero — the documented cost of the
+    // 5-prompt cap, pinned here so a change to it is a decision rather than a
+    // surprise. See the docstring on `allocateMix`.
     const byIntent = new Set(result.proposals.map((p) => p.intent));
-    expect([...byIntent].sort()).toEqual(
-      ["alternatives", "brand_check", "comparison", "discovery", "how_to", "pricing"].sort()
-    );
+    expect([...byIntent].sort()).toEqual(["alternatives", "comparison", "discovery", "how_to"]);
     expect(result.proposals.filter((p) => p.intent === "brand_check").every((p) => p.branded)).toBe(true);
     expect(result.proposals.some((p) => p.persona === "Head of Engineering")).toBe(true);
     expect(result.proposals.some((p) => p.competitorId !== null)).toBe(true);
@@ -512,7 +534,7 @@ describe("generatePromptSet — the model call", () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.proposals).toHaveLength(30);
+    expect(result.proposals).toHaveLength(MAX_ACTIVE_PROMPTS);
   });
 });
 
@@ -563,7 +585,7 @@ describe("generatePromptSet — mapping the model's answer back to slots", () =>
 
   it("cannot write more rows than there are slots, however many the model returns", async () => {
     const tenant = await seedProfile();
-    await fillActiveTo(tenant.id, 29);
+    await fillActiveTo(tenant.id, MAX_ACTIVE_PROMPTS - 1);
     // One slot left under the cap. A model that answers forty of them must
     // still only cost this tenant one proposal.
     const generate = vi.fn(async () => ({
@@ -721,8 +743,8 @@ describe("generatePromptSet — the batch write", () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.proposals).toHaveLength(30);
-    // Thirty rows, one INSERT. A loop would be thirty, and a failure partway
+    expect(result.proposals).toHaveLength(MAX_ACTIVE_PROMPTS);
+    // Five rows, one INSERT. A loop would be five, and a failure partway
     // through it would leave a half-written set the reviewer reads as complete.
     expect(calls()).toBe(1);
   });

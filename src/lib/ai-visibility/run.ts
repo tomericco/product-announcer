@@ -16,6 +16,7 @@ import { ENGINE_CLIENTS } from "@/lib/ai-visibility/engines";
 import { extractSample, loadBrandTargets, type ExtractSampleDeps } from "@/lib/ai-visibility/extract";
 import { judgeRun } from "@/lib/ai-visibility/judge";
 import { emitSignals } from "@/lib/ai-visibility/signals";
+import { MAX_ACTIVE_PROMPTS, RUNNABLE_ORDER } from "@/lib/ai-visibility/prompts";
 import { mapWithConcurrency } from "@/lib/concurrency";
 import type { EngineClient, EngineId } from "@/lib/ai-visibility/types";
 
@@ -44,9 +45,12 @@ export type PlanRunResult =
 
 /**
  * Sample rows are inserted in chunks so one plan cannot exceed the driver's
- * bind-parameter ceiling. 30 prompts x 3 engines x 3 samples is 270 rows and
- * roughly a dozen columns each — comfortably over 3,000 parameters in one
- * statement, which is the wrong thing to discover on a tenant's first run.
+ * bind-parameter ceiling. The chunk long predates `MAX_ACTIVE_PROMPTS = 5` —
+ * at 5 prompts x 3 engines x 3 samples a plan is 45 rows and never chunks at
+ * all — and stays because the ceiling it guards is the driver's, not the
+ * cap's: raising the cap back toward 30 (270 rows, roughly a dozen columns
+ * each, comfortably over 3,000 parameters in one statement) must not be the
+ * commit that discovers this.
  */
 const SAMPLE_INSERT_CHUNK = 200;
 
@@ -202,13 +206,23 @@ export async function planRun(
   // on and can never see.
   const engines = settings.engines;
 
+  // At most `MAX_ACTIVE_PROMPTS`, in `RUNNABLE_ORDER` — see `runnablePrompts`.
+  // Lowering the cap does not deactivate anything, so a tenant seeded under an
+  // older, higher ceiling still has more `active` rows than a run may ask; the
+  // LIMIT here is what makes the cap a cost cut rather than a note on a form.
+  // The ORDER BY is the load-bearing half: it is creation order, so every run
+  // asks the SAME prompts, and the trend chart's series stays comparable to
+  // itself. `capExceeded` reads the same slice, so the estimate quoted before
+  // the click is the plan that follows it.
   const prompts = await database
     .select({
       id: aiVisibilityPrompts.id,
       intent: aiVisibilityPrompts.intent,
     })
     .from(aiVisibilityPrompts)
-    .where(and(eq(aiVisibilityPrompts.tenantId, tenantId), eq(aiVisibilityPrompts.status, "active")));
+    .where(and(eq(aiVisibilityPrompts.tenantId, tenantId), eq(aiVisibilityPrompts.status, "active")))
+    .orderBy(...RUNNABLE_ORDER)
+    .limit(MAX_ACTIVE_PROMPTS);
   if (prompts.length === 0) return { ok: false, reason: "no_prompts" };
 
   const inFlightBefore = await findInFlightRun(database, tenantId);

@@ -43,7 +43,7 @@ async function click(element: HTMLElement) {
   });
 }
 
-const ESTIMATE = { prompts: 28, engines: 3, samples: 3, calls: 252, usd: 3.12 };
+const ESTIMATE = { prompts: 5, engines: 3, samples: 3, calls: 45, usd: 6.23 };
 
 function metrics(overrides: Partial<EngineMetrics> = {}): EngineMetrics {
   // Every rate is 0..100, not 0..1 — `engineMetrics` returns percentages
@@ -293,8 +293,19 @@ describe("engineGridClass", () => {
 
 describe("estimateSentence", () => {
   it("states the shape of the spend in plain dollars, never credits", () => {
-    expect(estimateSentence({ prompts: 28, engines: 3, samples: 3, calls: 252, usd: 3.12 })).toBe(
-      "≈ 28 prompts × 3 engines × 3 samples — about $3.12"
+    expect(estimateSentence({ prompts: 5, engines: 3, samples: 3, calls: 45, usd: 6.23 })).toBe(
+      "≈ 45 calls — 5 prompts × 3 engines × up to 3 samples — about $6.23"
+    );
+  });
+
+  it("quotes the planned CALL count rather than a product the reader can falsify", () => {
+    // Two brand-check prompts among the five: they are sampled once per engine,
+    // so the plan is 3×3×3 + 2×3 = 33 calls, not the 45 that 5 × 3 × 3 implies.
+    // The old sentence invited exactly that multiplication and lost the
+    // argument — it read "≈ 26 prompts × 3 engines × 3 samples" over a plan of
+    // 216 calls, not the 234 it spelled out.
+    expect(estimateSentence({ prompts: 5, engines: 3, samples: 3, calls: 33, usd: 4.57 })).toContain(
+      "≈ 33 calls"
     );
   });
 });
@@ -353,7 +364,7 @@ describe("RunNowButton", () => {
 
     expect(runNowAction).not.toHaveBeenCalled();
     expect(
-      screen.getByText(/≈ 28 prompts × 3 engines × 3 samples — about \$3\.12/)
+      screen.getByText(/≈ \d+ calls — .* — about \$\d/)
     ).toBeInTheDocument();
     // The attribution-lag caveat travels with the spend, per the trust cues.
     expect(screen.getByText(/Content changes show in 60–90 days\./)).toBeInTheDocument();

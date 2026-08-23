@@ -24,9 +24,18 @@ export type RunEstimate = { prompts: number; engines: number; samples: number; c
  * and the reason there is a confirmation dialog at all. Never credits: the
  * research found credit systems are disliked precisely because they hide
  * this number.
+ *
+ * `calls` is quoted, and the three factors are demoted to a parenthetical that
+ * says "up to". The sentence used to read "≈ 26 prompts × 3 engines × 3
+ * samples", inviting the reader to multiply — and the product was wrong: 234
+ * against a real plan of 216, because brand-check prompts are sampled ONCE per
+ * engine whatever the samples setting says. A trust cue whose own arithmetic
+ * does not check out is worse than no trust cue, and this is the one screen
+ * that has to be right about money. `calls` comes from `plannedCallsForPrompts`,
+ * which is the count the planner actually inserts.
  */
 export function estimateSentence(estimate: RunEstimate): string {
-  return `≈ ${estimate.prompts} prompts × ${estimate.engines} engines × ${estimate.samples} samples — about $${estimate.usd.toFixed(2)}`;
+  return `≈ ${estimate.calls} calls — ${estimate.prompts} prompts × ${estimate.engines} engines × up to ${estimate.samples} samples — about $${estimate.usd.toFixed(2)}`;
 }
 
 /**

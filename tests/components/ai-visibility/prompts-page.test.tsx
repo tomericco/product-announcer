@@ -94,7 +94,7 @@ vi.mock("@/lib/workspace/session", () => ({ requireSession }));
 vi.mock("@/lib/workspace/company-profile", () => ({ getOrCreateCompanyProfile }));
 vi.mock("@/lib/workspace/competitors", () => ({ listCompetitors }));
 vi.mock("@/lib/ai-visibility/settings", () => ({ getAiVisibilitySettings }));
-vi.mock("@/lib/ai-visibility/prompts", () => ({ listPrompts, MAX_ACTIVE_PROMPTS: 30 }));
+vi.mock("@/lib/ai-visibility/prompts", () => ({ listPrompts, MAX_ACTIVE_PROMPTS: 5 }));
 vi.mock("@/lib/ai-visibility/metrics", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/ai-visibility/metrics")>();
   return { ...actual, promptMatrix };
@@ -323,14 +323,14 @@ describe("prompts page — what the editor is handed", () => {
 describe("prompts page — the suggestions section's gates", () => {
   it("blocks Suggest more at the active cap and states the count as the reason", async () => {
     setup({
-      prompts: Array.from({ length: 30 }, (_, index) =>
+      prompts: Array.from({ length: 5 }, (_, index) =>
         prompt({ id: `${index}`.padStart(8, "0") + "-1111-4111-8111-111111111111" })
       ),
     });
     await renderPage();
 
     expect(captured.suggestions!.canSuggestMore).toBe(false);
-    expect(captured.suggestions!.suggestMoreReason).toBe("30 / 30 limit");
+    expect(captured.suggestions!.suggestMoreReason).toBe("5 / 5 limit");
   });
 
   it("blocks it on an unconfigured profile with a different, actionable reason", async () => {

@@ -15,6 +15,7 @@ import {
 import type { EngineAnswer, EngineClient, EngineError } from "../../../src/lib/ai-visibility/types";
 import { cancelRun, finalizeRun, latestRun, planRun, runSlice } from "../../../src/lib/ai-visibility/run";
 import { engineMetrics } from "../../../src/lib/ai-visibility/metrics";
+import { MAX_ACTIVE_PROMPTS } from "../../../src/lib/ai-visibility/prompts";
 import { seedTenant, dropTenant } from "../../helpers/fixtures";
 
 const TENANT = "AI Visibility Run Test Tenant";
@@ -57,6 +58,93 @@ async function seedPrompt(
     .returning();
   return prompt;
 }
+
+describe("planRun — the prompt budget", () => {
+  /**
+   * A tenant seeded under the OLD 30-prompt ceiling. Lowering
+   * `MAX_ACTIVE_PROMPTS` deactivates nothing, so this is the state every
+   * existing tenant is in, and it is the state in which the cost cut either
+   * lands or does not.
+   */
+  async function seedOverTheCap(tenantId: string, count: number) {
+    const prompts = [];
+    for (let index = 0; index < count; index += 1) {
+      // One INSERT each, so `created_at` orders them: a single batched insert
+      // would stamp one transaction timestamp across all of them and leave the
+      // `id` tiebreak doing all the work. Both orders are stable; this one is
+      // also readable.
+      prompts.push(await seedPrompt(tenantId, { text: `capped prompt ${index}` }));
+    }
+    return prompts;
+  }
+
+  it("plans at most MAX_ACTIVE_PROMPTS, however many are active", async () => {
+    const tenant = await seedTenant(TENANT);
+    await seedSettings(tenant.id, { engines: ["openai"], samplesPerPrompt: 3 });
+    await seedOverTheCap(tenant.id, 12);
+
+    const result = await planRun(tenant.id, { trigger: "manual", now: frozen("2026-03-02T09:00:00Z") });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // 5 prompts x 1 engine x 3 samples. Twelve would be 36.
+    expect(result.plannedCalls).toBe(MAX_ACTIVE_PROMPTS * 3);
+  });
+
+  it("asks the SAME prompts every run, which is what makes the trend comparable", async () => {
+    // The whole reason the selection is ordered rather than arbitrary: the
+    // trend chart plots one series across twelve runs, and that series only
+    // means anything if every run asked the same questions. A drifting pick
+    // would leave the chart silently plotting a different question each week
+    // under one unbroken line.
+    const tenant = await seedTenant(TENANT);
+    await seedSettings(tenant.id, { engines: ["openai"], samplesPerPrompt: 1 });
+    const prompts = await seedOverTheCap(tenant.id, 9);
+
+    const asked = async () => {
+      const plan = await planRun(tenant.id, { trigger: "manual", now: frozen("2026-03-02T09:00:00Z") });
+      if (!plan.ok) throw new Error(`planRun refused: ${plan.reason}`);
+      const rows = await db
+        .select({ promptId: aiVisibilitySamples.promptId })
+        .from(aiVisibilitySamples)
+        .where(eq(aiVisibilitySamples.runId, plan.runId));
+      await db.update(aiVisibilityRuns).set({ status: "complete" }).where(eq(aiVisibilityRuns.id, plan.runId));
+      return [...new Set(rows.map((row) => row.promptId))].sort();
+    };
+
+    const first = await asked();
+    const second = await asked();
+
+    expect(first).toHaveLength(MAX_ACTIVE_PROMPTS);
+    expect(second).toEqual(first);
+    // And they are the OLDEST five, not any five that happen to be stable.
+    expect(first).toEqual(prompts.slice(0, MAX_ACTIVE_PROMPTS).map((p) => p.id).sort());
+  });
+
+  it("promotes the next prompt only when a human pauses one of the chosen five", async () => {
+    // The one case where the series SHOULD change, and the prompts page
+    // records why. Nothing a run does can cause it.
+    const tenant = await seedTenant(TENANT);
+    await seedSettings(tenant.id, { engines: ["openai"], samplesPerPrompt: 1 });
+    const prompts = await seedOverTheCap(tenant.id, 7);
+    await db
+      .update(aiVisibilityPrompts)
+      .set({ status: "paused" })
+      .where(eq(aiVisibilityPrompts.id, prompts[0].id));
+
+    const plan = await planRun(tenant.id, { trigger: "manual", now: frozen("2026-03-02T09:00:00Z") });
+    expect(plan.ok).toBe(true);
+    if (!plan.ok) return;
+    const rows = await db
+      .select({ promptId: aiVisibilitySamples.promptId })
+      .from(aiVisibilitySamples)
+      .where(eq(aiVisibilitySamples.runId, plan.runId));
+
+    expect([...new Set(rows.map((row) => row.promptId))].sort()).toEqual(
+      prompts.slice(1, MAX_ACTIVE_PROMPTS + 1).map((p) => p.id).sort()
+    );
+  });
+});
 
 describe("planRun", () => {
   it("refuses when the feature is disabled", async () => {

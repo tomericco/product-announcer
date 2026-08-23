@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../src/db";
 import { aiVisibilityPrompts, users } from "../../src/db/schema";
+import { MAX_ACTIVE_PROMPTS } from "../../src/lib/ai-visibility/prompts";
 import { seedTenant, dropTenant } from "../helpers/fixtures";
 
 const TENANT = "AI Visibility Actions Test Tenant";
@@ -179,7 +180,7 @@ describe("savePromptAction", () => {
   });
 
   it("refuses to add past the active cap rather than silently overspending", async () => {
-    for (let index = 0; index < 30; index += 1) {
+    for (let index = 0; index < MAX_ACTIVE_PROMPTS; index += 1) {
       const row = await seedProposal(`prompt number ${index}`);
       await db
         .update(aiVisibilityPrompts)
@@ -193,7 +194,7 @@ describe("savePromptAction", () => {
 
     expect(await savePromptAction(form)).toEqual({
       ok: false,
-      error: "You're at the 30 active prompt limit. Pause one first.",
+      error: `You're at the ${MAX_ACTIVE_PROMPTS} active prompt limit. Pause one first.`,
     });
   });
 });
@@ -359,7 +360,7 @@ describe("approveProposalsAction", () => {
 
   it("turns the cap into an instruction with a number, not a wall", async () => {
     await db.insert(aiVisibilityPrompts).values(
-      Array.from({ length: 29 }, (_, index) => ({
+      Array.from({ length: MAX_ACTIVE_PROMPTS - 1 }, (_, index) => ({
         tenantId: currentTenantId,
         text: `active prompt number ${index}`,
         intent: "discovery" as const,
@@ -376,7 +377,7 @@ describe("approveProposalsAction", () => {
 
     expect(await approveProposalsAction(form)).toEqual({
       ok: false,
-      error: "That would pass the 30 active prompt limit — uncheck 2 more.",
+      error: `That would pass the ${MAX_ACTIVE_PROMPTS} active prompt limit — uncheck 2 more.`,
     });
   });
 });
@@ -423,7 +424,7 @@ describe("togglePromptAction and deletePromptAction", () => {
 
   it("reports resuming past the cap as the instruction, not as a silent no-op", async () => {
     await db.insert(aiVisibilityPrompts).values(
-      Array.from({ length: 30 }, (_, index) => ({
+      Array.from({ length: MAX_ACTIVE_PROMPTS }, (_, index) => ({
         tenantId: currentTenantId,
         text: `active prompt number ${index}`,
         intent: "discovery" as const,
@@ -436,7 +437,7 @@ describe("togglePromptAction and deletePromptAction", () => {
 
     expect(await togglePromptAction(paused.id, true)).toEqual({
       ok: false,
-      error: "You're at the 30 active prompt limit. Pause one first.",
+      error: `You're at the ${MAX_ACTIVE_PROMPTS} active prompt limit. Pause one first.`,
     });
     const [row] = await db.select().from(aiVisibilityPrompts).where(eq(aiVisibilityPrompts.id, paused.id));
     expect(row.status).toBe("paused");

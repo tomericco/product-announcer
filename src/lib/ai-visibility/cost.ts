@@ -2,6 +2,7 @@ import { and, eq, gte, lt, sql } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
 import { aiVisibilityPrompts, aiVisibilityRuns } from "@/db/schema";
 import { engineCost } from "@/lib/ai-visibility/engines";
+import { MAX_ACTIVE_PROMPTS, RUNNABLE_ORDER } from "@/lib/ai-visibility/prompts";
 import { roundUsd } from "@/lib/ai-visibility/money";
 import { ENGINE_IDS, type EngineId } from "@/lib/ai-visibility/types";
 
@@ -118,7 +119,9 @@ export type CapState = {
  * `spentUsd` and the pre-run predicate would be self-fulfilling.
  *
  * Prompts are counted here rather than passed in so there is exactly one place
- * that knows brand-check prompts cost one sample.
+ * that knows brand-check prompts cost one sample — and, since the cap became a
+ * cost cut, exactly one place that knows a run asks only the first
+ * `MAX_ACTIVE_PROMPTS` of them.
  */
 export async function capExceeded(
   tenantId: string,
@@ -130,17 +133,27 @@ export async function capExceeded(
     (ENGINE_IDS as readonly string[]).includes(e)
   );
 
-  const [counts] = await database
-    .select({
-      branded: sql<number>`count(*) filter (where ${aiVisibilityPrompts.intent} = 'brand_check')::int`,
-      other: sql<number>`count(*) filter (where ${aiVisibilityPrompts.intent} <> 'brand_check')::int`,
-    })
+  // The prompts `planRun` will ACTUALLY ask: at most `MAX_ACTIVE_PROMPTS`, in
+  // `RUNNABLE_ORDER`. A `count(*)` over every active row was right while the
+  // planner asked every active row; it is not now that the planner takes a
+  // capped slice, and a gate that priced 30 prompts against a run of 5 would
+  // pause tenants for spend that was never going to happen. Reading the rows
+  // rather than counting them is what lets the two agree — at five rows the
+  // difference is noise, and the intents have to come from the same slice or
+  // the brand-check correction is applied to the wrong prompts.
+  const runnable = await database
+    .select({ intent: aiVisibilityPrompts.intent })
     .from(aiVisibilityPrompts)
-    .where(and(eq(aiVisibilityPrompts.tenantId, tenantId), eq(aiVisibilityPrompts.status, "active")));
+    .where(and(eq(aiVisibilityPrompts.tenantId, tenantId), eq(aiVisibilityPrompts.status, "active")))
+    .orderBy(...RUNNABLE_ORDER)
+    .limit(MAX_ACTIVE_PROMPTS);
+
+  const branded = runnable.filter((prompt) => prompt.intent === "brand_check").length;
+  const other = runnable.length - branded;
 
   const estimateUsd =
-    estimateRunCost({ promptCount: counts?.other ?? 0, engines, samplesPerPrompt: settings.samplesPerPrompt }) +
-    estimateRunCost({ promptCount: counts?.branded ?? 0, engines, samplesPerPrompt: 1 });
+    estimateRunCost({ promptCount: other, engines, samplesPerPrompt: settings.samplesPerPrompt }) +
+    estimateRunCost({ promptCount: branded, engines, samplesPerPrompt: 1 });
 
   const spentUsd = await monthToDateSpendUsd(tenantId, now, database);
   const capUsd = settings.monthlyCapUsd;

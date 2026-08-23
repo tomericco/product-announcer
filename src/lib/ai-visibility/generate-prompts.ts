@@ -17,10 +17,16 @@ import { PROMPT_INTENTS, type PromptIntent } from "@/lib/ai-visibility/types";
 import { MAX_ACTIVE_PROMPTS, countActivePrompts, normalizePromptText } from "@/lib/ai-visibility/prompts";
 
 /**
- * The spec's intent mix, verbatim. It sums to 40 rather than 30 on purpose:
- * this is what a tenant with an empty prompt set is offered, and 30 is what
- * they may end up with ACTIVE. `allocateMix` scales it to the slots actually
- * left under the cap.
+ * The spec's intent mix, verbatim. It sums to 40 rather than to the active cap
+ * on purpose: this is what a tenant with an empty prompt set is OFFERED, and
+ * `MAX_ACTIVE_PROMPTS` is what they may end up with ACTIVE. `allocateMix`
+ * scales it to the slots actually left under that cap.
+ *
+ * NOT reweighted when the cap fell to 5. These six weights are the spec's
+ * answer to "what should a prompt set measure", and 40 is still the offer for
+ * an empty set; bending them so that six intents divide evenly into five slots
+ * would change what the feature claims to measure in order to tidy up an
+ * arithmetic remainder.
  */
 export const INTENT_MIX: Record<PromptIntent, number> = {
   discovery: 12,
@@ -46,6 +52,25 @@ export const INTENT_MIX_TOTAL = 40;
  * cap would silently stop being offered whole intents. Below six there are
  * more intents than prompts, so some intent MUST go unrepresented; which ones
  * survive is left to largest-remainder.
+ *
+ * `MAX_ACTIVE_PROMPTS` is 5, which is below six, so the starvation rescue
+ * above does NOT run for a fresh tenant and two intents get nothing. The
+ * actual allocation at 5, verified against this function rather than derived
+ * on paper:
+ *
+ *     discovery 2, comparison 1, alternatives 1, how_to 1,
+ *     brand_check 0, pricing 0                                   (sums to 5)
+ *
+ * Read that as the cost of the cut, not as a bug: a five-prompt set measures
+ * shortlists, head-to-heads, switching and practitioner questions, and stops
+ * measuring price questions and brand checks. Brand check is the notable loss
+ * — it is the prompt that asks whether an engine knows what the company sells
+ * at all — and a tenant who wants it back adds one by hand, which costs one
+ * call per engine per run because brand-check prompts are sampled once.
+ *
+ * The sum-to-`slots` invariant is unaffected by any of this: the
+ * largest-remainder loop assigns every leftover slot before the rescue block
+ * is reached, and the rescue only ever MOVES a slot between intents.
  *
  * Deterministic — `Array#sort` is stable, ties fall back to `PROMPT_INTENTS`
  * order, and the same slot count always yields the same mix.

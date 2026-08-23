@@ -3,6 +3,7 @@ import { db } from "../../../src/db";
 import { aiVisibilityPrompts } from "../../../src/db/schema";
 import { capExceeded } from "../../../src/lib/ai-visibility/cost";
 import { plannedCallsForPrompts } from "../../../src/lib/ai-visibility/planned-calls";
+import { MAX_ACTIVE_PROMPTS, runnablePrompts } from "../../../src/lib/ai-visibility/prompts";
 import { engineCost } from "../../../src/lib/ai-visibility/engines";
 import { ENGINE_IDS, type EngineId } from "../../../src/lib/ai-visibility/types";
 import { monthlyEstimateUsd } from "../../../src/app/(dashboard)/settings/ai-visibility-form";
@@ -18,6 +19,11 @@ import { seedTenant, dropTenant } from "../../helpers/fixtures";
  * The brand-check rule is the specific place they drifted: `capExceeded`
  * charges a `brand_check` prompt exactly one sample whatever the samples
  * setting says, and an estimate that charged all of them at three read high.
+ *
+ * The second is `MAX_ACTIVE_PROMPTS`. A run asks at most that many prompts, so
+ * both sides price at most that many: the gate LIMITs its own read, and the
+ * pages hand the form a `runnablePrompts` slice. These fixtures therefore stay
+ * at or under the cap except where the test is about overshooting it.
  */
 const TENANT = "AI Visibility Estimate Gate Test Tenant";
 
@@ -65,7 +71,7 @@ describe("the settings estimate and the cap gate agree", () => {
   it("charges brand-check prompts one sample on both sides", async () => {
     const tenant = await seedTenant(TENANT);
     await seedPrompts(tenant.id, [
-      ...Array.from({ length: 26 }, () => ({ intent: "discovery" })),
+      ...Array.from({ length: 3 }, () => ({ intent: "discovery" })),
       { intent: "brand_check" },
       { intent: "brand_check" },
     ]);
@@ -79,7 +85,7 @@ describe("the settings estimate and the cap gate agree", () => {
 
     expect(
       formPerRunUsd({
-        promptCount: 28,
+        promptCount: 5,
         brandCheckCount: 2,
         engines: settings.engines as EngineId[],
         samplesPerPrompt: 3,
@@ -89,14 +95,14 @@ describe("the settings estimate and the cap gate agree", () => {
 
   it("agrees for a prompt set with no brand checks at all", async () => {
     const tenant = await seedTenant(TENANT);
-    await seedPrompts(tenant.id, Array.from({ length: 12 }, () => ({ intent: "comparison" })));
+    await seedPrompts(tenant.id, Array.from({ length: 5 }, () => ({ intent: "comparison" })));
     const settings = { engines: [...ENGINE_IDS], samplesPerPrompt: 5, monthlyCapUsd: 200 };
 
     const gate = await capExceeded(tenant.id, settings, new Date("2026-08-17T00:00:00Z"));
 
     expect(
       formPerRunUsd({
-        promptCount: 12,
+        promptCount: 5,
         brandCheckCount: 0,
         engines: [...ENGINE_IDS],
         samplesPerPrompt: 5,
@@ -155,7 +161,7 @@ describe("the settings estimate and the cap gate agree", () => {
     // spends money.
     const tenant = await seedTenant(TENANT);
     const specs = [
-      ...Array.from({ length: 4 }, () => ({ intent: "discovery" })),
+      ...Array.from({ length: 3 }, () => ({ intent: "discovery" })),
       { intent: "brand_check" },
       { intent: "brand_check" },
     ];
@@ -168,11 +174,36 @@ describe("the settings estimate and the cap gate agree", () => {
       samplesPerPrompt: settings.samplesPerPrompt,
     });
 
-    // 4 × 3 + 2 × 1 = 14 per engine, 28 across two. A flat product says 36.
-    expect(calls).toBe(28);
+    // 3 × 3 + 2 × 1 = 11 per engine, 22 across two. A flat product says 30.
+    expect(calls).toBe(22);
     // And the gate priced exactly those calls: both engines here cost the same
     // per call in the fixture only if that holds, so assert per-engine instead.
-    expect(gate.estimateUsd).toBeCloseTo(14 * (engineCost("openai") + engineCost("gemini")), 8);
+    expect(gate.estimateUsd).toBeCloseTo(11 * (engineCost("openai") + engineCost("gemini")), 8);
+  });
+
+  it("prices only the prompts a run will ask, for a tenant seeded over the cap", async () => {
+    // Lowering `MAX_ACTIVE_PROMPTS` deactivates nothing, so this tenant is a
+    // real one: 8 active rows, of which `planRun` asks the first 5. A gate
+    // still pricing all 8 would pause a tenant for spend that never happens,
+    // and the form beside it would quote a number the run never spends.
+    const tenant = await seedTenant(TENANT);
+    const specs = Array.from({ length: 8 }, () => ({ intent: "discovery" }));
+    await seedPrompts(tenant.id, specs);
+    const settings = { engines: ["openai"], samplesPerPrompt: 3, monthlyCapUsd: 200 };
+
+    const gate = await capExceeded(tenant.id, settings, new Date("2026-08-17T00:00:00Z"));
+
+    expect(gate.estimateUsd).toBeCloseTo(MAX_ACTIVE_PROMPTS * 3 * engineCost("openai"), 8);
+    // The pages feed the form the same slice, so the two still agree.
+    const runnable = runnablePrompts(specs);
+    expect(
+      formPerRunUsd({
+        promptCount: runnable.length,
+        brandCheckCount: 0,
+        engines: ["openai"],
+        samplesPerPrompt: 3,
+      })
+    ).toBeCloseTo(gate.estimateUsd, 8);
   });
 
   it("agrees at zero prompts, where both must say zero rather than NaN", async () => {

@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import { ENGINE_CLIENTS, engineLabel, engineCost } from "../../../../src/lib/ai-visibility/engines";
 import { ENGINE_IDS } from "../../../../src/lib/ai-visibility/types";
 import { ENGINE_REQUEST_TIMEOUT_MS } from "../../../../src/lib/ai-visibility/engines/shape";
+import { MAX_ACTIVE_PROMPTS } from "../../../../src/lib/ai-visibility/prompts";
 
 describe("the engine registry", () => {
   it("has one client per engine id, keyed by its own id", () => {
@@ -31,22 +32,25 @@ describe("the engine registry", () => {
     }
   });
 
-  it("reports what the DEFAULT run actually costs, which is far above the $20 cap", () => {
-    // 30 prompts x 3 samples on all three engines, weekly. This test does not
-    // assert a target — it pins the real number so that changing the run shape
-    // or a provider's rates has to be a deliberate edit here.
+  it("reports what the DEFAULT run actually costs", () => {
+    // `MAX_ACTIVE_PROMPTS` prompts x 3 samples on all three engines, weekly.
+    // This test does not assert a target — it pins the real number so that
+    // changing the run shape or a provider's rates has to be a deliberate edit
+    // here.
     //
-    // The default cap is $20/month. This shape costs roughly nine times that,
-    // so a tenant on the defaults pauses partway through their first run. That
-    // is a product decision (fewer prompts, fewer samples, or a higher cap),
-    // NOT something to fix by quietly lowering these constants — the previous
-    // values were ~8-27x too low and made the estimate and the cap both lie.
-    const perRun = ENGINE_IDS.reduce((total, id) => total + engineCost(id) * 30 * 3, 0);
+    // These constants came in far above what the spec's cost model assumed,
+    // and the answer was to cut the prompt cap from 30 to 5 rather than to
+    // quietly lower them — the values before that were ~8-27x too low and made
+    // the estimate and the cap both lie. At 30 prompts this shape cost $37.35 a
+    // run, roughly nine times the $20 monthly cap; at 5 it is under a third of
+    // it per run, and a weekly cadence still runs a tenant past the default cap
+    // inside a month, which is a product decision and not a bug in here.
+    const perRun = ENGINE_IDS.reduce((total, id) => total + engineCost(id) * MAX_ACTIVE_PROMPTS * 3, 0);
     const perMonth = perRun * 4.33;
 
-    expect(perRun).toBeCloseTo(37.35, 1);
-    expect(perMonth).toBeGreaterThan(150);
-    expect(perMonth).toBeLessThan(175);
+    expect(perRun).toBeCloseTo(6.23, 2);
+    expect(perMonth).toBeGreaterThan(25);
+    expect(perMonth).toBeLessThan(30);
   });
 });
 

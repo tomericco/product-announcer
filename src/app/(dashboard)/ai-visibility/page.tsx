@@ -19,7 +19,7 @@ import { requireSession } from "@/lib/workspace/session";
 import { getOrCreateCompanyProfile } from "@/lib/workspace/company-profile";
 import { listCompetitors } from "@/lib/workspace/competitors";
 import { getAiVisibilitySettings } from "@/lib/ai-visibility/settings";
-import { listPrompts } from "@/lib/ai-visibility/prompts";
+import { listPrompts, runnablePrompts } from "@/lib/ai-visibility/prompts";
 import { plannedCallsForPrompts } from "@/lib/ai-visibility/planned-calls";
 import { latestRun } from "@/lib/ai-visibility/run";
 import {
@@ -207,7 +207,15 @@ export default async function AiVisibilityPage() {
   // number the enforcement disagrees with — always higher, and higher on the
   // one screen whose job is to be trusted about money. `plannedCallsForPrompts`
   // is that split, written once.
-  const plannedCalls = plannedCallsForPrompts(activePrompts, {
+  // The prompts a run will ACTUALLY ask. Lowering `MAX_ACTIVE_PROMPTS` does
+  // not deactivate anything, so a tenant seeded under the old ceiling still
+  // has more active rows than `planRun` will take — and quoting a price for
+  // rows that will not be asked is exactly the kind of wrong this line must
+  // not be. `listPrompts` already returns `RUNNABLE_ORDER`, so this is the
+  // same slice the planner and `capExceeded` take.
+  const runnable = runnablePrompts(activePrompts);
+
+  const plannedCalls = plannedCallsForPrompts(runnable, {
     engineCount: settings.engines.length,
     samplesPerPrompt: settings.samplesPerPrompt,
   });
@@ -226,7 +234,7 @@ export default async function AiVisibilityPage() {
   // and the No-run-yet empty state — so the two can never quote different
   // money for the same click.
   const runEstimate: RunEstimate = {
-    prompts: activePrompts.length,
+    prompts: runnable.length,
     engines: settings.engines.length,
     samples: settings.samplesPerPrompt,
     calls: plannedCalls,

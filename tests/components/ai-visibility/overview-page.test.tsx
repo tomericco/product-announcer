@@ -137,7 +137,14 @@ vi.mock("@/lib/workspace/session", () => ({ requireSession }));
 vi.mock("@/lib/workspace/company-profile", () => ({ getOrCreateCompanyProfile }));
 vi.mock("@/lib/workspace/competitors", () => ({ listCompetitors }));
 vi.mock("@/lib/ai-visibility/settings", () => ({ getAiVisibilitySettings }));
-vi.mock("@/lib/ai-visibility/prompts", () => ({ listPrompts, MAX_ACTIVE_PROMPTS: 30 }));
+// `runnablePrompts` is the real one: it is a pure slice, and stubbing it would
+// hide the very thing the page now depends on — that the run estimate prices
+// only the prompts a run will ask.
+vi.mock("@/lib/ai-visibility/prompts", () => ({
+  listPrompts,
+  MAX_ACTIVE_PROMPTS: 5,
+  runnablePrompts: <T,>(prompts: readonly T[]): T[] => prompts.slice(0, 5),
+}));
 vi.mock("@/lib/ai-visibility/run", () => ({ latestRun }));
 vi.mock("@/lib/ai-visibility/cited-domains", () => ({ citedDomains, everSignalledDomains }));
 vi.mock("@/lib/signals/query", () => ({ listSignals }));

@@ -54,7 +54,8 @@ The content marketer on a 2–5 person team (pivot spec). Weekly:
 **v1**
 
 - Prompt generation from company context; review → approve; edit/pause/add;
-  monthly suggestion refresh as proposals; hard cap 30 active prompts.
+  monthly suggestion refresh as proposals; hard cap 5 active prompts (was 30
+  as specced; cut for cost — see §Engines & run mechanics).
 - Three engines via API: OpenAI Responses + web search, Gemini + Google
   Search grounding, Claude + web search. Per-tenant engine toggles; all on by
   default. (Perplexity was specced and built as a fourth, then removed before
@@ -167,9 +168,13 @@ v2 metrics are listed under Scope.
 
 - Neutral fixed system prompt; default temperature (we want the natural
   distribution); no `user_location` in v1 (locale is v2); English.
-- **3 samples** per prompt × engine per run; brand-check prompts 1×. 30 × 3 ×
-  3 ≈ 270 calls per run, weekly → ~1,170 calls/month ≈ **$12–35/tenant/month**
-  at list prices (parent research), less with Gemini's 5k/month free grounded
+- **3 samples** per prompt × engine per run; brand-check prompts 1×. As
+  specced this was 30 × 3 × 3 ≈ 270 calls per run, weekly → ~1,170
+  calls/month ≈ **$12–35/tenant/month** at list prices (parent research). The
+  measured per-call costs came in higher than that range assumed (openai
+  $0.252, anthropic $0.094, gemini $0.069 — $0.415 per prompt-sample across
+  all three), so the prompt cap was cut to 5: **5 × 3 × 3 = 45 calls per run,
+  ≈ $6.20**, weekly → ≈ $27/month, less with Gemini's 5k/month free grounded
   tier. **Target: $20/tenant/month.** Samples per prompt is a setting (1 / 3 /
   5) with "3 recommended — single samples are noisy"; if the estimate exceeds
   the cap, the settings card suggests dropping to 1 sample on the most
@@ -194,7 +199,10 @@ v2 metrics are listed under Scope.
 - **Inputs**: category (+ synonyms), positioning claims, personas (role + team
   size), competitors, topics. If category or positioning is empty, generation
   is disabled with a hint linking to `/company`.
-- **Mix** for ~30 prompts: 12 discovery ("best {category} for {persona}"),
+- **Mix** (the offer for an empty prompt set, summing to 40; `allocateMix`
+  scales it to the slots left under the 5-prompt cap, which yields discovery
+  2, comparison 1, alternatives 1, how-to 1 and nothing for brand-check or
+  pricing): 12 discovery ("best {category} for {persona}"),
   8 comparison ("{us} vs {comp}", "{compA} vs {compB}"), 6 alternatives,
   6 how-to from topics, 4 brand-check ("what is {us}", "{us} pricing"),
   4 pricing/buying. Claude generates from templates; every prompt carries
@@ -554,7 +562,7 @@ current settings" next to the cap and in the Run-now dialog — no credits.
 | "API-observed" | Good enough for v1; one badge + engine labels | Honest proxy; UI scraping out | 02 §4, 03 §5.4 |
 | Samples | 3 per prompt × engine; brand-check 1× | Floor at which 0/3 ↔ 3/3 means anything | 01 §4 |
 | Cadence | Weekly, configurable day; fortnightly/off; no daily | Actionable for a 2–5 person team; effects take 60–90 days | parent research |
-| Prompt cap | 30 active; proposals/paused do not count | Cost target $20/tenant/month and clutter | 01 §7, 02 §2 |
+| Prompt cap | 5 active (specced 30); proposals/paused do not count | Cost target $20/tenant/month, against measured per-call costs | 01 §7, 02 §2 |
 | Cost cap | Hard pause, default $20 (target spend) | Warning-only bills silently | 03 Q2 |
 | Cost display | Plain "≈ $X/month" | Credits are hated for unpredictability | 02 §4, Q7 |
 | Edit a prompt | New prompt, old paused, linked | History must stay on the wording that produced it | 03 Q6, §5.2 |
@@ -580,7 +588,7 @@ current settings" next to the cap and in the Run-now dialog — no credits.
 
 - **Non-determinism** (~73% repeat consistency) — 3 samples, rolling 4-run
   window, two-run hold on signals, n thresholds, ±pp on headlines.
-- **Cost creep** — hard cap, 30-prompt cap, per-tenant engine/sample toggles,
+- **Cost creep** — hard cap, 5-prompt cap, per-tenant engine/sample toggles,
   estimate before every run, Gemini free tier, Claude via Batches.
 - **API ≠ consumer UI** — "API-observed" labelling, engine names carry "API",
   tooltip explains the proxy.

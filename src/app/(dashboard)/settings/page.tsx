@@ -12,7 +12,7 @@ import { AiVisibilityForm } from "./ai-visibility-form";
 import { normalizeWeekStart } from "@/lib/workspace/calendar-settings";
 import { getOrCreateCompanyProfile } from "@/lib/workspace/company-profile";
 import { getAiVisibilitySettings } from "@/lib/ai-visibility/settings";
-import { listPrompts } from "@/lib/ai-visibility/prompts";
+import { listPrompts, runnablePrompts } from "@/lib/ai-visibility/prompts";
 import { capExceeded } from "@/lib/ai-visibility/cost";
 import { engineCost } from "@/lib/ai-visibility/engines";
 import { ENGINE_ORDER } from "../ai-visibility/engine-labels";
@@ -34,7 +34,13 @@ export default async function SettingsPage() {
     .where(eq(scheduleConfigs.tenantId, session.user.tenantId));
   const profile = await getOrCreateCompanyProfile(session.user.tenantId);
   const aiVisibilitySettings = await getAiVisibilitySettings(session.user.tenantId);
-  const aiVisibilityPrompts = await listPrompts(session.user.tenantId, { status: "active" });
+  // Sliced to what a run will actually ask, so the settings card's monthly
+  // projection matches `capExceeded` and the planner. A tenant seeded under
+  // the old 30-prompt ceiling still has 30 active rows; only the first
+  // `MAX_ACTIVE_PROMPTS` of them are ever asked.
+  const aiVisibilityPrompts = runnablePrompts(
+    await listPrompts(session.user.tenantId, { status: "active" })
+  );
   // Read here, in the Server Component, and handed down as plain numbers:
   // `engineCost` lives with the three fetch-based API clients, so importing it
   // from the form would pull all three into the browser bundle.

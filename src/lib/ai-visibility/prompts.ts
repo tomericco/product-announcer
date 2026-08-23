@@ -7,12 +7,62 @@ import { PROMPT_INTENTS, type PromptIntent } from "@/lib/ai-visibility/types";
 /**
  * The hard ceiling on prompts a run may ask.
  *
- * This is the cost dial, not a tidiness rule: 30 prompts × 3 engines × 3
- * samples is ~270 calls a week, which is the $20/tenant/month target. Raising
- * it raises the bill linearly. Proposals and paused prompts do NOT count —
- * neither costs anything until a human activates it.
+ * This is the cost dial, not a tidiness rule: 5 prompts × 3 engines × 3
+ * samples is 45 calls a run, about $6.20 at the measured per-call constants
+ * (openai 0.252, anthropic 0.094, gemini 0.069 — $0.415 per prompt-sample
+ * across all three). Raising it raises the bill linearly; the previous 30 put
+ * a weekly run at ~270 calls and ~$37. Proposals and paused prompts do NOT
+ * count — neither costs anything until a human activates it.
+ *
+ * Lowering this does NOT deactivate anything, so a tenant seeded under the old
+ * ceiling still has 30 `active` rows. `runnablePrompts` is what makes the cut
+ * land: the planner and both cost estimates ask at most this many.
  */
-export const MAX_ACTIVE_PROMPTS = 30;
+export const MAX_ACTIVE_PROMPTS = 5;
+
+/**
+ * The stable order in which a run consumes its prompt budget: creation order,
+ * `id` breaking the tie.
+ *
+ * The tie-break is not decoration. A generated set is one batched INSERT and
+ * Postgres `now()` is the TRANSACTION timestamp, so all of a tenant's prompts
+ * usually share a `created_at` to the microsecond; without `id` the "first
+ * five" would be whatever the planner's query happened to return.
+ */
+export const RUNNABLE_ORDER = [asc(aiVisibilityPrompts.createdAt), asc(aiVisibilityPrompts.id)];
+
+/**
+ * The active prompts a run will actually ask — at most `MAX_ACTIVE_PROMPTS` of
+ * them, taken in `RUNNABLE_ORDER`.
+ *
+ * WHY an order at all, rather than "any five": the trend chart plots one
+ * series over twelve runs, and that series is only comparable to itself if the
+ * runs behind it asked the SAME questions. A selection that drifted — newest
+ * five, a sample, anything reweighted as the prompt set changes — would leave
+ * the chart silently plotting a different question each week under one line,
+ * which destroys the single metric this whole feature exists to produce. It
+ * matters far more that the five are the same five every run than which five
+ * they are.
+ *
+ * Creation order is what makes that hold. It is a property of rows already
+ * written, so nothing a later run does can reorder it: adding, pausing or
+ * rewording a prompt cannot promote a prompt past one older than it. (Pausing
+ * one of the chosen five DOES promote the sixth — but that is a human
+ * deliberately changing the question set, which is the one case where the
+ * series should change and the prompt detail page records why.)
+ *
+ * Intent diversity was considered and rejected as the primary key. A mix-aware
+ * pick — one per intent, say — reshuffles the moment the intent mix of the
+ * active set changes, which is exactly the drift above. Diversity is bought
+ * instead where it is free: `allocateMix` already spreads a fresh tenant's
+ * five across four intents, and they are the five oldest rows thereafter.
+ *
+ * Pure and generic so the pages can apply it to a list they already hold
+ * without a second query; `listPrompts` returns rows in `RUNNABLE_ORDER`.
+ */
+export function runnablePrompts<T>(activePrompts: readonly T[]): T[] {
+  return activePrompts.slice(0, MAX_ACTIVE_PROMPTS);
+}
 
 /** Long enough for a real buyer question, short enough that the bad-prompt check has teeth. */
 export const MAX_PROMPT_CHARS = 300;
@@ -91,8 +141,9 @@ export async function listPrompts(
     .from(aiVisibilityPrompts)
     .where(and(...conditions))
     // Id breaks ties: a multi-row insert stamps one `now()` across the batch,
-    // and the prompts editor must not reshuffle between renders.
-    .orderBy(asc(aiVisibilityPrompts.createdAt), asc(aiVisibilityPrompts.id));
+    // and the prompts editor must not reshuffle between renders. This is also
+    // `RUNNABLE_ORDER`, so `runnablePrompts` can slice the result directly.
+    .orderBy(...RUNNABLE_ORDER);
 }
 
 /** One prompt plus the row that replaced it, which is not a column on the prompt itself. */
