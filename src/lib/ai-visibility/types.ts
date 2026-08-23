@@ -21,18 +21,6 @@ export const PROMPT_INTENTS = [
 export type PromptIntent = (typeof PROMPT_INTENTS)[number];
 
 /**
- * The one instruction every engine is given, identical across all three.
- *
- * Neutral by design: the run measures the natural distribution of answers, so
- * anything that nudges the model toward listing brands, or toward citing,
- * would measure our own prompt rather than the engine. Temperature is left at
- * each provider's default for the same reason (spec, "Engines & run
- * mechanics").
- *
- * Lives here rather than in `engines/index.ts` because all three clients need
- * it and `engines/index.ts` imports them — putting it there would cycle.
- */
-/**
  * The system prompt the engines send — by default, none at all.
  *
  * A buyer typing "best content design tools" into ChatGPT sends no system
@@ -46,6 +34,9 @@ export type PromptIntent = (typeof PROMPT_INTENTS)[number];
  * `own_page_cited` signal count. Measuring citations while asking for citations
  * inflates the metric by an unknown amount, and the amount is not stable across
  * engines, so it does not even cancel out in a comparison.
+ *
+ * Lives here rather than in `engines/index.ts` because all three clients need
+ * it and `engines/index.ts` imports them — putting it there would cycle.
  *
  * `AI_VISIBILITY_SYSTEM_PROMPT` overrides it, for A/B runs against the old
  * behaviour. An empty or unset value means no system prompt is sent at all —
