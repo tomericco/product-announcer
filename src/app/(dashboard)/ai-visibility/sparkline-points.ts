@@ -18,15 +18,19 @@
  */
 
 /**
- * One run's point on a 12-week sparkline.
+ * One run's point on a 12-RUN sparkline. Runs, not weeks: cadence is a tenant
+ * setting and can be fortnightly.
  *
- * `rate` is a percentage, 0..100, and both callers now plot the same metric:
- * the overview tile plots the engine's mention rate (the number it headlines),
- * the prompt detail card plots how often that engine named us on that one
- * prompt. It was called `sov` while the tile headlined share of voice and the
- * prompt card — which never plotted a share — borrowed the name; a chart whose
- * field name disagrees with what it draws is how a line ends up labelled as the
- * wrong metric.
+ * `rate` is a percentage, 0..100 — on the one surface left that draws this,
+ * `/ai-visibility/prompts/[promptId]`, how often that engine named us on that
+ * one prompt. It was called `sov` back when the overview tile headlined share
+ * of voice and the prompt card — which never plotted a share — borrowed the
+ * name; a chart whose field name disagrees with what it draws is how a line
+ * ends up labelled as the wrong metric.
+ *
+ * The overview no longer uses any of this: its four tile sparklines are one
+ * `VisibilityTrend` chart, whose own shapes live in `trend-points.ts` for the
+ * same server/client reason spelled out above.
  *
  * Nullable on purpose: a run whose cut fell below the display threshold has no
  * publishable number, and Recharts renders a null as a gap (`connectNulls` left

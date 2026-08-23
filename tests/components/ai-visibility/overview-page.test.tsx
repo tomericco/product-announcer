@@ -3,6 +3,7 @@ import { render, screen } from "@testing-library/react";
 import type { EngineId, EngineMetrics, WindowCounts } from "../../../src/lib/ai-visibility/types";
 import type { BrandShare } from "../../../src/app/(dashboard)/ai-visibility/competitor-bars";
 import type { EngineTile } from "../../../src/app/(dashboard)/ai-visibility/overview-cards";
+import type { TrendSeries } from "../../../src/app/(dashboard)/ai-visibility/trend-points";
 import type { MatrixRow } from "../../../src/app/(dashboard)/ai-visibility/prompt-matrix";
 import type { CitedDomainRow } from "../../../src/app/(dashboard)/ai-visibility/cited-domains-table";
 import type { RunEstimate } from "../../../src/app/(dashboard)/ai-visibility/run-now-button";
@@ -25,6 +26,7 @@ import type { RunEstimate } from "../../../src/app/(dashboard)/ai-visibility/run
 
 const captured = {
   tiles: null as EngineTile[] | null,
+  trend: null as TrendSeries[] | null,
   bars: null as { rows: BrandShare[]; n: number } | null,
   matrix: null as MatrixRow[] | null,
   matrixEngines: null as readonly EngineId[] | null,
@@ -42,6 +44,12 @@ vi.mock("@/app/(dashboard)/ai-visibility/overview-cards", () => ({
   OverviewCards: (props: { tiles: EngineTile[] }) => {
     captured.tiles = props.tiles;
     return <div data-testid="overview-cards" />;
+  },
+}));
+vi.mock("@/app/(dashboard)/ai-visibility/visibility-trend", () => ({
+  VisibilityTrend: (props: { series: TrendSeries[] }) => {
+    captured.trend = props.series;
+    return <div data-testid="visibility-trend" />;
   },
 }));
 vi.mock("@/app/(dashboard)/ai-visibility/competitor-bars", () => ({
@@ -265,6 +273,7 @@ async function renderPage() {
 beforeEach(() => {
   vi.clearAllMocks();
   captured.tiles = null;
+  captured.trend = null;
   captured.bars = null;
   captured.matrix = null;
   captured.matrixEngines = null;
@@ -423,7 +432,11 @@ describe("overview — the nine states, and that they are mutually exclusive", (
     expect(byEngine.get("all")!.failureNote).toBeNull();
   });
 
-  it("Model changed: the note and the sparkline tick come from the same comparison", async () => {
+  it("Model changed: the note stays on the tile of the engine it happened to", async () => {
+    // The chart carries NO model ticks. Three engines over twelve runs is up to
+    // 36 labelled dots on three 1px backdrop lines, and the hero can carry none
+    // of them anyway — `modelId` is null for "all" by construction, because
+    // three engines do not share a model.
     setup({
       history: [
         { runId: "r1", runDate: "2026-08-03T09:00:00Z", mentionPct: 55, sovPct: 30, modelId: "gpt-5.1" },
@@ -432,14 +445,29 @@ describe("overview — the nine states, and that they are mutually exclusive", (
     });
     await renderPage();
 
-    const tile = captured.tiles![0];
-    // The sparkline plots the metric the tile headlines — mention rate — and
-    // not the share of voice returned beside it in the same history rows.
-    expect(tile.points.map((point) => point.rate)).toEqual([55, 61]);
-    expect(tile.modelChangeNote).toBe("Model changed to gpt-5.2 this run");
-    expect(tile.points.map((point) => point.modelChange)).toEqual([null, "gpt-5.2"]);
-    // The first point has nothing to compare against, so it is never a change.
-    expect(tile.points[0].modelChange).toBeNull();
+    expect(captured.tiles![0].modelChangeNote).toBe("Model changed to gpt-5.2 this run");
+  });
+
+  it("Model changed on a run older than the last one is not reported as this run's", async () => {
+    setup({
+      history: [
+        { runId: "r1", runDate: "2026-08-03T09:00:00Z", mentionPct: 55, sovPct: 30, modelId: "gpt-5.1" },
+        { runId: "r2", runDate: "2026-08-10T09:00:00Z", mentionPct: 61, sovPct: 34, modelId: "gpt-5.2" },
+        { runId: "r3", runDate: "2026-08-17T09:00:00Z", mentionPct: 63, sovPct: 35, modelId: "gpt-5.2" },
+      ],
+    });
+    await renderPage();
+
+    expect(captured.tiles![0].modelChangeNote).toBeNull();
+  });
+
+  it("A single run in the history is never a model change — there is nothing to compare it to", async () => {
+    setup({
+      history: [{ runId: "r1", runDate: "2026-08-03T09:00:00Z", mentionPct: 55, sovPct: 30, modelId: "gpt-5.1" }],
+    });
+    await renderPage();
+
+    expect(captured.tiles![0].modelChangeNote).toBeNull();
   });
 
   it("A failed run is reported as failed rather than as a run that answered nothing", async () => {
@@ -458,6 +486,91 @@ describe("overview — the nine states, and that they are mutually exclusive", (
     await renderPage();
 
     expect(screen.getByText("Last run Aug 17, 2026 · 252 calls · $3.12")).toBeInTheDocument();
+  });
+});
+
+describe("overview — the trend chart's series", () => {
+  const HISTORY = [
+    { runId: "r1", runDate: "2026-08-03T09:00:00Z", mentionPct: 55, sovPct: 30, modelId: "gpt-5.1" },
+    { runId: "r2", runDate: "2026-08-10T09:00:00Z", mentionPct: 61, sovPct: 34, modelId: "gpt-5.1" },
+  ];
+
+  it("plots MENTION rate, not the share of voice returned beside it in the same rows", async () => {
+    // A share is a ratio between brands, so a competitor added in week 6 steps
+    // every line down at once — a settings change wearing the costume of a
+    // visibility change. The benchmark card below already has to say so.
+    setup({ history: HISTORY });
+    await renderPage();
+
+    expect(captured.trend![0].points.map((point) => point.rate)).toEqual([55, 61]);
+  });
+
+  it("gives the chart one line per tile, in the same order, with the pooled one last", async () => {
+    // Last matters: Recharts paints in child order, so the hero has to be the
+    // final line or the 1px backdrop draws over the 2px one.
+    setup({ history: HISTORY });
+    await renderPage();
+
+    expect(captured.trend!.map((line) => line.key)).toEqual(["openai", "gemini", "anthropic", "all"]);
+    expect(captured.trend!.map((line) => line.name)).toEqual([
+      "ChatGPT",
+      "Gemini",
+      "Claude",
+      "All engines",
+    ]);
+    expect(captured.trend!.map((line) => line.key)).toEqual(captured.tiles!.map((tile) => tile.engine));
+  });
+
+  it("labels each point with its run date, so the x-axis reads as dates and not as indexes", async () => {
+    setup({ history: HISTORY });
+    await renderPage();
+
+    expect(captured.trend![0].points.map((point) => point.label)).toEqual(["Aug 3, 2026", "Aug 10, 2026"]);
+  });
+
+  it("passes a below-threshold run through as null, never as a zero", async () => {
+    // `engineHistory` nulls any run below the display floor. Substituting 0
+    // here would draw a collapse that did not happen, which is the one thing
+    // this whole feature is arranged against.
+    setup({ history: [{ runId: "r1", runDate: "2026-08-03T09:00:00Z", mentionPct: null, sovPct: null, modelId: null }] });
+    await renderPage();
+
+    expect(captured.trend![0].points[0].rate).toBeNull();
+  });
+
+  it("lets the pooled line clear the floor several runs before any single engine does", async () => {
+    // Pooling three engines reaches n >= 30 first, so early weeks legitimately
+    // show one solid hero over three broken backdrops. The page must not
+    // flatten that: each series keeps its own gaps.
+    setup({});
+    // After `setup`, which installs the flat one-history-for-every-key stub.
+    engineHistory.mockImplementation(async (_tenantId: string, key: string) =>
+      key === "all"
+        ? [
+            { runId: "r1", runDate: "2026-08-03T09:00:00Z", mentionPct: 40, sovPct: 20, modelId: null },
+            { runId: "r2", runDate: "2026-08-10T09:00:00Z", mentionPct: 44, sovPct: 22, modelId: null },
+          ]
+        : [
+            { runId: "r1", runDate: "2026-08-03T09:00:00Z", mentionPct: null, sovPct: null, modelId: "gpt-5.1" },
+            { runId: "r2", runDate: "2026-08-10T09:00:00Z", mentionPct: 39, sovPct: 21, modelId: "gpt-5.1" },
+          ]
+    );
+    await renderPage();
+
+    const byKey = new Map(captured.trend!.map((line) => [line.key, line]));
+    expect(byKey.get("all")!.points.map((point) => point.rate)).toEqual([40, 44]);
+    expect(byKey.get("openai")!.points.map((point) => point.rate)).toEqual([null, 39]);
+  });
+
+  it("draws no pooled line for a one-engine tenant, where it would be that engine twice", async () => {
+    setup({
+      settings: { engines: ["anthropic"] },
+      metrics: [metrics("anthropic"), metrics("all")],
+      history: HISTORY,
+    });
+    await renderPage();
+
+    expect(captured.trend!.map((line) => line.key)).toEqual(["anthropic"]);
   });
 });
 

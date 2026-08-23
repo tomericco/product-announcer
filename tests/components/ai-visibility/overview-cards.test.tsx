@@ -67,7 +67,6 @@ function tile(overrides: Partial<EngineTile> = {}): EngineTile {
     engine: "openai",
     label: "ChatGPT API + web search",
     metrics: metrics(),
-    points: [],
     failureNote: null,
     modelChangeNote: null,
     ...overrides,
@@ -181,9 +180,18 @@ describe("OverviewCards", () => {
     render(<OverviewCards tiles={[tile({ label: "ChatGPT" })]} />);
 
     expect(screen.getByText("ChatGPT")).toHaveAttribute("title", "ChatGPT API + web search");
-    expect(
-      screen.getByRole("img", { name: "Mention rate over the last 12 weeks, ChatGPT API + web search" })
-    ).toBeInTheDocument();
+  });
+
+  it("draws no sparkline of its own — the trend is one chart beneath the row", () => {
+    // Four tiles each drew the same metric over the same window, all pinned to
+    // the same 0..100 domain, at 64px with both axes hidden. One fact, four
+    // objects, none of them big enough to read a direction off.
+    const { container } = render(
+      <OverviewCards tiles={[tile(), tile({ engine: "all", label: "All engines" })]} />
+    );
+
+    expect(container.querySelector("svg.recharts-surface")).toBeNull();
+    expect(screen.queryByRole("img")).not.toBeInTheDocument();
   });
 
   it("keeps printing n on a below-threshold tile, so the reader can watch it grow", () => {

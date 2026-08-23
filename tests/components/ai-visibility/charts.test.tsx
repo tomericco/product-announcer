@@ -13,6 +13,17 @@ import {
   orderedShares,
   type BrandShare,
 } from "../../../src/app/(dashboard)/ai-visibility/competitor-bars";
+import { VisibilityTrend } from "../../../src/app/(dashboard)/ai-visibility/visibility-trend";
+// Same rule as the sparkline's: the derivations sit outside the "use client"
+// module so a Server Component can call them, and importing them from there
+// mirrors that.
+import {
+  hasPlottablePoint,
+  trendEndLabels,
+  trendRows,
+  trendTicks,
+  type TrendSeries,
+} from "../../../src/app/(dashboard)/ai-visibility/trend-points";
 
 function point(overrides: Partial<RatePoint> = {}): RatePoint {
   return { runId: "r1", label: "Jun 3", rate: 40, modelChange: null, publishedLabel: null, ...overrides };
@@ -255,5 +266,281 @@ describe("chart theming", () => {
     const theme = container.querySelector("style")!.textContent!;
     expect(theme).toContain("--color-sharePct: var(--chart-2);");
     expect(theme).not.toContain("var(--chart-1)");
+  });
+});
+
+
+const RUN_LABELS = [
+  "Jun 1", "Jun 8", "Jun 15", "Jun 22", "Jun 29", "Jul 6",
+  "Jul 13", "Jul 20", "Jul 27", "Aug 3", "Aug 10", "Aug 17",
+];
+
+/** One trend line over the first `rates.length` runs of RUN_LABELS. */
+function line(key: TrendSeries["key"], name: string, rates: (number | null)[]): TrendSeries {
+  return {
+    key,
+    name,
+    points: rates.map((rate, index) => ({ runId: `r${index}`, label: RUN_LABELS[index], rate })),
+  };
+}
+
+/** Four lines: three backdrop engines plus the pooled hero. */
+function fourLines(): TrendSeries[] {
+  return [
+    line("openai", "ChatGPT", [10, 20, 30, 40]),
+    line("gemini", "Gemini", [null, 25, 35, 45]),
+    line("anthropic", "Claude", [12, 22, 32, 42]),
+    line("all", "All engines", [11, 21, 31, 41]),
+  ];
+}
+
+describe("trendRows", () => {
+  it("puts every series on one row per run, aligned by run id", () => {
+    const rows = trendRows([line("openai", "ChatGPT", [10, 20]), line("all", "All engines", [11, 21])]);
+
+    expect(rows).toEqual([
+      { runId: "r0", label: "Jun 1", openai: 10, all: 11 },
+      { runId: "r1", label: "Jun 8", openai: 20, all: 21 },
+    ]);
+  });
+
+  it("keeps a measured zero, which is a reading and not a missing value", () => {
+    // `??`, not `||`. A 0% run means the engines answered and named nobody;
+    // dropping it to null would draw a gap where there is a real, bad number.
+    expect(trendRows([line("openai", "ChatGPT", [0])])[0].openai).toBe(0);
+  });
+
+  it("gives a run one series is missing a null, rather than dropping the run for everyone", () => {
+    const rows = trendRows([
+      { key: "openai", name: "ChatGPT", points: [{ runId: "r0", label: "Jun 1", rate: 10 }] },
+      { key: "all", name: "All engines", points: [] },
+    ]);
+
+    expect(rows).toEqual([{ runId: "r0", label: "Jun 1", openai: 10, all: null }]);
+  });
+
+  it("takes the run spine from the first series that has any", () => {
+    const rows = trendRows([
+      { key: "openai", name: "ChatGPT", points: [] },
+      line("all", "All engines", [11, 21, 31]),
+    ]);
+
+    expect(rows.map((row) => row.label)).toEqual(["Jun 1", "Jun 8", "Jun 15"]);
+  });
+
+  it("draws nothing at all when no series has a run", () => {
+    expect(trendRows([{ key: "openai", name: "ChatGPT", points: [] }])).toEqual([]);
+  });
+});
+
+describe("hasPlottablePoint", () => {
+  it("is false only when EVERY series is entirely null", () => {
+    expect(hasPlottablePoint([line("openai", "ChatGPT", [null, null])])).toBe(false);
+    // One number anywhere is enough — the rest are honest gaps, and the pooled
+    // line clears the floor several runs before any single engine does.
+    expect(
+      hasPlottablePoint([line("openai", "ChatGPT", [null, null]), line("all", "All engines", [null, 41])])
+    ).toBe(true);
+  });
+});
+
+describe("trendTicks", () => {
+  it("thins twelve run dates to about four, keeping the first and the last", () => {
+    const rows = trendRows([line("all", "All engines", RUN_LABELS.map((_, i) => i * 5))]);
+    const ticks = trendTicks(rows);
+
+    expect(ticks).toHaveLength(4);
+    expect(ticks[0]).toBe("Jun 1");
+    expect(ticks.at(-1)).toBe("Aug 17");
+    // Evenly spaced, so the axis reads as a scale rather than as four arbitrary
+    // dates: twelve labels in the width of a card overlap into a grey smear.
+    expect(ticks).toEqual(["Jun 1", "Jun 29", "Jul 20", "Aug 17"]);
+  });
+
+  it("labels every run when there are few enough to fit", () => {
+    const rows = trendRows([line("all", "All engines", [11, 21, 31])]);
+    expect(trendTicks(rows)).toEqual(["Jun 1", "Jun 8", "Jun 15"]);
+  });
+
+  it("collapses two runs that share a date rather than ticking it twice", () => {
+    const rows = trendRows([
+      {
+        key: "all",
+        name: "All engines",
+        points: [
+          { runId: "r0", label: "Jun 1", rate: 10 },
+          { runId: "r1", label: "Jun 1", rate: 20 },
+        ],
+      },
+    ]);
+
+    expect(trendTicks(rows)).toEqual(["Jun 1"]);
+  });
+});
+
+describe("trendEndLabels", () => {
+  it("pins each name to its line's LAST PLOTTABLE point, not to the last run", () => {
+    // A series whose newest runs fell below the floor ends mid-chart. A label
+    // at a null has no y to sit at — the same reason `sparklineMarkers` drops a
+    // marker with no rate.
+    const series = [line("openai", "ChatGPT", [10, 20, null, null]), line("all", "All engines", [11, 21, 31, 41])];
+    const rows = trendRows(series);
+
+    expect(trendEndLabels(rows, series)).toEqual([
+      { key: "openai", name: "ChatGPT", label: "Jun 8", rate: 20 },
+      { key: "all", name: "All engines", label: "Jun 22", rate: 41 },
+    ]);
+  });
+
+  it("labels a series with nothing plottable not at all", () => {
+    const series = [line("openai", "ChatGPT", [null, null]), line("all", "All engines", [11, 21])];
+    expect(trendEndLabels(trendRows(series), series).map((end) => end.key)).toEqual(["all"]);
+  });
+
+  it("labels a line whose only reading is a measured zero", () => {
+    const series = [line("all", "All engines", [0])];
+    expect(trendEndLabels(trendRows(series), series)).toEqual([
+      { key: "all", name: "All engines", label: "Jun 1", rate: 0 },
+    ]);
+  });
+});
+
+describe("VisibilityTrend", () => {
+  it("says there are no runs yet rather than drawing an empty frame", () => {
+    render(<VisibilityTrend series={[{ key: "all", name: "All engines", points: [] }]} />);
+
+    expect(screen.getByText("No runs yet")).toBeInTheDocument();
+  });
+
+  it("says the answers are too thin when EVERY series is null, which is a different sentence", () => {
+    // "No runs yet" over twelve runs that all fell below the floor would be
+    // false. Nothing-happened and not-enough-evidence are the two readings this
+    // feature exists to keep apart.
+    render(
+      <VisibilityTrend
+        series={[line("openai", "ChatGPT", [null, null]), line("all", "All engines", [null, null])]}
+      />
+    );
+
+    expect(screen.getByText("Not enough answers yet")).toBeInTheDocument();
+    expect(screen.queryByText("No runs yet")).not.toBeInTheDocument();
+  });
+
+  it("draws the chart when one series has one number, leaving the rest as gaps", () => {
+    render(
+      <VisibilityTrend
+        series={[line("openai", "ChatGPT", [null, null]), line("all", "All engines", [null, 41])]}
+      />
+    );
+
+    expect(screen.queryByText("Not enough answers yet")).not.toBeInTheDocument();
+    // The engine with nothing to plot draws an EMPTY path rather than a flat
+    // zero — `connectNulls` off and no point to anchor, so there is no line.
+    expect(document.querySelector('path[stroke="var(--color-openai)"]')!.getAttribute("d")).toBeFalsy();
+    expect(document.querySelector('path[stroke="var(--color-all)"]')!.getAttribute("d")).toBeTruthy();
+  });
+
+  it("makes the pooled line the hero and the three engines a 1px backdrop", () => {
+    const { container } = render(<VisibilityTrend series={fourLines()} />);
+
+    const lines = [...container.querySelectorAll("path.recharts-line-curve")];
+    expect(lines.map((path) => path.getAttribute("stroke"))).toEqual([
+      "var(--color-openai)",
+      "var(--color-gemini)",
+      "var(--color-anthropic)",
+      "var(--color-all)",
+    ]);
+    expect(lines.map((path) => path.getAttribute("stroke-width"))).toEqual(["1", "1", "1", "2"]);
+    // The hero is LAST in document order. Recharts paints in child order, so a
+    // backdrop drawn after it would cross over the 2px line.
+    expect(lines.at(-1)!.getAttribute("stroke")).toBe("var(--color-all)");
+  });
+
+  it("tells the engines apart by DASH PATTERN, because the palette cannot do it", () => {
+    // Measured against --card, only --chart-3, --chart-4 and --brand-ink clear
+    // 3:1 in both themes — and --brand-ink vs --chart-4 is 1.03:1 in light,
+    // because they are the same colour. The ramp is sequential, not
+    // categorical: there are not three distinguishable steps to spend here.
+    const { container } = render(<VisibilityTrend series={fourLines()} />);
+
+    const dashes = [...container.querySelectorAll("path.recharts-line-curve")].map((path) =>
+      path.getAttribute("stroke-dasharray")
+    );
+    expect(dashes).toEqual([null, "5 3", "1 3", null]);
+  });
+
+  it("colours the hero --brand-ink and every backdrop --muted-foreground, never --chart-1", () => {
+    // --chart-1 is byte-identical to --brand in globals.css and sits at ~1.4:1
+    // against the card: a 1px stroke of it is not there at all.
+    const { container } = render(<VisibilityTrend series={fourLines()} />);
+
+    const theme = container.querySelector("style")!.textContent!;
+    expect(theme).toContain("--color-all: var(--brand-ink);");
+    expect(theme).toContain("--color-openai: var(--muted-foreground);");
+    expect(theme).toContain("--color-gemini: var(--muted-foreground);");
+    expect(theme).toContain("--color-anthropic: var(--muted-foreground);");
+    expect(theme).not.toContain("var(--chart-1)");
+    expect(theme).not.toContain("var(--brand)");
+  });
+
+  it("names each line at its own end, with no legend to map a dash pattern back from", () => {
+    const { container } = render(<VisibilityTrend series={fourLines()} />);
+
+    const labels = [...container.querySelectorAll("text.recharts-label")].map((node) => node.textContent);
+    expect(labels).toEqual(["ChatGPT", "Gemini", "Claude", "All engines"]);
+    expect(container.querySelector(".recharts-legend-wrapper")).toBeNull();
+  });
+
+  it("shows both axes — this is the page's one real chart, not a 64px tile glyph", () => {
+    // Without a y-axis a reader cannot tell 8% from 80%; without run dates they
+    // cannot tell what span they are looking at. Hiding both is right inside a
+    // tile, where the number is printed directly above the line, and wrong here.
+    const { container } = render(<VisibilityTrend series={fourLines()} />);
+
+    const yTicks = [...container.querySelectorAll(".recharts-yAxis-tick-labels .recharts-cartesian-axis-tick-value")];
+    expect(yTicks.map((node) => node.textContent)).toEqual(["0%", "50%", "100%"]);
+
+    const xTicks = [...container.querySelectorAll(".recharts-xAxis-tick-labels .recharts-cartesian-axis-tick-value")];
+    expect(xTicks.map((node) => node.textContent)).toEqual(["Jun 1", "Jun 8", "Jun 15", "Jun 22"]);
+  });
+
+  it("puts the numbers in an sr-only table, since role=img with a name says nothing at 48 points", () => {
+    render(<VisibilityTrend series={fourLines()} />);
+
+    const table = screen.getByRole("table");
+    expect(table.className).toContain("sr-only");
+    const headers = [...table.querySelectorAll("thead th")].map((node) => node.textContent);
+    expect(headers).toEqual(["Run", "ChatGPT", "Gemini", "Claude", "All engines"]);
+
+    const firstRow = [...table.querySelectorAll("tbody tr")[0].children].map((node) => node.textContent);
+    // Gemini's first run fell below the floor. `ratePct` renders it as one em
+    // dash — the single substitution this whole feature is arranged against is
+    // printing that as "0%".
+    expect(firstRow).toEqual(["Jun 1", "10%", "—", "12%", "11%"]);
+  });
+
+  it("counts the span in RUNS, never in weeks — a fortnightly tenant reads twelve of these as six months", () => {
+    const { container } = render(<VisibilityTrend series={fourLines()} />);
+
+    // Both the visible caption and the data table's own, which are the same
+    // sentence deliberately: one string, so they cannot disagree.
+    expect(container.querySelector("figcaption")!.textContent).toContain(
+      "Mention rate — how often you were named — over the last 4 runs."
+    );
+    expect(screen.getByRole("table").querySelector("caption")!.textContent).toContain("4 runs");
+    expect(screen.queryByText(/weeks/)).not.toBeInTheDocument();
+  });
+
+  it("draws one line and skips the pooling caveat for a one-engine tenant", () => {
+    // The page drops "all" when there is one engine, because the pooled cut IS
+    // that engine's cut. Nothing here special-cases it: one series, no backdrop
+    // to distinguish it from, and no sentence explaining a line that is absent.
+    const { container } = render(<VisibilityTrend series={[line("anthropic", "Claude", [12, 22])]} />);
+
+    expect(container.querySelectorAll("path.recharts-line-curve")).toHaveLength(1);
+    expect(screen.queryByText(/All engines pools/)).not.toBeInTheDocument();
+    expect([...container.querySelectorAll("text.recharts-label")].map((n) => n.textContent)).toEqual([
+      "Claude",
+    ]);
   });
 });

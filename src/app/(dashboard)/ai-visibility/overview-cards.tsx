@@ -5,8 +5,6 @@ import type { EngineId, EngineMetrics } from "@/lib/ai-visibility/types";
 import { ENGINE_LABEL } from "./engine-labels";
 import { engineGridClass } from "./engine-grid";
 import { ratePct } from "./format";
-import { RateSparkline } from "./rate-sparkline";
-import type { RatePoint } from "./sparkline-points";
 
 export type TileReading = {
   /**
@@ -50,10 +48,10 @@ export type TileReading = {
  * date", so they overlap, and below eight lifetime runs they share almost every
  * run — and it stays null until roughly eight runs have accumulated, which is
  * two months of a weekly cadence. What it was there to answer, "which way is
- * this going", the 12-week sparkline directly beneath answers with the whole
+ * this going", the trend chart directly beneath this row answers with the whole
  * shape instead of one damped number. The field stays on `EngineMetrics`: a
- * later surface that can draw it in context (a hover on the sparkline, a
- * period-over-period view) should not have to recompute it.
+ * later surface that can draw it in context (a period-over-period view) should
+ * not have to recompute it.
  *
  * The band and `n` stay. They are the trust cues, not decoration: a rate
  * without either is a number nobody can check.
@@ -83,7 +81,6 @@ export type EngineTile = {
    */
   label: string;
   metrics: EngineMetrics;
-  points: RatePoint[];
   failureNote: string | null;
   modelChangeNote: string | null;
 };
@@ -95,6 +92,12 @@ export type EngineTile = {
  * page hands it down already computed that way; this component only renders
  * what it is given. Averaging three rates would weight a 12-sample engine
  * equally with an 84-sample one.
+ *
+ * The tiles carry the LEVEL and nothing else. Each one used to draw its own
+ * 64px sparkline of the same metric over the same window, four of them pinned
+ * to the same 0..100 domain — one fact drawn four times, at a size where
+ * neither axis fitted. The trend is one chart now, directly beneath this row.
+ * `modelChangeNote` stays here, beside the engine the change happened to.
  */
 export function OverviewCards({ tiles }: { tiles: EngineTile[] }) {
   return (
@@ -104,9 +107,9 @@ export function OverviewCards({ tiles }: { tiles: EngineTile[] }) {
     <div className={engineGridClass(tiles.length)}>
       {tiles.map((tile) => {
         const reading = tileReading(tile.metrics);
-        // The methodology name, for the places a full sentence fits: the
-        // header's `title`, and the sparkline's accessible name, where "GPT"
-        // alone would be the whole thing a screen reader is told.
+        // The methodology name, for the one place a full sentence fits: the
+        // header's `title`, where "GPT" alone would be the whole thing anyone
+        // hovering or listening is told.
         const fullName = tile.engine === "all" ? "All engines" : ENGINE_LABEL[tile.engine];
         return (
           <Card key={tile.engine} size="sm">
@@ -132,12 +135,6 @@ export function OverviewCards({ tiles }: { tiles: EngineTile[] }) {
                 {reading.kind === "rate" && <span className="text-xs text-muted-foreground">named</span>}
                 {reading.band && <span className="text-xs text-muted-foreground tabular-nums">{reading.band}</span>}
               </div>
-
-              {/* Same metric as the headline above it. */}
-              <RateSparkline
-                points={tile.points}
-                ariaLabel={`Mention rate over the last 12 weeks, ${fullName}`}
-              />
 
               {/* Plain words, not "n = 84 answers". `n` on this tile and
                   `completedCalls` in the header are different counts — this one

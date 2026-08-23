@@ -43,7 +43,8 @@ import { AiVisibilityOffEmptyState } from "./off-empty-state";
 import { OverviewCards, type EngineTile } from "./overview-cards";
 import { PromptMatrix, type MatrixRow } from "./prompt-matrix";
 import { RunNowButton, type RunEstimate } from "./run-now-button";
-import type { RatePoint } from "./sparkline-points";
+import type { TrendSeries } from "./trend-points";
+import { VisibilityTrend } from "./visibility-trend";
 
 const DAY_LABEL = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"] as const;
 
@@ -283,25 +284,37 @@ export default async function AiVisibilityPage() {
   const metricsByEngine = new Map(allMetrics.map((row) => [row.engine, row]));
   const pooled = metricsByEngine.get("all")!;
 
-  const tiles: EngineTile[] = seriesKeys.map((key, index) => {
-    const history = series[index];
-    // Both the note and the tick come from the SAME comparison, so a tile can
-    // never claim a model change its own sparkline does not show.
-    const points: RatePoint[] = history.map((point, pointIndex) => ({
+  /**
+   * The trend chart's series — MENTION rate, one line per tile, same order.
+   *
+   * `engineHistory` returns `sovPct` from the same counts for a share surface
+   * that wants a history, and this is deliberately not it: adding a competitor
+   * in week 6 steps every share down at once, and on a twelve-run trend that
+   * step is a settings change wearing the costume of a visibility change.
+   * Mention rate has one denominator and matches what the tiles headline.
+   */
+  const trendSeries: TrendSeries[] = seriesKeys.map((key, index) => ({
+    key,
+    name: key === "all" ? "All engines" : ENGINE_NAME[key],
+    points: series[index].map((point) => ({
       runId: point.runId,
       label: DATE_FORMAT.format(new Date(point.runDate)),
-      // Mention rate, matching the tile's headline. `engineHistory` returns
-      // `sovPct` from the same counts for a share surface that wants a history;
-      // plotting it under a mention-rate number would make the tile argue with
-      // its own chart.
       rate: point.mentionPct,
-      modelChange:
-        pointIndex > 0 && point.modelId && point.modelId !== history[pointIndex - 1].modelId
-          ? point.modelId
-          : null,
-      publishedLabel: null,
-    }));
-    const latestChange = points.length > 0 ? points[points.length - 1].modelChange : null;
+    })),
+  }));
+
+  const tiles: EngineTile[] = seriesKeys.map((key, index) => {
+    const history = series[index];
+    // The model-change note is the ONE annotation kept from the sparklines the
+    // chart replaces, and it stays HERE, beside the engine it happened to.
+    // Ticking it on the chart would put up to 36 labelled dots on three
+    // backdrop lines, and the hero can carry none of them anyway: `modelId` is
+    // null for "all" by construction, because three engines do not share a
+    // model and inventing one would be a false mark.
+    const latest = history.at(-1);
+    const previous = history.at(-2);
+    const latestChange =
+      latest && previous && latest.modelId && latest.modelId !== previous.modelId ? latest.modelId : null;
 
     const engineHealth = key === "all" ? undefined : healthByEngine.get(key);
     const failureNote =
@@ -324,7 +337,6 @@ export default async function AiVisibilityPage() {
       // samples, and averaging three rates would weight a 12-sample engine like
       // an 84-sample one.
       metrics: metricsByEngine.get(key)!,
-      points,
       failureNote,
       modelChangeNote: latestChange ? `Model changed to ${latestChange} this run` : null,
     };
@@ -581,8 +593,22 @@ export default async function AiVisibilityPage() {
           {/* Row 1 — the engines the tenant runs, plus the pooled "All engines"
               when there is more than one to pool. An engine switched off gets
               no tile: one permanently reading "Collecting baseline" for
-              something nobody is paying for is noise, not honesty. */}
-          <OverviewCards tiles={tiles} />
+              something nobody is paying for is noise, not honesty.
+
+              The tiles are the LEVEL; the chart beneath them is the TREND, and
+              the two are one block rather than two rows. It is not wrapped in a
+              Card of its own: a fifth card here would push the prompt matrix —
+              the only row on this page a reader can act on without leaving it,
+              and deliberately promoted to row 2 — a whole card lower.
+
+              The four 64px sparklines this replaces drew the same metric over
+              the same window four times, all pinned to the same 0..100 domain
+              with both axes hidden. Four objects, one fact, and none of them
+              readable enough to answer "which way is this going". */}
+          <div className="space-y-3">
+            <OverviewCards tiles={tiles} />
+            <VisibilityTrend series={trendSeries} />
+          </div>
 
           {/* Row 2 — the gap-hunting grid, promoted above the benchmark.
               This is the row that does job 2 in the design ("find the gaps that
