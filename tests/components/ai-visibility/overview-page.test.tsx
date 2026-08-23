@@ -573,6 +573,43 @@ describe("overview — the trend chart's series", () => {
     expect(captured.trend![0].points.map((point) => point.label)).toEqual(["Aug 3, 2026", "Aug 10, 2026"]);
   });
 
+  it("leads the page with the trend, titled with the metric the line actually plots", async () => {
+    // Direction is what a weekly reader opens this page for, and the chart used
+    // to sit under the tiles with no heading of its own. "Trend" alone would
+    // not fix that either: this page carries a mention rate, a share of voice
+    // and a citation rate, and the reader has to be told which one this is.
+    setup({ history: HISTORY });
+    await renderPage();
+
+    expect(screen.getByText("Mention rate per run")).toBeInTheDocument();
+
+    const order = [...document.body.querySelectorAll("[data-testid]")].map((node) =>
+      node.getAttribute("data-testid")
+    );
+    expect(order.indexOf("visibility-trend")).toBeLessThan(order.indexOf("overview-cards"));
+  });
+
+  it("states the pooling ABOVE the chart, where the figcaption used to state it below", async () => {
+    // The chart is the page's first section now, so "the bold line is every
+    // engine pooled" has to reach the reader before the lines do.
+    setup({ history: HISTORY });
+    await renderPage();
+
+    expect(screen.getByText(/pools every sample from every engine/)).toBeInTheDocument();
+  });
+
+  it("skips the pooling sentence for a one-engine tenant, who has no pooled line", async () => {
+    setup({
+      settings: { engines: ["anthropic"] },
+      metrics: [metrics("anthropic"), metrics("all")],
+      history: HISTORY,
+    });
+    await renderPage();
+
+    expect(screen.queryByText(/pools every sample/)).not.toBeInTheDocument();
+    expect(screen.getByText("How often the engine named you, run by run.")).toBeInTheDocument();
+  });
+
   it("passes a below-threshold run through as null, never as a zero", async () => {
     // `engineHistory` nulls any run below the display floor. Substituting 0
     // here would draw a collapse that did not happen, which is the one thing

@@ -27,8 +27,8 @@ export const MIN_N_PROMPT = 3;
  * The 30 floor exists to stop a thin run being rendered as a misleading
  * NUMBER — "8%" printed in 30px type reads as a fact about the world, and at
  * n=10 it is not one. A sparkline point is not that. It is read as SHAPE, in a
- * series, and it sits directly beneath tiles whose headline numbers still carry
- * the strict floor. The reader who wants the number gets it, floored at 30;
+ * series, and it sits on the same screen as tiles whose headline numbers still
+ * carry the strict floor. The reader who wants the number gets it, floored at 30;
  * the line only says which way things are moving.
  *
  * The cost is real and is accepted, not overlooked: at n=15 a mention-rate

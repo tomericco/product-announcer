@@ -302,6 +302,23 @@ export default async function AiVisibilityPage() {
    * step is a settings change wearing the costume of a visibility change.
    * Mention rate has one denominator and matches what the tiles headline.
    */
+  /**
+   * The trend card's description — what the reader meets BEFORE the picture.
+   *
+   * It sits here rather than in the chart's own figcaption because the chart is
+   * now the page's first section: the hero/backdrop hierarchy has to be stated
+   * above the lines, not under them. The figcaption keeps the sentence that
+   * needs the data (how many runs the span covers) and nothing else, so the
+   * pooling note is written once.
+   *
+   * Conditional for the same reason `seriesKeys` is: a one-engine tenant has no
+   * pooled line, and explaining one they cannot see is noise.
+   */
+  const trendDescription =
+    seriesKeys.length > 1
+      ? "How often the engines named you, run by run. The bold line pools every sample from every engine rather than averaging the three rates; each engine is drawn behind it."
+      : "How often the engine named you, run by run.";
+
   const trendSeries: TrendSeries[] = seriesKeys.map((key, index) => ({
     key,
     name: key === "all" ? "All engines" : ENGINE_NAME[key],
@@ -618,27 +635,41 @@ export default async function AiVisibilityPage() {
         </EmptyState>
       ) : (
         <>
-          {/* Row 1 — the engines the tenant runs, plus the pooled "All engines"
-              when there is more than one to pool. An engine switched off gets
-              no tile: one permanently reading "Collecting baseline" for
-              something nobody is paying for is noise, not honesty.
-
-              The tiles are the LEVEL; the chart beneath them is the TREND, and
-              the two are one block rather than two rows. It is not wrapped in a
-              Card of its own: a fifth card here would push the prompt matrix —
-              the only row on this page a reader can act on without leaving it,
-              and deliberately promoted to row 2 — a whole card lower.
+          {/* Row 1 — the TREND, and the first thing on the page.
+              Direction is the question a weekly reader opens this page with,
+              and it was answered below the fold by a chart with no heading of
+              its own. Titled like every other section here — a Card, because
+              an untitled figure floating above four cards reads as a banner
+              rather than as a section — and the title names the metric,
+              because this page carries several rates and a bare "Trend" would
+              not say which one the line is.
 
               The four 64px sparklines this replaces drew the same metric over
               the same window four times, all pinned to the same 0..100 domain
               with both axes hidden. Four objects, one fact, and none of them
               readable enough to answer "which way is this going". */}
-          <div className="space-y-3">
-            <OverviewCards tiles={tiles} />
-            <VisibilityTrend series={trendSeries} />
-          </div>
+          <Card>
+            <CardHeader>
+              <CardTitle>Mention rate per run</CardTitle>
+              <CardDescription>{trendDescription}</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <VisibilityTrend series={trendSeries} />
+            </CardContent>
+          </Card>
 
-          {/* Row 2 — the gap-hunting grid, promoted above the benchmark.
+          {/* Row 2 — the engines the tenant runs, plus the pooled "All engines"
+              when there is more than one to pool. An engine switched off gets
+              no tile: one permanently reading "Collecting baseline" for
+              something nobody is paying for is noise, not honesty.
+
+              The chart above is the TREND; these tiles are the LEVEL, and they
+              are deliberately un-carded as a row of small cards rather than a
+              titled section — the chart's title already names the metric they
+              headline. */}
+          <OverviewCards tiles={tiles} />
+
+          {/* Row 3 — the gap-hunting grid, promoted above the benchmark.
               This is the row that does job 2 in the design ("find the gaps that
               are worth content"), and it is the only row on the page a reader
               can act on without leaving it. It sat fourth, under two cards that
@@ -660,7 +691,7 @@ export default async function AiVisibilityPage() {
             </CardContent>
           </Card>
 
-          {/* Row 3 — the competitor benchmark. */}
+          {/* Row 4 — the competitor benchmark. */}
           <Card>
             <CardHeader>
               <CardTitle>Competitor benchmark</CardTitle>
@@ -683,7 +714,7 @@ export default async function AiVisibilityPage() {
             </CardContent>
           </Card>
 
-          {/* Row 4 — where the answers come from. Twelve runs, not four: a
+          {/* Row 5 — where the answers come from. Twelve runs, not four: a
               domain cited once a quarter still belongs on this list, and the
               description says which span it covers.
 

@@ -62,8 +62,12 @@ const BACKDROP_COLOR = "var(--muted-foreground)";
  *
  * The hero is POOLED samples (2px, `--brand-ink`); the three engines are a 1px
  * `--muted-foreground` backdrop. That hierarchy is the design: the question the
- * row above asks is "are we being named", and the per-engine split is context
- * for the answer rather than three competing answers.
+ * tiles below answer is "are we being named", and the per-engine split is
+ * context for that answer rather than three competing answers.
+ *
+ * The section's TITLE and its one-line description are the page's, not this
+ * component's — same as every other section on the overview. What stays here is
+ * the figcaption, which needs the data (how many runs the span covers).
  */
 export function VisibilityTrend({ series }: { series: TrendSeries[] }) {
   const rows = trendRows(series);
@@ -208,15 +212,13 @@ export function VisibilityTrend({ series }: { series: TrendSeries[] }) {
         </tbody>
       </table>
 
-      {/* The pooling caveat only where there is something pooled: a one-engine
-          tenant has no "All engines" series, and explaining one it cannot see
-          is noise. */}
-      <figcaption className="text-xs text-muted-foreground">
-        {caption}
-        {series.some((line) => line.key === "all")
-          ? " All engines pools every sample rather than averaging the three rates."
-          : ""}
-      </figcaption>
+      {/* The span, and only the span — the one sentence here that needs the
+          data. The pooling caveat used to be appended to it and now sits in
+          the section's own description, ABOVE the chart: this figure is the
+          page's first section, so "the bold line is every engine pooled" has
+          to reach the reader before the lines do, not after them. Written
+          once, in the place that renders first. */}
+      <figcaption className="text-xs text-muted-foreground">{caption}</figcaption>
     </figure>
   );
 }

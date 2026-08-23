@@ -48,7 +48,7 @@ export type TileReading = {
  * date", so they overlap, and below eight lifetime runs they share almost every
  * run — and it stays null until roughly eight runs have accumulated, which is
  * two months of a weekly cadence. What it was there to answer, "which way is
- * this going", the trend chart directly beneath this row answers with the whole
+ * this going", the trend chart directly above this row answers with the whole
  * shape instead of one damped number. The field stays on `EngineMetrics`: a
  * later surface that can draw it in context (a period-over-period view) should
  * not have to recompute it.
@@ -96,7 +96,9 @@ export type EngineTile = {
  * The tiles carry the LEVEL and nothing else. Each one used to draw its own
  * 64px sparkline of the same metric over the same window, four of them pinned
  * to the same 0..100 domain — one fact drawn four times, at a size where
- * neither axis fitted. The trend is one chart now, directly beneath this row.
+ * neither axis fitted. The trend is one chart now, in the titled section
+ * directly ABOVE this row — direction is what a weekly reader opens the page
+ * for, so it leads and the level follows.
  * `modelChangeNote` stays here, beside the engine the change happened to.
  */
 export function OverviewCards({ tiles }: { tiles: EngineTile[] }) {

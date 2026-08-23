@@ -577,16 +577,27 @@ describe("VisibilityTrend", () => {
     expect(screen.queryByText(/weeks/)).not.toBeInTheDocument();
   });
 
-  it("draws one line and skips the pooling caveat for a one-engine tenant", () => {
+  it("draws one line for a one-engine tenant", () => {
     // The page drops "all" when there is one engine, because the pooled cut IS
-    // that engine's cut. Nothing here special-cases it: one series, no backdrop
-    // to distinguish it from, and no sentence explaining a line that is absent.
+    // that engine's cut. Nothing here special-cases it: one series and no
+    // backdrop to distinguish it from.
     const { container } = render(<VisibilityTrend series={[line("anthropic", "Claude", [12, 22])]} />);
 
     expect(container.querySelectorAll("path.recharts-line-curve")).toHaveLength(1);
-    expect(screen.queryByText(/All engines pools/)).not.toBeInTheDocument();
     expect([...container.querySelectorAll("text.recharts-label")].map((n) => n.textContent)).toEqual([
       "Claude",
     ]);
+  });
+
+  it("leaves the pooling caveat to the section description, so it is written once", () => {
+    // It used to be appended to the figcaption, UNDER the chart. The chart is
+    // the page's first section now, so "the bold line is every engine pooled"
+    // has to reach the reader before the lines do — which is the page's
+    // CardDescription, above it. Two copies would be two places to fix.
+    const { container } = render(<VisibilityTrend series={fourLines()} />);
+
+    expect(container.querySelector("figcaption")!.textContent).toBe(
+      "Mention rate — how often you were named — over the last 4 runs."
+    );
   });
 });
