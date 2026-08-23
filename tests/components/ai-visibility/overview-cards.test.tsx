@@ -3,11 +3,10 @@ import { render, screen, fireEvent, act } from "@testing-library/react";
 import type { EngineMetrics } from "../../../src/lib/ai-visibility/types";
 import {
   OverviewCards,
-  metricsLine,
-  shareReading,
   tileReading,
   type EngineTile,
 } from "../../../src/app/(dashboard)/ai-visibility/overview-cards";
+import { ratePct } from "../../../src/app/(dashboard)/ai-visibility/format";
 import { engineGridClass } from "../../../src/app/(dashboard)/ai-visibility/engine-grid";
 import { RunNowButton, estimateSentence } from "../../../src/app/(dashboard)/ai-visibility/run-now-button";
 import { GeneratePromptSetButton } from "../../../src/app/(dashboard)/ai-visibility/generate-prompt-set-button";
@@ -136,49 +135,55 @@ describe("tileReading", () => {
   });
 });
 
-describe("shareReading", () => {
-  it("keeps share of voice, demoted to the small line", () => {
-    expect(shareReading(metrics())).toEqual({ kind: "share", text: "Share of voice 31%" });
+describe("ratePct", () => {
+  it("rounds an already-percentage rate and appends a sign, never multiplying again", () => {
+    expect(ratePct(62)).toBe("62%");
+    expect(ratePct(0.4)).toBe("0%");
+    expect(ratePct(0)).toBe("0%");
   });
 
-  it("keeps 'No brands named' as a finding, not as a zero", () => {
-    // `shareOfVoice === null` still means two things, and they are still
-    // different facts. With a known mentionRate the window IS fat enough and
-    // nobody — us or a rival — was named: strictly more than the 0% headline
-    // above it, which reports only that WE were not named.
-    expect(shareReading(metrics({ mentionRate: 0, shareOfVoice: null }))).toEqual({
-      kind: "none-named",
-      text: "No brands named",
-    });
-  });
-
-  it("dashes the share below the threshold rather than claiming nobody was named", () => {
-    expect(shareReading(metrics({ mentionRate: null, shareOfVoice: null }))).toEqual({
-      kind: "baseline",
-      text: "Share of voice —",
-    });
-  });
-});
-
-describe("metricsLine", () => {
-  it("carries what the headline and the share line did not take", () => {
-    expect(metricsLine(metrics())).toBe("Cited 18% · Recommended 24%");
-  });
-
-  it("dashes a metric that is below threshold rather than printing a zero", () => {
-    expect(metricsLine(metrics({ citationRate: null }))).toBe("Cited — · Recommended 24%");
-  });
-
-  it("no longer repeats the mention rate, which is now the big number", () => {
-    expect(metricsLine(metrics())).not.toContain("Mentioned");
+  it("prints one em dash for an unknown, so no call site can render it as a zero", () => {
+    // The substitution the whole metrics design exists to prevent, now with a
+    // single place it could ever go wrong. The four call sites that used to
+    // hand-roll this were split between `Math.round`, `toFixed(0)` and their
+    // own null branches — one of which did not have one.
+    expect(ratePct(null)).toBe("—");
   });
 });
 
 describe("OverviewCards", () => {
-  it("prints n on every tile — a share without one is unreadable", () => {
+  it("prints the sample count on every tile — a rate without one is unreadable", () => {
     render(<OverviewCards tiles={[tile(), tile({ engine: "all", label: "All engines" })]} />);
 
-    expect(screen.getAllByText("n = 84 answers")).toHaveLength(2);
+    // Plain words, not "n = 84 answers": the header two hundred pixels above
+    // counts something else ("252 calls", errors included) and the algebraic
+    // prefix made the smaller number look like the authoritative one.
+    expect(screen.getAllByText("84 answers read")).toHaveLength(2);
+  });
+
+  it("carries no Share of voice / Cited / Recommended line", () => {
+    // Twelve numbers in the page's densest row, three em dashes joined by
+    // interpuncts in the baseline state, and a share of voice the benchmark
+    // card below states twice more. The metrics stay on `EngineMetrics`;
+    // citation rate is stated once on the Cited-sources card, beside the
+    // denominator it is actually measured over.
+    render(<OverviewCards tiles={[tile()]} />);
+
+    expect(screen.queryByText(/Share of voice/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Cited/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Recommended/)).not.toBeInTheDocument();
+  });
+
+  it("titles the tile with the short engine name and keeps the full one as its tooltip", () => {
+    // "GPT-5.x API + web search" is ~180px of methodology in a header that
+    // truncates at about half that. The "API-observed" badge in the page
+    // header carries the proxy caveat once, with the tooltip that explains it.
+    render(<OverviewCards tiles={[tile({ label: "GPT" })]} />);
+
+    expect(screen.getByText("GPT")).toHaveAttribute("title", "GPT-5.x API + web search");
+    expect(
+      screen.getByRole("img", { name: "Mention rate over the last 12 weeks, GPT-5.x API + web search" })
+    ).toBeInTheDocument();
   });
 
   it("keeps printing n on a below-threshold tile, so the reader can watch it grow", () => {
@@ -202,33 +207,20 @@ describe("OverviewCards", () => {
     );
 
     expect(screen.getByText("Collecting baseline")).toBeInTheDocument();
-    expect(screen.getByText("n = 11 answers")).toBeInTheDocument();
+    expect(screen.getByText("11 answers read")).toBeInTheDocument();
     expect(screen.queryByText(/pp$/)).not.toBeInTheDocument();
   });
 
-  it("renders 'No brands named' as a finding, at full contrast, beside a real 0% headline", () => {
-    const baseline = metrics({
-      n: 11,
-      mentionRate: null,
-      shareOfVoice: null,
-      citationRate: null,
-      recommendationRate: null,
-      mentionWilsonPp: null,
-      sovWilsonPp: null,
-      deltaPp: null,
-    });
+  it("still prints a measured zero as a rate, not as a sentence", () => {
+    // 0 of 84 is a reading, and it has a band. "Collecting baseline" is
+    // reserved for the window that is too thin to say anything at all — the
+    // one distinction this whole surface is arranged to keep.
     const noneNamed = metrics({ mentionRate: 0, shareOfVoice: null, mentionWilsonPp: 4, sovWilsonPp: null });
-    const { rerender } = render(<OverviewCards tiles={[tile({ metrics: baseline })]} />);
-    const baselineClass = screen.getByText("Collecting baseline").className;
+    render(<OverviewCards tiles={[tile({ metrics: noneNamed })]} />);
 
-    rerender(<OverviewCards tiles={[tile({ metrics: noneNamed })]} />);
-    // The headline is a measured rate; the FINDING is on the line beneath it.
     expect(screen.getByText("0%")).toBeInTheDocument();
-    const findingClass = screen.getByText("No brands named").className;
-
-    expect(baselineClass).toContain("text-muted-foreground");
-    expect(findingClass).not.toContain("text-muted-foreground");
-    expect(findingClass).toContain("text-foreground");
+    expect(screen.getByText("±4 pp")).toBeInTheDocument();
+    expect(screen.queryByText("Collecting baseline")).not.toBeInTheDocument();
   });
 
   it("prints no 30-day delta line, whatever deltaPp says", () => {

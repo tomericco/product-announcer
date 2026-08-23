@@ -105,6 +105,37 @@ describe("RateSparkline", () => {
 
     expect(screen.getByText("No runs yet")).toBeInTheDocument();
   });
+
+  it("renders the empty shape when every run in the window was too thin to publish", () => {
+    // `engineHistory` nulls any run below the aggregate floor, so a young or
+    // thin window arrives as a full-length array with nothing plottable in it.
+    // Testing only `length === 0` drew an empty 64px box with no line, which
+    // reads as a broken chart.
+    render(
+      <RateSparkline
+        points={[point({ runId: "r1", rate: null }), point({ runId: "r2", rate: null })]}
+        ariaLabel="Mention rate, last 12 weeks, GPT"
+      />
+    );
+
+    // And it says WHY. "No runs yet" over twelve runs that all fell below the
+    // floor would be false: nothing-happened and not-enough-evidence are the
+    // two readings this feature exists to keep apart.
+    expect(screen.getByText("Not enough answers yet")).toBeInTheDocument();
+    expect(screen.queryByText("No runs yet")).not.toBeInTheDocument();
+  });
+
+  it("still draws the chart when one run in the window has a number", () => {
+    render(
+      <RateSparkline
+        points={[point({ runId: "r1", rate: null }), point({ runId: "r2", rate: 40 })]}
+        ariaLabel="Mention rate, last 12 weeks, GPT"
+      />
+    );
+
+    expect(screen.queryByText("Not enough answers yet")).not.toBeInTheDocument();
+    expect(screen.queryByText("No runs yet")).not.toBeInTheDocument();
+  });
 });
 
 describe("orderedShares", () => {

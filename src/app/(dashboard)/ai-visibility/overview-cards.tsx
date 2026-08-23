@@ -2,7 +2,9 @@
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { EngineId, EngineMetrics } from "@/lib/ai-visibility/types";
+import { ENGINE_LABEL } from "./engine-labels";
 import { engineGridClass } from "./engine-grid";
+import { ratePct } from "./format";
 import { RateSparkline } from "./rate-sparkline";
 import type { RatePoint } from "./sparkline-points";
 
@@ -17,27 +19,6 @@ export type TileReading = {
   headline: string;
   band: string | null;
 };
-
-export type ShareReading = {
-  /**
-   * `none-named` is a FINDING, not an absence, and the tile renders it at full
-   * contrast for that reason: the window is fat enough to report and no tracked
-   * brand — ours or a competitor's — was named in any answer. On a discovery
-   * prompt set that is usually the most actionable line on the page.
-   */
-  kind: "share" | "baseline" | "none-named";
-  text: string;
-};
-
-/**
- * `engineMetrics` returns every rate already in percentage points (0..100),
- * so this rounds and appends a sign — it does NOT multiply. Multiplying
- * again would print "6200%" and, worse, would look plausible on the day
- * someone changes the scale back.
- */
-function percent(rate: number | null): string {
-  return rate === null ? "—" : `${Math.round(rate)}%`;
-}
 
 /**
  * What the big number on a tile says: MENTION RATE, "how often were we named".
@@ -83,41 +64,23 @@ export function tileReading(metrics: EngineMetrics): TileReading {
   }
   return {
     kind: "rate",
-    headline: `${Math.round(metrics.mentionRate)}%`,
+    headline: ratePct(metrics.mentionRate),
     band: metrics.mentionWilsonPp === null ? null : `±${Math.round(metrics.mentionWilsonPp)} pp`,
   };
 }
 
-/**
- * Share of voice, demoted to the small line but not dropped.
- *
- * It keeps the three readings it always had, because the null still means two
- * different things and they are still not the same fact:
- *
- * - `mentionRate === null` — below the threshold; nothing is known, so this
- *   prints an em dash rather than a claim.
- * - `shareOfVoice === null` with a known `mentionRate` — the window IS fat
- *   enough, and no tracked brand was named in any answer. Not "0%": a zero
- *   share implies a denominator, and here nobody won the mentions. It also
- *   says strictly more than the 0% headline above it, which reports only that
- *   WE were not named.
- * - otherwise — a real share.
- */
-export function shareReading(metrics: EngineMetrics): ShareReading {
-  if (metrics.mentionRate === null) return { kind: "baseline", text: "Share of voice —" };
-  if (metrics.shareOfVoice === null) return { kind: "none-named", text: "No brands named" };
-  return { kind: "share", text: `Share of voice ${Math.round(metrics.shareOfVoice)}%` };
-}
-
-/** The remaining two metrics, after the headline took mention rate and the share line took SOV. */
-export function metricsLine(metrics: EngineMetrics): string {
-  return [`Cited ${percent(metrics.citationRate)}`, `Recommended ${percent(metrics.recommendationRate)}`].join(
-    " · "
-  );
-}
-
 export type EngineTile = {
   engine: EngineId | "all";
+  /**
+   * The tile's title — the SHORT engine name ("GPT"), not the methodology one.
+   *
+   * `ENGINE_LABEL` ("GPT-5.x API + web search") is ~180px of card header wide
+   * and was rendered truncated on every tile, so the only part a reader saw was
+   * the part the abbreviation already says. The "API-observed" badge in the
+   * page header carries the proxy caveat once, with the tooltip that explains
+   * it; the full name is still what the tooltip, the failure note and this
+   * card's `title` attribute use.
+   */
   label: string;
   metrics: EngineMetrics;
   points: RatePoint[];
@@ -141,11 +104,14 @@ export function OverviewCards({ tiles }: { tiles: EngineTile[] }) {
     <div className={engineGridClass(tiles.length)}>
       {tiles.map((tile) => {
         const reading = tileReading(tile.metrics);
-        const share = shareReading(tile.metrics);
+        // The methodology name, for the places a full sentence fits: the
+        // header's `title`, and the sparkline's accessible name, where "GPT"
+        // alone would be the whole thing a screen reader is told.
+        const fullName = tile.engine === "all" ? "All engines" : ENGINE_LABEL[tile.engine];
         return (
           <Card key={tile.engine} size="sm">
             <CardHeader>
-              <CardTitle className="truncate" title={tile.label}>
+              <CardTitle className="truncate" title={fullName}>
                 {tile.label}
               </CardTitle>
             </CardHeader>
@@ -170,23 +136,23 @@ export function OverviewCards({ tiles }: { tiles: EngineTile[] }) {
               {/* Same metric as the headline above it. */}
               <RateSparkline
                 points={tile.points}
-                ariaLabel={`Mention rate over the last 12 weeks, ${tile.label}`}
+                ariaLabel={`Mention rate over the last 12 weeks, ${fullName}`}
               />
 
-              <p className="text-xs text-muted-foreground tabular-nums">n = {tile.metrics.n} answers</p>
-              <p className="text-xs text-muted-foreground">
-                <span
-                  className={
-                    // A finding, not an absence: full-contrast text, so it does
-                    // not read as "still collecting".
-                    share.kind === "none-named" ? "font-medium text-foreground" : undefined
-                  }
-                >
-                  {share.text}
-                </span>
-                {" · "}
-                {metricsLine(tile.metrics)}
-              </p>
+              {/* Plain words, not "n = 84 answers". `n` on this tile and
+                  `completedCalls` in the header are different counts — this one
+                  excludes errors, refusals and brand-check prompts — and the
+                  algebraic prefix made the smaller of the two look like the
+                  authoritative one.
+
+                  The `Share of voice · Cited · Recommended` line that used to
+                  sit here is gone: twelve numbers in the page's densest row,
+                  three em dashes joined by interpuncts in the baseline state,
+                  and a share of voice the benchmark card below already states
+                  twice. The metrics are still computed; citation rate is now
+                  stated once, on the Cited-sources card, beside the denominator
+                  it is actually measured over. */}
+              <p className="text-xs text-muted-foreground tabular-nums">{tile.metrics.n} answers read</p>
 
               {tile.modelChangeNote && <p className="text-xs text-muted-foreground">{tile.modelChangeNote}</p>}
               {/* --destructive owns every failure state in this system;

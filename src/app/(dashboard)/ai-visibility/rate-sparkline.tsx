@@ -32,10 +32,20 @@ const CHART_CONFIG = {
  * to anyone not looking at it.
  */
 export function RateSparkline({ points, ariaLabel }: { points: RatePoint[]; ariaLabel: string }) {
-  if (points.length === 0) {
+  // "Every point is null" gets the same treatment as "no points at all", and it
+  // has to be handled here: `engineHistory` nulls any run whose cut fell below
+  // the display floor, so a young or thin window arrives as a full-length array
+  // with nothing plottable in it. Testing only `length === 0` drew an empty
+  // 64px box with no line and no explanation, which reads as a broken chart.
+  //
+  // Different words for the two, though. "No runs yet" over twelve runs that
+  // were all too thin to publish would be false, and this feature's whole
+  // discipline is that "nothing happened" and "not enough evidence" are
+  // separate sentences.
+  if (points.length === 0 || points.every((point) => point.rate === null)) {
     return (
       <div role="img" aria-label={ariaLabel} className="flex h-16 items-center text-xs text-muted-foreground">
-        No runs yet
+        {points.length === 0 ? "No runs yet" : "Not enough answers yet"}
       </div>
     );
   }
