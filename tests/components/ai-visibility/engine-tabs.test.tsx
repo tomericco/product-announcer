@@ -159,11 +159,15 @@ describe("EngineTabs — a sample's body", () => {
   it("clamps a long answer and expands it in place rather than truncating it", () => {
     const { container } = tabs([sample()]);
 
-    const answer = container.querySelector("p.text-sm")!;
-    expect(answer.className).toContain("line-clamp-[12]");
+    // A height clamp, not `line-clamp`: the answer renders as markdown — a
+    // block of headings and lists — and -webkit-box line clamping only ever
+    // clamped the single text node it used to be.
+    const answer = container.querySelector(".answer-content")!;
+    expect(answer.className).toContain("max-h-64");
+    expect(answer.className).toContain("overflow-hidden");
 
     fireEvent.click(screen.getByRole("button", { name: "Show full answer" }));
-    expect(container.querySelector("p.text-sm")!.className).not.toContain("line-clamp-[12]");
+    expect(container.querySelector(".answer-content")!.className).not.toContain("max-h-64");
     expect(screen.getByRole("button", { name: "Show less" })).toBeInTheDocument();
   });
 

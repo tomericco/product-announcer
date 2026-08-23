@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
 import {
   HighlightedAnswer,
+  answerHtml,
   segmentAnswer,
   type AnswerAlias,
 } from "../../../src/app/(dashboard)/ai-visibility/prompts/[promptId]/highlighted-answer";
@@ -113,6 +114,98 @@ describe("segmentAnswer", () => {
   });
 });
 
+describe("answerHtml", () => {
+  it("renders the markdown an engine actually writes — headings, lists, bold", () => {
+    // A real answer opens like this. Rendered as plain text it showed the
+    // marketer `##` and `**` in the one place they go to understand a number.
+    const html = answerHtml("## 1. Tools\n\n- **Versional** — a content hub\n- Lokalise\n", ALIASES);
+
+    expect(html).toContain("<h2>");
+    expect(html).toContain("<ul>");
+    expect(html).toContain("<strong>");
+    expect(html).not.toContain("##");
+    expect(html).not.toContain("**");
+  });
+
+  it("marks a brand in ordinary prose, us in the accent and a rival outlined", () => {
+    const html = answerHtml("Try Versional or Lokalise.", ALIASES);
+
+    expect(html).toContain('<mark title="Versional (you)" class="rounded-sm px-0.5 bg-brand-subtle');
+    expect(html).toContain('<mark title="Lokalise (competitor)"');
+  });
+
+  it("marks a brand inside a heading and inside a list item, not only in a paragraph", () => {
+    const html = answerHtml("## Versional\n\n- Lokalise is another\n", ALIASES);
+
+    expect(html).toMatch(/<h2><mark title="Versional \(you\)"/);
+    expect(html).toMatch(/<li><mark title="Lokalise \(competitor\)"/);
+  });
+
+  it("renders raw HTML in the answer inert — no script, no event handler, no tag", () => {
+    // The answer is text from a third-party API. `renderMarkdown` drops raw
+    // HTML outright; nothing here re-introduces it.
+    const html = answerHtml('<script>alert(1)</script> <img src=x onerror="alert(1)"> ok', ALIASES);
+
+    expect(html).not.toContain("<script");
+    expect(html).not.toContain("onerror");
+    expect(html).not.toContain("<img");
+  });
+
+  it("escapes the brand name it marks, so an alias cannot smuggle markup either", () => {
+    const html = answerHtml("<b>Versional</b> ships", ALIASES);
+
+    expect(html).not.toContain("<b>");
+    expect(html).toContain("<mark");
+  });
+
+  it("does not mark an alias inside a link's href", () => {
+    // The href never reaches the matcher at all — only text tokens do — which
+    // is the property that makes this safe rather than lucky.
+    const html = answerHtml("[the docs](https://lokalise.com/pricing) explain it", ALIASES);
+
+    expect(html).toContain('href="https://lokalise.com/pricing"');
+    expect(html).not.toMatch(/href="[^"]*<mark/);
+    expect(html).not.toContain("<mark");
+  });
+
+  it("does not mark an alias inside a code span or a fenced block", () => {
+    const inline = answerHtml("Run `Versional deploy` to ship", ALIASES);
+    expect(inline).toContain("<code>Versional deploy</code>");
+    expect(inline).not.toContain("<mark");
+
+    const fenced = answerHtml("```\nimport Versional from 'x'\n```", ALIASES);
+    expect(fenced).toContain("<pre>");
+    expect(fenced).not.toContain("<mark");
+  });
+
+  it("still marks the same alias in the prose around the code", () => {
+    const html = answerHtml("Versional ships `Versional deploy` daily", ALIASES);
+
+    expect(html.match(/<mark/g)).toHaveLength(1);
+  });
+
+  it("keeps a blanked href blanked — the renderer's own guarantee, unchanged by marking", () => {
+    expect(answerHtml("[click](javascript:alert(1))", ALIASES)).toContain('href=""');
+  });
+
+  it("does not mark a brand name inside a bare URL the way it never did in plain text", () => {
+    const html = answerHtml("See https://lokalise.com/pricing for Lokalise pricing.", ALIASES);
+
+    // One mark: the prose mention, not the autolinked URL.
+    expect(html.match(/<mark/g)).toHaveLength(1);
+  });
+
+  it("escapes ordinary text exactly as the renderer would, entities included", () => {
+    const html = answerHtml("5 < 6 & 7 &amp; 8", ALIASES);
+
+    expect(html).toBe("<p>5 &lt; 6 &amp; 7 &amp; 8</p>");
+  });
+
+  it("returns nothing for an empty answer", () => {
+    expect(answerHtml("", ALIASES)).toBe("");
+  });
+});
+
 describe("HighlightedAnswer", () => {
   it("marks us with the accent and a competitor with an outline", () => {
     const { container } = render(<HighlightedAnswer text="Versional or Lokalise" aliases={ALIASES} />);
@@ -124,17 +217,31 @@ describe("HighlightedAnswer", () => {
     expect(marks[1].className).not.toContain("bg-brand-subtle");
   });
 
-  it("renders markup in the answer as text, never as markup", () => {
-    // The answer is text from a third-party API. It is rendered as React
-    // children, never through dangerouslySetInnerHTML — this test is what
-    // stops someone "simplifying" it into a string of <mark> tags later.
+  it("renders the answer's markdown structure rather than its source", () => {
+    const { container } = render(
+      <HighlightedAnswer text={"## Best tools\n\n- **Versional**\n- Lokalise\n"} aliases={ALIASES} />
+    );
+
+    expect(container.querySelector("h2")).toHaveTextContent("Best tools");
+    expect(container.querySelectorAll("li")).toHaveLength(2);
+    expect(container.querySelector("strong")).toBeInTheDocument();
+    expect(container.textContent).not.toContain("##");
+  });
+
+  it("renders markup in the answer inert, never as markup", () => {
+    // The answer is text from a third-party API, and this component uses
+    // dangerouslySetInnerHTML. What keeps that safe is that the HTML is built
+    // by `renderMarkdown` — which drops raw HTML and blanks unsafe hrefs — and
+    // that the marks go in at the text-token level, never by string-replacing
+    // over rendered markup. This test is what stops someone "simplifying"
+    // that into a replace over the rendered HTML.
     const { container } = render(
       <HighlightedAnswer text={"<script>alert(1)</script> and <b>bold</b>"} aliases={ALIASES} />
     );
 
     expect(container.querySelector("script")).toBeNull();
     expect(container.querySelector("b")).toBeNull();
-    expect(screen.getByText(/<script>alert\(1\)<\/script> and <b>bold<\/b>/)).toBeInTheDocument();
+    expect(container.innerHTML).not.toContain("onerror");
   });
 
   it("names each mark for a screen reader, since colour is the only other cue", () => {
@@ -142,5 +249,15 @@ describe("HighlightedAnswer", () => {
 
     expect(screen.getByText("Versional")).toHaveAttribute("title", "Versional (you)");
     expect(screen.getByText("Lokalise")).toHaveAttribute("title", "Lokalise (competitor)");
+  });
+
+  it("carries the styling the rendered markdown needs, since preflight flattens it", () => {
+    const { container } = render(<HighlightedAnswer text="# Title" aliases={ALIASES} className="max-h-64" />);
+
+    const root = container.firstElementChild!;
+    expect(root.className).toContain("mdx-content");
+    expect(root.className).toContain("answer-content");
+    // And the caller's own class still lands — the clamp on the samples list.
+    expect(root.className).toContain("max-h-64");
   });
 });

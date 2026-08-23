@@ -1,106 +1,32 @@
 "use client";
 
 import { cn } from "@/lib/utils";
+import { answerHtml, type AnswerAlias } from "./answer-markdown";
 
-export type AnswerAlias = { name: string; kind: "tenant" | "competitor"; label: string };
-export type AnswerSegment = { text: string; kind: "plain" | "tenant" | "competitor"; label?: string };
-
-const WORD_CHAR = /[A-Za-z0-9]/;
-
-/**
- * Whether `index` sits inside a URL. Scans back to the nearest whitespace and
- * asks whether that token looks like a link.
- *
- * The alias table applies the same rule during extraction, and it matters
- * just as much here: "lokalise.com" in a citation is not the engine naming
- * Lokalise in its answer, and highlighting it would make a citation look
- * like a mention to anyone reading the raw text to check our arithmetic.
- */
-function insideUrl(text: string, index: number): boolean {
-  let start = index;
-  while (start > 0 && !/\s/.test(text[start - 1])) start -= 1;
-  let end = index;
-  while (end < text.length && !/\s/.test(text[end])) end += 1;
-  const token = text.slice(start, end);
-  return token.includes("://") || token.startsWith("www.") || /^[\w.-]+\.(com|io|ai|org|net|co)\b/i.test(token);
-}
+// Re-exported so the two call sites and their tests keep one import path for
+// "the answer view and its vocabulary". The pure functions live next door in a
+// module with no "use client", because a Server Component may render this
+// component but may not CALL anything exported from a client module.
+export { segmentAnswer, answerHtml } from "./answer-markdown";
+export type { AnswerAlias, AnswerSegment } from "./answer-markdown";
 
 /**
- * Splits an answer into plain and marked segments.
+ * The engine's answer as the engine wrote it — markdown rendered, our brand in
+ * the accent, tracked competitors outlined.
  *
- * Three rules, each of which is a bug when dropped:
- * - **Word boundaries.** "Versionality" is not a mention of Versional.
- * - **Longest match wins.** With both "Phrase" and "Phrase TMS" tracked, the
- *   answer names one product, and marking the shorter one leaves " TMS"
- *   dangling outside the highlight.
- * - **Never inside a URL.** See `insideUrl`.
+ * `dangerouslySetInnerHTML`, and the reasons this is safe are load-bearing
+ * rather than incidental. The HTML comes from `answerHtml`, which renders
+ * through `lib/markdown/render.ts` — raw HTML in the answer is DROPPED, and
+ * any href or src outside http(s)/mailto/relative/anchor is blanked — and
+ * inserts its `<mark>`s at the text-token level, so a brand name can never
+ * land inside a tag, an attribute, a code span or a fenced block. Nothing here
+ * concatenates markup with answer text. That distinction is the whole safety
+ * argument; see the note on `answerHtml` before changing how the two combine.
  *
- * Matching is case-insensitive; the ANSWER's own casing is preserved in the
- * output, because the segment text is sliced from the answer rather than
- * taken from the alias.
- */
-export function segmentAnswer(text: string, aliases: AnswerAlias[]): AnswerSegment[] {
-  const lower = text.toLowerCase();
-
-  type Match = { start: number; end: number; alias: AnswerAlias };
-  const matches: Match[] = [];
-
-  for (const alias of aliases) {
-    const needle = alias.name.toLowerCase();
-    if (!needle) continue;
-    let from = 0;
-    for (;;) {
-      const start = lower.indexOf(needle, from);
-      if (start === -1) break;
-      const end = start + needle.length;
-      from = start + 1;
-
-      const before = start > 0 ? text[start - 1] : "";
-      const after = end < text.length ? text[end] : "";
-      if (before && WORD_CHAR.test(before)) continue;
-      if (after && WORD_CHAR.test(after)) continue;
-      if (insideUrl(text, start)) continue;
-
-      matches.push({ start, end, alias });
-    }
-  }
-
-  // Earliest first; on a tie the longest wins, and the tenant wins a tie of
-  // equal length so an ambiguous name is never silently attributed to a
-  // competitor.
-  matches.sort((a, b) => {
-    if (a.start !== b.start) return a.start - b.start;
-    const lengthDelta = b.end - b.start - (a.end - a.start);
-    if (lengthDelta !== 0) return lengthDelta;
-    if (a.alias.kind !== b.alias.kind) return a.alias.kind === "tenant" ? -1 : 1;
-    return 0;
-  });
-
-  const segments: AnswerSegment[] = [];
-  let cursor = 0;
-  for (const match of matches) {
-    // Overlaps the previous accepted match — dropped, not truncated.
-    if (match.start < cursor) continue;
-    // No empty plain segment between two adjacent marks.
-    if (match.start > cursor) segments.push({ text: text.slice(cursor, match.start), kind: "plain" });
-    segments.push({
-      text: text.slice(match.start, match.end),
-      kind: match.alias.kind,
-      label: match.alias.label,
-    });
-    cursor = match.end;
-  }
-  if (cursor < text.length) segments.push({ text: text.slice(cursor), kind: "plain" });
-  return segments;
-}
-
-/**
- * The raw answer with brands marked: us in the accent (state — the thing the
- * page exists to show), competitors as a plain outline.
- *
- * Rendered as React children. The answer is text from a third-party API, and
- * building a string of `<mark>` tags for `dangerouslySetInnerHTML` would be
- * an injection with an extra step; React escapes every segment for free.
+ * `.mdx-content` carries the heading, list and code styling the editor already
+ * uses (Tailwind's preflight flattens all of it otherwise); `.answer-content`
+ * steps the scale down, because this is quoted evidence inside a card rather
+ * than a document.
  */
 export function HighlightedAnswer({
   text,
@@ -111,28 +37,10 @@ export function HighlightedAnswer({
   aliases: AnswerAlias[];
   className?: string;
 }) {
-  const segments = segmentAnswer(text, aliases);
-
   return (
-    <p className={cn("text-sm whitespace-pre-wrap", className)}>
-      {segments.map((segment, index) =>
-        segment.kind === "plain" ? (
-          <span key={index}>{segment.text}</span>
-        ) : (
-          <mark
-            key={index}
-            title={`${segment.label} (${segment.kind === "tenant" ? "you" : "competitor"})`}
-            className={cn(
-              "rounded-sm px-0.5",
-              segment.kind === "tenant"
-                ? "bg-brand-subtle text-brand-subtle-foreground"
-                : "border border-border bg-transparent text-foreground"
-            )}
-          >
-            {segment.text}
-          </mark>
-        )
-      )}
-    </p>
+    <div
+      className={cn("mdx-content answer-content text-sm", className)}
+      dangerouslySetInnerHTML={{ __html: answerHtml(text, aliases) }}
+    />
   );
 }

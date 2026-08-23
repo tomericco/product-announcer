@@ -13,10 +13,67 @@ function escapeAttr(value: string): string {
   return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
 }
 
-function buildRenderer() {
+/**
+ * marked's own text escaping, reproduced because overriding the `text`
+ * renderer replaces it.
+ *
+ * The "no encode" variant: `&` is escaped only when it does not already start
+ * an entity, so `&amp;` in the source survives as one ampersand rather than
+ * becoming `&amp;amp;`. Matches marked's default `escape(text, false)`.
+ */
+export function escapeMarkdownText(text: string): string {
+  return text.replace(/[<>"']|&(?!(#\d{1,7}|#[Xx][a-fA-F0-9]{1,6}|\w+);)/g, (character) => {
+    switch (character) {
+      case "&":
+        return "&amp;";
+      case "<":
+        return "&lt;";
+      case ">":
+        return "&gt;";
+      case '"':
+        return "&quot;";
+      default:
+        return "&#39;";
+    }
+  });
+}
+
+/**
+ * How to turn one plain-text run into HTML.
+ *
+ * Receives the RAW text of a markdown text token — never markup, never an
+ * attribute value, never the inside of a code span or a fenced block, all of
+ * which reach their own renderers. Returns HTML and therefore owns its own
+ * escaping: `escapeMarkdownText` is what the default does.
+ *
+ * This is the seam that lets a caller decorate prose (the AI-visibility answer
+ * view wraps tracked brand names in `<mark>`) without ever running a string
+ * replace over rendered markup, which is how highlighting corrupts an href or
+ * reintroduces the injection this renderer exists to prevent.
+ */
+export type RenderTextFn = (text: string) => string;
+
+function buildRenderer(renderText?: RenderTextFn) {
   const marked = new Marked({ gfm: true, breaks: false });
   marked.use({
     renderer: {
+      // Only reached when a caller asked for it; otherwise marked's default
+      // text renderer stands, and this file behaves exactly as it did.
+      ...(renderText
+        ? {
+            text(token: Tokens.Text | Tokens.Escape) {
+              // An inline container (a loose list item, a table cell): recurse
+              // rather than treating its raw text as a leaf, or the nested
+              // emphasis and links inside it would be printed as source.
+              if ("tokens" in token && token.tokens) return this.parser.parseInline(token.tokens);
+              // Already HTML, produced by a tokenizer this file does not own.
+              // Escaping it would print tags; decorating it would be the very
+              // string-replace-over-markup this seam exists to avoid.
+              if ("escaped" in token && token.escaped) return token.text;
+              return renderText(token.text);
+            },
+          }
+        : {}),
       // Drop raw HTML blocks/inline (e.g. <script>, <img onerror>). Same stance
       // as markdown-to-html.ts.
       html() {
@@ -44,7 +101,7 @@ function buildRenderer() {
   return marked;
 }
 
-export function renderMarkdown(markdown: string): string {
+export function renderMarkdown(markdown: string, options?: { renderText?: RenderTextFn }): string {
   if (!markdown.trim()) return "";
-  return (buildRenderer().parse(markdown, { async: false }) as string).trim();
+  return (buildRenderer(options?.renderText).parse(markdown, { async: false }) as string).trim();
 }

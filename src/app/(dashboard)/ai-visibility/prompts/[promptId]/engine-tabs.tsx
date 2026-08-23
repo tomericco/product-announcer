@@ -86,7 +86,11 @@ function Sample({ sample, aliases }: { sample: SampleView; aliases: AnswerAlias[
           <HighlightedAnswer
             text={sample.answerText}
             aliases={aliases}
-            className={cn(!expanded && "line-clamp-[12]")}
+            // A height clamp, not `line-clamp`: the answer is now a block of
+            // headings and lists rather than one paragraph, and -webkit-box
+            // line clamping only ever clamped the single text node it used to
+            // be. ~12 lines at this scale.
+            className={cn(!expanded && "max-h-64 overflow-hidden")}
           />
           <Button variant="ghost" size="sm" onClick={() => setExpanded((prev) => !prev)}>
             {expanded ? "Show less" : "Show full answer"}
