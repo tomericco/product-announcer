@@ -4,7 +4,7 @@ import {
   ENGINE_REQUEST_TIMEOUT_MS,
 } from "@/lib/ai-visibility/engines/shape";
 import {
-  NEUTRAL_SYSTEM_PROMPT,
+  engineSystemPrompt,
   type EngineAnswer,
   type EngineCitation,
   type EngineClient,
@@ -110,7 +110,7 @@ export async function askOpenAi(
       headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
         model,
-        instructions: NEUTRAL_SYSTEM_PROMPT,
+        ...(engineSystemPrompt() ? { instructions: engineSystemPrompt() } : {}),
         input: prompt,
         // No temperature: the natural distribution IS the measurement.
         tools: [{ type: "web_search", search_context_size: "medium" }],

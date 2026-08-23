@@ -32,9 +32,30 @@ export type PromptIntent = (typeof PROMPT_INTENTS)[number];
  * Lives here rather than in `engines/index.ts` because all four clients need
  * it and `engines/index.ts` imports them — putting it there would cycle.
  */
-export const NEUTRAL_SYSTEM_PROMPT =
-  "You are a helpful assistant. Answer the user's question directly and concisely, " +
-  "using web search where it helps. Cite the sources you used.";
+/**
+ * The system prompt the engines send — by default, none at all.
+ *
+ * A buyer typing "best content design tools" into ChatGPT sends no system
+ * prompt, so neither do we. The engine's own product prompt is part of what we
+ * are trying to observe; ours would be a second instruction the real user never
+ * gave, and this feature's whole claim is that it reports what an engine says
+ * rather than what we asked it to say.
+ *
+ * The prompt this replaced ended "Cite the sources you used." — an instruction
+ * to perform the exact behaviour the cited-domain leaderboard and the
+ * `own_page_cited` signal count. Measuring citations while asking for citations
+ * inflates the metric by an unknown amount, and the amount is not stable across
+ * engines, so it does not even cancel out in a comparison.
+ *
+ * `AI_VISIBILITY_SYSTEM_PROMPT` overrides it, for A/B runs against the old
+ * behaviour. An empty or unset value means no system prompt is sent at all —
+ * the engines omit the field rather than sending an empty string, which some
+ * providers reject and others treat as a real (empty) instruction.
+ */
+export function engineSystemPrompt(): string | undefined {
+  const override = process.env.AI_VISIBILITY_SYSTEM_PROMPT?.trim();
+  return override ? override : undefined;
+}
 
 export type EngineCitation = { url: string; position: number };
 

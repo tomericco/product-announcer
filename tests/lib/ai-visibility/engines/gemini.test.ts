@@ -53,7 +53,10 @@ describe("askGemini", () => {
     const body = JSON.parse(init.body as string);
     expect(body.tools).toEqual([{ google_search: {} }]);
     expect(body.contents[0].parts[0].text).toBe("best issue trackers for startups");
-    expect(body.systemInstruction.parts[0].text).toEqual(expect.any(String));
+    // No system prompt by default: a buyer types a question and sends nothing
+    // else, and the prompt this replaced asked the model to cite its sources —
+    // instructing the very behaviour the leaderboard counts.
+    expect(body.systemInstruction).toBeUndefined();
   });
 
   it("joins the parts and keeps the grounding URIs in order, unresolved", async () => {

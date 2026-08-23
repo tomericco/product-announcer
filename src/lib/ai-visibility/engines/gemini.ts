@@ -4,7 +4,7 @@ import {
   ENGINE_REQUEST_TIMEOUT_MS,
 } from "@/lib/ai-visibility/engines/shape";
 import {
-  NEUTRAL_SYSTEM_PROMPT,
+  engineSystemPrompt,
   type EngineAnswer,
   type EngineCitation,
   type EngineClient,
@@ -127,7 +127,7 @@ export async function askGemini(
       // log line or in an error message.
       headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
       body: JSON.stringify({
-        systemInstruction: { parts: [{ text: NEUTRAL_SYSTEM_PROMPT }] },
+        ...(engineSystemPrompt() ? { systemInstruction: { parts: [{ text: engineSystemPrompt() }] } } : {}),
         contents: [{ role: "user", parts: [{ text: prompt }] }],
         tools: [{ google_search: {} }],
       }),

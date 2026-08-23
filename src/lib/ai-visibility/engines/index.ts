@@ -19,7 +19,7 @@ import {
  * alternative is a run that silently skips an engine a tenant switched on.
  *
  * This module imports the clients; nothing in a client may import this module
- * back. The one thing all four share, `NEUTRAL_SYSTEM_PROMPT`, therefore lives
+ * back. The one thing all four share, `engineSystemPrompt()`, therefore lives
  * in `types.ts`.
  */
 export const ENGINE_CLIENTS: Record<EngineId, EngineClient> = {
@@ -52,3 +52,4 @@ export function engineLabel(id: EngineId): string {
 export function engineCost(id: EngineId): number {
   return ENGINE_COSTS[id];
 }
+

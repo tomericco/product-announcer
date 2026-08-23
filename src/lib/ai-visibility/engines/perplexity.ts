@@ -4,7 +4,7 @@ import {
   ENGINE_REQUEST_TIMEOUT_MS,
 } from "@/lib/ai-visibility/engines/shape";
 import {
-  NEUTRAL_SYSTEM_PROMPT,
+  engineSystemPrompt,
   type EngineAnswer,
   type EngineCitation,
   type EngineClient,
@@ -121,7 +121,7 @@ export async function askPerplexity(
       // Nothing speculative goes in this body.
       body: JSON.stringify({
         model,
-        instructions: NEUTRAL_SYSTEM_PROMPT,
+        ...(engineSystemPrompt() ? { instructions: engineSystemPrompt() } : {}),
         input: prompt,
         // Search is not implied here the way it was on Sonar chat-completions —
         // without this the model answers from memory, which measures training

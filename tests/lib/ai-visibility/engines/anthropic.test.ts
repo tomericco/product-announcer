@@ -68,11 +68,25 @@ describe("askAnthropic", () => {
     const body = JSON.parse(init.body as string);
     expect(body.tools[0]).toMatchObject({ type: "web_search_20250305", name: "web_search" });
     expect(body.messages).toEqual([{ role: "user", content: "best issue trackers for startups" }]);
-    expect(typeof body.system).toBe("string");
+    // No system prompt by default: a buyer types a question and sends nothing
+    // else, and the prompt this replaced asked the model to cite its sources —
+    // instructing the very behaviour the leaderboard counts.
+    expect(body.system).toBeUndefined();
     expect(body.max_tokens).toBeGreaterThan(0);
     // Thinking shares the answer's token budget, and a live check showed it
     // eating enough of it to truncate the answer itself.
     expect(body.thinking).toEqual({ type: "disabled" });
+  });
+
+  it("sends a system prompt only when one is configured, for A/B against the old behaviour", async () => {
+    vi.stubEnv("ANTHROPIC_API_KEY", "sk-ant-test");
+    vi.stubEnv("AI_VISIBILITY_SYSTEM_PROMPT", "You are a helpful assistant.");
+    const fetchImpl = vi.fn(async () => json(ANSWER));
+
+    await askAnthropic("best issue trackers for startups", { fetchImpl: fetchImpl as never });
+
+    const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(init.body as string).system).toBe("You are a helpful assistant.");
   });
 
   it("extracts text, citations in order, the queries and the dated model id", async () => {

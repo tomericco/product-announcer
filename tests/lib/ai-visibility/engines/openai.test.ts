@@ -68,7 +68,10 @@ describe("askOpenAi", () => {
     const body = JSON.parse(init.body as string);
     expect(body.input).toBe("best issue trackers for startups");
     expect(body.tools).toEqual([{ type: "web_search", search_context_size: "medium" }]);
-    expect(typeof body.instructions).toBe("string");
+    // No system prompt by default: a buyer types a question and sends nothing
+    // else, and the prompt this replaced asked the model to cite its sources —
+    // instructing the very behaviour the leaderboard counts.
+    expect(body.instructions).toBeUndefined();
   });
 
   it("extracts the answer, the model, the citations in order and the queries", async () => {

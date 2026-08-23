@@ -4,7 +4,7 @@ import {
   ENGINE_REQUEST_TIMEOUT_MS,
 } from "@/lib/ai-visibility/engines/shape";
 import {
-  NEUTRAL_SYSTEM_PROMPT,
+  engineSystemPrompt,
   type EngineAnswer,
   type EngineCitation,
   type EngineClient,
@@ -149,7 +149,9 @@ export async function askAnthropic(
         // answer itself was cut off. What is being measured is the answer a
         // buyer would read, not the reasoning behind it.
         thinking: { type: "disabled" },
-        system: NEUTRAL_SYSTEM_PROMPT,
+        // Omitted entirely when unset — Anthropic treats an empty system
+        // string as a real (empty) instruction.
+        ...(engineSystemPrompt() ? { system: engineSystemPrompt() } : {}),
         messages: [{ role: "user", content: prompt }],
         tools: [
           { type: "web_search_20250305", name: "web_search", max_uses: ANTHROPIC_MAX_SEARCHES },

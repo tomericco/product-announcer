@@ -67,12 +67,16 @@ describe("askPerplexity", () => {
     // Provider-prefixed slug: a bare "sonar" is not a valid Agent API model id.
     expect(body.model).toBe("perplexity/sonar");
     expect(body.input).toBe("best issue trackers for startups");
-    expect(typeof body.instructions).toBe("string");
+    // No system prompt by default: a buyer types a question and sends nothing
+    // else, and the prompt this replaced asked the model to cite its sources —
+    // instructing the very behaviour the leaderboard counts.
+    expect(body.instructions).toBeUndefined();
     // Search is opt-in here — without the tool the model answers from memory.
     expect(body.tools).toEqual([{ type: "web_search" }]);
     // The endpoint is strict: an unknown field anywhere is a 400, so the body
-    // must carry nothing beyond these four keys.
-    expect(Object.keys(body).sort()).toEqual(["input", "instructions", "model", "tools"]);
+    // must carry nothing beyond these three keys. `instructions` is absent
+    // because no system prompt is sent by default.
+    expect(Object.keys(body).sort()).toEqual(["input", "model", "tools"]);
   });
 
   it("reads the answer, the citations and the queries out of the output items", async () => {
