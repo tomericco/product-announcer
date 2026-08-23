@@ -133,7 +133,7 @@ describe("askAnthropic", () => {
     });
   });
 
-  it("refuses a refusal, an empty answer and an answer written without searching", async () => {
+  it("refuses a refusal and an empty answer", async () => {
     vi.stubEnv("ANTHROPIC_API_KEY", "sk-ant-test");
 
     const refusal = vi.fn(async () =>
@@ -149,19 +149,6 @@ describe("askAnthropic", () => {
       costUsd: ANTHROPIC_COST_PER_CALL_USD,
     });
 
-    const noSearch = vi.fn(async () =>
-      json({
-        model: "m",
-        stop_reason: "end_turn",
-        content: [{ type: "text", text: "From memory." }],
-      })
-    );
-    expect(await askAnthropic("x", { fetchImpl: noSearch as never })).toEqual({
-      kind: "refused",
-      message: expect.stringMatching(/search/i),
-      costUsd: ANTHROPIC_COST_PER_CALL_USD,
-    });
-
     const empty = vi.fn(async () =>
       json({
         model: "m",
@@ -174,6 +161,55 @@ describe("askAnthropic", () => {
       message: expect.any(String),
       costUsd: ANTHROPIC_COST_PER_CALL_USD,
     });
+  });
+
+  it("returns an answer written without searching, marked ungrounded", async () => {
+    vi.stubEnv("ANTHROPIC_API_KEY", "sk-ant-test");
+
+    const noSearch = vi.fn(async () =>
+      json({
+        model: "m",
+        stop_reason: "end_turn",
+        content: [{ type: "text", text: "From memory." }],
+      })
+    );
+    const result = await askAnthropic("x", { fetchImpl: noSearch as never });
+
+    // A no-search answer is what a buyer asking this question would read, so it
+    // counts toward the mention-family metrics and is excluded only from the
+    // citation-family ones — via `searchUsed`.
+    expect("kind" in result).toBe(false);
+    if ("kind" in result) return;
+    expect(result.text).toBe("From memory.");
+    expect(result.searchUsed).toBe(false);
+    expect(result.citations).toEqual([]);
+  });
+
+  it("marks a sample grounded when it carries citations but no server_tool_use block", async () => {
+    vi.stubEnv("ANTHROPIC_API_KEY", "sk-ant-test");
+
+    // Citations hang off text blocks, the flag off the `server_tool_use` block,
+    // so they can disagree. A cited-but-unflagged sample would take citation
+    // rate over 100%, since its denominator is the grounded count.
+    const citedWithoutFlag = vi.fn(async () =>
+      json({
+        model: "m",
+        stop_reason: "end_turn",
+        content: [
+          {
+            type: "text",
+            text: "Acme is strong.",
+            citations: [{ url: "https://acme.com/pricing" }],
+          },
+        ],
+      })
+    );
+    const result = await askAnthropic("x", { fetchImpl: citedWithoutFlag as never });
+
+    expect("kind" in result).toBe(false);
+    if ("kind" in result) return;
+    expect(result.searchUsed).toBe(true);
+    expect(result.citations).toEqual([{ url: "https://acme.com/pricing", position: 1 }]);
   });
 
   it("treats a truncated or paused answer as an error, not as an answer", async () => {
@@ -385,11 +421,12 @@ describe("askAnthropic, the remaining error paths and extraction edges", () => {
       })
     );
 
-    expect(await askAnthropic("x", { fetchImpl: fetchImpl as never })).toEqual({
-      kind: "refused",
-      message: expect.stringMatching(/search/i),
-      costUsd: ANTHROPIC_COST_PER_CALL_USD,
-    });
+    const result = await askAnthropic("x", { fetchImpl: fetchImpl as never });
+
+    expect("kind" in result).toBe(false);
+    if ("kind" in result) return;
+    expect(result.searchUsed).toBe(false);
+    expect(result.searchQueries).toEqual([]);
   });
 
   it("strips the blobs as KEYS, and leaves a block that never had them alone", async () => {

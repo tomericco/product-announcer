@@ -104,7 +104,7 @@ describe("askGemini", () => {
     });
   });
 
-  it("refuses a blocked, empty or ungrounded answer", async () => {
+  it("refuses a blocked or empty answer", async () => {
     vi.stubEnv("GEMINI_API_KEY", "gem-test");
 
     const blocked = vi.fn(async () =>
@@ -115,15 +115,26 @@ describe("askGemini", () => {
       message: expect.any(String),
       costUsd: GEMINI_COST_PER_CALL_USD,
     });
+  });
 
+  it("returns an ungrounded answer rather than refusing it", async () => {
+    vi.stubEnv("GEMINI_API_KEY", "gem-test");
+
+    // Gemini declines to ground on discovery, alternatives and how-to prompts —
+    // 18 of a 30-prompt set. Dropping those made a Gemini signal impossible on
+    // exactly the intents this feature exists for.
     const ungrounded = vi.fn(async () =>
       json({ modelVersion: "m", candidates: [{ content: { parts: [{ text: "From memory." }] } }] })
     );
-    expect(await askGemini("x", { fetchImpl: ungrounded as never })).toEqual({
-      kind: "refused",
-      message: expect.stringMatching(/search|ground/i),
-      costUsd: GEMINI_COST_PER_CALL_USD,
-    });
+    const result = await askGemini("x", { fetchImpl: ungrounded as never });
+
+    expect("kind" in result).toBe(false);
+    if ("kind" in result) return;
+    expect(result.text).toBe("From memory.");
+    expect(result.searchUsed).toBe(false);
+    expect(result.citations).toEqual([]);
+    expect(result.searchQueries).toEqual([]);
+    expect(result.costUsd).toBe(GEMINI_COST_PER_CALL_USD);
   });
 
   it("treats a truncated answer as an error, not as an answer", async () => {
@@ -485,11 +496,12 @@ describe("askGemini, shapes that are not what the docs describe", () => {
 
     const result = await askGemini("x", { fetchImpl: fetchImpl as never });
 
-    // The text read fine; nothing citable could be found, so it reads as
-    // ungrounded rather than blowing up the slice.
-    expect("kind" in result).toBe(true);
-    if (!("kind" in result)) return;
-    expect(["error", "refused"]).toContain(result.kind);
+    // The text read fine; nothing citable could be found, so it comes back as
+    // an ungrounded answer rather than blowing up the slice.
+    expect("kind" in result).toBe(false);
+    if ("kind" in result) return;
+    expect(result.searchUsed).toBe(false);
+    expect(result.citations).toEqual([]);
   });
 
   it("does not throw when candidates or the body itself is the wrong type", async () => {

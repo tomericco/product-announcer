@@ -220,14 +220,12 @@ export async function askGemini(
     citations.push({ url: uri, position: citations.length + 1 });
   }
 
+  // Gemini decides PER QUESTION whether to ground, and declines on exactly the
+  // discovery, alternatives and how-to prompts this feature exists to measure.
+  // An ungrounded answer is still what a buyer asking that question reads, so
+  // it is a successful sample carrying `searchUsed: false`; the citation-family
+  // metrics exclude it downstream. See the ungrounded-answers design.
   const searchUsed = searchQueries.length > 0 || citations.length > 0;
-  if (!searchUsed) {
-    return {
-      kind: "refused",
-      message: "gemini answered without grounding the answer in a search",
-      costUsd: GEMINI_COST_PER_CALL_USD,
-    };
-  }
 
   return {
     text,

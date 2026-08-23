@@ -9,8 +9,12 @@ import {
 
 /**
  * The metric cut, in one place (design §Metrics: "`n` = samples in the cut
- * after excluding errors, no-search refusals, flagged rows and brand-check
- * prompts").
+ * after excluding errors, flagged rows and brand-check prompts").
+ *
+ * An answer written WITHOUT a web search is in the cut. It is what a buyer
+ * asking that question would read, so it measures what the engine said just as
+ * well as a grounded one does; only the citation-family metrics exclude it, and
+ * they do that on `search_used` rather than here (ungrounded-answers design).
  *
  * `branded` and `intent === "brand_check"` are both checked. They are the same
  * set by construction — generation marks brand-check prompts branded — but a

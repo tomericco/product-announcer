@@ -66,11 +66,11 @@ export type EngineError = {
   /**
    * What the failed call still cost, when the provider gave us enough to say.
    *
-   * A failure is not free. A refusal, an answer written without searching, and
-   * an answer truncated at the token ceiling all ran the model to completion
-   * and are billed in full — the truncated one is the most expensive kind of
-   * call there is. Typing these as costless made every such sample record zero
-   * spend, so the monthly cap under-counted by however many samples failed.
+   * A failure is not free. A refusal and an answer truncated at the token
+   * ceiling both ran the model to completion and are billed in full — the
+   * truncated one is the most expensive kind of call there is. Typing these as
+   * costless made every such sample record zero spend, so the monthly cap
+   * under-counted by however many samples failed.
    *
    * Populated when the provider returned a complete response we could read;
    * left undefined for a transport failure or a non-2xx, where nothing tells

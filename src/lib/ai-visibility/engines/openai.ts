@@ -226,15 +226,18 @@ export async function askOpenAi(
       costUsd: OPENAI_COST_PER_CALL_USD,
     };
   }
-  // An answer written from the model's own memory measures training data, not
-  // the live web. Stored, shown as a coverage gap, excluded from rates.
-  if (!searchUsed) {
-    return {
-      kind: "refused",
-      message: "openai answered without searching the web",
-      costUsd: OPENAI_COST_PER_CALL_USD,
-    };
-  }
+  // An answer written from the model's own memory is a real answer: it is what
+  // a buyer asking this question would read, and it measures what the engine
+  // SAID. It is excluded only from the citation-family metrics, which is
+  // `search_used`'s job downstream — see the ungrounded-answers design.
+  //
+  // A citation without a search flag is impossible to honour downstream:
+  // `citationRate` divides own-domain citations by the GROUNDED sample count,
+  // so a cited-but-unflagged sample would push the rate over 100%. The
+  // citations are collected from annotations, independently of the
+  // `web_search_call` item that sets the flag, so the two can disagree.
+  // Citations are the stronger evidence, so they win.
+  if (citations.length > 0) searchUsed = true;
 
   return {
     text,

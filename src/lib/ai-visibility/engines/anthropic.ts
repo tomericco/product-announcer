@@ -249,13 +249,15 @@ export async function askAnthropic(
       costUsd: ANTHROPIC_COST_PER_CALL_USD,
     };
   }
-  if (!searchUsed) {
-    return {
-      kind: "refused",
-      message: "anthropic answered without searching the web",
-      costUsd: ANTHROPIC_COST_PER_CALL_USD,
-    };
-  }
+  // An answer written from the model's own memory is a real answer — what the
+  // engine SAID is measurable, only what it CITED is not. `search_used` carries
+  // that distinction downstream; see the ungrounded-answers design.
+  //
+  // Citations hang off text blocks, independently of the `server_tool_use`
+  // block that sets the flag, so a citation can arrive with `searchUsed` false.
+  // Downstream `citationRate` divides by the grounded sample count, so that
+  // combination would report over 100%. Citations are the stronger evidence.
+  if (citations.length > 0) searchUsed = true;
 
   return {
     text,

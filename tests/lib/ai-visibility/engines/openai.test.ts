@@ -203,7 +203,7 @@ describe("askOpenAi", () => {
     });
   });
 
-  it("refuses a refusal, an empty answer, and an answer written without searching", async () => {
+  it("refuses a refusal and an empty answer", async () => {
     vi.stubEnv("OPENAI_API_KEY", "sk-test");
 
     const refusal = vi.fn(async () =>
@@ -219,6 +219,17 @@ describe("askOpenAi", () => {
       costUsd: OPENAI_COST_PER_CALL_USD,
     });
 
+    const empty = vi.fn(async () => json({ model: "m", output: [{ type: "web_search_call" }] }));
+    expect(await askOpenAi("x", { fetchImpl: empty as never })).toEqual({
+      kind: "refused",
+      message: expect.any(String),
+      costUsd: OPENAI_COST_PER_CALL_USD,
+    });
+  });
+
+  it("returns an answer written without searching, marked ungrounded", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "sk-test");
+
     const noSearch = vi.fn(async () =>
       json({
         model: "m",
@@ -226,18 +237,46 @@ describe("askOpenAi", () => {
       })
     );
     const result = await askOpenAi("x", { fetchImpl: noSearch as never });
-    expect(result).toEqual({
-      kind: "refused",
-      message: expect.stringMatching(/search/i),
-      costUsd: OPENAI_COST_PER_CALL_USD,
-    });
 
-    const empty = vi.fn(async () => json({ model: "m", output: [{ type: "web_search_call" }] }));
-    expect(await askOpenAi("x", { fetchImpl: empty as never })).toEqual({
-      kind: "refused",
-      message: expect.any(String),
-      costUsd: OPENAI_COST_PER_CALL_USD,
-    });
+    // What the engine SAID is measurable even when it never searched. Only the
+    // citation-family metrics exclude it, keyed off `searchUsed`.
+    expect("kind" in result).toBe(false);
+    if ("kind" in result) return;
+    expect(result.text).toBe("From memory.");
+    expect(result.searchUsed).toBe(false);
+    expect(result.citations).toEqual([]);
+    expect(result.searchQueries).toEqual([]);
+  });
+
+  it("marks a sample grounded when it carries citations but no web_search_call", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "sk-test");
+
+    // Citations come off annotations, the flag off a `web_search_call` item, so
+    // the two can disagree. `ownCitations > nGrounded` would push citation rate
+    // over 100%, so the citations win.
+    const citedWithoutFlag = vi.fn(async () =>
+      json({
+        model: "m",
+        output: [
+          {
+            type: "message",
+            content: [
+              {
+                type: "output_text",
+                text: "Acme is strong.",
+                annotations: [{ type: "url_citation", url: "https://acme.com/pricing" }],
+              },
+            ],
+          },
+        ],
+      })
+    );
+    const result = await askOpenAi("x", { fetchImpl: citedWithoutFlag as never });
+
+    expect("kind" in result).toBe(false);
+    if ("kind" in result) return;
+    expect(result.searchUsed).toBe(true);
+    expect(result.citations).toEqual([{ url: "https://acme.com/pricing", position: 1 }]);
   });
 
   it("exposes itself as an EngineClient", () => {
