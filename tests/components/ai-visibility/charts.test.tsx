@@ -119,7 +119,7 @@ describe("RateSparkline", () => {
   });
 
   it("renders the empty shape when every run in the window was too thin to publish", () => {
-    // `engineHistory` nulls any run below the aggregate floor, so a young or
+    // `engineHistory` nulls any run below MIN_N_HISTORY, so a young or
     // thin window arrives as a full-length array with nothing plottable in it.
     // Testing only `length === 0` drew an empty 64px box with no line, which
     // reads as a broken chart.

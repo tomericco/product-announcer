@@ -22,6 +22,7 @@ import {
   promptSamples,
   HISTORY_RUNS,
   MIN_N_AGGREGATE,
+  MIN_N_HISTORY,
   MIN_N_PROMPT,
   WINDOW_RUNS,
 } from "../../../src/lib/ai-visibility/metrics";
@@ -579,6 +580,103 @@ describe("engineHistory", () => {
 
     const points = await engineHistory(tenant.id, "openai");
     expect(points.map((point) => point.runId)).toEqual([done.id]);
+  });
+
+  describe("the history floor is MIN_N_HISTORY, not the tiles' MIN_N_AGGREGATE", () => {
+    // The floor `engineHistory` applies is per RUN — it does not pool a window
+    // the way the tiles do — and one run at the current shape
+    // (MAX_ACTIVE_PROMPTS 5 x samplesPerPrompt 3) is 15 samples per engine. At
+    // the strict 30 every per-engine point came back null and all three engine
+    // lines on the trend chart never drew.
+    it("is exactly one run's worth of samples, and the tiles' floor is untouched", () => {
+      expect(MIN_N_HISTORY).toBe(15);
+      expect(MIN_N_AGGREGATE).toBe(30);
+      expect(MIN_N_HISTORY).toBeLessThan(MIN_N_AGGREGATE);
+    });
+
+    it("plots a per-engine point at 15 — one run — where the old floor drew nothing", async () => {
+      const tenant = await seedTenant(TENANT);
+      const run = await seedRun(tenant.id, "2026-01-05T09:00:00Z", "complete", { openai: "gpt-5.1" });
+      await seedAggregate({
+        runId: run.id,
+        tenantId: tenant.id,
+        engine: "openai",
+        n: MIN_N_HISTORY,
+        tenantMentions: 6,
+        competitorMentions: { r: 9 },
+      });
+
+      const points = await engineHistory(tenant.id, "openai");
+      expect(points).toHaveLength(1);
+      expect(points[0].mentionPct).toBeCloseTo((6 / MIN_N_HISTORY) * 100, 4);
+      expect(points[0].sovPct).toBeCloseTo((6 / 15) * 100, 4);
+    });
+
+    it("still BREAKS the line below 15 — a null, never a zero", async () => {
+      // The bug the floor exists to prevent: a thin run rendered as 0% is
+      // pixel-identical to losing every mention. `tenantMentions: 0` is the
+      // sharp case — the honest-looking wrong answer is exactly the number
+      // this run would produce if it were published.
+      const tenant = await seedTenant(TENANT);
+      const run = await seedRun(tenant.id, "2026-01-05T09:00:00Z");
+      await seedAggregate({
+        runId: run.id,
+        tenantId: tenant.id,
+        engine: "openai",
+        n: MIN_N_HISTORY - 1,
+        tenantMentions: 0,
+        competitorMentions: { r: 14 },
+      });
+
+      const points = await engineHistory(tenant.id, "openai");
+      expect(points).toHaveLength(1);
+      expect(points[0].mentionPct).toBeNull();
+      expect(points[0].sovPct).toBeNull();
+      // And not by accident of the counts: a zero would be falsy too.
+      expect(points[0].mentionPct).not.toBe(0);
+    });
+
+    it("holds the pooled \"all\" series to the SAME floor as the engine lines", async () => {
+      // One chart, one evidentiary standard. Pooling three engines clears 15
+      // and 30 alike on a normal run, so the choice only shows on a run thin
+      // enough to sit between them: at n=20 pooled the combined line must draw,
+      // because a gap there — while the engine lines carry on — reads to a
+      // viewer as data loss rather than as a stricter standard.
+      const tenant = await seedTenant(TENANT);
+      const run = await seedRun(tenant.id, "2026-01-05T09:00:00Z");
+      for (const engine of ["openai", "gemini"]) {
+        await seedAggregate({ runId: run.id, tenantId: tenant.id, engine, n: 10, tenantMentions: 4 });
+      }
+
+      // Each engine alone is below the floor and breaks...
+      expect((await engineHistory(tenant.id, "openai"))[0].mentionPct).toBeNull();
+      // ...and the pooled 20 is above it, though still short of MIN_N_AGGREGATE.
+      const pooled = await engineHistory(tenant.id, "all");
+      expect(pooled[0].mentionPct).toBeCloseTo((8 / 20) * 100, 4);
+    });
+
+    it("does not lower the tiles: one 15-sample run plots but headlines nothing", async () => {
+      // The whole trade in one assertion. The line gets its shape; the big
+      // number beside it still refuses to be a number until n >= 30.
+      const clock = () => new Date("2026-03-30T00:00:00Z");
+      const tenant = await seedTenant(TENANT);
+      const run = await seedRun(tenant.id, "2026-03-01T09:00:00Z");
+      await seedAggregate({
+        runId: run.id,
+        tenantId: tenant.id,
+        engine: "openai",
+        n: MIN_N_HISTORY,
+        tenantMentions: 6,
+        competitorMentions: { r: 9 },
+      });
+
+      expect((await engineHistory(tenant.id, "openai"))[0].mentionPct).not.toBeNull();
+
+      const tile = (await engineMetrics(tenant.id, db, clock)).metrics.find((r) => r.engine === "openai")!;
+      expect(tile.n).toBe(MIN_N_HISTORY);
+      expect(tile.mentionRate).toBeNull();
+      expect(tile.shareOfVoice).toBeNull();
+    });
   });
 
   it("pools every engine for \"all\" and carries no model id", async () => {

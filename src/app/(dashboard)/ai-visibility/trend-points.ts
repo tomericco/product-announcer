@@ -31,6 +31,14 @@ export type TrendKey = EngineId | "all";
  * publishable number, and the chart renders a null as a GAP (`connectNulls`
  * off) rather than as a zero. Zero and "not enough answers to say" are the two
  * readings this whole feature exists to keep apart.
+ *
+ * The floor is `MIN_N_HISTORY` (15), applied per run by `engineHistory` — NOT
+ * the `MIN_N_AGGREGATE` (30) the tiles headline under, and NOT copied into
+ * this file. Every line here is held to the same one, the pooled "All engines"
+ * included. Consequence to expect when reading a rendered chart: at n=15 a
+ * per-engine point carries roughly +/-25pp of Wilson noise, so single-run
+ * wiggles on the backdrop lines are noise, and only the hero has enough
+ * samples behind it to be read run-to-run.
  */
 export type TrendSeries = {
   key: TrendKey;

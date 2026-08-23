@@ -584,7 +584,7 @@ describe("overview — the trend chart's series", () => {
   });
 
   it("lets the pooled line clear the floor several runs before any single engine does", async () => {
-    // Pooling three engines reaches n >= 30 first, so early weeks legitimately
+    // Pooling three engines reaches MIN_N_HISTORY first, so early weeks legitimately
     // show one solid hero over three broken backdrops. The page must not
     // flatten that: each series keeps its own gaps.
     setup({});

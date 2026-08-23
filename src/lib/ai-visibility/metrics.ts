@@ -8,7 +8,7 @@ import {
   aiVisibilitySamples,
 } from "@/db/schema";
 import type { DomainClass } from "@/lib/ai-visibility/domains";
-import { MIN_N_AGGREGATE, MIN_N_PROMPT } from "@/lib/ai-visibility/thresholds";
+import { MIN_N_AGGREGATE, MIN_N_HISTORY, MIN_N_PROMPT } from "@/lib/ai-visibility/thresholds";
 import {
   ENGINE_IDS,
   type EngineId,
@@ -19,10 +19,10 @@ import {
 
 /** Design §Metrics: a rolling 4-run window, ~12 samples per prompt. */
 export const WINDOW_RUNS = 4;
-// The two display floors live in `./thresholds` so a client component can read
+// The display floors live in `./thresholds` so a client component can read
 // them without pulling `@/db` into the browser bundle. Re-exported here because
 // this is where every server-side caller already imports them from.
-export { MIN_N_AGGREGATE, MIN_N_PROMPT };
+export { MIN_N_AGGREGATE, MIN_N_HISTORY, MIN_N_PROMPT };
 /**
  * How many runs a trend plots. Design §UX calls it a "12-week sparkline", but
  * the unit is RUNS: cadence is a tenant setting and can be fortnightly, so
@@ -648,9 +648,22 @@ export type EngineHistoryPoint = {
  * already summed here, and the benchmark card below the tiles is a share
  * surface with no history of its own yet.
  *
- * Both are null below MIN_N_AGGREGATE so the line BREAKS rather than dropping
- * to zero. A thin run rendered as 0% is the single most misleading thing this
+ * Both are null below MIN_N_HISTORY so the line BREAKS rather than dropping to
+ * zero. A thin run rendered as 0% is the single most misleading thing this
  * chart could do: it looks exactly like losing every mention.
+ *
+ * MIN_N_HISTORY (15), not MIN_N_AGGREGATE (30), and the reasoning is written
+ * out at the constant. In short: `engineHistory` floors PER RUN — unlike the
+ * tiles, which pool a 4-run window first — and one run at the current
+ * 5-prompt x 3-sample shape is 15 samples per engine, so the strict floor left
+ * every per-engine point null and the three engine lines never drew at all.
+ *
+ * The SAME floor applies to `engine === "all"`, which pools three engines to
+ * ~45 per run and would clear either number today. That is deliberate: this is
+ * one chart, and holding its combined line to a stricter standard than the
+ * lines beneath it would mean a run where the pooled line breaks while the
+ * per-engine lines carry on — a gap the reader can only read as data loss.
+ * One chart, one evidentiary standard; the tiles above keep the strict one.
  */
 export async function engineHistory(
   tenantId: string,
@@ -692,7 +705,7 @@ export async function engineHistory(
 
   return runs.map((run) => {
     const counts = byRun.get(run.id);
-    const publishable = counts !== undefined && counts.n >= MIN_N_AGGREGATE;
+    const publishable = counts !== undefined && counts.n >= MIN_N_HISTORY;
     return {
       runId: run.id,
       runDate: run.startedAt.toISOString(),
