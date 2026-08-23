@@ -31,20 +31,33 @@ export const OPENAI_DEFAULT_MODEL = "gpt-5.5";
  * under-estimate bills them past their cap.
  */
 /**
- * Measured: one live grounded call returned 47,398 input + 2,022 output tokens.
+ * Measured across four live grounded calls, not one.
  *
- *   input   47,398 x $5/M   = $0.2370
- *   output   2,022 x $30/M  = $0.0607
- *   search       2 x $10/1k = $0.0200
- *                             -------
- *                             $0.3176
+ *   call            input    output  searches   cost
+ *   ------------  -------  --------  --------  ------
+ *   first probe    47,398     2,022         2  $0.318
+ *   prompt 0       23,388     2,948         3  $0.235
+ *   prompt 1       21,652     2,992         4  $0.238
+ *   prompt 2       27,914     1,266         4  $0.218
+ *                                             ------
+ *                                    average  $0.252
  *
- * By far the most expensive engine, and the reason is `search_context_size:
- * "medium"` — 47k of retrieved page text at $5/M input. Dropping it to "low"
- * is the single biggest cost lever in this feature; it has not been measured
- * against citation quality, so it is not changed here.
+ * At $5/M input, $30/M output and $10/1k searches. The first probe was an
+ * outlier at nearly twice the input of the other three, and pricing the engine
+ * off it alone put this constant 27% high — the estimate on the Run-now dialog
+ * and the monthly cap were both overstating by that much.
+ *
+ * Still by far the most expensive engine: the retrieved page text lands in the
+ * INPUT, so a grounded answer costs an order of magnitude more than the same
+ * answer from memory. Claude does the same job on ~18k input.
+ *
+ * `search_context_size` is deliberately "medium" and lowering it does NOT save
+ * money — measured, and it costs 34% MORE. The setting caps text per search,
+ * not the number of searches, so a starved model simply searches more (3-4 ->
+ * 5-6): more search fees and more retrieved text in the input anyway, with no
+ * gain in citations. Do not "optimise" it again without re-measuring.
  */
-export const OPENAI_COST_PER_CALL_USD = 0.32;
+export const OPENAI_COST_PER_CALL_USD = 0.252;
 
 type OpenAiAnnotation = { type?: string; url?: string };
 type OpenAiContentPart = {

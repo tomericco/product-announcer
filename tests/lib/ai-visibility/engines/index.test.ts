@@ -44,9 +44,9 @@ describe("the engine registry", () => {
     const perRun = ENGINE_IDS.reduce((total, id) => total + engineCost(id) * 30 * 3, 0);
     const perMonth = perRun * 4.33;
 
-    expect(perRun).toBeCloseTo(43.47, 1);
-    expect(perMonth).toBeGreaterThan(180);
-    expect(perMonth).toBeLessThan(195);
+    expect(perRun).toBeCloseTo(37.35, 1);
+    expect(perMonth).toBeGreaterThan(150);
+    expect(perMonth).toBeLessThan(175);
   });
 });
 
