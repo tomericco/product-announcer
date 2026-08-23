@@ -18,7 +18,14 @@ export type CitedDomainRow = {
   citations: number;
   /** Distinct answers citing it. This is the number the share is built on. */
   answers: number;
-  /** `answers` as a percentage of eligible answers in the window. */
+  /**
+   * `answers` as a percentage of the GROUNDED eligible answers in the window.
+   *
+   * A citation rate, so it takes the citation denominator: an answer the engine
+   * wrote without searching cited nothing at all, and including it would deflate
+   * every domain's share by however much of the window went ungrounded
+   * (ungrounded-answers design, decision 6).
+   */
   answerShare: number;
   engines: EngineId[];
   competitorId: string | null;
@@ -130,6 +137,7 @@ export async function citedDomains(
       promptId: aiVisibilitySamples.promptId,
       status: aiVisibilitySamples.status,
       flagged: aiVisibilitySamples.flagged,
+      searchUsed: aiVisibilitySamples.searchUsed,
       extraction: aiVisibilitySamples.extraction,
       branded: aiVisibilityPrompts.branded,
       intent: aiVisibilityPrompts.intent,
@@ -145,6 +153,8 @@ export async function citedDomains(
     );
 
   const eligible = new Map<string, { engine: string; promptId: string; tenantMentioned: boolean }>();
+  /** The `answerShare` denominator: eligible answers the engine actually searched on. */
+  let grounded = 0;
   for (const sample of samples) {
     if (!isEligible(sample, sample)) continue;
     eligible.set(sample.id, {
@@ -152,6 +162,7 @@ export async function citedDomains(
       promptId: sample.promptId,
       tenantMentioned: sample.extraction?.deterministic.tenantMentioned ?? false,
     });
+    if (sample.searchUsed) grounded += 1;
   }
   if (eligible.size === 0) return [];
 
@@ -219,7 +230,11 @@ export async function citedDomains(
     byDomain.set(citation.domain, acc);
   }
 
-  const denominator = eligible.size;
+  // Grounded answers, not every eligible answer. `grounded` can only be 0 when
+  // no answer in the window searched — and then no citation row exists either,
+  // so `byDomain` is empty and nothing divides by it. The `max(1, …)` is belt
+  // and braces against a hand-written citation row on an ungrounded sample.
+  const denominator = Math.max(1, grounded);
 
   return [...byDomain.values()]
     .map((acc) => ({

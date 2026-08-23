@@ -43,6 +43,8 @@ async function answer(a: {
   tenantMentioned: boolean;
   status?: string;
   flagged?: boolean;
+  /** Grounded unless a test says otherwise — the common case. */
+  searchUsed?: boolean;
   domains: { domain: string; domainClass: string; competitorId?: string | null }[];
 }) {
   const [sample] = await db
@@ -55,6 +57,7 @@ async function answer(a: {
       sampleIndex: a.sampleIndex,
       status: a.status ?? "ok",
       flagged: a.flagged ?? false,
+      searchUsed: a.searchUsed ?? true,
       judged: true,
       answerText: "text",
       extraction: { deterministic: { tenantMentioned: a.tenantMentioned, competitorIds: [], ownDomainCited: false } },
@@ -88,8 +91,24 @@ describe("citedDomains", () => {
 
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ domain: "g2.com", domainClass: "review", citations: 3, answers: 2 });
-    // Two of three eligible answers cited it.
+    // Two of three grounded answers cited it.
     expect(rows[0].answerShare).toBeCloseTo((2 / 3) * 100, 4);
+  });
+
+  it("builds answerShare on the grounded answers, not on every eligible one", async () => {
+    const { tenant, run, prompt } = await fixture();
+    // Two searched answers, one of which cited g2. Two answered from memory:
+    // they measure what the engine said, but they cited nothing at all, so
+    // counting them here would report 25% for a domain cited by half the
+    // answers that could have cited anything.
+    await answer({ tenantId: tenant.id, runId: run.id, promptId: prompt.id, engine: "openai", sampleIndex: 0, tenantMentioned: true, domains: [{ domain: "g2.com", domainClass: "review" }] });
+    await answer({ tenantId: tenant.id, runId: run.id, promptId: prompt.id, engine: "openai", sampleIndex: 1, tenantMentioned: true, domains: [] });
+    await answer({ tenantId: tenant.id, runId: run.id, promptId: prompt.id, engine: "gemini", sampleIndex: 0, tenantMentioned: true, searchUsed: false, domains: [] });
+    await answer({ tenantId: tenant.id, runId: run.id, promptId: prompt.id, engine: "gemini", sampleIndex: 1, tenantMentioned: false, searchUsed: false, domains: [] });
+
+    const rows = await citedDomains(tenant.id, {});
+    expect(rows[0].answers).toBe(1);
+    expect(rows[0].answerShare).toBeCloseTo(50, 6);
   });
 
   it("lists the engines that cited a domain, in engine order", async () => {
@@ -322,7 +341,7 @@ describe("the citedDomains window", () => {
     expect(rows.map((r) => r.domain).sort()).toEqual([
       "run1.com", "run2.com", "run3.com", "run4.com", "run5.com",
     ]);
-    // Each of the five answers is its own denominator entry.
+    // Each of the five grounded answers is its own denominator entry.
     expect(rows[0].answerShare).toBeCloseTo(20, 6);
   });
 
@@ -348,14 +367,15 @@ describe("the citedDomains window", () => {
 });
 
 describe("citedDomains answer share arithmetic", () => {
-  it("divides distinct citing answers by every eligible answer, counting repeats only in `citations`", async () => {
+  it("divides distinct citing answers by every grounded answer, counting repeats only in `citations`", async () => {
     const { tenant, run, prompt } = await fixture();
     // Four eligible answers. g2 is cited by three of them (twice in one), and
     // blog is cited by one.
     await answer({ tenantId: tenant.id, runId: run.id, promptId: prompt.id, engine: "openai", sampleIndex: 0, tenantMentioned: true, domains: [{ domain: "g2.com", domainClass: "review" }, { domain: "g2.com", domainClass: "review" }] });
     await answer({ tenantId: tenant.id, runId: run.id, promptId: prompt.id, engine: "openai", sampleIndex: 1, tenantMentioned: true, domains: [{ domain: "g2.com", domainClass: "review" }] });
     await answer({ tenantId: tenant.id, runId: run.id, promptId: prompt.id, engine: "openai", sampleIndex: 2, tenantMentioned: true, domains: [{ domain: "g2.com", domainClass: "review" }, { domain: "blog.example.com", domainClass: "publisher" }] });
-    // An eligible answer citing nothing still sits in the denominator.
+    // A grounded answer citing nothing still sits in the denominator: it
+    // searched and chose to cite nobody, which is a real zero.
     await answer({ tenantId: tenant.id, runId: run.id, promptId: prompt.id, engine: "gemini", sampleIndex: 0, tenantMentioned: true, domains: [] });
 
     const rows = await citedDomains(tenant.id, {});
