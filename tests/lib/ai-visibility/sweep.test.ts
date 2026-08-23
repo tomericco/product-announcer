@@ -166,7 +166,7 @@ function planOnly(tenantId: string, result: PlanRunResult) {
 
 /** A `slice` that always reports work left, so nothing reaches `finalize`. */
 const idleSlice = () =>
-  vi.fn().mockResolvedValue({ processed: 0, remaining: 1, budgetSpent: true, pausedByCap: false });
+  vi.fn().mockResolvedValue({ processed: 0, remaining: 1, budgetSpent: true, pausedByCap: false, cancelled: false });
 
 /** The calls whose subject (tenant id or run id) is one this test created. */
 const mine = (calls: unknown[][], id: string) => calls.filter((call) => call[0] === id);
@@ -175,7 +175,7 @@ describe("sweepAiVisibility", () => {
   it("starts a run when the cadence is due, then slices and finalizes it", async () => {
     const { tenant } = await seedSource();
     const plan = planOnly(tenant.id, { ok: true, runId: "run-1", plannedCalls: 3, estimateUsd: 0.03 });
-    const slice = vi.fn().mockResolvedValue({ processed: 3, remaining: 0, budgetSpent: false, pausedByCap: false });
+    const slice = vi.fn().mockResolvedValue({ processed: 3, remaining: 0, budgetSpent: false, pausedByCap: false, cancelled: false });
     const finalize = vi.fn().mockResolvedValue({ status: "complete", judged: 3, signals: 1 });
 
     await sweepAiVisibility({ now: clock(MONDAY), plan, slice, finalize });
@@ -213,7 +213,7 @@ describe("sweepAiVisibility", () => {
       })
       .returning();
     const plan = planOnly(tenant.id, { ok: true, runId: "run-1", plannedCalls: 3, estimateUsd: 0.03 });
-    const slice = vi.fn().mockResolvedValue({ processed: 10, remaining: 0, budgetSpent: false, pausedByCap: false });
+    const slice = vi.fn().mockResolvedValue({ processed: 10, remaining: 0, budgetSpent: false, pausedByCap: false, cancelled: false });
     const finalize = vi.fn().mockResolvedValue({ status: "complete", judged: 0, signals: 0 });
 
     await sweepAiVisibility({ now: clock(TUESDAY), plan, slice, finalize });
@@ -236,7 +236,7 @@ describe("sweepAiVisibility", () => {
         status: "running",
       })
       .returning();
-    const slice = vi.fn().mockResolvedValue({ processed: 5, remaining: 40, budgetSpent: true, pausedByCap: false });
+    const slice = vi.fn().mockResolvedValue({ processed: 5, remaining: 40, budgetSpent: true, pausedByCap: false, cancelled: false });
     const finalize = vi.fn();
 
     await sweepAiVisibility({
@@ -263,7 +263,7 @@ describe("sweepAiVisibility", () => {
         status: "running",
       })
       .returning();
-    const slice = vi.fn().mockResolvedValue({ processed: 5, remaining: 40, budgetSpent: false, pausedByCap: true });
+    const slice = vi.fn().mockResolvedValue({ processed: 5, remaining: 40, budgetSpent: false, pausedByCap: true, cancelled: false });
     const finalize = vi.fn();
 
     await sweepAiVisibility({
@@ -333,7 +333,7 @@ describe("sweepAiVisibility", () => {
     await sweepAiVisibility({
       now: clock(MONDAY),
       plan,
-      slice: vi.fn().mockResolvedValue({ processed: 3, remaining: 0, budgetSpent: false, pausedByCap: false }),
+      slice: vi.fn().mockResolvedValue({ processed: 3, remaining: 0, budgetSpent: false, pausedByCap: false, cancelled: false }),
       finalize: vi.fn().mockResolvedValue({ status: "complete", judged: 0, signals: 0 }),
     });
 
@@ -372,7 +372,7 @@ describe("sweepAiVisibility", () => {
       plannedCalls: 3,
       estimateUsd: 0.03,
     }));
-    const slice = vi.fn().mockResolvedValue({ processed: 3, remaining: 0, budgetSpent: false, pausedByCap: false });
+    const slice = vi.fn().mockResolvedValue({ processed: 3, remaining: 0, budgetSpent: false, pausedByCap: false, cancelled: false });
 
     await sweepAiVisibility({
       now: clock(MONDAY),
@@ -454,7 +454,7 @@ describe("sweepAiVisibility", () => {
       plannedCalls: 3,
       estimateUsd: 0.03,
     }));
-    const slice = vi.fn().mockResolvedValue({ processed: 3, remaining: 0, budgetSpent: false, pausedByCap: false });
+    const slice = vi.fn().mockResolvedValue({ processed: 3, remaining: 0, budgetSpent: false, pausedByCap: false, cancelled: false });
 
     await sweepAiVisibility({
       now: clock(MONDAY),
@@ -488,7 +488,7 @@ describe("sweepAiVisibility", () => {
     const now = () => new Date(new Date(MONDAY).getTime() + elapsedMs);
     const slice = vi.fn(async () => {
       elapsedMs += 60_000;
-      return { processed: 3, remaining: 0, budgetSpent: false, pausedByCap: false };
+      return { processed: 3, remaining: 0, budgetSpent: false, pausedByCap: false, cancelled: false };
     });
 
     await sweepAiVisibility({
@@ -509,7 +509,7 @@ describe("sweepAiVisibility", () => {
 
   it("never hands a source more time than the tick has left", async () => {
     const { tenant } = await seedSource();
-    const slice = vi.fn().mockResolvedValue({ processed: 3, remaining: 0, budgetSpent: false, pausedByCap: false });
+    const slice = vi.fn().mockResolvedValue({ processed: 3, remaining: 0, budgetSpent: false, pausedByCap: false, cancelled: false });
 
     await sweepAiVisibility({
       now: clock(MONDAY),
@@ -549,7 +549,7 @@ describe("sweepAiVisibility", () => {
       raced = run.id;
       return { ok: false, reason: "run_in_flight", runId: run.id };
     });
-    const slice = vi.fn().mockResolvedValue({ processed: 1, remaining: 3, budgetSpent: true, pausedByCap: false });
+    const slice = vi.fn().mockResolvedValue({ processed: 1, remaining: 3, budgetSpent: true, pausedByCap: false, cancelled: false });
 
     await sweepAiVisibility({ now: clock(MONDAY), plan, slice, finalize: vi.fn() });
 
@@ -659,7 +659,7 @@ const planPerTenant = () =>
   );
 
 const drainedSlice = () =>
-  vi.fn().mockResolvedValue({ processed: 3, remaining: 0, budgetSpent: false, pausedByCap: false });
+  vi.fn().mockResolvedValue({ processed: 3, remaining: 0, budgetSpent: false, pausedByCap: false, cancelled: false });
 
 const completeFinalize = () =>
   vi.fn().mockResolvedValue({ status: "complete", judged: 0, signals: 0 });
@@ -734,7 +734,7 @@ describe("sweepAiVisibility — the tick's ceiling", () => {
       // Only ours moves the clock, so a foreign tenant sliced in between
       // cannot change the arithmetic this asserts.
       if (runId === `run-${first.id}`) elapsedMs += 90_000;
-      return { processed: 3, remaining: 0, budgetSpent: false, pausedByCap: false };
+      return { processed: 3, remaining: 0, budgetSpent: false, pausedByCap: false, cancelled: false };
     });
 
     await sweepAiVisibility({
@@ -759,7 +759,7 @@ describe("sweepAiVisibility — the tick's ceiling", () => {
     const now = () => new Date(new Date(MONDAY).getTime() + elapsedMs);
     const slice = vi.fn(async (runId: string) => {
       if (runId === "run-1") elapsedMs += 20_000;
-      return { processed: 3, remaining: 0, budgetSpent: false, pausedByCap: false };
+      return { processed: 3, remaining: 0, budgetSpent: false, pausedByCap: false, cancelled: false };
     });
     const finalize = completeFinalize();
 
@@ -792,7 +792,7 @@ describe("sweepAiVisibility — resuming, refusing, and surviving", () => {
     const { tenant, source } = await seedSource({ enabled: false, cadence: "off" });
     const run = await seedRunningRun(tenant.id, source.id);
     const plan = planOnly(tenant.id, { ok: true, runId: "run-1", plannedCalls: 3, estimateUsd: 0.03 });
-    const slice = vi.fn().mockResolvedValue({ processed: 1, remaining: 9, budgetSpent: true, pausedByCap: false });
+    const slice = vi.fn().mockResolvedValue({ processed: 1, remaining: 9, budgetSpent: true, pausedByCap: false, cancelled: false });
 
     await sweepAiVisibility({ now: clock(TUESDAY), plan, slice, finalize: vi.fn() });
 
@@ -860,7 +860,7 @@ describe("sweepAiVisibility — resuming, refusing, and surviving", () => {
     const run = await seedRunningRun(tenant.id, source.id);
     const slice = vi
       .fn()
-      .mockResolvedValue({ processed: 12, remaining: 0, budgetSpent: false, pausedByCap: true });
+      .mockResolvedValue({ processed: 12, remaining: 0, budgetSpent: false, pausedByCap: true, cancelled: false });
     const finalize = vi.fn();
 
     await sweepAiVisibility({

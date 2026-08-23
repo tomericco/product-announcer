@@ -16,7 +16,7 @@ import {
 // lives inside the core call that would breach it, so this file cannot
 // check-then-write across an await and let two tabs both squeeze past 30.
 import { generatePromptSet } from "@/lib/ai-visibility/generate-prompts";
-import { finalizeRun, planRun, runSlice } from "@/lib/ai-visibility/run";
+import { cancelRun, finalizeRun, planRun, runSlice } from "@/lib/ai-visibility/run";
 import { PROMPT_INTENTS, type PromptIntent } from "@/lib/ai-visibility/types";
 
 /**
@@ -360,6 +360,12 @@ export async function runNowAction(): Promise<ActionResult<{ runId: string }>> {
         // The cap gate already set `paused_by_cap` and the source's
         // lastError; finalizing here would judge and aggregate a half-run.
         if (outcome.pausedByCap) return;
+        // Somebody pressed Stop. `cancelRun` has already settled the run, so
+        // there is nothing left to drive OR to finalize — and this must be
+        // checked before `remaining`, because a stopped run's pending samples
+        // stay pending, so `remaining` never reaches 0 and the loop would spin
+        // on a `runSlice` that returns immediately until the 240s budget lapsed.
+        if (outcome.cancelled) return;
         if (outcome.remaining === 0) break;
         if (remainingMs() <= 0) return; // still `running`; the sweep resumes it
       }
@@ -377,4 +383,35 @@ export async function runNowAction(): Promise<ActionResult<{ runId: string }>> {
   revalidatePath("/ai-visibility");
   revalidatePath("/company");
   return { ok: true, runId };
+}
+
+/**
+ * "Stop" — halts the tenant's in-flight run.
+ *
+ * Takes no argument, for the same reason `runNowAction` takes none: the run is
+ * derived from the session's tenant server-side, so there is no id a client
+ * could substitute for somebody else's. `cancelRun` does the whole job in one
+ * conditional UPDATE, which is also what makes a double-click safe — the second
+ * press finds nothing in flight and says so.
+ *
+ * The stop is real rather than cosmetic: the driver re-reads the run's status
+ * between batches, so the wave already handed to the engines lands (it is
+ * bought either way) and nothing further is claimed. What ran is aggregated and
+ * counted like a cap-paused run's; the rest never happens.
+ */
+export async function cancelRunAction(): Promise<ActionResult<{ runId: string; completedCalls: number }>> {
+  const session = await requireSession();
+
+  const result = await cancelRun(session.user.tenantId, { now: () => new Date() });
+  if (!result.ok) {
+    // The honest sentence for the only refusal there is: the run finished, or
+    // another tab already stopped it, between the page render and this click.
+    return { ok: false, error: "No run is in progress." };
+  }
+
+  // Same two surfaces `runNowAction` revalidates: the overview header and the
+  // Company card's "last ran" line.
+  revalidatePath("/ai-visibility");
+  revalidatePath("/company");
+  return { ok: true, runId: result.runId, completedCalls: result.completedCalls };
 }

@@ -596,7 +596,14 @@ export const aiVisibilityRuns = pgTable(
     // SET NULL for the same reason as `signals.sourceId`: the run is the
     // durable record of what we observed, and it must outlive its source row.
     sourceId: uuid("source_id").references(() => sources.id, { onDelete: "set null" }),
-    /** "pending" | "running" | "complete" | "failed" | "paused_by_cap". */
+    /**
+     * "pending" | "running" | "complete" | "failed" | "paused_by_cap" | "cancelled".
+     *
+     * `cancelled` is a human pressing Stop, and is terminal like the other
+     * three. It is deliberately NOT in the partial index below: freeing the
+     * tenant to plan a new run the instant they stop this one is most of the
+     * point of having a Stop at all.
+     */
     status: text("status").notNull().default("pending"),
     /** "scheduled" | "manual". */
     trigger: text("trigger").notNull(),

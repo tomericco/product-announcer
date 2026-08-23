@@ -128,9 +128,15 @@ const emptyCounts = (): WindowCounts => ({
  *   aggregates what it bought before the cap tripped and nothing ever resumes
  *   it — so excluding it throws away every answer the tenant paid for, which is
  *   the one outcome a cost cap must not have.
+ * - `cancelled` IS in, for the same reason as `paused_by_cap` and by the same
+ *   mechanism: a human pressing Stop ends the run where it stands, and
+ *   `settleCancelledRun` aggregates the answers it had already bought. Those
+ *   answers were paid for; `isEligible` has already dropped the errored and
+ *   refused ones, so what is left is real. Excluding them would charge the
+ *   tenant for measurements and then refuse to show them.
  * - `failed` is out: a run that never produced aggregates has nothing to plot.
  */
-const SETTLED_RUN_STATUSES = ["complete", "paused_by_cap"] as const;
+const SETTLED_RUN_STATUSES = ["complete", "paused_by_cap", "cancelled"] as const;
 
 /** The ids of the last `runs` settled runs, newest first. */
 async function windowRunIds(

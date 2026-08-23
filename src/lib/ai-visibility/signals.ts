@@ -605,8 +605,12 @@ export type EmitSignalsDeps = { database?: typeof defaultDb };
  * `windowRunIds`: `runSlice` aggregates what the run bought before the cap
  * tripped, and those counts are as final as a complete run's. Refusing to read
  * them would make the samples the tenant paid for invisible to every signal.
+ *
+ * `cancelled` is here on identical grounds — `settleCancelledRun` calls this
+ * function, so leaving the status out would make every stopped run emit
+ * nothing at all.
  */
-const EMITTABLE_STATUSES = ["pending", "running", "complete", "paused_by_cap"];
+const EMITTABLE_STATUSES = ["pending", "running", "complete", "paused_by_cap", "cancelled"];
 
 /**
  * How much of the leaderboard `new_cited_domain` may consider. Passed

@@ -43,6 +43,7 @@ import { AiVisibilityOffEmptyState } from "./off-empty-state";
 import { OverviewCards, type EngineTile } from "./overview-cards";
 import { PromptMatrix, type MatrixRow } from "./prompt-matrix";
 import { RunNowButton, type RunEstimate } from "./run-now-button";
+import { StopRunButton } from "./stop-run-button";
 import type { TrendSeries } from "./trend-points";
 import { VisibilityTrend } from "./visibility-trend";
 
@@ -511,6 +512,12 @@ export default async function AiVisibilityPage() {
     : lastRun
     ? lastRun.status === "failed"
       ? `Last run ${DATE_FORMAT.format(lastRun.startedAt)} — failed`
+      : // A stopped run is not a failure and not a whole run either. It gets
+        // its own word, with the counts it did buy, because those counts ARE
+        // in every number below — a line that read like an ordinary "Last run"
+        // would leave the operator wondering why the window looks thin.
+        lastRun.status === "cancelled"
+      ? `Last run ${DATE_FORMAT.format(lastRun.startedAt)} — stopped · ${lastRun.completedCalls} calls · $${lastRun.costUsd.toFixed(2)}`
       : `Last run ${DATE_FORMAT.format(lastRun.startedAt)} · ${lastRun.completedCalls} calls · $${lastRun.costUsd.toFixed(2)}`
     : "No run yet";
 
@@ -551,11 +558,24 @@ export default async function AiVisibilityPage() {
               that has ended reads as a live problem. */}
           {capResolvedNote && <p className="text-sm text-muted-foreground">{capResolvedNote}</p>}
         </Header>
-        <RunNowButton
-          estimate={runEstimate}
-          disabledReason={runDisabledReason}
-          disabledTone={runningLine ? "muted" : "destructive"}
-        />
+        {/* Stop sits beside Run now, never instead of it: while a run is in
+            flight Run now is the disabled control carrying "Running… 41 / 270
+            calls", and that line is the context the Stop button needs to be
+            read against. It appears only in flight — there is nothing to stop
+            otherwise, and a permanently disabled Stop would be noise. */}
+        <div className="flex items-start gap-2">
+          {inFlight && (
+            <StopRunButton
+              completedCalls={inFlight.completedCalls}
+              plannedCalls={inFlight.plannedCalls}
+            />
+          )}
+          <RunNowButton
+            estimate={runEstimate}
+            disabledReason={runDisabledReason}
+            disabledTone={runningLine ? "muted" : "destructive"}
+          />
+        </div>
       </div>
 
       {lastRun === null ? (

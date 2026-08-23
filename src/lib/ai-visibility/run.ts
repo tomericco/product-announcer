@@ -54,6 +54,17 @@ const SAMPLE_INSERT_CHUNK = 200;
 const IN_FLIGHT: string[] = ["pending", "running"];
 
 /**
+ * What a stopped run says about itself.
+ *
+ * Written on the run row so the header can explain the terminal status without
+ * composing a second wording of the same fact — the same rule `paused_by_cap`
+ * follows with `capPausedMessage`.
+ */
+export function stoppedMessage(completedCalls: number, plannedCalls: number): string {
+  return `Stopped after ${completedCalls} of ${plannedCalls} calls. What ran is kept and counted.`;
+}
+
+/**
  * Slack added to a driver's wall-clock budget when it takes the slice lease.
  *
  * The budget bounds when a slice STOPS handing out new work; the engine calls
@@ -286,6 +297,13 @@ export type RunSliceResult = {
   remaining: number;
   budgetSpent: boolean;
   pausedByCap: boolean;
+  /**
+   * The run was stopped by a human — terminal, and NOT something to finalize,
+   * resume or retry. Every driver has to branch on this separately from
+   * `remaining`, because a cancelled run still has pending samples by
+   * definition: `remaining > 0` on a run nobody will ever drive again.
+   */
+  cancelled: boolean;
 };
 
 /** How many pending rows one batch claims. One batch is one full concurrency wave. */
@@ -316,7 +334,13 @@ export async function runSlice(
 
   const [run] = await database.select().from(aiVisibilityRuns).where(eq(aiVisibilityRuns.id, runId));
   if (!run || !IN_FLIGHT.includes(run.status)) {
-    return { processed: 0, remaining: 0, budgetSpent: false, pausedByCap: false };
+    return {
+      processed: 0,
+      remaining: 0,
+      budgetSpent: false,
+      pausedByCap: false,
+      cancelled: run?.status === "cancelled",
+    };
   }
 
   // Two drivers reach this run in production: the daily cron sweep, and the
@@ -332,7 +356,7 @@ export async function runSlice(
   // doing this work.
   const lease = await acquireSliceLease(database, runId, opts.now(), opts.budgetMs);
   if (!lease) {
-    return { processed: 0, remaining: 0, budgetSpent: false, pausedByCap: false };
+    return { processed: 0, remaining: 0, budgetSpent: false, pausedByCap: false, cancelled: false };
   }
 
   if (run.status === "pending") {
@@ -354,10 +378,26 @@ export async function runSlice(
   let budgetSpent = false;
   let pausedByCap = false;
   let leaseLost = false;
+  let cancelled = false;
 
   while (true) {
     if (opts.now().getTime() - startedAt >= opts.budgetMs) {
       budgetSpent = true;
+      break;
+    }
+
+    // Re-read between batches for the same reason the cap is, and this is what
+    // makes "Stop" a real stop rather than a relabelled row: the wave already
+    // handed to the engines finishes and is paid for — nothing here aborts an
+    // HTTP call in flight — and then no further work is claimed. `status` is
+    // re-read rather than trusted from `run` above, which was loaded before any
+    // of this slice's minutes of engine calls.
+    const [current] = await database
+      .select({ status: aiVisibilityRuns.status })
+      .from(aiVisibilityRuns)
+      .where(eq(aiVisibilityRuns.id, runId));
+    if (!current || !IN_FLIGHT.includes(current.status)) {
+      cancelled = current?.status === "cancelled";
       break;
     }
 
@@ -509,6 +549,16 @@ export async function runSlice(
     .where(and(eq(aiVisibilitySamples.runId, runId), eq(aiVisibilitySamples.status, "pending")));
   const remaining = pending?.count ?? 0;
 
+  if (cancelled) {
+    // Settled HERE as well as in `cancelRun`, and deliberately: the cancel
+    // lands while this driver is mid-wave, so the samples that wave buys are
+    // written AFTER `cancelRun` has already aggregated. Re-aggregating once the
+    // wave is done is the only thing that gets them into the record — and
+    // `computeAggregates` deletes this run's rows before it rewrites them, so
+    // doing it twice costs a query rather than a double count.
+    await settleCancelledRun(runId, { now: opts.now }, deps);
+  }
+
   if (pausedByCap) {
     // A cap pause is TERMINAL: `finalizeRun` refuses a `paused_by_cap` run and
     // the sweep never resumes one, so this is the run's only chance to record
@@ -546,7 +596,7 @@ export async function runSlice(
     }
   }
 
-  return { processed, remaining, budgetSpent, pausedByCap };
+  return { processed, remaining, budgetSpent, pausedByCap, cancelled };
 }
 
 /**
@@ -557,7 +607,7 @@ export async function runSlice(
  * tick. Collapsing the two would make both callers guess, and guess differently.
  */
 export type FinalizeRunResult = {
-  status: "complete" | "running" | "paused_by_cap" | "failed";
+  status: "complete" | "running" | "paused_by_cap" | "cancelled" | "failed";
   judged: number;
   signals: number;
 };
@@ -716,6 +766,17 @@ export async function finalizeRun(
   // Reported rather than thrown — these are states a caller polls, and none of
   // them is this function's own failure.
   if (run.status === "paused_by_cap") return { status: "paused_by_cap", judged: 0, signals: 0 };
+  // A stopped run IS finalized — its answers are admitted to the window like a
+  // cap-paused run's — but not by the pipeline below. `settleCancelledRun` is
+  // the whole of it, and it deliberately does not judge: the judge is more
+  // model calls, and spending them after a human pressed Stop is the one thing
+  // Stop exists to prevent. Called rather than merely reported because nothing
+  // else will ever reach this run — the sweep only picks up `pending`/`running`
+  // — so "leave it to the next tick" means "never".
+  if (run.status === "cancelled") {
+    await settleCancelledRun(runId, { now: opts.now }, deps);
+    return { status: "cancelled", judged: 0, signals: 0 };
+  }
   if (!IN_FLIGHT.includes(run.status)) {
     return { status: run.status === "failed" ? "failed" : "running", judged: 0, signals: 0 };
   }
@@ -807,6 +868,154 @@ export async function finalizeRun(
     }
     return { status: "failed", judged: 0, signals: 0 };
   }
+}
+
+/**
+ * Closes out a run a human stopped.
+ *
+ * Same admission rule as `paused_by_cap` (design contract decision 4, and the
+ * ungrounded-answers ruling behind it): the samples that already landed are
+ * real answers that were really paid for, `isEligible` already excludes the
+ * errored and refused ones, and throwing the rest away would make the tenant
+ * pay for measurements they are then not allowed to see. Aggregates are summed
+ * COUNTS, so a thin run contributes proportionally little, and the n-floors
+ * decide what a thin window may say.
+ *
+ * No judge pass, unlike `finalizeRun`. Judging is more model calls, and the
+ * point of Stop is that no more money is spent — the cost is that
+ * `recommendations` is understated for this run, exactly as it already is for
+ * every cap-paused one.
+ *
+ * Never throws, and idempotent by construction. It runs twice on the ordinary
+ * path — once from `cancelRun`, once from the driver that was mid-wave when the
+ * stop landed — so `computeAggregates` (delete-then-insert per run) and
+ * `emitSignals` (`onConflictDoNothing` on the weekly externalId) are both
+ * relied on to absorb the second pass.
+ */
+async function settleCancelledRun(
+  runId: string,
+  opts: { now: Clock },
+  deps: FinalizeDeps = {}
+): Promise<void> {
+  const database = deps.database ?? defaultDb;
+  const aggregate = deps.aggregate ?? computeAggregates;
+  const emit = deps.emit ?? emitSignals;
+
+  try {
+    const [run] = await database
+      .select({
+        status: aiVisibilityRuns.status,
+        sourceId: aiVisibilityRuns.sourceId,
+        plannedCalls: aiVisibilityRuns.plannedCalls,
+      })
+      .from(aiVisibilityRuns)
+      .where(eq(aiVisibilityRuns.id, runId));
+    // Guarded rather than assumed: a driver reaching here on a run somebody
+    // has since re-planned must not rewrite that run's counters.
+    if (!run || run.status !== "cancelled") return;
+
+    // The per-batch increments are not the record — see `reconcileRunCounters`.
+    // Doubly true here: a stop lands mid-wave, so the last batch's totals are
+    // the ones most likely never to have been posted.
+    await reconcileRunCounters(database, runId);
+    await aggregate(runId, database);
+    await emit(runId, { now: opts.now }, { database });
+
+    const [totals] = await database
+      .select({ completed: aiVisibilityRuns.completedCalls })
+      .from(aiVisibilityRuns)
+      .where(eq(aiVisibilityRuns.id, runId));
+    const message = stoppedMessage(totals?.completed ?? 0, run.plannedCalls);
+    await database
+      .update(aiVisibilityRuns)
+      .set({ error: message, finishedAt: opts.now() })
+      .where(eq(aiVisibilityRuns.id, runId));
+
+    if (run.sourceId) {
+      const summary = await engineFailureSummary(database, runId);
+      // NOT `finish()`. That helper paints the source `failing` whenever the run
+      // was unproductive, and a run somebody stopped one second after starting
+      // it is unproductive by their own choice — a red source badge would report
+      // the operator's decision as an outage. A stop that did get answers is an
+      // ordinary success; a stop that got none leaves `status` exactly as it was.
+      await database
+        .update(sources)
+        .set({
+          lastRunAt: opts.now(),
+          lastError: message,
+          ...(summary.okSamples > 0 ? { lastSuccessAt: opts.now(), status: "active" as const } : {}),
+        })
+        .where(eq(sources.id, run.sourceId));
+    }
+  } catch (error) {
+    // The status flip is the load-bearing part and has already happened. A
+    // failure here costs this run its aggregates, not the tenant's ability to
+    // start another one.
+    console.error(`[ai-visibility] could not settle cancelled run ${runId}:`, error);
+  }
+}
+
+export type CancelRunResult =
+  | { ok: true; runId: string; completedCalls: number; plannedCalls: number }
+  | { ok: false; reason: "not_in_flight" };
+
+/**
+ * Stops the tenant's in-flight run.
+ *
+ * Takes a TENANT, never a run id: the run to stop is derived server-side from
+ * the partial unique index that already guarantees there is at most one, which
+ * is the same reason `runNowAction` refuses to accept an id from the client.
+ *
+ * The flip is one conditional UPDATE, so two operators pressing Stop together
+ * produce one cancellation and one `not_in_flight` rather than two settlements.
+ * `cancelled` is not in `IN_FLIGHT`, so the moment it lands the tenant is free
+ * to plan a new run — which is most of what Stop is for.
+ *
+ * The slice lease is cleared in the same statement. Nothing should wait out a
+ * lease on a run that will never resume, and it has a second effect worth
+ * having: a driver still mid-slice fails its next `renewSliceLease` and stops
+ * even if it somehow misses the status check.
+ */
+export async function cancelRun(
+  tenantId: string,
+  opts: { now: Clock },
+  deps: FinalizeDeps = {}
+): Promise<CancelRunResult> {
+  const database = deps.database ?? defaultDb;
+  const now = opts.now();
+
+  const [cancelled] = await database
+    .update(aiVisibilityRuns)
+    .set({
+      status: "cancelled",
+      finishedAt: now,
+      error: "Stopped.",
+      sliceLeaseUntil: null,
+      sliceLeaseOwner: null,
+    })
+    .where(
+      and(eq(aiVisibilityRuns.tenantId, tenantId), inArray(aiVisibilityRuns.status, IN_FLIGHT))
+    )
+    .returning({ id: aiVisibilityRuns.id, plannedCalls: aiVisibilityRuns.plannedCalls });
+  if (!cancelled) return { ok: false, reason: "not_in_flight" };
+
+  // Inline, not left to the sweep: the sweep only ever looks at `pending` and
+  // `running` runs, so for a cancelled one "the next tick" never comes. It is
+  // DB-only work — no engine calls, no judge — so it costs the operator's click
+  // a few queries and hands back a page that is already correct.
+  await settleCancelledRun(cancelled.id, opts, deps);
+
+  const [row] = await database
+    .select({ completedCalls: aiVisibilityRuns.completedCalls })
+    .from(aiVisibilityRuns)
+    .where(eq(aiVisibilityRuns.id, cancelled.id));
+
+  return {
+    ok: true,
+    runId: cancelled.id,
+    completedCalls: row?.completedCalls ?? 0,
+    plannedCalls: cancelled.plannedCalls,
+  };
 }
 
 /**

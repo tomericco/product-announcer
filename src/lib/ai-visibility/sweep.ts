@@ -318,7 +318,15 @@ export async function sweepAiVisibility(deps: SweepAiVisibilityDeps = {}): Promi
       // same lease (so it no-ops and reports `running`), and even holding it, it
       // re-counts pending samples before aggregating. Aggregates are never
       // written off a half-finished work list.
-      if (outcome.remaining === 0 && !outcome.pausedByCap) {
+      //
+      // `cancelled` is checked separately from `remaining` because a stopped
+      // run keeps its pending samples forever — `remaining` is nonzero on a run
+      // nobody will ever drive again. It is also already settled by
+      // `cancelRun`, so finalizing would only re-emit its signals. (The
+      // classify pass above cannot hand one to this loop in the first place —
+      // `cancelled` is not in `('pending','running')` — but a stop can land
+      // while THIS slice is running, which is exactly the case this arm is.)
+      if (outcome.remaining === 0 && !outcome.pausedByCap && !outcome.cancelled) {
         const spent = now().getTime() - sliceStartedAt;
         const left = Math.max(MIN_SOURCE_BUDGET_MS, budgetMs - spent);
         await finalize(runId, { budgetMs: left, now }, { database });

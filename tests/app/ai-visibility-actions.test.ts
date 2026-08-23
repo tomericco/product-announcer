@@ -29,8 +29,14 @@ const { generatePromptSet, planRun, runSlice, finalizeRun, afterCallbacks } = vi
     (
       runId: string,
       opts: { budgetMs: number; concurrency: number; now: () => Date }
-    ) => Promise<{ processed: number; remaining: number; budgetSpent: boolean; pausedByCap: boolean }>
-  >(async () => ({ processed: 270, remaining: 0, budgetSpent: false, pausedByCap: false })),
+    ) => Promise<{
+      processed: number;
+      remaining: number;
+      budgetSpent: boolean;
+      pausedByCap: boolean;
+      cancelled: boolean;
+    }>
+  >(async () => ({ processed: 270, remaining: 0, budgetSpent: false, pausedByCap: false, cancelled: false })),
   finalizeRun: vi.fn<(runId: string, opts: { budgetMs: number; now: () => Date }) => Promise<unknown>>(
     async () => ({})
   ),
@@ -499,8 +505,8 @@ describe("runNowAction", () => {
 
   it("keeps slicing until no pending samples remain, then finalizes once", async () => {
     runSlice
-      .mockResolvedValueOnce({ processed: 200, remaining: 160, budgetSpent: true, pausedByCap: false })
-      .mockResolvedValueOnce({ processed: 160, remaining: 0, budgetSpent: false, pausedByCap: false });
+      .mockResolvedValueOnce({ processed: 200, remaining: 160, budgetSpent: true, pausedByCap: false, cancelled: false })
+      .mockResolvedValueOnce({ processed: 160, remaining: 0, budgetSpent: false, pausedByCap: false, cancelled: false });
 
     await runNowAction();
     await afterCallbacks[0]();
@@ -510,7 +516,7 @@ describe("runNowAction", () => {
   });
 
   it("stops without finalizing when the cap pauses the run mid-slice", async () => {
-    runSlice.mockResolvedValueOnce({ processed: 12, remaining: 300, budgetSpent: false, pausedByCap: true });
+    runSlice.mockResolvedValueOnce({ processed: 12, remaining: 300, budgetSpent: false, pausedByCap: true, cancelled: false });
 
     await runNowAction();
     await afterCallbacks[0]();
