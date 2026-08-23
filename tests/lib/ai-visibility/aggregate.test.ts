@@ -91,6 +91,8 @@ describe("computeAggregates", () => {
     sampleIndex: number;
     status?: string;
     flagged?: boolean;
+    /** Grounded unless a test says otherwise — the common case. */
+    searchUsed?: boolean;
     extraction: SampleExtraction;
   }) {
     await db.insert(aiVisibilitySamples).values({
@@ -101,6 +103,7 @@ describe("computeAggregates", () => {
       sampleIndex: a.sampleIndex,
       status: a.status ?? "ok",
       flagged: a.flagged ?? false,
+      searchUsed: a.searchUsed ?? true,
       judged: true,
       answerText: "text",
       extraction: a.extraction,
@@ -163,6 +166,47 @@ describe("computeAggregates", () => {
       .from(aiVisibilityAggregates)
       .where(and(eq(aiVisibilityAggregates.runId, run.id), eq(aiVisibilityAggregates.promptId, pb.id)));
     expect(promptRows).toHaveLength(0);
+  });
+
+  it("counts an ungrounded sample in n but not in nGrounded", async () => {
+    const { tenant, rival, pa, run } = await seedFixture();
+    // The Gemini case: it answered the discovery question from memory, naming a
+    // competitor and not us. That is the visibility reality and belongs in the
+    // mention denominator; it cited nothing, so it must stay out of the
+    // citation one.
+    await addSample({ runId: run.id, tenantId: tenant.id, promptId: pa.id, engine: "gemini", sampleIndex: 0, searchUsed: false, extraction: extraction(false, [rival.id], false) });
+    await addSample({ runId: run.id, tenantId: tenant.id, promptId: pa.id, engine: "gemini", sampleIndex: 1, searchUsed: false, extraction: extraction(true, [], false) });
+    await addSample({ runId: run.id, tenantId: tenant.id, promptId: pa.id, engine: "gemini", sampleIndex: 2, searchUsed: true, extraction: extraction(true, [], true) });
+
+    await computeAggregates(run.id);
+
+    const engineRow = await engineRowOf(run.id);
+    expect(engineRow.n).toBe(3);
+    expect(engineRow.nGrounded).toBe(1);
+    expect(engineRow.tenantMentions).toBe(2);
+    expect(engineRow.competitorMentions).toEqual({ [rival.id]: 1 });
+    expect(engineRow.ownCitations).toBe(1);
+
+    const [promptRow] = await db
+      .select()
+      .from(aiVisibilityAggregates)
+      .where(and(eq(aiVisibilityAggregates.runId, run.id), eq(aiVisibilityAggregates.promptId, pa.id)));
+    expect(promptRow.n).toBe(3);
+    expect(promptRow.nGrounded).toBe(1);
+  });
+
+  it("keeps an ungrounded sample out of nGrounded only when it was eligible at all", async () => {
+    const { tenant, pa, run } = await seedFixture();
+    // An errored row is not in `n`, so it must not reach `nGrounded` either —
+    // the two counts are taken over the same cut.
+    await addSample({ runId: run.id, tenantId: tenant.id, promptId: pa.id, engine: "openai", sampleIndex: 0, status: "error", searchUsed: true, extraction: extraction(true, [], true) });
+    await addSample({ runId: run.id, tenantId: tenant.id, promptId: pa.id, engine: "openai", sampleIndex: 1, searchUsed: true, extraction: extraction(true, [], false) });
+
+    await computeAggregates(run.id);
+
+    const engineRow = await engineRowOf(run.id);
+    expect(engineRow.n).toBe(1);
+    expect(engineRow.nGrounded).toBe(1);
   });
 
   it("keeps engines separate", async () => {

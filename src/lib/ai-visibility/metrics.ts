@@ -98,6 +98,7 @@ export function clampBand(sovPct: number, bandPp: number): { lowPp: number; high
 
 const emptyCounts = (): WindowCounts => ({
   n: 0,
+  nGrounded: 0,
   tenantMentions: 0,
   ownCitations: 0,
   recommendations: 0,
@@ -157,6 +158,7 @@ export async function windowCounts(
   const rows = await database
     .select({
       n: aiVisibilityAggregates.n,
+      nGrounded: aiVisibilityAggregates.nGrounded,
       tenantMentions: aiVisibilityAggregates.tenantMentions,
       competitorMentions: aiVisibilityAggregates.competitorMentions,
       ownCitations: aiVisibilityAggregates.ownCitations,
@@ -176,6 +178,7 @@ export async function windowCounts(
   const total = emptyCounts();
   for (const row of rows) {
     total.n += row.n;
+    total.nGrounded += row.nGrounded;
     total.tenantMentions += row.tenantMentions;
     total.ownCitations += row.ownCitations;
     total.recommendations += row.recommendations;
@@ -213,16 +216,24 @@ function shareOfVoicePct(counts: WindowCounts): number | null {
 }
 
 function toMetrics(engine: EngineId | "all", counts: WindowCounts, deltaPpValue: number | null): EngineMetrics {
-  // Contract decision 8: below the threshold, every rate is null and the tile
-  // reads "Collecting baseline". `n` is always real so the reader can watch it
-  // grow.
+  // Citation rate is measured over the GROUNDED samples, so it gets the floor
+  // applied to ITS OWN denominator rather than to `n`. Ungrounded answers cited
+  // nothing, and folding them in as zeroes would deflate the rate by whatever
+  // share of the window the engine chose not to search — the ungrounded-answers
+  // design, decision 5. Null here renders as "—", not as 0%.
+  const citationRate =
+    counts.nGrounded < MIN_N_AGGREGATE ? null : (counts.ownCitations / counts.nGrounded) * 100;
+
+  // Contract decision 8: below the threshold, every mention-family rate is null
+  // and the tile reads "Collecting baseline". `n` is always real so the reader
+  // can watch it grow.
   if (counts.n < MIN_N_AGGREGATE) {
     return {
       engine,
       n: counts.n,
       mentionRate: null,
       shareOfVoice: null,
-      citationRate: null,
+      citationRate,
       recommendationRate: null,
       wilsonPp: null,
       deltaPp: null,
@@ -233,7 +244,7 @@ function toMetrics(engine: EngineId | "all", counts: WindowCounts, deltaPpValue:
     n: counts.n,
     mentionRate: (counts.tenantMentions / counts.n) * 100,
     shareOfVoice: shareOfVoicePct(counts),
-    citationRate: (counts.ownCitations / counts.n) * 100,
+    citationRate,
     recommendationRate: (counts.recommendations / counts.n) * 100,
     // The estimand is the SOV proportion; the EVIDENCE is answers.
     //

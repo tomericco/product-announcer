@@ -152,7 +152,15 @@ function metrics(engine: EngineId | "all", overrides: Partial<EngineMetrics> = {
 }
 
 function counts(overrides: Partial<WindowCounts> = {}): WindowCounts {
-  return { n: 84, tenantMentions: 20, competitorMentions: {}, ownCitations: 4, recommendations: 6, ...overrides };
+  return {
+    n: 84,
+    nGrounded: 84,
+    tenantMentions: 20,
+    competitorMentions: {},
+    ownCitations: 4,
+    recommendations: 6,
+    ...overrides,
+  };
 }
 
 function run(overrides: Record<string, unknown> = {}) {

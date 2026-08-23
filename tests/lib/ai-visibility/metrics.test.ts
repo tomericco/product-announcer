@@ -55,6 +55,8 @@ async function seedAggregate(a: {
   engine: string;
   promptId?: string | null;
   n: number;
+  /** Defaults to `n` — every sample grounded, the pre-ungrounded-answers world. */
+  nGrounded?: number;
   tenantMentions: number;
   competitorMentions?: Record<string, number>;
   ownCitations?: number;
@@ -66,6 +68,7 @@ async function seedAggregate(a: {
     engine: a.engine,
     promptId: a.promptId ?? null,
     n: a.n,
+    nGrounded: a.nGrounded ?? a.n,
     tenantMentions: a.tenantMentions,
     competitorMentions: a.competitorMentions ?? {},
     ownCitations: a.ownCitations ?? 0,
@@ -167,6 +170,7 @@ describe("windowCounts", () => {
     const tenant = await seedTenant(TENANT);
     expect(await windowCounts(tenant.id, {})).toEqual({
       n: 0,
+      nGrounded: 0,
       tenantMentions: 0,
       ownCitations: 0,
       recommendations: 0,
@@ -221,6 +225,69 @@ describe("engineMetrics", () => {
     expect(openai.citationRate).toBeCloseTo(20, 4);
     expect(openai.recommendationRate).toBeCloseTo(10, 4);
     expect(openai.wilsonPp).not.toBeNull();
+  });
+
+  it("divides citation rate by the grounded samples, and every other rate by n", async () => {
+    const tenant = await seedTenant(TENANT);
+    const run = await seedRun(tenant.id, "2026-03-01T09:00:00Z");
+    // 60 answers, 40 of them grounded — Gemini answering the discovery half of
+    // the prompt set from memory. Six own-domain citations out of the 40 that
+    // could have carried one is 15%; over all 60 it would read 10%, which
+    // charges the tenant for answers where nothing at all was cited.
+    await seedAggregate({
+      runId: run.id,
+      tenantId: tenant.id,
+      engine: "gemini",
+      n: 60,
+      nGrounded: 40,
+      tenantMentions: 30,
+      competitorMentions: { rival: 30 },
+      ownCitations: 6,
+      recommendations: 12,
+    });
+
+    const gemini = (await engineMetrics(tenant.id, db, CLOCK)).find((r) => r.engine === "gemini")!;
+    expect(gemini.n).toBe(60);
+    expect(gemini.citationRate).toBeCloseTo(15, 4);
+    expect(gemini.mentionRate).toBeCloseTo(50, 4);
+    expect(gemini.recommendationRate).toBeCloseTo(20, 4);
+    expect(gemini.shareOfVoice).toBeCloseTo(50, 4);
+  });
+
+  it("nulls citation rate on a thin grounded window while the mention rates stay real", async () => {
+    const tenant = await seedTenant(TENANT);
+    const run = await seedRun(tenant.id, "2026-03-01T09:00:00Z");
+    // Plenty of answers, too few searched ones to say anything about sourcing.
+    // The old doc block promised these were null together; they are not, and
+    // "—" for citation rate beside a real 50% mention rate is the honest render.
+    await seedAggregate({
+      runId: run.id,
+      tenantId: tenant.id,
+      engine: "gemini",
+      n: 90,
+      nGrounded: MIN_N_AGGREGATE - 1,
+      tenantMentions: 45,
+      competitorMentions: { rival: 45 },
+      ownCitations: 10,
+      recommendations: 9,
+    });
+
+    const gemini = (await engineMetrics(tenant.id, db, CLOCK)).find((r) => r.engine === "gemini")!;
+    expect(gemini.mentionRate).toBeCloseTo(50, 4);
+    expect(gemini.citationRate).toBeNull();
+  });
+
+  it("pools the grounded counts for the all row too", async () => {
+    const tenant = await seedTenant(TENANT);
+    const run = await seedRun(tenant.id, "2026-03-01T09:00:00Z");
+    // Neither engine clears the grounded floor alone; pooled they do, and the
+    // pooled rate is over the pooled grounded count, not over pooled n.
+    await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "openai", n: 40, nGrounded: 20, tenantMentions: 10, ownCitations: 4 });
+    await seedAggregate({ runId: run.id, tenantId: tenant.id, engine: "gemini", n: 40, nGrounded: 20, tenantMentions: 10, ownCitations: 4 });
+
+    const rows = await engineMetrics(tenant.id, db, CLOCK);
+    expect(rows.find((r) => r.engine === "openai")!.citationRate).toBeNull();
+    expect(rows.find((r) => r.engine === "all")!.citationRate).toBeCloseTo(20, 4);
   });
 
   it("pools samples for the all row rather than averaging engine rates", async () => {
@@ -617,7 +684,7 @@ describe("clampBand", () => {
 describe("brandMentionTotal", () => {
   it("counts the tenant plus every tracked brand, including ids no longer in the roster", () => {
     expect(
-      brandMentionTotal({ n: 84, tenantMentions: 26, ownCitations: 0, recommendations: 0, competitorMentions: { a: 30, deleted: 30 } })
+      brandMentionTotal({ n: 84, nGrounded: 84, tenantMentions: 26, ownCitations: 0, recommendations: 0, competitorMentions: { a: 30, deleted: 30 } })
     ).toBe(86);
   });
 });
@@ -1215,7 +1282,7 @@ describe("every read is scoped to the tenant it was asked for", () => {
     // ...and invisible to anybody else, including when they hand over a real
     // promptId or runId lifted from a URL.
     expect(await windowCounts(other.id, {})).toEqual({
-      n: 0, tenantMentions: 0, ownCitations: 0, recommendations: 0, competitorMentions: {},
+      n: 0, nGrounded: 0, tenantMentions: 0, ownCitations: 0, recommendations: 0, competitorMentions: {},
     });
     const foreign = await engineMetrics(other.id, db, CLOCK);
     expect(foreign.map((r) => r.n)).toEqual([0, 0, 0, 0]);

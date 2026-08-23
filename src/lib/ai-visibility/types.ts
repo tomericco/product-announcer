@@ -134,6 +134,14 @@ export type AiVisibilityPayload = {
 
 export type WindowCounts = {
   n: number;
+  /**
+   * Of `n`, the samples whose engine actually ran a search.
+   *
+   * The denominator for the citation-family metrics ONLY. An engine that
+   * answered from memory said something measurable and cited nothing, so it
+   * belongs in `n` and not here.
+   */
+  nGrounded: number;
   tenantMentions: number;
   ownCitations: number;
   recommendations: number;
@@ -146,10 +154,15 @@ export type EngineMetrics = {
   /**
    * null below the display threshold — "Collecting baseline", not zero.
    *
-   * This is the field that discriminates the whole row: it is null if and only
-   * if the window was too thin to show anything. Every other rate here is null
-   * in that case too, so `mentionRate === null` is the correct test for "we do
-   * not know yet".
+   * Null if and only if `n` — the MENTION denominator — was too thin, so this
+   * is the right test for "we do not know what the engine said yet", and the
+   * right discriminator for `shareOfVoice` and `recommendationRate`, which are
+   * null exactly when it is.
+   *
+   * It is NOT the test for `citationRate`. That rate is measured over
+   * `nGrounded`, which has its own floor, so `citationRate === null` alongside
+   * a real `mentionRate` is a normal state: the engine answered plenty and
+   * searched on too few of them to report where it got its answers.
    */
   mentionRate: number | null;
   /**
@@ -172,6 +185,15 @@ export type EngineMetrics = {
    * denominator — someone else won the mentions — and here there were none.
    */
   shareOfVoice: number | null;
+  /**
+   * 0..100 — own-domain citations over the GROUNDED sample count, not `n`.
+   *
+   * An engine that answered without searching cited nothing at all, which is a
+   * different fact from "it cited others and not us"; counting it as a zero
+   * would understate this rate by the ungrounded share. So it has its own
+   * denominator and its own floor, and is null whenever `nGrounded` is below
+   * MIN_N_AGGREGATE — independently of `mentionRate`.
+   */
   citationRate: number | null;
   recommendationRate: number | null;
   /**

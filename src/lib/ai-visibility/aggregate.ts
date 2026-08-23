@@ -34,6 +34,8 @@ export function isEligible(
 
 type Bucket = {
   n: number;
+  /** Of `n`, how many ran a search — the citation-family denominator. */
+  nGrounded: number;
   tenantMentions: number;
   competitorMentions: Record<string, number>;
   ownCitations: number;
@@ -42,6 +44,7 @@ type Bucket = {
 
 const emptyBucket = (): Bucket => ({
   n: 0,
+  nGrounded: 0,
   tenantMentions: 0,
   competitorMentions: {},
   ownCitations: 0,
@@ -78,6 +81,7 @@ export async function computeAggregates(
       promptId: aiVisibilitySamples.promptId,
       status: aiVisibilitySamples.status,
       flagged: aiVisibilitySamples.flagged,
+      searchUsed: aiVisibilitySamples.searchUsed,
       extraction: aiVisibilitySamples.extraction,
       branded: aiVisibilityPrompts.branded,
       intent: aiVisibilityPrompts.intent,
@@ -107,6 +111,10 @@ export async function computeAggregates(
 
     for (const bucket of [byEngine.get(row.engine)!, byPrompt.get(promptKey)!]) {
       bucket.n += 1;
+      // An engine that answered from memory is in `n` — it said something — but
+      // not in `nGrounded`, because it cited nothing and "nothing was cited" is
+      // not the same fact as "we were not cited".
+      if (row.searchUsed) bucket.nGrounded += 1;
       if (tenantMentioned) bucket.tenantMentions += 1;
       if (ownCited) bucket.ownCitations += 1;
       if (recommended) bucket.recommendations += 1;
