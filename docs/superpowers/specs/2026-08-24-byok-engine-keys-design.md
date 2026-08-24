@@ -52,8 +52,27 @@ The rule the evidence supports, which we adopt:
 > settings when it is an input parameter to **one feature's** behaviour.
 
 Supabase demonstrates it cleanly — SMTP credentials under Auth, S3 credentials
-under Storage, extensions under Integrations. Zendesk demonstrates the cost of
-not deciding: two parallel credential stores, both masking, no stated rule.
+under Storage, extensions under Integrations, and its Integrations page holds
+no secrets at all. Zendesk demonstrates the cost of not deciding: two parallel
+credential stores, both masking, no stated rule.
+
+**The sharper predictor, found across eight devtool vendors: OAuth connections
+go on a central integrations page; pasted secrets end up on the consuming
+feature's own settings screen.** PostHog shows it cleanly — GitHub, Linear and
+Jira connect by OAuth from the central integrations page, while GitLab, the one
+integration needing a pasted `api`-scoped token, lives on the error-tracking
+settings screen instead. Vercel shows the same split between Integrations and
+Connect. Nobody names this as a rule; all of them follow it. Our engine keys
+are pasted secrets, which puts them on the feature screen twice over.
+
+**The honest counter-example: Datadog.** It takes customer OpenAI and Anthropic
+API keys on the *integration tile* — and those keys are then consumed by LLM
+Observability, a different product surface. It is the closest thing to a BYOK
+feature in that survey and it went the other way. Two things make it weak
+support for copying: Datadog's tile *is* the feature surface for that
+integration, and the cross-surface dependency (key entered under Integrations,
+burned by LLM Observability) is one their docs never explain — the same
+unnarrated split we are trying to avoid. Recorded rather than dismissed.
 
 ### Naming
 
@@ -232,26 +251,46 @@ account does not.
 | Provider | New-paid-account reality |
 | --- | --- |
 | OpenAI Tier 1 ($5 paid) | 500 RPM uniform, but **TPM varies ~17× by model** — `gpt-4o` is **30,000 TPM** |
-| Anthropic Start | 1,000 RPM / 2M ITPM — **but new orgs may start in an undisclosed "Evaluation tier" below every published limit**, plus acceleration limits on sharp usage increases |
-| Gemini Tier 1 | Per-model RPM/TPM **no longer published**; a hard **$10 per rolling 10-minute window** spend cap applies regardless of throughput |
+| Anthropic Start | 1,000 RPM / 2M ITPM — **but new orgs may start in an undisclosed "Evaluation tier" below every published limit**, plus acceleration limits on sharp usage increases, plus a **$500/month spend cap** |
+| Gemini Tier 1 | Per-model RPM/TPM **no longer published** (Google removed the table; the figures circulating are user-reported and staff declined to confirm them). A hard **$10 per rolling 10-minute window** spend cap applies regardless of throughput |
 
-RPM is comfortable. **TPM is the binding constraint.** Twelve concurrent
-prompts at ~2,500 tokens each is 30,000 tokens in one burst — an instant 429 on
-a Tier 1 `gpt-4o` account, on a call pattern that works fine on ours.
+RPM is comfortable — 12 concurrent calls at 10–30s each is roughly 24–72 RPM,
+well under every published ceiling. **TPM is the binding constraint**, and the
+arithmetic is unforgiving: 30,000 TPM ÷ 12 concurrent = **2,500 tokens per
+request including output**. An AI-visibility prompt plus its answer exceeds
+that. A Tier 1 `gpt-4o` tenant 429s on the first sweep. This is invisible to us
+because our own account sits several tiers up.
 
 Required changes:
 
 1. Per-tenant configurable concurrency with a conservative default (start at 3).
-2. Honour `retry-after`; ramp rather than burst (Anthropic explicitly warns a
+2. Do not default BYOK tenants to `gpt-4o` — at Tier 1 it has 16× less headroom
+   than `gpt-5-mini` (30,000 vs 500,000 TPM) for the same 12 requests.
+3. Honour `retry-after`; ramp rather than burst (Anthropic explicitly warns a
    nominal 60 RPM "might be enforced as 1 request per second").
-3. Treat 429 as a first-class UI state that names the tier as the cause — with
+4. Treat 429 as a first-class UI state that names the tier as the cause — with
    a hard gate and no fallback, the customer's 429 is our outage.
-4. State any tier floor in the UI *before* they paste. Clay requires OpenAI
+5. State any tier floor in the UI *before* they paste. Clay requires OpenAI
    Tier 2 (≥450,000 TPM) and Anthropic Tier 4 for its AI features and surfaces
    this as a documented prerequisite; a marketer cannot diagnose a usage tier.
 
-Note our existing retry work (`MAX_SAMPLE_ATTEMPTS = 3`, backoff `[30s, 60s]`)
-already classifies 429 as retryable, which softens but does not solve this.
+### This contradicts the retry classification we shipped on 2026-08-24
+
+`isRetryableStatus` in `engines/shape.ts` treats **all** 429s as retryable, and
+`MAX_SAMPLE_ATTEMPTS = 3` with backoff `[30s, 60s]` retries them. That is right
+for a throughput 429 and wrong for a **spend-cap 429**, which will never
+succeed within the window:
+
+- **Anthropic's spend-cap 429 carries no `retry-after`** and is identified by
+  `error.details.error_code === "enforced_spend_limit_reached"`. Retrying it
+  burns three attempts and 90 seconds of budget to fail identically.
+- **Gemini's `$10 / 10-minute` cap** returns `429 RESOURCE_EXHAUSTED` and needs
+  a wait longer than our whole backoff ladder.
+
+So 429 must split into two classifications: `rate_limited` (retryable, honour
+`retry-after`) and `quota_exceeded` (terminal for this run, flips the key row
+to a status the tenant can act on). Without that split, a tenant who hits their
+spend cap sees a run that silently retries itself to death.
 
 ## Decision 10 — security bar
 
@@ -309,13 +348,26 @@ Cloudflare Secrets Store, Doppler):
    to any user that has access to the project."*
    Note Helicone ships an eye-toggle that fully decrypts and reveals a stored
    key in the browser. We do not.
+
+   Two implementations worth copying wholesale. **Vercel's Sensitive
+   Environment Variables**: values *"non-readable once created"*, stored *"in
+   an unreadable format"*, the current value hidden on edit, a "Sensitive" tag
+   in the list, and `[REDACTED]` substituted in build logs. **Segment's
+   `type: 'password'` field flag**, which drives masking in the UI, redaction
+   through the public API, and exclusion from config-as-code sync from one
+   declaration — the strongest cross-surface consistency claim found in any
+   survey. One flag, three surfaces, no way to forget one.
 4. Show only: provider, last 4, status, last verified, last used, who added it,
    when. **No surveyed product displays key-lifecycle metadata** — shipping
    provenance puts us ahead of all of them, and a 3-person team genuinely needs
    to know which colleague pasted the key. Braintrust comes closest with a
    masked `abc...xyz` preview plus last-updated and the user who changed it.
-5. Secret-shaped-string scrubber on the path into the logger and Sentry.
+5. **Scrub before logging, not just before rendering.** Redact `sk-*`,
+   `sk-ant-*`, `AIza*` and `org-*` patterns on the way into the logger and
+   Sentry. The UI is the symptom; the log is the durable copy.
 6. Ciphertext must survive into backups and replication as ciphertext.
+7. **Audit-log** add / replace / delete / enable / disable with actor and
+   timestamp. No surveyed product documents this for an LLM credential.
 
 ### Compliance
 
