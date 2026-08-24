@@ -321,6 +321,18 @@ function EngineRow({
   return (
     <div className="space-y-2 border-t pt-4 first:border-t-0 first:pt-0">
       <div className="flex flex-wrap items-center justify-between gap-2">
+        {/* The accessible name is the LABEL's text, not an `aria-label` on the
+            switch. Base UI's `Switch.Root` detects the wrapping `<label>` and
+            stamps `aria-labelledby` on itself, and `aria-labelledby` outranks
+            `aria-label` — so the `aria-label={`Use ${name}`}` that used to be
+            here computed to nothing at all, and a screen reader read the switch
+            as "ChatGPT".
+
+            Keeping the wrapper is what makes clicking the engine name toggle
+            the switch, so the fix is to put the verb in the label instead of
+            fighting it: the "Use " is visually hidden and the name is not, so
+            the row still reads "ChatGPT" and the control announces "Use
+            ChatGPT, switch, on". */}
         <Label className="text-sm font-medium">
           {/* The switch exists only because a verified key produced it. A
               non-verified row keeps the switch — it is still the tenant's — but
@@ -328,7 +340,6 @@ function EngineRow({
           <Switch
             checked={row.enabled}
             disabled={!isOwner || pending || (!row.enabled && !verified)}
-            aria-label={`Use ${name}`}
             onCheckedChange={(checked) =>
               run(
                 () => toggleEngineKeyAction(engine, checked),
@@ -336,7 +347,15 @@ function EngineRow({
               )
             }
           />
-          {name}
+          {/* The separator is a real text node, and it is load-bearing: the
+              accessible-name algorithm concatenates each element's contribution
+              without inserting one, so `<span>Use</span><span>ChatGPT</span>`
+              computes to "UseChatGPT". A whitespace-only child of a flex
+              container is not rendered, so it costs nothing visually. */}
+          <span className="sr-only">Use</span>{" "}
+          {/* Its own element, not a bare text node: the row is found by this
+              text, and a bare node would fold into the label's own text. */}
+          <span>{name}</span>
         </Label>
         {verified ? (
           <ConnectedIndicator label={row.enabled ? "Verified" : "Saved, not in use"} />

@@ -104,16 +104,20 @@ function engineRow(name: string): HTMLElement {
 }
 
 /**
- * The row's switch, found INSIDE its row rather than by accessible name.
+ * The row's switch, BY ITS ACCESSIBLE NAME.
  *
- * Its `aria-label` is not the name a screen reader computes: Base UI's
- * `Switch.Root` is wrapped in a `<Label>`, which stamps `aria-labelledby` on
- * it, and `aria-labelledby` outranks `aria-label`. Querying by row is the
- * honest way to reach it without asserting a name the platform does not
- * actually produce — see the note in the report on the dead `aria-label`.
+ * The name is computed from the wrapping `<Label>`, not from an `aria-label`:
+ * Base UI's `Switch.Root` detects the label ancestor and stamps
+ * `aria-labelledby` on itself, which outranks `aria-label` — so an
+ * `aria-label` here would be dead, and one was. The label carries a visually
+ * hidden "Use " instead, so the row still reads "ChatGPT" and the control is
+ * announced as the verb it performs.
+ *
+ * Queried this way on purpose: it is the only assertion that fails if the name
+ * silently goes back to being the bare engine name.
  */
 function engineSwitch(name: string): HTMLElement {
-  return within(engineRow(name)).getByRole("switch");
+  return within(engineRow(name)).getByRole("switch", { name: `Use ${name}` });
 }
 
 beforeEach(() => {
@@ -255,6 +259,19 @@ describe("state: verified and in use", () => {
     // key, and a three-person team needs to know which colleague did.
     expect(within(chatgpt).getByText(/…7f4A · added 24 Aug by Tomer · checked 24 Aug · last used 24 Aug/))
       .toBeInTheDocument();
+  });
+
+  it("names the switch after what it does, not after the row it sits in", () => {
+    // A switch called "ChatGPT" tells a screen-reader user which row they are
+    // in and nothing about the control. The verb is what makes "on" mean
+    // something — and it has to come from the LABEL, because Base UI stamps
+    // `aria-labelledby` on the switch from the wrapping `<Label>` and that
+    // outranks any `aria-label` put on it directly.
+    card({ keys: [row()] });
+
+    expect(screen.getByRole("switch", { name: "Use ChatGPT" })).toBeInTheDocument();
+    // The visible row is unchanged: the verb is hidden, the engine name is not.
+    expect(within(engineRow("ChatGPT")).getByText("ChatGPT")).toBeInTheDocument();
   });
 
   it("renders a switch that is on, because a verified key produced it", () => {
