@@ -2,7 +2,7 @@ import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
 import { sources, aiVisibilityRuns, type Source } from "@/db/schema";
 import { capPausedMessage } from "@/lib/ai-visibility/cost";
-import { getAiVisibilitySettingsForTenants } from "@/lib/ai-visibility/settings";
+import { DEFAULT_CONCURRENCY, getAiVisibilitySettingsForTenants } from "@/lib/ai-visibility/settings";
 import { planRun, runSlice, finalizeRun, type Clock, type PlanRunRefusal } from "@/lib/ai-visibility/run";
 
 /**
@@ -43,25 +43,17 @@ export const SWEEP_BUDGET_MS = positiveNumberFromEnv(
  * source falls back to when there is no settings row to read, and the env var
  * is how an operator moves that fallback during an incident.
  *
- * IT IS 3, NOT 12, AND THE ARITHMETIC IS WHY. Contract decision 3 targeted 270
- * calls in one tick at concurrency 12-20, sized against OUR account. A BYOK
- * tenant's account is brand new, and OpenAI Tier 1 caps `gpt-4o` at
- * **30,000 TPM**:
- *
- *     30,000 TPM / 12 concurrent = 2,500 tokens per request, output included
- *
- * A grounded AI-visibility call measures ~23,000 input + ~2,500 output tokens —
- * the retrieved page text lands in the input — so one call blows that budget
- * five times over and twelve of them 429 the tenant on their first sweep. At 3
- * the same tenant has 10,000 tokens per request to work with.
- *
- * RPM was never the binding constraint: 12 concurrent calls at 10-30s each is
- * roughly 24-72 RPM, under every published ceiling. TPM is what bites, and it
- * is invisible from our own account because ours sits several tiers up.
- *
- * Do not raise this back to 12 without redoing that division.
+ * The number itself is `DEFAULT_CONCURRENCY`, imported rather than restated.
+ * Read the comment on it before touching either: it is 3 and not 12 for an
+ * arithmetic reason (OpenAI Tier 1 is 30,000 TPM and one grounded call is
+ * ~25,000 tokens), and a fallback that quietly disagreed with the default would
+ * be a different concurrency for the tenants who most need the conservative
+ * one — the ones with no settings row.
  */
-export const SWEEP_CONCURRENCY = positiveNumberFromEnv(process.env.AI_VISIBILITY_CONCURRENCY, 3);
+export const SWEEP_CONCURRENCY = positiveNumberFromEnv(
+  process.env.AI_VISIBILITY_CONCURRENCY,
+  DEFAULT_CONCURRENCY
+);
 
 /** No source gets less than this, however many are waiting. */
 export const MIN_SOURCE_BUDGET_MS = 5_000;

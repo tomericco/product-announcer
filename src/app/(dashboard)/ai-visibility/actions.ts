@@ -17,7 +17,7 @@ import {
 // check-then-write across an await and let two tabs both squeeze past 30.
 import { generatePromptSet } from "@/lib/ai-visibility/generate-prompts";
 import { cancelRun, driveRun, findResumableRun, planRun } from "@/lib/ai-visibility/run";
-import { getAiVisibilitySettings } from "@/lib/ai-visibility/settings";
+import { DEFAULT_CONCURRENCY, getAiVisibilitySettings } from "@/lib/ai-visibility/settings";
 import { PROMPT_INTENTS, type PromptIntent } from "@/lib/ai-visibility/types";
 
 /**
@@ -42,10 +42,12 @@ const RUN_NOW_FINALIZE_MIN_MS = 10_000;
 /**
  * The FALLBACK, used only when the tenant's own setting cannot be read.
  *
- * The knob is `ai_visibility_settings.concurrency`, defaulting to 3 — see
- * `SWEEP_CONCURRENCY` in `sweep.ts` for the TPM arithmetic that makes 12
- * unsafe for a new provider account. This constant used to BE that default and
- * is kept only so an operator has a lever if the read fails.
+ * The knob is `ai_visibility_settings.concurrency`, whose default is
+ * `DEFAULT_CONCURRENCY` — imported, not restated. Read the comment on it before
+ * touching this: it is 3 and not 12 for an arithmetic reason, and a fallback
+ * that quietly disagreed with the default would apply a different concurrency
+ * on exactly the path where something has already gone wrong. The env var is
+ * kept only so an operator has a lever if the read fails.
  *
  * `positiveNumberFromEnv`-style parsing rather than bare `Number()`: an empty
  * `AI_VISIBILITY_CONCURRENCY=` is `Number("") === 0`, and a concurrency of 0
@@ -53,7 +55,7 @@ const RUN_NOW_FINALIZE_MIN_MS = 10_000;
  */
 function fallbackConcurrency(): number {
   const parsed = Number(process.env.AI_VISIBILITY_CONCURRENCY);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 3;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_CONCURRENCY;
 }
 
 /** The tenant's own setting, or the fallback if the row cannot be read. */

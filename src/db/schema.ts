@@ -514,10 +514,17 @@ export const aiVisibilitySettings = pgTable("ai_visibility_settings", {
    * Engine calls in flight at once for this tenant's runs.
    *
    * Per-tenant because the ceiling is per-ACCOUNT, and under BYOK the account
-   * is theirs, not ours. See `SWEEP_CONCURRENCY` in `sweep.ts` for the
-   * arithmetic behind the default of 3 — the short version is that OpenAI
-   * Tier 1 `gpt-4o` is 30,000 TPM, and 30,000 ÷ 12 is 2,500 tokens per request
-   * including output, which one grounded answer exceeds on its own.
+   * is theirs, not ours. See `DEFAULT_CONCURRENCY` in
+   * `lib/ai-visibility/settings.ts` for the arithmetic behind the 3 — the short
+   * version is that OpenAI Tier 1 `gpt-4o` is 30,000 TPM, and 30,000 ÷ 12 is
+   * 2,500 tokens per request including output, which one grounded answer
+   * exceeds on its own.
+   *
+   * THE LITERAL IS DELIBERATE and it is the one copy of this number that is not
+   * an import. This file takes no runtime dependency on `src/lib` — drizzle-kit
+   * bundles it outside Next's path resolution, and the only other import here
+   * is type-only for exactly that reason. `tests/lib/ai-visibility/settings.test.ts`
+   * asserts this default equals `DEFAULT_CONCURRENCY`, so it cannot drift.
    */
   concurrency: smallint("concurrency").notNull().default(3),
   monthlyCapUsd: real("monthly_cap_usd").notNull().default(20),

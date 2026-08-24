@@ -10,6 +10,7 @@ import {
   getAiVisibilitySource,
   setAiVisibilityEnabled,
   DEFAULT_AI_VISIBILITY_SETTINGS,
+  DEFAULT_CONCURRENCY,
   MIN_MONTHLY_CAP_USD,
   MAX_MONTHLY_CAP_USD,
 } from "../../../src/lib/ai-visibility/settings";
@@ -44,6 +45,39 @@ const VALID = {
   concurrency: 3,
   monthlyCapUsd: 45,
 };
+
+describe("the concurrency default exists once", () => {
+  /**
+   * Four places used to say 3, and the two that decide what a run actually does
+   * — the sweep's fallback and the Run-now action's — said it as a literal.
+   * They are imports now, so this test is what holds the two that cannot be:
+   * the schema column default (this file takes no runtime dependency on
+   * `src/lib`; drizzle-kit bundles it outside Next's path resolution) and the
+   * migration that created it, which is frozen history.
+   *
+   * Read the comment on `DEFAULT_CONCURRENCY` before changing any of them. It
+   * is 3 and not 12 because OpenAI Tier 1 is 30,000 TPM and one grounded
+   * AI-visibility call is ~25,000 tokens.
+   */
+  it("is the same number in the schema column, the defaults object and the sweep fallback", async () => {
+    expect(aiVisibilitySettings.concurrency.default).toBe(DEFAULT_CONCURRENCY);
+    expect(DEFAULT_AI_VISIBILITY_SETTINGS.concurrency).toBe(DEFAULT_CONCURRENCY);
+
+    // Read with the env override unset, which is the state the fallback exists
+    // for. `actions.ts`'s twin is a private function with the same import and
+    // no seam to reach it through; the import is what makes it agree.
+    delete process.env.AI_VISIBILITY_CONCURRENCY;
+    const { SWEEP_CONCURRENCY } = await import("../../../src/lib/ai-visibility/sweep");
+    expect(SWEEP_CONCURRENCY).toBe(DEFAULT_CONCURRENCY);
+  });
+
+  it("a tenant row written without one comes back on it", async () => {
+    const tenant = await seedTenant(TENANT);
+    await db.insert(aiVisibilitySettings).values({ tenantId: tenant.id });
+
+    expect((await getAiVisibilitySettings(tenant.id)).concurrency).toBe(DEFAULT_CONCURRENCY);
+  });
+});
 
 describe("getAiVisibilitySettings", () => {
   it("returns the defaults when the tenant has no row", async () => {
