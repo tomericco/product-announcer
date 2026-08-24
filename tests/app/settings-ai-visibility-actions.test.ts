@@ -61,7 +61,6 @@ describe("saveAiVisibilityConfig", () => {
       form({
         cadence: "fortnightly",
         dayOfWeek: "4",
-        engines: ["openai", "gemini", "anthropic"],
         samplesPerPrompt: "5",
         monthlyCapUsd: "45",
       })
@@ -70,9 +69,30 @@ describe("saveAiVisibilityConfig", () => {
     const row = await stored(tenant.id);
     expect(row.cadence).toBe("fortnightly");
     expect(row.dayOfWeek).toBe(4);
-    expect(row.engines).toEqual(["openai", "gemini", "anthropic"]);
     expect(row.samplesPerPrompt).toBe(5);
     expect(row.monthlyCapUsd).toBe(45);
+  });
+
+  it("does not touch `engines`, however the form posts", async () => {
+    // The second half of Decision 2: the engine switches live in the
+    // AI-engines card, beside the key each depends on, and this action no
+    // longer reads the field at all. A stale tab still posting one — or a
+    // hand-crafted request — must not be able to undo a switch flipped there,
+    // so this asserts the ABSENCE of a write rather than the presence of the
+    // right one.
+    const tenant = await seedTenant(TENANT);
+    currentTenantId = tenant.id;
+    await db
+      .insert(aiVisibilitySettings)
+      .values({ tenantId: tenant.id, engines: ["gemini"] })
+      .onConflictDoUpdate({
+        target: aiVisibilitySettings.tenantId,
+        set: { engines: ["gemini"] },
+      });
+
+    await saveAiVisibilityConfig(form({ engines: ["openai", "anthropic"], cadence: "weekly" }));
+
+    expect((await stored(tenant.id)).engines).toEqual(["gemini"]);
   });
 
   it("saves the day even when the cadence is off, so the schedule survives being paused", async () => {
@@ -121,7 +141,6 @@ describe("saveAiVisibilityConfig", () => {
       "Invalid monthlyCapUsd"
     );
     await expect(saveAiVisibilityConfig(form({ cadence: "daily" }))).rejects.toThrow("Invalid cadence");
-    await expect(saveAiVisibilityConfig(form({ engines: [] }))).rejects.toThrow("Invalid engines");
     await expect(saveAiVisibilityConfig(form({ samplesPerPrompt: "2" }))).rejects.toThrow(
       "Invalid samplesPerPrompt"
     );
