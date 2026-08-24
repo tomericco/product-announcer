@@ -12,7 +12,7 @@ import { askAnthropic } from "../../../src/lib/ai-visibility/engines/anthropic";
 import { askGemini } from "../../../src/lib/ai-visibility/engines/gemini";
 import { askOpenAi } from "../../../src/lib/ai-visibility/engines/openai";
 import { ENGINE_KEY_ENV_VAR, resolveEngineKey } from "../../../src/lib/ai-visibility/engines/shape";
-import { effectiveEngines } from "../../../src/lib/ai-visibility/engine-keys";
+import { effectiveEngines, storeEngineKey } from "../../../src/lib/ai-visibility/engine-keys";
 import { getAiVisibilitySettings } from "../../../src/lib/ai-visibility/settings";
 import { ENGINE_IDS } from "../../../src/lib/ai-visibility/types";
 import { planRun, runSlice } from "../../../src/lib/ai-visibility/run";
@@ -775,5 +775,94 @@ describe("a run writes its verdict into the audit trail", () => {
     expect(sample.status).toBe("error");
     expect(sample.askAttempts).toBe(1);
     expect(sample.nextAttemptAt).toBeNull();
+  });
+});
+
+/**
+ * The window between a run deciding a key is bad and writing that down.
+ *
+ * `runSlice` resolves a key, spends up to 60 seconds on a network call, and
+ * then writes its verdict back by `(tenantId, engine)`. An owner watching the
+ * run fail can paste a working key inside that window, and the in-flight
+ * verdict lands on top of it.
+ */
+describe("a run's verdict cannot land on a key it never used", () => {
+  it("leaves a key replaced mid-call verified, rather than rejecting it seconds later", async () => {
+    // The interleaving, made deterministic: the client pastes the replacement
+    // in the middle of the call it is about to fail. Sample 401s at T, owner
+    // pastes at T+1s, the flip lands at T+2s.
+    const tenant = await seedTenant(TENANT);
+    await db.insert(aiVisibilitySettings).values({
+      tenantId: tenant.id,
+      enabled: true,
+      engines: ["openai"],
+      samplesPerPrompt: 1,
+      monthlyCapUsd: 20,
+    });
+    await db.insert(aiVisibilityPrompts).values({
+      tenantId: tenant.id,
+      text: "best issue tracker for startups",
+      intent: "discovery",
+      origin: "generated",
+      status: "active",
+    });
+    await seedEngineKey(tenant.id, "openai");
+    const planned = await planRun(tenant.id, { trigger: "manual", now: () => new Date() });
+    if (!planned.ok) throw new Error(`planRun refused: ${planned.reason}`);
+
+    const REPLACEMENT = "sk-proj-the-owner-pasted-this-9Q2b";
+
+    await runSlice(
+      planned.runId,
+      { budgetMs: 60_000, concurrency: 1, now: () => new Date() },
+      {
+        database: db,
+        engines: {
+          openai: {
+            id: "openai",
+            label: "openai (key revoked mid-run)",
+            ask: async () => {
+              // The owner, watching the run fail, pastes a working key.
+              await storeEngineKey(
+                {
+                  tenantId: tenant.id,
+                  engine: "openai",
+                  key: REPLACEMENT,
+                  actorUserId: null,
+                },
+                new Date(),
+                db
+              );
+              return {
+                kind: "error" as const,
+                code: "invalid_key" as const,
+                message: "ChatGPT rejected the API key.",
+              };
+            },
+          },
+        },
+        extract: async () => {},
+      }
+    );
+
+    const [key] = await db
+      .select()
+      .from(aiVisibilityEngineKeys)
+      .where(eq(aiVisibilityEngineKeys.tenantId, tenant.id));
+    // The row holds the REPLACEMENT, and the replacement verified a moment ago.
+    // The 401 was about the key before it, and a verdict about a secret that no
+    // longer exists is not a verdict about this one.
+    expect(key.last4).toBe(REPLACEMENT.slice(-4));
+    expect(key.status).toBe("verified");
+    expect(key.lastFailureCode).toBeNull();
+    // Nor may the stale verdict be audited: the trail would read "replaced,
+    // then auto_failed" and send the owner to replace a key they just replaced.
+    const trail = await db
+      .select()
+      .from(aiVisibilityEngineKeyEvents)
+      .where(eq(aiVisibilityEngineKeyEvents.tenantId, tenant.id));
+    expect(trail.map((entry) => entry.action)).toEqual(["replaced"]);
+    // And the engine is still one the next run may plan.
+    expect(await effectiveEngines(tenant.id, ["openai"])).toEqual(["openai"]);
   });
 });

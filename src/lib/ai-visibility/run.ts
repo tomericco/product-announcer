@@ -742,10 +742,20 @@ export async function runSlice(
           // row present and switched on to mean "resume" rather than "reconnect".
           if (!retrying) {
             await flipEngineKeyOnFailure(
-              // Narrowed by the key resolution above: `keyFor` only returns
-              // `ok` for an id in `ENGINE_IDS`, so reaching this line means the
-              // column held a real engine.
-              { tenantId: run.tenantId, engine: row.engine as EngineId, code: result.code },
+              {
+                tenantId: run.tenantId,
+                // Narrowed by the key resolution above: `keyFor` only returns
+                // `ok` for an id in `ENGINE_IDS`, so reaching this line means
+                // the column held a real engine.
+                engine: row.engine as EngineId,
+                code: result.code,
+                // Which SECRET this verdict is about. Minutes can pass between
+                // reading the key and writing what the provider thought of it,
+                // and an owner watching a run fail may well paste a working key
+                // inside that window. The write applies only while the row
+                // still holds the one that failed.
+                verifiedAt: loaded.verifiedAt,
+              },
               opts.now(),
               database
             );

@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
 import {
   aiVisibilityEngineKeyEvents,
@@ -219,7 +219,26 @@ export async function effectiveEngines(
  */
 
 export type LoadedEngineKey =
-  | { ok: true; key: string }
+  | {
+      ok: true;
+      key: string;
+      /**
+       * When the row this key came out of was last verified — the caller's
+       * receipt for WHICH secret it is holding.
+       *
+       * Every write that puts a different secret on the row moves this: a
+       * replacement sets it to the moment it verified, and so does a Re-check.
+       * A caller that read a key, spent a minute on a network call, and now
+       * wants to write a verdict back hands this in as a guard, so a verdict
+       * about a secret that has since been replaced lands on nothing. See
+       * `flipEngineKeyOnFailure`.
+       *
+       * `last4` would have done the same job with a one-in-a-million collision.
+       * This one has none, and it also catches the Re-check case, where the
+       * secret is unchanged but a human has just proved it works.
+       */
+      verifiedAt: Date | null;
+    }
   | { ok: false; reason: "missing" | "disabled" | "unusable" | "unreadable" };
 
 /**
@@ -269,6 +288,7 @@ export async function loadEngineKeySecret(
         iv: row.keyIv,
         authTag: row.keyAuthTag,
       }),
+      verifiedAt: row.verifiedAt,
     };
   } catch (error) {
     // The error itself, never the key. `decryptSecret`'s throw carries no
@@ -436,6 +456,15 @@ export async function storeEngineKey(
  * for a rejected key to keep being charged. `enabled` is untouched on purpose —
  * see `flipEngineKeyOnFailure` for why a provider's verdict does not throw the
  * tenant's switch.
+ *
+ * `guard` is optimistic concurrency for callers whose verdict is about a
+ * SPECIFIC secret rather than about whatever the row holds now. A Re-check
+ * passes none: a human is looking at the row, and whatever is on it is what
+ * they just tested. A run passes the `verifiedAt` it read before it made the
+ * call, and a guarded write that matches nothing is not an error — it is the
+ * row having moved on, so nothing is written and nothing is audited.
+ *
+ * Returns whether the write applied, so a caller can tell those two apart.
  */
 export async function setEngineKeyStatus(
   entry: {
@@ -445,12 +474,14 @@ export async function setEngineKeyStatus(
     failureCode?: string | null;
     actorUserId?: string | null;
     action?: EngineKeyAction;
+    /** Apply only while the row still holds the key this verdict is about. */
+    guard?: { verifiedAt: Date | null };
   },
   now: Date = new Date(),
   database: typeof defaultDb = defaultDb
-): Promise<void> {
+): Promise<boolean> {
   const verified = entry.status === "verified";
-  await database
+  const applied = await database
     .update(aiVisibilityEngineKeys)
     .set({
       status: entry.status,
@@ -458,12 +489,10 @@ export async function setEngineKeyStatus(
         ? { verifiedAt: now, lastFailureCode: null, lastFailureAt: null }
         : { lastFailureCode: entry.failureCode ?? entry.status, lastFailureAt: now }),
     })
-    .where(
-      and(
-        eq(aiVisibilityEngineKeys.tenantId, entry.tenantId),
-        eq(aiVisibilityEngineKeys.engine, entry.engine)
-      )
-    );
+    .where(and(rowFor(entry.tenantId, entry.engine), guardClause(entry.guard)))
+    .returning({ id: aiVisibilityEngineKeys.id });
+
+  if (applied.length === 0) return false;
 
   await recordEngineKeyEvent(
     {
@@ -475,6 +504,30 @@ export async function setEngineKeyStatus(
     },
     database
   );
+  return true;
+}
+
+/** One tenant's row for one engine — the key every write in this module is by. */
+function rowFor(tenantId: string, engine: EngineId) {
+  return and(
+    eq(aiVisibilityEngineKeys.tenantId, tenantId),
+    eq(aiVisibilityEngineKeys.engine, engine)
+  );
+}
+
+/**
+ * The optimistic-concurrency half of that key, when the caller has one.
+ *
+ * `undefined` means unguarded — the caller is writing about the row, not about
+ * a particular secret on it. A null `verifiedAt` is a real value to match on
+ * (a hand-seeded row can carry one), so it becomes `IS NULL` rather than
+ * `= NULL`, which matches nothing and would silently drop the write.
+ */
+function guardClause(guard: { verifiedAt: Date | null } | undefined) {
+  if (!guard) return undefined;
+  return guard.verifiedAt === null
+    ? isNull(aiVisibilityEngineKeys.verifiedAt)
+    : eq(aiVisibilityEngineKeys.verifiedAt, guard.verifiedAt);
 }
 
 /**
@@ -520,24 +573,45 @@ export function isCredentialFailure(code: string): boolean {
  * Removal is the one operation that does flip `enabled` — see
  * `removeEngineKey`, and the design's rule that removing a key turns its engine
  * off in the same transaction.
+ *
+ * ### It writes about ONE secret, not about the row
+ *
+ * There is a real window here. `runSlice` reads a key, spends up to sixty
+ * seconds on a network call, and only then writes the verdict back. An owner
+ * watching that run fail can paste a working key inside that window — which is
+ * the sane thing to do — and the in-flight verdict would land on top of it,
+ * marking a credential that verified seconds ago as rejected. The tenant is
+ * then told to replace a key they just replaced.
+ *
+ * So the caller passes the `verifiedAt` it read alongside the key, and the
+ * write applies only while the row still holds it. If it does not, the row has
+ * moved on under us and the verdict is about a secret that no longer exists:
+ * nothing is written, and nothing is audited.
  */
 export async function flipEngineKeyOnFailure(
-  entry: { tenantId: string; engine: EngineId; code: string },
+  entry: {
+    tenantId: string;
+    engine: EngineId;
+    code: string;
+    /** The row's `verifiedAt` when the failing call's key was read. */
+    verifiedAt: Date | null;
+  },
   now: Date = new Date(),
   database: typeof defaultDb = defaultDb
 ): Promise<void> {
+  const guard = { verifiedAt: entry.verifiedAt };
+
   if (!isCredentialFailure(entry.code)) {
     // Recorded, not escalated: the badge should be able to say "rate-limited on
     // the 24 Aug run" without the engine having been taken off the board.
+    //
+    // Guarded all the same. A "rate-limited on the 24 Aug run" note under a key
+    // pasted this morning is a smaller lie than a rejection, but it is the same
+    // lie: it describes a call this secret never made.
     await database
       .update(aiVisibilityEngineKeys)
       .set({ lastFailureCode: entry.code, lastFailureAt: now })
-      .where(
-        and(
-          eq(aiVisibilityEngineKeys.tenantId, entry.tenantId),
-          eq(aiVisibilityEngineKeys.engine, entry.engine)
-        )
-      );
+      .where(and(rowFor(entry.tenantId, entry.engine), guardClause(guard)));
     return;
   }
 
@@ -549,6 +623,7 @@ export async function flipEngineKeyOnFailure(
       failureCode: entry.code,
       action: "auto_failed",
       actorUserId: null,
+      guard,
     },
     now,
     database
