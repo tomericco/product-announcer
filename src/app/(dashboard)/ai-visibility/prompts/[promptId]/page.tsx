@@ -73,8 +73,18 @@ export default async function PromptDetailPage({
   // The keyed engines, so the tabs match the tiles on the overview. A tab for
   // an engine with no key would be a permanently empty panel for something
   // nobody is paying for.
+  //
+  // Unless nothing is keyed at all. Then that rule empties the page: zero
+  // sparkline cards and an `EngineTabs` with no tabs, over answers that are
+  // sitting right there in `samples`. So when no run is possible, the engines
+  // shown are the ones that ANSWERED this prompt — no extra query, because the
+  // answers are already loaded — and the line under the title says why nothing
+  // new is arriving.
   const runEngines = await effectiveEngines(tenantId, settings.engines);
-  const engines = ENGINE_ORDER.filter((engine) => runEngines.includes(engine));
+  const runBlocked = runEngines.length === 0;
+  const engines = ENGINE_ORDER.filter((engine) =>
+    runBlocked ? samples.some((sample) => sample.engine === engine) : runEngines.includes(engine)
+  );
   const requestedEngine = Array.isArray(query.engine) ? query.engine[0] : query.engine;
   const initialEngine = engines.find((engine) => engine === requestedEngine) ?? engines[0] ?? ENGINE_ORDER[0];
 
@@ -141,6 +151,19 @@ export default async function PromptDetailPage({
           {prompt.status === "paused" && <Badge variant="outline">Paused</Badge>}
         </div>
         {prompt.flagReason && <p className="text-sm text-destructive">{prompt.flagReason}</p>}
+        {/* Stated once, under the title, rather than repeated over each of the
+            three sections below. The overview page carries the same fact as a
+            banner with the control that fixes it; this page is reached from
+            there, so it needs the sentence and not a second button. */}
+        {runBlocked && (
+          <p className="text-sm text-destructive">
+            Measuring is paused — no engine key is connected, so nothing new is collected.{" "}
+            <Link href="/settings#ai-engines" className="underline underline-offset-2">
+              Connect an engine
+            </Link>
+            . Everything below was measured while a key was connected.
+          </p>
+        )}
         {/* Both directions of the supersede chain, so history is reachable
             from whichever wording you arrived at. */}
         {prompt.supersedesId && (

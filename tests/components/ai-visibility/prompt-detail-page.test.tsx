@@ -238,6 +238,47 @@ describe("prompt detail — the alias table", () => {
   });
 });
 
+describe("prompt detail — when nothing is keyed", () => {
+  it("shows the answers already collected rather than an empty page", async () => {
+    // THE REGRESSION. The tabs and the sparkline cards are drawn from the
+    // EFFECTIVE engine list, which is empty for a tenant with no usable key —
+    // so `engineGridClass(0)` drew nothing and `EngineTabs` opened with no
+    // tabs, over answers that were sitting right there in `promptSamples`.
+    //
+    // With no run possible, the engines shown are the ones that ANSWERED this
+    // prompt. No extra query: the answers are already loaded.
+    setup({
+      effectiveEngines: [],
+      samples: [sample(), sample({ id: "s2", engine: "gemini" })],
+    });
+    await renderPage();
+
+    expect(captured.tabs?.engines).toEqual(["openai", "gemini"]);
+    expect(captured.tabs?.initialEngine).toBe("openai");
+    expect(captured.tabs?.samples).toHaveLength(2);
+    // One card per engine that answered, so the history is still readable.
+    expect(captured.sparklines).toHaveLength(2);
+  });
+
+  it("says why nothing new is arriving, and routes to the keys", async () => {
+    setup({ effectiveEngines: [], samples: [sample()] });
+    await renderPage();
+
+    expect(screen.getByText(/Measuring is paused/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Connect an engine" })).toHaveAttribute(
+      "href",
+      "/settings#ai-engines"
+    );
+  });
+
+  it("says nothing about a pause while the engines are keyed", async () => {
+    setup();
+    await renderPage();
+
+    expect(screen.queryByText(/Measuring is paused/)).not.toBeInTheDocument();
+  });
+});
+
 describe("prompt detail — which engine tab opens", () => {
   it("opens the engine a matrix cell was about", async () => {
     setup();

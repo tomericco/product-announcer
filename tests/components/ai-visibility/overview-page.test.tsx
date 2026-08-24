@@ -115,6 +115,7 @@ const {
   engineHistory,
   promptMatrix,
   runEngineHealth,
+  measuredEngines,
   citedDomains,
   everSignalledDomains,
   listSignals,
@@ -132,6 +133,9 @@ const {
   engineHistory: vi.fn(),
   promptMatrix: vi.fn(),
   runEngineHealth: vi.fn(),
+  // What the tenant has ALREADY measured, which is a different question from
+  // `effectiveEngines`'s "what will run next" — see "measuring is paused".
+  measuredEngines: vi.fn(),
   citedDomains: vi.fn(),
   everSignalledDomains: vi.fn(),
   listSignals: vi.fn(),
@@ -178,6 +182,7 @@ vi.mock("@/lib/ai-visibility/metrics", async (importOriginal) => {
     engineHistory,
     promptMatrix,
     runEngineHealth,
+    measuredEngines,
   };
 });
 vi.mock("@/lib/ai-visibility/cost", async (importOriginal) => {
@@ -308,6 +313,12 @@ function setup(overrides: Record<string, unknown> = {}) {
   engineHistory.mockImplementation(async () => (o.history as unknown[]) ?? []);
   promptMatrix.mockResolvedValue((o.matrix as unknown[]) ?? []);
   runEngineHealth.mockResolvedValue((o.health as unknown[]) ?? []);
+  // Defaults to whatever runs: for the 50 tests that are about a connected
+  // tenant the two lists are the same, and only the paused state pulls them
+  // apart.
+  measuredEngines.mockResolvedValue(
+    (o.measured as unknown[]) ?? (o.effectiveEngines as unknown[]) ?? [...ALL_ENGINES]
+  );
   citedDomains.mockResolvedValue((o.domains as unknown[]) ?? []);
   everSignalledDomains.mockResolvedValue(new Set((o.everSignalled as string[]) ?? []));
   listSignals.mockResolvedValue((o.signals as unknown[]) ?? []);
@@ -349,6 +360,77 @@ describe("overview — the BYOK gate", () => {
     // sending someone to the prompt review first would dead-end them.
     expect(listPrompts).not.toHaveBeenCalled();
     expect(captured.runNow).toBeNull();
+  });
+
+  it("keeps every measurement already paid for when the last key goes", async () => {
+    // THE REGRESSION. The page returned the "No AI engines connected" empty
+    // state BEFORE loading any metrics, so it replaced the tiles, the trend,
+    // the matrix and the cited domains — for a tenant who has months of data
+    // and has simply paused, or whose only key auto-failed, or who paused
+    // ChatGPT for a month, which Decision 5 names as a state to support. The
+    // copy said "Anything already measured is kept" and offered no route to it.
+    setup({
+      effectiveEngines: [],
+      measured: ["openai", "gemini"],
+      matrix: [
+        {
+          promptId: "p1",
+          text: "best localization tools",
+          branded: false,
+          cells: [{ engine: "openai", hits: 2, n: 3, competitorsNamed: 1 }],
+        },
+      ],
+      domains: [
+        { domain: "g2.com", citations: 9, answerShare: 17, engines: ["openai"], domainClass: "third_party" },
+      ],
+    });
+    await renderPage();
+
+    // Every section that reads history is still on the page…
+    expect(screen.getByTestId("visibility-trend")).toBeInTheDocument();
+    expect(screen.getByTestId("overview-cards")).toBeInTheDocument();
+    expect(screen.getByTestId("prompt-matrix")).toBeInTheDocument();
+    expect(screen.getByTestId("cited-domains")).toBeInTheDocument();
+    // …carrying the engines that MEASURED, since none of them will run.
+    expect(captured.tiles?.map((tile) => tile.engine)).toEqual(["openai", "gemini", "all"]);
+    expect(captured.matrixEngines).toEqual(["openai", "gemini"]);
+    expect(captured.domains).toHaveLength(1);
+  });
+
+  it("says measuring is paused, and routes to the keys, above the numbers", async () => {
+    setup({ effectiveEngines: [], measured: ["openai"] });
+    await renderPage();
+
+    expect(screen.getByText(/Measuring is paused/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Connect an engine" })).toHaveAttribute(
+      "href",
+      "/settings#ai-engines"
+    );
+    // The distinction the banner exists to draw: what stopped is the
+    // COLLECTING, and what is below it was paid for and is kept.
+    expect(screen.getByText(/Everything below was measured while a key was connected/)).toBeInTheDocument();
+    // And the full-page empty state is not ALSO rendered — one state, not two.
+    expect(screen.queryByText("No AI engines connected")).not.toBeInTheDocument();
+  });
+
+  it("refuses Run now with the reason, rather than offering a click that can only fail", async () => {
+    setup({ effectiveEngines: [], measured: ["openai"] });
+    await renderPage();
+
+    expect(captured.runNow?.disabledReason).toMatch(/No engine key is connected/);
+    // Priced at nothing, because nothing would be asked.
+    expect(captured.runNow?.estimate.engines).toBe(0);
+  });
+
+  it("still shows the empty state when nothing has ever been measured", async () => {
+    // Ship day, and any tenant who has never had a key: there is no history to
+    // fall through to, so the one thing worth saying is what is missing.
+    setup({ effectiveEngines: [], measured: [] });
+    await renderPage();
+
+    expect(screen.getByText("No AI engines connected")).toBeInTheDocument();
+    expect(screen.queryByTestId("overview-cards")).not.toBeInTheDocument();
+    expect(listPrompts).not.toHaveBeenCalled();
   });
 
   it("Off still wins over no engines — one state, not two stacked", async () => {
