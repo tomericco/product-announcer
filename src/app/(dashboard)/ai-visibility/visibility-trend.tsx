@@ -105,7 +105,14 @@ export function VisibilityTrend({ series }: { series: TrendSeries[] }) {
   // "runs", not "weeks": cadence is a tenant setting and can be fortnightly, so
   // twelve of these is six months for some tenants. The sparkline this replaces
   // said "the last 12 weeks" in its accessible name and was wrong for them.
-  const caption = `Mention rate — how often you were named — over the last ${rows.length} ${runWord}.`;
+  //
+  // Named for the sr-only table only. The section title and description above
+  // the chart already say what the metric is and what the bold line pools, so
+  // a visible figcaption repeating "Mention rate — how often you were named"
+  // was the same sentence twice on screen; the table's `<caption>` still needs
+  // it, since a screen reader can land there without ever reading the section
+  // header above the figure.
+  const tableCaption = `Mention rate — how often you were named — over the last ${rows.length} ${runWord}.`;
 
   return (
     <figure className="space-y-1">
@@ -189,7 +196,7 @@ export function VisibilityTrend({ series }: { series: TrendSeries[] }) {
           this is a `.map`, not a second query. `ratePct` formats it, which is
           what makes an unpublishable run render "—" and never "0%". */}
       <table className="sr-only">
-        <caption>{caption}</caption>
+        <caption>{tableCaption}</caption>
         <thead>
           <tr>
             <th scope="col">Run</th>
@@ -211,14 +218,6 @@ export function VisibilityTrend({ series }: { series: TrendSeries[] }) {
           ))}
         </tbody>
       </table>
-
-      {/* The span, and only the span — the one sentence here that needs the
-          data. The pooling caveat used to be appended to it and now sits in
-          the section's own description, ABOVE the chart: this figure is the
-          page's first section, so "the bold line is every engine pooled" has
-          to reach the reader before the lines do, not after them. Written
-          once, in the place that renders first. */}
-      <figcaption className="text-xs text-muted-foreground">{caption}</figcaption>
     </figure>
   );
 }

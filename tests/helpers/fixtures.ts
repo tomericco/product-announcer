@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import { db } from "../../src/db";
 import { tenants } from "../../src/db/schema";
 import {
+  aiVisibilityEngineKeys,
   companyProfiles,
   contentImages,
   contentPieces,
@@ -12,6 +13,8 @@ import {
   type VisualIdentity,
 } from "../../src/db/schema";
 import { DEFAULT_VISUAL_IDENTITY } from "../../src/lib/images/visual-identity";
+import { encryptSecret } from "../../src/lib/credentials/encryption";
+import { ENGINE_IDS, type EngineId } from "../../src/lib/ai-visibility/types";
 
 /**
  * Seeds a tenant by name. The name is the cleanup key — `dropTenant` deletes
@@ -139,4 +142,54 @@ export async function seedContentImage(a: {
     .where(eq(contentImages.id, image.id))
     .returning();
   return { image: wired, render };
+}
+
+/**
+ * A verified, enabled engine key — the state BYOK requires before a run can be
+ * planned at all.
+ *
+ * Nearly every AI-visibility test needs one now: `effectiveEngines` intersects
+ * the tenant's chosen engines with the engines holding a verified key, with no
+ * fallback when that is empty, so a tenant with no key row plans nothing. The
+ * plaintext is a recognisable fake — never a real-looking secret — and it is
+ * encrypted through the same `encryptSecret` production uses, so a test that
+ * asserts "the run sent the tenant's key" is asserting against the real
+ * decrypt path rather than a stub.
+ */
+export async function seedEngineKey(
+  tenantId: string,
+  engine: EngineId,
+  overrides: Partial<typeof aiVisibilityEngineKeys.$inferInsert> = {}
+) {
+  const key = overrides.keyCiphertext ? "" : `test-${engine}-key-0000`;
+  const encrypted = key ? encryptSecret(key) : null;
+  const [row] = await db
+    .insert(aiVisibilityEngineKeys)
+    .values({
+      tenantId,
+      engine,
+      ...(encrypted
+        ? {
+            keyCiphertext: encrypted.ciphertext,
+            keyIv: encrypted.iv,
+            keyAuthTag: encrypted.authTag,
+          }
+        : { keyCiphertext: "", keyIv: "", keyAuthTag: "" }),
+      last4: key.slice(-4),
+      status: "verified",
+      enabled: true,
+      verifiedAt: new Date(),
+      ...overrides,
+    })
+    .onConflictDoUpdate({
+      target: [aiVisibilityEngineKeys.tenantId, aiVisibilityEngineKeys.engine],
+      set: { status: "verified", enabled: true, ...overrides },
+    })
+    .returning();
+  return { row, key };
+}
+
+/** Every engine keyed at once — the ordinary "this tenant is fully connected" state. */
+export async function seedAllEngineKeys(tenantId: string) {
+  for (const engine of ENGINE_IDS) await seedEngineKey(tenantId, engine);
 }

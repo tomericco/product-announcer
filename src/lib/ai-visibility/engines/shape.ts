@@ -29,20 +29,13 @@
 export const ENGINE_REQUEST_TIMEOUT_MS = 60_000;
 
 /**
- * Whether a non-2xx from a provider is worth asking again.
- *
- * 429 is the whole reason this exists: three providers' rate limits are in play
- * on every wave, and a rate-limited sample used to cost the run a data point
- * outright. 5xx is the provider having a bad minute. Everything else in the 4xx
- * range is about the REQUEST — 401 is a key that is wrong or out of funds, 404
- * is a model id that no longer resolves, 400 is a body we built wrong — and
- * re-sending it buys an identical failure at full price.
- *
- * Shared by all three clients so the classification cannot drift between them.
+ * `isRetryableStatus` used to live here. It now lives in `engines/failure.ts`
+ * as `codeForStatus` + `isRetryableCode`, because "is this worth asking again"
+ * stopped being a question a status code can answer on its own: a 429 is
+ * retryable when it is throughput and terminal when it is a spend cap, and
+ * telling those apart needs the body. Classification and the closed set of
+ * failure codes are one concern and belong in one module.
  */
-export function isRetryableStatus(status: number): boolean {
-  return status === 429 || status >= 500;
-}
 
 /** The value when it really is an array, otherwise an empty one. */
 export function asArray<T>(value: T[] | undefined | null | unknown): T[] {
@@ -58,4 +51,45 @@ export function asArray<T>(value: T[] | undefined | null | unknown): T[] {
  */
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * The env var each engine's key falls back to, for LOCAL DEVELOPMENT ONLY.
+ *
+ * Under BYOK the key is the tenant's, passed to `ask()` as `deps.apiKey`, and
+ * `runSlice` always passes one explicitly — an engine with no usable stored key
+ * is never asked at all. These are what remain so a developer can exercise a
+ * client from a script or a test without seeding an encrypted row, and so the
+ * judge and prompt generation (which still run on OUR Anthropic key, and say so
+ * in the UI) keep working.
+ *
+ * They are NOT a fallback in the product sense. The design's hard gate is that
+ * a tenant with no verified key does not sample that engine and is never billed
+ * to us; the run path enforces that above this layer, by refusing to plan, and
+ * by never handing a client an absent key.
+ */
+export const ENGINE_KEY_ENV_VAR = {
+  openai: "OPENAI_API_KEY",
+  gemini: "GEMINI_API_KEY",
+  anthropic: "ANTHROPIC_API_KEY",
+} as const;
+
+/**
+ * The key a client will actually send: the caller's, or the local-dev env var.
+ *
+ * `undefined` and `""` are different inputs with the same outcome and that is
+ * deliberate — a caller who resolved a key and got an empty string must not
+ * silently fall through to ours. Only an ABSENT `apiKey` consults the
+ * environment; an explicitly empty one is a failure.
+ */
+export function resolveEngineKey(
+  engine: keyof typeof ENGINE_KEY_ENV_VAR,
+  apiKey: string | undefined
+): string | null {
+  if (apiKey !== undefined) {
+    const trimmed = apiKey.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  const fromEnv = process.env[ENGINE_KEY_ENV_VAR[engine]];
+  return fromEnv && fromEnv.trim().length > 0 ? fromEnv.trim() : null;
 }

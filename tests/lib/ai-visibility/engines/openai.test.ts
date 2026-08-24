@@ -147,6 +147,7 @@ describe("askOpenAi", () => {
     );
     expect(await askOpenAi("x", { fetchImpl: truncated as never })).toEqual({
       kind: "error",
+      code: "bad_response",
       message: expect.stringContaining("max_output_tokens"),
       // Generated all the way to the ceiling: the most expensive kind of call
       // there is, and it must not be recorded against the cap as free.
@@ -165,7 +166,8 @@ describe("askOpenAi", () => {
     );
     expect(await askOpenAi("x", { fetchImpl: failed as never })).toEqual({
       kind: "error",
-      message: expect.stringContaining("failed"),
+      code: "bad_response",
+      message: expect.stringContaining("response status failed"),
       costUsd: OPENAI_COST_PER_CALL_USD,
     });
   });
@@ -176,7 +178,8 @@ describe("askOpenAi", () => {
 
     expect(await askOpenAi("x", { fetchImpl: fetchImpl as never })).toEqual({
       kind: "error",
-      message: expect.stringContaining("OPENAI_API_KEY"),
+      code: "invalid_key",
+      message: expect.stringContaining("no key supplied"),
     });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
@@ -186,24 +189,37 @@ describe("askOpenAi", () => {
 
     const rateLimited = vi.fn(async () => new Response("slow down", { status: 429 }));
     const limited = await askOpenAi("x", { fetchImpl: rateLimited as never });
-    // Retryable: a rate limit is a moment, and the sample is asked again.
-    expect(limited).toEqual({ kind: "error", message: expect.stringContaining("429"), retryable: true });
+    // Retryable: a rate limit is a moment, and the sample is asked again. The
+    // STATUS is no longer in the message — the code carries that fact now, and
+    // the body ("slow down", or a 401's key fragment) never leaves the client.
+    expect(limited).toEqual({
+      kind: "error",
+      code: "rate_limited",
+      message: expect.stringContaining("rate-limiting"),
+      retryable: true,
+    });
 
     const broken = vi.fn(async () => new Response("boom", { status: 503 }));
     expect(await askOpenAi("x", { fetchImpl: broken as never })).toEqual({
       kind: "error",
-      message: expect.stringContaining("503"),
+      code: "provider_unavailable",
+      message: expect.stringContaining("Couldn't reach OpenAI"),
       retryable: true,
     });
 
     const thrower = vi.fn(async () => {
       throw new Error("socket hang up");
     });
-    expect(await askOpenAi("x", { fetchImpl: thrower as never })).toEqual({
+    const threw = await askOpenAi("x", { fetchImpl: thrower as never });
+    expect(threw).toEqual({
       kind: "error",
+      code: "provider_unavailable",
       retryable: true,
-      message: expect.stringContaining("socket hang up"),
+      message: expect.stringContaining("request never completed"),
     });
+    // A fetch error stringifies with the request attached, and that request
+    // carries an Authorization header. It goes to the log, not to the row.
+    expect("message" in threw && threw.message).not.toContain("socket hang up");
   });
 
   it("refuses a refusal and an empty answer", async () => {
@@ -217,6 +233,7 @@ describe("askOpenAi", () => {
     );
     expect(await askOpenAi("x", { fetchImpl: refusal as never })).toEqual({
       kind: "refused",
+      code: "refused",
       message: expect.any(String),
       // A refusal ran the model. Billed like any other call.
       costUsd: OPENAI_COST_PER_CALL_USD,
@@ -225,6 +242,7 @@ describe("askOpenAi", () => {
     const empty = vi.fn(async () => json({ model: "m", output: [{ type: "web_search_call" }] }));
     expect(await askOpenAi("x", { fetchImpl: empty as never })).toEqual({
       kind: "refused",
+      code: "refused",
       message: expect.any(String),
       costUsd: OPENAI_COST_PER_CALL_USD,
     });
@@ -295,23 +313,34 @@ describe("askOpenAi, the remaining error paths and extraction edges", () => {
 
     expect(await askOpenAi("x", { fetchImpl: fetchImpl as never })).toEqual({
       kind: "error",
-      message: expect.stringContaining("OPENAI_API_KEY"),
+      code: "invalid_key",
+      message: expect.stringContaining("no key supplied"),
     });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it("turns a 401 into an error carrying the status and the body", async () => {
+  it("turns a 401 into `invalid_key` and keeps the provider's body out of it", async () => {
+    // The 401 body OpenAI actually returns. It echoes the submitted key's
+    // prefix AND its last four characters — under BYOK that is a customer
+    // secret, and this string used to be stored on the sample row and rendered
+    // on the overview. The assertion that matters is the ABSENCE.
     vi.stubEnv("OPENAI_API_KEY", "sk-test");
     const unauthorized = vi.fn(
-      async () => new Response('{"error":{"message":"Incorrect API key"}}', { status: 401 })
+      async () =>
+        new Response(
+          '{"error":{"message":"Incorrect API key provided: sk-Eyftb****************************99vW. You can find your API key at https://platform.openai.com/account/api-keys.","type":"invalid_request_error","code":"invalid_api_key"}}',
+          { status: 401 }
+        )
     );
 
-    expect(await askOpenAi("x", { fetchImpl: unauthorized as never })).toEqual({
-      kind: "error",
-      message: expect.stringContaining("401"),
-    });
     const result = await askOpenAi("x", { fetchImpl: unauthorized as never });
-    expect("kind" in result && result.message).toContain("Incorrect API key");
+    expect(result).toEqual({ kind: "error", code: "invalid_key", message: expect.any(String) });
+    const message = "message" in result ? result.message : "";
+    expect(message).not.toContain("sk-Eyftb");
+    expect(message).not.toContain("99vW");
+    expect(message).not.toContain("Incorrect API key");
+    // Terminal, as it always was: a wrong key fails identically every time.
+    expect("retryable" in result && result.retryable).not.toBe(true);
   });
 
   it("turns an unparseable body into an error rather than an exception", async () => {
@@ -320,6 +349,7 @@ describe("askOpenAi, the remaining error paths and extraction edges", () => {
     const empty = vi.fn(async () => new Response("", { status: 200 }));
     expect(await askOpenAi("x", { fetchImpl: empty as never })).toEqual({
       kind: "error",
+      code: "bad_response",
       message: expect.stringMatching(/unparseable/i),
     });
 
@@ -327,6 +357,7 @@ describe("askOpenAi, the remaining error paths and extraction edges", () => {
     const html = vi.fn(async () => new Response("<html>502 Bad Gateway</html>", { status: 200 }));
     expect(await askOpenAi("x", { fetchImpl: html as never })).toEqual({
       kind: "error",
+      code: "bad_response",
       message: expect.stringMatching(/unparseable/i),
     });
   });

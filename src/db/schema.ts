@@ -510,12 +510,138 @@ export const aiVisibilitySettings = pgTable("ai_visibility_settings", {
     .notNull()
     .default(["openai", "gemini", "anthropic"]),
   samplesPerPrompt: smallint("samples_per_prompt").notNull().default(3),
+  /**
+   * Engine calls in flight at once for this tenant's runs.
+   *
+   * Per-tenant because the ceiling is per-ACCOUNT, and under BYOK the account
+   * is theirs, not ours. See `DEFAULT_CONCURRENCY` in
+   * `lib/ai-visibility/settings.ts` for the arithmetic behind the 3 — the short
+   * version is that OpenAI Tier 1 `gpt-4o` is 30,000 TPM, and 30,000 ÷ 12 is
+   * 2,500 tokens per request including output, which one grounded answer
+   * exceeds on its own.
+   *
+   * THE LITERAL IS DELIBERATE and it is the one copy of this number that is not
+   * an import. This file takes no runtime dependency on `src/lib` — drizzle-kit
+   * bundles it outside Next's path resolution, and the only other import here
+   * is type-only for exactly that reason. `tests/lib/ai-visibility/settings.test.ts`
+   * asserts this default equals `DEFAULT_CONCURRENCY`, so it cannot drift.
+   */
+  concurrency: smallint("concurrency").notNull().default(3),
   monthlyCapUsd: real("monthly_cap_usd").notNull().default(20),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 export type AiVisibilitySettings = typeof aiVisibilitySettings.$inferSelect;
+
+/**
+ * One tenant-supplied provider key per engine — BYOK (design
+ * `2026-08-24-byok-engine-keys-design.md`, "Data").
+ *
+ * WRITE-ONCE BY CONSTRUCTION. The ciphertext columns are readable only by the
+ * run path and the re-check action; nothing renders, returns or logs the
+ * plaintext, and `last4` is the ONLY fragment any surface may show. That puts
+ * us with Cloudflare Secrets Store ("can no longer be decrypted or accessed via
+ * API or on the dashboard") rather than with an eye-toggle that reveals a
+ * stored secret in a browser.
+ *
+ * Same encryption as `webflowConnections` — AES-256-GCM through
+ * `src/lib/credentials/encryption.ts`, per-record IV and auth tag, key material
+ * in the environment and never in this database. There is deliberately no
+ * second scheme.
+ *
+ * `enabled` is not `status`. A key can be verified and switched off ("Saved,
+ * not in use"): OpenAI, Google and Anthropic each show a secret exactly once,
+ * so Remove is not undoable by the person who did it, while off is one click.
+ */
+export const aiVisibilityEngineKeys = pgTable(
+  "ai_visibility_engine_keys",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    /** "openai" | "gemini" | "anthropic" — `EngineId`, text like every other engine column. */
+    engine: text("engine").notNull(),
+    keyCiphertext: text("key_ciphertext").notNull(),
+    keyIv: text("key_iv").notNull(),
+    keyAuthTag: text("key_auth_tag").notNull(),
+    /**
+     * The last four characters of the key, for display. The only fragment that
+     * ever leaves the server, and short enough to identify a key to the person
+     * who pasted it without confirming it to anyone else.
+     */
+    last4: text("last4").notNull(),
+    /**
+     * `verified` | `invalid_key` | `quota_exceeded` | `rate_limited` |
+     * `provider_unavailable` | `unreadable`.
+     *
+     * Five failure states, never four: `unreadable` — we could not DECRYPT the
+     * stored key — must not collapse into `invalid_key`. Zed shipped that bug
+     * and told users to replace keys that were fine.
+     */
+    status: text("status").notNull().default("verified"),
+    enabled: boolean("enabled").notNull().default(true),
+    verifiedAt: timestamp("verified_at", { withTimezone: true }),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    /** The `EngineFailureCode` behind the last failed call, whether or not it moved `status`. */
+    lastFailureCode: text("last_failure_code"),
+    lastFailureAt: timestamp("last_failure_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    // Provenance — the industry blank. No surveyed product shows who added a
+    // key, and a three-person team genuinely needs to know which colleague
+    // pasted it. SET NULL so removing a member does not take the key with them.
+    createdByUserId: uuid("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  },
+  (table) => [
+    // One key per engine per tenant. No pools, no fallback ordering, no
+    // aliases — every extra field is a field a marketer can get wrong.
+    uniqueIndex("ai_visibility_engine_keys_tenant_engine_unique").on(table.tenantId, table.engine),
+  ]
+);
+
+export type AiVisibilityEngineKey = typeof aiVisibilityEngineKeys.$inferSelect;
+
+/**
+ * The audit trail for engine keys: add / replace / remove / enable / disable,
+ * with the actor and the timestamp.
+ *
+ * Security checklist item 7. No surveyed product documents an audit log for an
+ * LLM credential; this is the cheapest place to be ahead of all of them, and
+ * the row survives the key it describes (`ON DELETE SET NULL` on the actor,
+ * nothing at all on the key — the events are the record of a key that is gone).
+ *
+ * Carries no ciphertext and no fragment of one. `last4` is repeated so a
+ * removed key is still identifiable in the trail.
+ */
+export const aiVisibilityEngineKeyEvents = pgTable(
+  "ai_visibility_engine_key_events",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    engine: text("engine").notNull(),
+    /** "added" | "replaced" | "removed" | "enabled" | "disabled" | "rechecked" | "auto_failed". */
+    action: text("action").notNull(),
+    last4: text("last4"),
+    /** The resulting `status`, so the trail explains why a run stopped sampling. */
+    status: text("status"),
+    // Null for `auto_failed`: a run flipping a key on a provider's verdict has
+    // no human actor, and inventing one would misreport the trail.
+    actorUserId: uuid("actor_user_id").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("ai_visibility_engine_key_events_tenant_idx").on(table.tenantId, table.createdAt),
+  ]
+);
+
+export type AiVisibilityEngineKeyEvent = typeof aiVisibilityEngineKeyEvents.$inferSelect;
 
 export const aiVisibilityPrompts = pgTable(
   "ai_visibility_prompts",

@@ -482,7 +482,7 @@ describe("runNowAction", () => {
       [{ ok: false, reason: "run_in_flight", runId: "run-0" }, "A run is already in progress."],
       [
         { ok: false, reason: "cap_reached", spentUsd: 19.4, estimateUsd: 3.1, capUsd: 20 },
-        "Monthly cap reached ($19.40 of $20.00) — raise it in Settings, or wait for next month.",
+        "Monthly engine budget reached ($19.40 of $20.00) — raise it in Settings, or wait for next month.",
       ],
     ] as const;
 

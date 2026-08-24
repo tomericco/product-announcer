@@ -5,7 +5,6 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -20,7 +19,6 @@ import { MIN_MONTHLY_CAP_USD, MAX_MONTHLY_CAP_USD } from "@/lib/ai-visibility/mo
 // Also dependency-free, and the same brand-check rule `capExceeded` charges and
 // the two Run-now buttons quote. This card had its own copy of it.
 import { callsPerEnginePerRun } from "@/lib/ai-visibility/planned-calls";
-import { ENGINE_LABEL, ENGINE_ORDER } from "../ai-visibility/engine-labels";
 import { saveAiVisibilityConfig } from "./actions";
 
 const CADENCE_OPTIONS = [
@@ -104,6 +102,7 @@ export function monthlyEstimateUsd({
  */
 export function AiVisibilityForm({
   defaults,
+  engines,
   promptCount,
   brandCheckCount = 0,
   costPerCall,
@@ -112,10 +111,17 @@ export function AiVisibilityForm({
   defaults: {
     cadence: "weekly" | "fortnightly" | "off";
     dayOfWeek: number;
-    engines: EngineId[];
     samplesPerPrompt: number;
     monthlyCapUsd: number;
   };
+  /**
+   * The engines that will actually run — `settings.engines` intersected with
+   * the engines holding an enabled, verified key.
+   *
+   * Read-only here. This form prices what will happen; the AI-engines card
+   * above decides what that is.
+   */
+  engines: EngineId[];
   promptCount: number;
   /** Of `promptCount`, how many are sampled once regardless of the setting. */
   brandCheckCount?: number;
@@ -124,11 +130,13 @@ export function AiVisibilityForm({
 }) {
   const [cadence, setCadence] = useState(defaults.cadence);
   const [dayOfWeek, setDayOfWeek] = useState(String(defaults.dayOfWeek));
-  const [engines, setEngines] = useState<EngineId[]>(defaults.engines);
   const [samples, setSamples] = useState(String(defaults.samplesPerPrompt));
   const [cap, setCap] = useState(String(defaults.monthlyCapUsd));
 
   const capUsd = Number(cap);
+  // The EFFECTIVE engines — the ones with an enabled, verified key — not
+  // everything the settings row names. A tenant with three engines on and one
+  // Gemini key is quoted Gemini's price, because Gemini is what will run.
   const estimate = monthlyEstimateUsd({
     promptCount,
     brandCheckCount,
@@ -137,14 +145,11 @@ export function AiVisibilityForm({
     cadence,
     costPerCall,
   });
-  const callsPerRunPerEngine = callsPerEnginePerRun(promptCount, brandCheckCount, Number(samples));
-
-  // The lib rejects an empty engines array ({ ok:false, error:"engines" }):
-  // an enabled feature with zero engines would look on and measure nothing,
-  // so "stop running" is spelled cadence "off" or the /company switch. This
-  // guard mirrors that rule client-side so the reason is readable BEFORE
-  // the submit, instead of surfacing as a failed save.
-  const noEngines = engines.length === 0;
+  // Zero effective engines is no longer a reason to block Save. It is an
+  // ordinary, fully-explained BYOK state — no keys connected yet — and it is
+  // fixed in the card above, not by editing a cadence. The old guard existed
+  // because an empty engines list was invalid input to a form that owned the
+  // switches; this form no longer owns them.
   const capIsANumber = cap.trim().length > 0 && Number.isFinite(capUsd);
   const overCap = capIsANumber && capUsd > 0 && estimate > capUsd;
   // The same bounds `saveAiVisibilitySettings` enforces. Without the upper one
@@ -209,45 +214,15 @@ export function AiVisibilityForm({
         </p>
       </div>
 
-      {/* A fieldset, not a bare <Label>: the label element had no control and
-          no labelable descendant, so a screen-reader user met four unrelated
-          switches with no group context. */}
-      <fieldset className="space-y-2">
-        <legend className="text-sm leading-none font-medium select-none">Engines</legend>
-        {ENGINE_ORDER.map((engine) => (
-          <div key={engine} className="space-y-0.5">
-            <Label>
-              <Switch
-                checked={engines.includes(engine)}
-                aria-label={ENGINE_LABEL[engine]}
-                onCheckedChange={(checked) =>
-                  setEngines((prev) =>
-                    checked ? [...prev, engine] : prev.filter((entry) => entry !== engine)
-                  )
-                }
-              />
-              {ENGINE_LABEL[engine]}
-            </Label>
-            {/* One branch, not two: every engine currently costs something
-                (Gemini's grounded calls included), so a "free within its
-                allowance" arm would be copy no tenant can ever see. */}
-            <p className="pl-11 text-xs text-muted-foreground">
-              {`About $${(costPerCall[engine] * callsPerRunPerEngine).toFixed(
-                2
-              )} per run at your current prompt set.`}
-            </p>
-          </div>
-        ))}
-        {/* Hidden inputs carry the array: a Switch is not a form control. */}
-        {engines.map((engine) => (
-          <input key={engine} type="hidden" name="engines" value={engine} />
-        ))}
-        {noEngines && (
-          <p className="text-xs text-destructive">
-            Turn on at least one engine — with none on, runs are scheduled and measure nothing.
-          </p>
-        )}
-      </fieldset>
+      {/* The Engines fieldset used to sit here. It moved into the AI-engines
+          card above, beside the key each engine depends on: "is ChatGPT part of
+          my measurement?" and "do we have a working ChatGPT key?" are the same
+          question, and two controls for one decision is a contradiction waiting
+          to be rendered. There is now exactly one place to enable an engine.
+
+          This form no longer posts `engines` at all — `saveAiVisibilitySettings`
+          treats an absent list as "leave it alone", so saving a cadence here
+          cannot undo a switch flipped up there. */}
 
       <div className="space-y-2">
         <Label>Samples per prompt</Label>
@@ -274,7 +249,7 @@ export function AiVisibilityForm({
       </div>
 
       <div className="space-y-2">
-        <Label htmlFor="ai-visibility-cap">Monthly cap</Label>
+        <Label htmlFor="ai-visibility-cap">Monthly engine budget</Label>
         <Input
           id="ai-visibility-cap"
           name="monthlyCapUsd"
@@ -289,32 +264,41 @@ export function AiVisibilityForm({
         <p className="text-xs text-muted-foreground tabular-nums">
           Spent this month ${spentUsd.toFixed(2)} of ${capIsANumber ? capUsd.toFixed(2) : "—"}
         </p>
-        {/* Said plainly rather than left to be discovered on a bill: a cap that
-            silently covers only part of what the feature spends is worse than
-            no cap. Reading the answers is a Claude call billed to `llm_usage`
-            alongside every other generation in the product. */}
+        {/* The cap did not stop being useful under BYOK; it stopped being ours.
+            "We stop spending your money" is MORE valuable than "we stop
+            spending ours" — no provider gives you a per-project stop-loss — but
+            it is also an estimate against an invoice we cannot see, and saying
+            so is the difference between a budget and a promise.
+
+            The second sentence is the one copy must not get wrong: BYOK moves
+            the ENGINE share of the cost and nothing else. The judge and prompt
+            generation still run on our Anthropic key. */}
         <p className="text-xs text-muted-foreground">
-          Covers engine calls — only engine calls count against this cap. Reading the answers costs a
-          little on top and is billed with the rest of your workspace&apos;s AI usage.
+          We stop running when estimated engine spend reaches this. The engines bill your own keys
+          directly — these are our estimates, and your provider&apos;s invoice is the record.
+        </p>
+        <p className="text-xs text-muted-foreground">
+          Reading and scoring the answers runs on Versional&apos;s own AI and is included in your plan.
+          Only the engine calls hit your keys.
         </p>
         <p className="text-xs text-muted-foreground" data-testid="ai-visibility-estimate">
           ≈ ${estimate.toFixed(2)}/month at current settings
         </p>
         {overCap && (
           <p className="text-xs text-destructive">
-            That estimate is above your ${capUsd.toFixed(2)} cap, so runs will pause part-way through the
+            That estimate is above your ${capUsd.toFixed(2)} budget, so runs will pause part-way through the
             month. Drop to 1 sample on the most expensive engine before dropping prompts.
           </p>
         )}
         {badCap && (
           <p className="text-xs text-destructive">
-            Set a cap between ${MIN_MONTHLY_CAP_USD} and ${MAX_MONTHLY_CAP_USD} — the feature will not
-            run without one, and will not accept a larger one.
+            Set a budget between ${MIN_MONTHLY_CAP_USD} and ${MAX_MONTHLY_CAP_USD} — the feature will
+            not run without one, and will not accept a larger one.
           </p>
         )}
       </div>
 
-      <Button type="submit" variant="outline" disabled={noEngines || badCap}>
+      <Button type="submit" variant="outline" disabled={badCap}>
         Save
       </Button>
     </form>

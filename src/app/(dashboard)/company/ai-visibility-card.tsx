@@ -8,6 +8,7 @@ import { buttonVariants } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
+import { scrubSecrets } from "@/lib/ai-visibility/scrub";
 import type { Source } from "@/db/schema";
 import { setAiVisibilityWatching } from "./actions";
 import { DATE_FORMAT, SourceStatusBadge } from "./source-status";
@@ -136,6 +137,11 @@ export function AiVisibilityCard({
                 NOT set `failing` for it — so keying the colour off the string
                 painted that sentence red beside a green Active badge, and
                 `--destructive` owns real failures only. */}
+            {/* Scrubbed on the way to the DOM. This source's `lastError` is
+                composed from the engines' per-sample errors, which are our own
+                sentences now — but every row written before that change holds
+                the provider's body verbatim, key fragment and all, and nothing
+                backfills them. `scrub.ts` explains the rest. */}
             {source.lastError && (
               <p
                 className={cn(
@@ -143,7 +149,7 @@ export function AiVisibilityCard({
                   source.status === "failing" ? "text-destructive" : "text-muted-foreground"
                 )}
               >
-                {source.lastError}
+                {scrubSecrets(source.lastError)}
               </p>
             )}
           </li>

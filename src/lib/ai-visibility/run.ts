@@ -13,12 +13,22 @@ import { computeAggregates } from "@/lib/ai-visibility/aggregate";
 import { capExceeded, capPausedMessage } from "@/lib/ai-visibility/cost";
 import { roundUsd } from "@/lib/ai-visibility/money";
 import { ENGINE_CLIENTS } from "@/lib/ai-visibility/engines";
+import { engineKeyFailureMessage } from "@/lib/ai-visibility/engines/failure";
+import {
+  effectiveEngines,
+  flipEngineKeyOnFailure,
+  isCredentialFailure,
+  loadEngineKeySecret,
+  markEngineKeyUsed,
+  type LoadedEngineKey,
+} from "@/lib/ai-visibility/engine-keys";
 import { extractSample, loadBrandTargets, type ExtractSampleDeps } from "@/lib/ai-visibility/extract";
 import { judgeRun } from "@/lib/ai-visibility/judge";
 import { emitSignals } from "@/lib/ai-visibility/signals";
 import { MAX_ACTIVE_PROMPTS, RUNNABLE_ORDER } from "@/lib/ai-visibility/prompts";
 import { mapWithConcurrency } from "@/lib/concurrency";
-import type { EngineClient, EngineId } from "@/lib/ai-visibility/types";
+import { scrubSecrets } from "@/lib/ai-visibility/scrub";
+import { ENGINE_IDS, type EngineClient, type EngineId } from "@/lib/ai-visibility/types";
 
 /** Injected wall clock. Read repeatedly, never captured once — slices budget on it. */
 export type Clock = () => Date;
@@ -35,6 +45,10 @@ export type RunDeps = {
 
 export type PlanRunRefusal =
   | { ok: false; reason: "disabled" }
+  // BYOK's hard gate: `settings.engines` intersected with the engines holding
+  // an enabled, verified key came back empty. Every tenant is in this state on
+  // the day the feature ships.
+  | { ok: false; reason: "no_engines" }
   | { ok: false; reason: "no_prompts" }
   | { ok: false; reason: "run_in_flight"; runId: string }
   | { ok: false; reason: "cap_reached"; spentUsd: number; estimateUsd: number; capUsd: number };
@@ -96,10 +110,48 @@ export const MAX_SAMPLE_ATTEMPTS = 3;
  */
 const SAMPLE_RETRY_BACKOFF_MS = [30_000, 60_000] as const;
 
+/**
+ * The whole ladder, summed — 90 seconds.
+ *
+ * Exported because `engines/failure.ts` needs the same number to decide when a
+ * provider's `retry-after` outlasts every attempt we would make, and it cannot
+ * import this module (this module imports the engines). It restates the figure
+ * as `RETRY_WINDOW_MS`; `tests/lib/ai-visibility/retry.test.ts` asserts the two
+ * are equal, so changing the ladder without changing the threshold fails.
+ */
+export const TOTAL_RETRY_WINDOW_MS = SAMPLE_RETRY_BACKOFF_MS.reduce((sum, ms) => sum + ms, 0);
+
 /** The wait after `attempts` retryable failures. Clamped, so a ladder change cannot index off the end. */
 export function sampleBackoffMs(attempts: number): number {
   const index = Math.min(Math.max(attempts, 1), SAMPLE_RETRY_BACKOFF_MS.length) - 1;
   return SAMPLE_RETRY_BACKOFF_MS[index];
+}
+
+/**
+ * How long this sample actually waits: what the provider asked for, or our
+ * ladder when it asked for nothing.
+ *
+ * The ladder is a guess made once, in this file, about three providers at once.
+ * `retry-after` is the provider telling us the answer for this key at this
+ * moment, and design Decision 9 requires honouring it — Anthropic warns that a
+ * nominal 60 RPM "might be enforced as 1 request per second", which no fixed
+ * ladder can know.
+ *
+ * Two clamps, and both are load-bearing:
+ *
+ *  - a FLOOR of one second, because a `retry-after: 0` (or a header parsed off a
+ *    skewed clock) would put the row straight back into the very next batch,
+ *    which is the hot-loop the `nextAttemptAt` filter exists to prevent;
+ *  - a CEILING of the whole ladder, so a wait this run cannot survive cannot be
+ *    stamped on a row that the sweep would then keep re-reading. A provider
+ *    asking for longer than that is returned TERMINAL upstream, in
+ *    `classifyHttpFailure` — still `rate_limited`, because the key is fine, but
+ *    with no `retryable` and so no next attempt to schedule. This clamp is the
+ *    backstop for a client that sets `retryAfterMs` without going through it.
+ */
+export function retryWaitMs(retryAfterMs: number | undefined, attempts: number): number {
+  if (retryAfterMs === undefined) return sampleBackoffMs(attempts);
+  return Math.min(TOTAL_RETRY_WINDOW_MS, Math.max(1_000, retryAfterMs));
 }
 
 /**
@@ -242,14 +294,18 @@ export async function planRun(
   const settings = await getAiVisibilitySettings(tenantId, database);
   if (!settings.enabled) return { ok: false, reason: "disabled" };
 
-  // Never empty, and deliberately not guarded here. `getAiVisibilitySettings`
-  // substitutes the full engine list for one that filters down to nothing, and
-  // `saveAiVisibilitySettings` refuses to write an empty list in the first
-  // place — so the only way to reach this line with zero engines is a
-  // hand-written row, and Phase A's ruling is that measuring all three beats
-  // measuring none. A refusal arm for it would be a state the UI must branch
-  // on and can never see.
-  const engines = settings.engines;
+  // The engines this tenant can actually be charged for: their chosen list
+  // intersected with the engines holding an enabled, verified key of their own.
+  //
+  // EMPTY IS A REAL REFUSAL NOW, and it is the common one on ship day: every
+  // existing tenant has three engines on and zero keys, and `effectiveEngines`
+  // deliberately does not fall back to all three the way `normalizeSettingsRow`
+  // does. Under the hard gate that fallback would plan a $6.20 run on OUR keys
+  // for a tenant who has connected nothing — the precise thing BYOK exists to
+  // stop. So it becomes a refusal the UI branches on and explains, rather than
+  // a state that cannot happen.
+  const engines = await effectiveEngines(tenantId, settings.engines, database);
+  if (engines.length === 0) return { ok: false, reason: "no_engines" };
 
   // At most `MAX_ACTIVE_PROMPTS`, in `RUNNABLE_ORDER` — see `runnablePrompts`.
   // Lowering the cap does not deactivate anything, so a tenant seeded under an
@@ -273,7 +329,10 @@ export async function planRun(
   const inFlightBefore = await findInFlightRun(database, tenantId);
   if (inFlightBefore) return { ok: false, reason: "run_in_flight", runId: inFlightBefore };
 
-  const cap = await capExceeded(tenantId, settings, now, database);
+  // `engines`, not `settings.engines`: the tenant is quoted for, and gated on,
+  // exactly what will run. A tenant with three engines on and one Gemini key
+  // runs Gemini and must be priced at Gemini.
+  const cap = await capExceeded(tenantId, { ...settings, engines }, now, database);
   if (cap.exceeded) {
     return {
       ok: false,
@@ -445,6 +504,34 @@ export async function runSlice(
   // resolves over the network once, not once per citation.
   const redirectCache = new Map<string, string>();
   const modelIds: Record<string, string> = { ...(run.modelIds ?? {}) };
+
+  /**
+   * The tenant's own key per engine, resolved ONCE per slice.
+   *
+   * This is where "no fallback to our keys" stops being a promise and becomes
+   * a property of the code: a client only reads `process.env` when its caller
+   * passes no `apiKey` at all, and this map guarantees the run never does. An
+   * engine whose key is missing, switched off, non-verified or undecryptable
+   * gets a failure written for its samples and is never asked.
+   *
+   * Once, not per sample: a 270-call run would otherwise decrypt the same three
+   * keys ninety times each. `keyFor` memoises the load, including its failures.
+   *
+   * The plaintext lives in this local map for the life of the slice and is
+   * handed only to the client it belongs to. It is never stored, never logged
+   * and never returned — `runSlice` resolves to counters.
+   */
+  const keyCache = new Map<string, LoadedEngineKey>();
+  async function keyFor(engine: string): Promise<LoadedEngineKey> {
+    const cached = keyCache.get(engine);
+    if (cached) return cached;
+    const loaded = (ENGINE_IDS as readonly string[]).includes(engine)
+      ? await loadEngineKeySecret(run.tenantId, engine as EngineId, { requireUsable: true }, database)
+      : ({ ok: false, reason: "missing" } as const);
+    keyCache.set(engine, loaded);
+    return loaded;
+  }
+
   let processed = 0;
   let budgetSpent = false;
   let pausedByCap = false;
@@ -475,7 +562,17 @@ export async function runSlice(
     // Re-checked between batches, not just before the run: an engine that costs
     // more than estimated must not be able to run past the cap for the rest of
     // the work list. `reached`, not `exceeded` — see cost.ts.
-    const cap = await capExceeded(run.tenantId, settings, opts.now(), database);
+    // `run.engines` — what this run was PLANNED with — rather than today's
+    // settings: a key removed mid-run must not retro-price the work already
+    // planned. Only `reached` is read here, and that is spend against the cap
+    // with no estimate in it, so this is about the sentence staying honest
+    // rather than about the gate changing.
+    const cap = await capExceeded(
+      run.tenantId,
+      { ...settings, engines: run.engines },
+      opts.now(),
+      database
+    );
     if (cap.reached) {
       pausedByCap = true;
       break;
@@ -541,7 +638,32 @@ export async function runSlice(
           return failed;
         }
 
-        const result = await client.ask(row.promptText);
+        // BYOK: the tenant's key, or no call at all.
+        //
+        // A run planned minutes ago can reach this line with a key that has
+        // since been removed, switched off or auto-failed by an earlier sample
+        // in this very slice — and, on the release that introduces this table,
+        // with no key row at all, because a run already in flight when the
+        // migration lands was planned under the old rules. Every one of those
+        // is a sample that must be RECORDED as a failure rather than paid for
+        // on our account, which is what the absence of an `else` branch here
+        // buys: there is no path from "no tenant key" to an engine call.
+        const loaded = await keyFor(row.engine);
+        if (!loaded.ok) {
+          await database
+            .update(aiVisibilitySamples)
+            .set({
+              status: "error",
+              error: scrubSecrets(engineKeyFailureMessage(row.engine, loaded.reason)),
+              nextAttemptAt: null,
+              askAttempts: row.askAttempts + 1,
+              askedAt: opts.now(),
+            })
+            .where(eq(aiVisibilitySamples.id, row.id));
+          return failed;
+        }
+
+        const result = await client.ask(row.promptText, { apiKey: loaded.key });
 
         // `EngineError` is the only branch carrying `kind`; `EngineAnswer` has none.
         if ("kind" in result) {
@@ -553,13 +675,29 @@ export async function runSlice(
           // direction of error the cap can survive.
           const knownCost = result.costUsd ?? 0;
 
-          // A retryable failure — a 429, a 5xx, a timeout — is a moment, not a
-          // verdict. Written back `pending` with the attempt counted and a
-          // backoff stamped, so the row keeps its place in the work list
-          // instead of costing the engine a data point outright. `error` is
-          // still stored on the way past: if this turns out to be the last
-          // attempt, the message a human reads is the last thing that went
+          // A retryable failure — a THROUGHPUT 429, a 5xx, a timeout — is a
+          // moment, not a verdict. Written back `pending` with the attempt
+          // counted and a backoff stamped, so the row keeps its place in the
+          // work list instead of costing the engine a data point outright.
+          // `error` is still stored on the way past: if this turns out to be the
+          // last attempt, the message a human reads is the last thing that went
           // wrong, exactly as it was before.
+          //
+          // A SPEND-CAP 429 is not one of those. It arrives with the same status
+          // as a throughput limit and `classifyHttpFailure` tells them apart by
+          // the marker the provider puts in the body, so it lands here as
+          // `quota_exceeded` with no `retryable` — terminal on the first
+          // attempt. Retrying it would spend three calls and 90 seconds of a
+          // customer's budget to fail identically, on a cap that by definition
+          // cannot clear inside the window.
+          //
+          // A throughput 429 asking for a two-minute wait is terminal for the
+          // same reason and is NOT that: it stays `rate_limited`, so the key row
+          // is left alone. Which of the two this is decides whether the tenant
+          // keeps their engine — see `isCredentialFailure`.
+          //
+          // The WAIT is the provider's when the provider said, and ours only
+          // when it did not — see `retryWaitMs`.
           const attempts = row.askAttempts + 1;
           const retrying = result.retryable === true && attempts < MAX_SAMPLE_ATTEMPTS;
 
@@ -567,7 +705,13 @@ export async function runSlice(
             .update(aiVisibilitySamples)
             .set({
               status: retrying ? "pending" : result.kind === "refused" ? "refused" : "error",
-              error: result.message,
+              // Scrubbed on the way into the column even though `engineFailure`
+              // already composed this from our own words. This is the last gate
+              // before the string becomes durable — it is read back into
+              // `sources.lastError` and rendered on two pages — and the clients
+              // are injectable, so "the client promised" is not a property this
+              // write can rely on. See `scrub.ts`.
+              error: scrubSecrets(result.message),
               // ACCUMULATED, not assigned. Every attempt the provider billed is
               // real money, and `reconcileRunCounters` re-derives the run's
               // total from these rows at finalize — an assignment here would
@@ -576,11 +720,47 @@ export async function runSlice(
               costUsd: sql`${aiVisibilitySamples.costUsd} + ${knownCost}`,
               askAttempts: attempts,
               nextAttemptAt: retrying
-                ? new Date(opts.now().getTime() + sampleBackoffMs(attempts))
+                ? new Date(opts.now().getTime() + retryWaitMs(result.retryAfterMs, attempts))
                 : null,
               askedAt: opts.now(),
             })
             .where(eq(aiVisibilitySamples.id, row.id));
+
+          // The provider's verdict on the KEY, written back to the key row.
+          //
+          // Only `invalid_key` and `quota_exceeded` move the row's status —
+          // see `isCredentialFailure`. Both are terminal for the credential,
+          // and a non-verified status is what takes the engine out of
+          // `effectiveEngines`, so the rest of THIS run stops asking it (the
+          // key cache below is invalidated so the very next batch sees it) and
+          // the next run refuses to plan it at all.
+          //
+          // Deliberately NOT `enabled: false`. That switch is the tenant's, it
+          // says "Saved, not in use", and a provider blip must not leave someone
+          // looking at a control reporting a choice they did not make. The
+          // remedy for a spend cap is a payment and a Re-check, which needs the
+          // row present and switched on to mean "resume" rather than "reconnect".
+          if (!retrying) {
+            await flipEngineKeyOnFailure(
+              {
+                tenantId: run.tenantId,
+                // Narrowed by the key resolution above: `keyFor` only returns
+                // `ok` for an id in `ENGINE_IDS`, so reaching this line means
+                // the column held a real engine.
+                engine: row.engine as EngineId,
+                code: result.code,
+                // Which SECRET this verdict is about. Minutes can pass between
+                // reading the key and writing what the provider thought of it,
+                // and an owner watching a run fail may well paste a working key
+                // inside that window. The write applies only while the row
+                // still holds the one that failed.
+                verifiedAt: loaded.verifiedAt,
+              },
+              opts.now(),
+              database
+            );
+            if (isCredentialFailure(result.code)) keyCache.delete(row.engine);
+          }
           return { costUsd: knownCost, engine: row.engine, modelId: null };
         }
 
@@ -624,6 +804,11 @@ export async function runSlice(
           console.error(`[ai-visibility] extraction failed for sample ${row.id}:`, error);
         }
 
+        // "last used" on the key row — the Cloudflare column the design copies,
+        // and the thing that tells a tenant a key is being spent rather than
+        // merely stored. Fire-and-forget: a failed stamp is not a failed sample.
+        await markEngineKeyUsed(run.tenantId, row.engine as EngineId, opts.now(), database);
+
         return { costUsd: result.costUsd, engine: row.engine, modelId: result.modelId };
       } catch (error) {
         // Per-row try/catch: one hostile or broken engine response must not cost
@@ -637,7 +822,15 @@ export async function runSlice(
         try {
           await database
             .update(aiVisibilitySamples)
-            .set({ status: "error", error: String(error), nextAttemptAt: null, askedAt: opts.now() })
+            // A throw escaping `ask()` is our bug, but the exception it threw
+            // is not necessarily ours: a fetch or SDK error stringifies to
+            // include the request that failed, headers and all. Scrubbed.
+            .set({
+              status: "error",
+              error: scrubSecrets(String(error)),
+              nextAttemptAt: null,
+              askedAt: opts.now(),
+            })
             .where(eq(aiVisibilitySamples.id, row.id));
         } catch {
           // The row stays pending and is retried next slice. Nothing better to do.
@@ -710,7 +903,17 @@ export async function runSlice(
       console.error(`[ai-visibility] could not aggregate cap-paused run ${runId}:`, error);
     }
 
-    const cap = await capExceeded(run.tenantId, settings, opts.now(), database);
+    // `run.engines` — what this run was PLANNED with — rather than today's
+    // settings: a key removed mid-run must not retro-price the work already
+    // planned. Only `reached` is read here, and that is spend against the cap
+    // with no estimate in it, so this is about the sentence staying honest
+    // rather than about the gate changing.
+    const cap = await capExceeded(
+      run.tenantId,
+      { ...settings, engines: run.engines },
+      opts.now(),
+      database
+    );
     const message = capPausedMessage(cap.spentUsd, cap.capUsd);
     await database
       .update(aiVisibilityRuns)
@@ -994,7 +1197,10 @@ export async function finalizeRun(
 
     return { status: "complete", judged: judged.judged, signals: emitted.written };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    // Scrubbed: finalize calls the judge, which calls a provider SDK, whose
+    // errors stringify with the failing request attached. This message is
+    // written to `ai_visibility_runs.error` and read back onto the source row.
+    const message = scrubSecrets(error instanceof Error ? error.message : String(error));
     try {
       await database
         .update(aiVisibilityRuns)
@@ -1362,7 +1568,7 @@ export async function cancelRun(
  * The tenant's most recent run, whatever its status.
  *
  * Any status on purpose: the overview header has to render "Running… 41 / 270
- * calls" and "Paused — monthly cap reached" off this row, and filtering to
+ * calls" and "Paused — monthly engine budget reached" off this row, and filtering to
  * `complete` would make both states invisible on the one page that exists to
  * show them.
  */

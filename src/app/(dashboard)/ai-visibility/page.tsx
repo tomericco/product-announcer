@@ -19,6 +19,7 @@ import { requireSession } from "@/lib/workspace/session";
 import { getOrCreateCompanyProfile } from "@/lib/workspace/company-profile";
 import { listCompetitors } from "@/lib/workspace/competitors";
 import { getAiVisibilitySettings } from "@/lib/ai-visibility/settings";
+import { effectiveEngines } from "@/lib/ai-visibility/engine-keys";
 import { listPrompts, runnablePrompts } from "@/lib/ai-visibility/prompts";
 import { plannedCallsForPrompts } from "@/lib/ai-visibility/planned-calls";
 import { latestRun, runIsStalled } from "@/lib/ai-visibility/run";
@@ -26,11 +27,13 @@ import {
   brandMentionTotal,
   engineHistory,
   engineMetrics,
+  measuredEngines,
   promptMatrix,
   runEngineHealth,
 } from "@/lib/ai-visibility/metrics";
 import { citedDomains, everSignalledDomains } from "@/lib/ai-visibility/cited-domains";
 import { capExceeded, capPausedMessage } from "@/lib/ai-visibility/cost";
+import { scrubSecrets } from "@/lib/ai-visibility/scrub";
 import { listSignals } from "@/lib/signals/query";
 import type { EngineId, WindowCounts } from "@/lib/ai-visibility/types";
 import { DATE_FORMAT } from "../company/source-status";
@@ -122,6 +125,67 @@ export default async function AiVisibilityPage() {
     );
   }
 
+  // ---- The BYOK gate -------------------------------------------------------
+  //
+  // `effectiveEngines` is what a run will actually sample, and it does not fall
+  // back to all three when the intersection is empty. On ship day it is empty
+  // for EVERY existing tenant: three engines named on the settings row and zero
+  // keys. So this page must never render as though a run were possible.
+  //
+  // But "cannot run" and "has nothing to show" are two different states, and
+  // the page used to collapse them — it returned the empty state below before
+  // loading any metrics, so a tenant who removed their last key, or whose only
+  // key auto-failed, or who paused ChatGPT for a month (Decision 5's own
+  // example) lost the tiles, the trend, the matrix and the cited domains for
+  // measurements they had already paid for. The copy said "Anything already
+  // measured is kept" while offering no route to any of it.
+  //
+  // So: what will RUN and what has been MEASURED are read separately, and the
+  // page shows the second while explaining the first.
+  const [runEngines, measured] = await Promise.all([
+    effectiveEngines(tenantId, settings.engines),
+    measuredEngines(tenantId),
+  ]);
+  // Nothing will run, and the tenant is not being told to wait for something —
+  // this is the state the whole page is about, and every section below reads it.
+  const runBlocked = runEngines.length === 0;
+
+  // ---- State: No engines connected, and nothing measured either ------------
+  //
+  // The genuinely empty case: ship day, and any tenant who has never had a key.
+  // There is no history to fall through to, so the one thing worth saying is
+  // what is missing.
+  //
+  // Placed after the Off state and before the prompt states on purpose. Without
+  // keys, approving prompts buys nothing, so pointing someone at the prompt
+  // review first would be sending them down a path that dead-ends.
+  if (runBlocked && measured.length === 0) {
+    return (
+      <div className="space-y-4">
+        <Header />
+        <EmptyState>
+          <EmptyStateIcon>
+            <ScanSearch />
+          </EmptyStateIcon>
+          <EmptyStateTitle>No AI engines connected</EmptyStateTitle>
+          <EmptyStateDescription>
+            Engine answers are collected with your own provider keys, billed to your accounts rather
+            than ours, so nothing runs until at least one key is connected. Anything already measured
+            is kept.
+          </EmptyStateDescription>
+          <EmptyStateActions>
+            {/* A styled Link, not `Button render={<Link/>}`: Base UI's Button
+                stamps role="button" on whatever it renders, and this only
+                navigates. */}
+            <Link href="/settings#ai-engines" className={buttonVariants()}>
+              Connect an engine
+            </Link>
+          </EmptyStateActions>
+        </EmptyState>
+      </div>
+    );
+  }
+
   const prompts = await listPrompts(tenantId, { status: ["proposed", "active", "paused"] });
   const activePrompts = prompts.filter((prompt) => prompt.status === "active");
   const proposals = prompts.filter((prompt) => prompt.status === "proposed");
@@ -169,7 +233,11 @@ export default async function AiVisibilityPage() {
     capExceeded(
       tenantId,
       {
-        engines: settings.engines,
+        // The engines that will actually run, so the gate, the estimate and the
+        // tiles are all reading the same list. Quoting a three-engine price to
+        // a tenant with one key would be wrong on the one screen whose job is
+        // to be checkable about money.
+        engines: runEngines,
         samplesPerPrompt: settings.samplesPerPrompt,
         monthlyCapUsd: settings.monthlyCapUsd,
       },
@@ -224,7 +292,7 @@ export default async function AiVisibilityPage() {
   const runnable = runnablePrompts(activePrompts);
 
   const plannedCalls = plannedCallsForPrompts(runnable, {
-    engineCount: settings.engines.length,
+    engineCount: runEngines.length,
     samplesPerPrompt: settings.samplesPerPrompt,
   });
 
@@ -242,21 +310,38 @@ export default async function AiVisibilityPage() {
       ? `Stalled at ${inFlight.completedCalls} / ${inFlight.plannedCalls} calls — resume to finish it`
       : `Running… ${inFlight.completedCalls} / ${inFlight.plannedCalls} calls`
     : null;
-  const runDisabledReason = runningLine ?? capBlocking;
+  // Nothing to ask with. `runNowAction` refuses this with `no_engines` anyway;
+  // this is the visible reason, stated before the click rather than after it,
+  // and it outranks the cap because a key is the thing missing first.
+  const blockedReason = runBlocked
+    ? "No engine key is connected, so a run has nothing to ask with."
+    : null;
+  const runDisabledReason = runningLine ?? blockedReason ?? capBlocking;
 
   // One estimate object for both places a run can be started from — the header
   // and the No-run-yet empty state — so the two can never quote different
   // money for the same click.
   const runEstimate: RunEstimate = {
     prompts: runnable.length,
-    engines: settings.engines.length,
+    engines: runEngines.length,
     samples: settings.samplesPerPrompt,
     calls: plannedCalls,
     // The gate's own number, not a second computation of it.
     usd: cap.estimateUsd,
   };
 
-  const shownEngines = ENGINE_ORDER.filter((engine) => settings.engines.includes(engine));
+  // The engines with a key, in display order — not everything the settings row
+  // names. An engine nobody is paying for gets no tile, no series and no matrix
+  // column: a permanent "Collecting baseline" for something that will never
+  // collect anything reads as broken rather than as unused.
+  //
+  // Unless nothing is keyed at all, in which case that rule would hide the
+  // whole page. A tenant who cannot run is shown what they already have —
+  // that is the difference between a paused measurement and a deleted one, and
+  // the banner above the tiles is where the pause is explained.
+  const shownEngines = ENGINE_ORDER.filter((engine) =>
+    (runBlocked ? measured : runEngines).includes(engine)
+  );
 
   const [engineCuts, matrix, domains, competitors, health, tenantRows] = await Promise.all([
     engineMetrics(tenantId),
@@ -357,10 +442,16 @@ export default async function AiVisibilityPage() {
       latest && previous && latest.modelId && latest.modelId !== previous.modelId ? latest.modelId : null;
 
     const engineHealth = key === "all" ? undefined : healthByEngine.get(key);
+    // `lastError` is now composed by the engine clients from a closed set of
+    // codes and our own sentences, so it carries no provider body text —
+    // `scrubSecrets` here is for the rows written BEFORE that was true. Every
+    // sample stored up to this change holds `openai 401: Incorrect API key
+    // provided: sk-…99vW`, and those rows are still what the last-run tiles
+    // read. Nothing backfills them; this is what keeps them off the screen.
     const failureNote =
       engineHealth && engineHealth.erroredPrompts > 0
         ? `${ENGINE_LABEL[engineHealth.engine]} failed on ${engineHealth.erroredPrompts} prompts${
-            engineHealth.lastError ? ` — ${engineHealth.lastError}` : ""
+            engineHealth.lastError ? ` — ${scrubSecrets(engineHealth.lastError)}` : ""
           }`
         : null;
 
@@ -617,6 +708,35 @@ export default async function AiVisibilityPage() {
           />
         </div>
       </div>
+
+      {/* ---- The run-blocked banner ----------------------------------------
+          Above everything, and NOT instead of it. The numbers below are real
+          and were paid for; what has stopped is the collecting of new ones, so
+          the banner says which of those two it is and dates the last run in the
+          header line right above it.
+
+          Not an EmptyState: nothing here is empty. A Card in the destructive
+          border, carrying the one control that fixes it. */}
+      {runBlocked && (
+        <Card className="border-destructive">
+          <CardHeader>
+            <CardTitle>Measuring is paused — no engine key connected</CardTitle>
+            <CardDescription>
+              Engine answers are collected with your own provider keys, billed to your accounts rather
+              than ours, so nothing new is collected until at least one key is connected. Everything
+              below was measured while a key was connected, and it is kept.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {/* A styled Link, not `Button render={<Link/>}`: Base UI's Button
+                stamps role="button" on whatever it renders, and this only
+                navigates. */}
+            <Link href="/settings#ai-engines" className={buttonVariants()}>
+              Connect an engine
+            </Link>
+          </CardContent>
+        </Card>
+      )}
 
       {lastRun === null ? (
         // ---- State: No run yet ----------------------------------------------

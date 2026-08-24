@@ -62,6 +62,38 @@ export type EngineAnswer = {
 
 export type EngineError = {
   kind: "error" | "refused";
+  /**
+   * WHICH of the six things went wrong — the closed set in
+   * `engines/failure.ts`.
+   *
+   * Required, not optional, and that is the whole point: the field exists so
+   * that a client cannot return a failure without having decided what kind it
+   * was, and so that everything downstream can branch on a value we control
+   * instead of on a provider's prose.
+   *
+   * Typed as a plain string union here rather than imported from
+   * `engines/failure.ts` because this module imports nothing — `src/db/schema.ts`
+   * reads two types out of it, so any import here becomes a schema dependency.
+   * `EngineFailureCode` is declared over the same six literals and the two are
+   * asserted identical in `tests/lib/ai-visibility/engines/failure.test.ts`.
+   */
+  code:
+    | "invalid_key"
+    | "quota_exceeded"
+    | "rate_limited"
+    | "provider_unavailable"
+    | "bad_response"
+    | "refused";
+  /**
+   * A sentence WE wrote, safe to store and to render.
+   *
+   * NEVER provider body text. A provider's own error message quotes the
+   * submitted credential back at you — an OpenAI 401 carries the key's prefix
+   * and its last four characters — and this string is written to
+   * `ai_visibility_samples.error`, summarised into `sources.lastError`, and
+   * interpolated into the overview page. Build it with `engineFailure()`, which
+   * composes it from the code and scrubs the result.
+   */
   message: string;
   /**
    * What the failed call still cost, when the provider gave us enough to say.
@@ -86,16 +118,29 @@ export type EngineError = {
    * everything else; retrying a terminal failure spends real money to fail
    * identically, which is worse than the missing sample.
    *
+   * It is a SEPARATE fact from `code`, not a function of it. `code` says what
+   * went wrong and whose fault it is; this says whether another attempt inside
+   * this run is worth paying for. A `rate_limited` failure is terminal when the
+   * provider asks for a longer wait than the whole retry ladder — and it is
+   * still `rate_limited`, because the account and the key are both fine.
+   * Nothing may infer a credential verdict from a `retryable: false`.
+   *
    * RETRYABLE — the call never produced an answer and the reason is about the
    * moment rather than the request:
-   *   - HTTP 429 (rate limited)
-   *   - any 5xx (provider fault)
-   *   - a transport failure, a dropped connection, or the 60s abort timeout
+   *   - `rate_limited`: a throughput 429 the run can still wait out
+   *   - `provider_unavailable`: any 5xx, a transport failure, a dropped
+   *     connection, or the 60s abort timeout
    *
-   * TERMINAL (leave undefined) — asking again produces the same outcome:
-   *   - 4xx other than 429: 401 (bad or out-of-funds key), 404 (bad model id),
-   *     400 (a request we built wrong)
-   *   - a missing API key
+   * TERMINAL (leave undefined) — this run gains nothing by asking again:
+   *   - `quota_exceeded`: a spend-cap 429 that NAMED itself, or an account with
+   *     no credit. Anthropic's carries no `retry-after` and identifies itself by
+   *     error code; OpenAI's says `insufficient_quota`. This code is a verdict
+   *     on the credential — it pauses the key — so only a published marker
+   *     reaches it
+   *   - `rate_limited` with a `retry-after` longer than the ladder: the wait
+   *     outlasts every attempt this run would make, and the key is untouched
+   *   - `invalid_key`: 401/403, a missing key, or a body naming the key
+   *   - `bad_response`: 404 (bad model id), 400 (a request we built wrong)
    *   - `kind: "refused"` — the model read the prompt and declined; that IS the
    *     measurement, and it is billed
    *   - a truncated answer (`incomplete_details`, `MAX_TOKENS`, `max_tokens`,
@@ -105,13 +150,46 @@ export type EngineError = {
    *     mean OUR reader is wrong about the shape, which no retry fixes
    */
   retryable?: boolean;
+  /**
+   * How long the PROVIDER asked us to wait before the next attempt, in ms.
+   *
+   * Set only alongside `retryable`, and only when the provider actually said —
+   * a `retry-after` header, or Google's `RetryInfo.retryDelay`. When it is
+   * absent `runSlice` uses its own ladder, which is a guess; when it is present
+   * the provider's number wins, because Anthropic warns that a nominal 60 RPM
+   * "might be enforced as 1 request per second" and no fixed ladder of ours can
+   * know that.
+   *
+   * Never longer than the whole ladder: a provider asking for more than that
+   * has said the run cannot wait it out, so the failure comes back terminal
+   * (`retryable` unset) and this field is dropped with the attempt it would
+   * have scheduled. The CODE is unchanged by that — a slow rate limit is still
+   * a rate limit.
+   */
+  retryAfterMs?: number;
 };
 
 export type EngineClient = {
   id: EngineId;
   /** e.g. "GPT-5.x API + web search". Carries "API" on purpose — see the spec's trust cues. */
   label: string;
-  ask(prompt: string, deps?: { fetchImpl?: typeof fetch }): Promise<EngineAnswer | EngineError>;
+  /**
+   * `apiKey` is the TENANT's key — BYOK, design "Data": "`askOpenAI`/`askGemini`/
+   * `askAnthropic` take the key as an argument instead of reading
+   * `process.env`. Env keys remain for local development only."
+   *
+   * Optional in the TYPE and mandatory in PRACTICE on the run path: `runSlice`
+   * resolves a key per engine before it asks anything, and an engine with no
+   * usable stored key has its samples failed rather than asked. Leaving it out
+   * falls back to the local-dev env var (see `resolveEngineKey`), which is what
+   * keeps a client callable from a script; passing an empty string does not
+   * fall back, so a caller that resolved a key and got nothing cannot silently
+   * spend ours.
+   */
+  ask(
+    prompt: string,
+    deps?: { fetchImpl?: typeof fetch; apiKey?: string }
+  ): Promise<EngineAnswer | EngineError>;
 };
 
 export type BrandHit = { brandId: string; name: string; isTenant: boolean };

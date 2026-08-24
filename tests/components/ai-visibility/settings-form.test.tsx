@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, act, cleanup, within } from "@testing-library/react";
+import { render, screen, fireEvent, act, cleanup } from "@testing-library/react";
 import type { EngineId } from "../../../src/lib/ai-visibility/types";
 import {
   AiVisibilityForm,
@@ -23,14 +23,30 @@ const DEFAULTS = {
   enabled: true,
   cadence: "weekly" as const,
   dayOfWeek: 1,
-  engines: ["openai", "gemini", "anthropic"] as EngineId[],
   samplesPerPrompt: 3 as const,
   monthlyCapUsd: 20,
 };
 
+/**
+ * `engines` is a PROP now, not form state.
+ *
+ * The switches moved into the AI-engines card beside the key each engine
+ * depends on (design Decision 2), so what this form receives is the EFFECTIVE
+ * list — settings.engines intersected with the engines holding a verified key —
+ * and its only use for it is pricing.
+ */
+const ENGINES: EngineId[] = ["openai", "gemini", "anthropic"];
+
 function form(props: Partial<Parameters<typeof AiVisibilityForm>[0]> = {}) {
   return render(
-    <AiVisibilityForm defaults={DEFAULTS} promptCount={28} costPerCall={COST} spentUsd={4.1} {...props} />
+    <AiVisibilityForm
+      defaults={DEFAULTS}
+      engines={ENGINES}
+      promptCount={28}
+      costPerCall={COST}
+      spentUsd={4.1}
+      {...props}
+    />
   );
 }
 
@@ -133,25 +149,27 @@ describe("monthlyEstimateUsd", () => {
 });
 
 describe("AiVisibilityForm", () => {
-  it("recomputes the estimate as engines are switched off", async () => {
-    form();
-    const before = screen.getByTestId("ai-visibility-estimate").textContent;
+  it("prices only the engines that will actually run", () => {
+    // The design's worked example: a tenant with three engines named on the
+    // settings row and one Gemini key runs Gemini and is quoted Gemini's price.
+    // The estimate reads the EFFECTIVE list, so a card quoting three engines'
+    // worth of spend to that tenant is the failure this pins.
+    form({ engines: ["gemini"] });
+    const one = screen.getByTestId("ai-visibility-estimate").textContent;
 
-    await act(async () => {
-      fireEvent.click(screen.getByRole("switch", { name: /Gemini API, grounded/ }));
-      fireEvent.click(screen.getByRole("switch", { name: /Claude API \+ web search/ }));
-    });
-
-    expect(screen.getByTestId("ai-visibility-estimate").textContent).not.toBe(before);
+    cleanup();
+    form({ engines: ENGINES });
+    expect(screen.getByTestId("ai-visibility-estimate").textContent).not.toBe(one);
   });
 
-  it("groups the three engine switches under one named group", () => {
+  it("renders no engine switches at all — there is exactly one place to enable an engine", () => {
+    // Decision 2. "Is ChatGPT part of my measurement?" and "do we have a
+    // working ChatGPT key?" are the same question, and two controls for one
+    // decision is a contradiction waiting to be rendered. The switches live in
+    // the AI-engines card now, beside the key each depends on.
     form();
-    // They were three bare switches under a <Label> with no control and no
-    // labelable descendant, so a screen-reader user met "ChatGPT API + web
-    // search" with nothing saying it was one of a set of engines.
-    const engines = screen.getByRole("group", { name: "Engines" });
-    expect(within(engines).getAllByRole("switch")).toHaveLength(3);
+    expect(screen.queryAllByRole("switch")).toHaveLength(0);
+    expect(screen.queryByRole("group", { name: "Engines" })).not.toBeInTheDocument();
   });
 
   it("shows spend against the cap in dollars, never credits", () => {
@@ -159,11 +177,24 @@ describe("AiVisibilityForm", () => {
     expect(screen.getByText("Spent this month $4.10 of $20.00")).toBeInTheDocument();
   });
 
-  it("says plainly that the cap does not cover the judge", () => {
-    // Judge tokens bill to `llm_usage` and are outside this cap — a cap that
-    // silently does not cover everything is worse than no cap.
+  it("says plainly that the budget does not cover the judge", () => {
+    // BYOK moves the ENGINE share of the cost and nothing else: the judge and
+    // prompt generation still run on our Anthropic key. Copy that let a reader
+    // infer "my keys pay for all of it" would be contradicted by their next
+    // invoice — from us.
     form();
-    expect(screen.getByText(/only engine calls count/i)).toBeInTheDocument();
+    expect(screen.getByText(/Only the engine calls hit your keys/i)).toBeInTheDocument();
+  });
+
+  it("frames the budget as their money, and the estimate as an estimate", () => {
+    // The cap did not stop being useful under BYOK; it stopped being ours. It
+    // is also an estimate against an invoice we cannot see, and saying so is
+    // the difference between a budget and a promise.
+    form();
+    expect(screen.getByText("Monthly engine budget")).toBeInTheDocument();
+    expect(
+      screen.getByText(/your provider.s invoice is the record/i)
+    ).toBeInTheDocument();
   });
 
   it("recommends 3 samples whether or not one is already chosen", () => {
@@ -177,15 +208,16 @@ describe("AiVisibilityForm", () => {
     expect(screen.getByText(/3 recommended — single samples are noisy/)).toBeInTheDocument();
   });
 
-  it("refuses to save with every engine off, since that silently measures nothing", async () => {
-    // `saveAiVisibilitySettings` rejects an empty engines array with
-    // { ok:false, error:"engines" } — an enabled feature with zero engines
-    // would look on and measure nothing, so "stop running" is spelled
-    // cadence "off" or the /company switch. This client-side guard exists so
-    // the human reads WHY before submitting, instead of a failed save.
-    form({ defaults: { ...DEFAULTS, engines: [] } });
-    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
-    expect(screen.getByText(/Turn on at least one engine/)).toBeInTheDocument();
+  it("still saves with no effective engines — that is a BYOK state, not invalid input", async () => {
+    // The old guard blocked Save on an empty engines list, because the list was
+    // this form's own input and an enabled feature with none would plan zero
+    // calls behind a green badge. Under BYOK zero engines is the ORDINARY
+    // opening state — every tenant has it on ship day — it is fixed in the
+    // AI-engines card, and it has its own empty state on /ai-visibility.
+    // Blocking a cadence save over it would strand someone in a card that
+    // cannot fix the thing it is complaining about.
+    form({ engines: [] });
+    expect(screen.getByRole("button", { name: "Save" })).not.toBeDisabled();
   });
 
   it("refuses a cap the server would reject, instead of letting it throw an error page", () => {
@@ -204,7 +236,7 @@ describe("AiVisibilityForm", () => {
 
   it("says the estimate exceeds the cap before the save, not after the run is paused", async () => {
     form({ promptCount: 30, defaults: { ...DEFAULTS, monthlyCapUsd: 1 } });
-    expect(screen.getByText(/above your \$1\.00 cap/)).toBeInTheDocument();
+    expect(screen.getByText(/above your \$1\.00 budget/)).toBeInTheDocument();
   });
 
   /**
@@ -238,7 +270,7 @@ describe("AiVisibilityForm", () => {
 
     it("refuses an emptied field rather than reading it as zero", () => {
       form();
-      const input = screen.getByLabelText("Monthly cap");
+      const input = screen.getByLabelText("Monthly engine budget");
       act(() => {
         fireEvent.change(input, { target: { value: "" } });
       });
@@ -252,7 +284,7 @@ describe("AiVisibilityForm", () => {
 
     it("refuses a value that is not a number at all", () => {
       form();
-      const input = screen.getByLabelText("Monthly cap");
+      const input = screen.getByLabelText("Monthly engine budget");
       act(() => {
         fireEvent.change(input, { target: { value: "abc" } });
       });
@@ -265,7 +297,7 @@ describe("AiVisibilityForm", () => {
       expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
 
       act(() => {
-        fireEvent.change(screen.getByLabelText("Monthly cap"), { target: { value: "50" } });
+        fireEvent.change(screen.getByLabelText("Monthly engine budget"), { target: { value: "50" } });
       });
 
       expect(screen.getByRole("button", { name: "Save" })).not.toBeDisabled();
@@ -299,17 +331,14 @@ describe("AiVisibilityForm", () => {
     expect(posted.get("dayOfWeek")).toBe("2");
     expect(posted.get("samplesPerPrompt")).toBe("3");
     expect(posted.get("monthlyCapUsd")).toBe("35");
-    // The array the Switches stand in for — a Switch is not a form control.
-    expect(posted.getAll("engines")).toEqual(["openai", "gemini", "anthropic"]);
   });
 
-  it("posts only the engines still switched on", async () => {
+  it("posts NO engines field at all", () => {
+    // The second half of Decision 2. `saveAiVisibilitySettings` reads an absent
+    // list as "leave it alone", so a stale tab saving a cadence here cannot
+    // undo a switch flipped in the AI-engines card. Posting the list — even the
+    // correct one — would reintroduce exactly that race.
     form();
-
-    await act(async () => {
-      fireEvent.click(screen.getByRole("switch", { name: /Gemini API, grounded/ }));
-    });
-
-    expect(submit().getAll("engines")).not.toContain("gemini");
+    expect(submit().getAll("engines")).toEqual([]);
   });
 });

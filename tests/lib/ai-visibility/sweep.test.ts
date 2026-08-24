@@ -187,6 +187,42 @@ describe("sweepAiVisibility", () => {
     expect(mine(finalize.mock.calls, "run-1")).toHaveLength(1);
   });
 
+  it("drives each source at ITS OWN tenant's concurrency, not a global one", async () => {
+    // The rate limit being respected belongs to the account the calls are
+    // billed to, and under BYOK that account is the tenant's. A global number
+    // sized against our own tier is what 429s a brand-new one.
+    const { tenant } = await seedSource({ concurrency: 5 });
+    const plan = planOnly(tenant.id, { ok: true, runId: "run-1", plannedCalls: 3, estimateUsd: 0.03 });
+    const slice = idleSlice();
+
+    await sweepAiVisibility({ now: clock(MONDAY), plan, slice, finalize: vi.fn() });
+
+    const call = mine(slice.mock.calls, "run-1")[0];
+    expect(call[1]).toMatchObject({ concurrency: 5 });
+  });
+
+  it("falls back to 3, not 12, for a tenant with no stored preference", async () => {
+    // The column defaults to 3; this asserts the whole path agrees, because the
+    // number that reaches `runSlice` is the one that actually 429s somebody.
+    const { tenant } = await seedSource();
+    const plan = planOnly(tenant.id, { ok: true, runId: "run-1", plannedCalls: 3, estimateUsd: 0.03 });
+    const slice = idleSlice();
+
+    await sweepAiVisibility({ now: clock(MONDAY), plan, slice, finalize: vi.fn() });
+
+    expect(mine(slice.mock.calls, "run-1")[0][1]).toMatchObject({ concurrency: 3 });
+  });
+
+  it("an explicit override still applies to every source — the operator's lever", async () => {
+    const { tenant } = await seedSource({ concurrency: 5 });
+    const plan = planOnly(tenant.id, { ok: true, runId: "run-1", plannedCalls: 3, estimateUsd: 0.03 });
+    const slice = idleSlice();
+
+    await sweepAiVisibility({ now: clock(MONDAY), plan, slice, finalize: vi.fn(), concurrency: 1 });
+
+    expect(mine(slice.mock.calls, "run-1")[0][1]).toMatchObject({ concurrency: 1 });
+  });
+
   it("does nothing on a day the cadence does not fall on", async () => {
     const { tenant } = await seedSource();
     const plan = planOnly(tenant.id, { ok: true, runId: "run-1", plannedCalls: 3, estimateUsd: 0.03 });
@@ -351,11 +387,35 @@ describe("sweepAiVisibility", () => {
       .from(sources)
       .where(and(eq(sources.tenantId, tenant.id), eq(sources.type, "ai_visibility")));
     expect(source.status).toBe("failing");
-    expect(source.lastError).toContain("monthly cap");
+    expect(source.lastError).toContain("monthly engine budget");
     // A refusal is recorded but must NOT re-anchor the cadence: `lastRunAt`
     // is what the fortnight-elapsed test measures from, and only real runs
     // move it. A stamped refusal would make a cap-refused fortnightly tenant
     // re-wait 13 days after the month resets.
+    expect(source.lastRunAt).toBeNull();
+  });
+
+  it("records a no-keys refusal on the source rather than sitting green and silent", async () => {
+    // The BYOK hard gate, and on ship day this is EVERY tenant. With no
+    // vendor-key fallback, a sweep that quietly stops producing data is
+    // indistinguishable from one that is working — so the sentence has to land
+    // on the source row, which is what /company's health block renders.
+    const { tenant } = await seedSource();
+    const plan = planOnly(tenant.id, { ok: false, reason: "no_engines" });
+
+    await sweepAiVisibility({ now: clock(MONDAY), plan, slice: idleSlice(), finalize: vi.fn() });
+
+    const [source] = await db
+      .select()
+      .from(sources)
+      .where(and(eq(sources.tenantId, tenant.id), eq(sources.type, "ai_visibility")));
+    expect(source.lastError).toContain("No AI engine keys connected");
+    // Not `failing`. The cap is the one refusal that paints the source red,
+    // because that one is spending that stopped; this one is a setup step
+    // nobody has done yet, and a red badge on it would report a healthy new
+    // workspace as broken.
+    expect(source.status).not.toBe("failing");
+    // And, like every refusal, it does not re-anchor the cadence.
     expect(source.lastRunAt).toBeNull();
   });
 
@@ -661,7 +721,10 @@ describe("the budget knobs", () => {
     vi.stubEnv("AI_VISIBILITY_CONCURRENCY", "");
     const mod = await reload();
     expect(mod.SWEEP_BUDGET_MS).toBe(120_000);
-    expect(mod.SWEEP_CONCURRENCY).toBe(12);
+    // 3, not 12: see the constant's own comment. 30,000 TPM on OpenAI Tier 1
+    // divided by 12 concurrent is 2,500 tokens per request, and a grounded
+    // answer is ten times that.
+    expect(mod.SWEEP_CONCURRENCY).toBe(3);
   });
 
   it("falls back when a knob is zero or negative", async () => {
@@ -669,7 +732,7 @@ describe("the budget knobs", () => {
     vi.stubEnv("AI_VISIBILITY_CONCURRENCY", "-4");
     const mod = await reload();
     expect(mod.SWEEP_BUDGET_MS).toBe(120_000);
-    expect(mod.SWEEP_CONCURRENCY).toBe(12);
+    expect(mod.SWEEP_CONCURRENCY).toBe(3);
   });
 
   it("uses a value that parses", async () => {

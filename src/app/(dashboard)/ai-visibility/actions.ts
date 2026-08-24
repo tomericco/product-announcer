@@ -17,6 +17,7 @@ import {
 // check-then-write across an await and let two tabs both squeeze past 30.
 import { generatePromptSet } from "@/lib/ai-visibility/generate-prompts";
 import { cancelRun, driveRun, findResumableRun, planRun } from "@/lib/ai-visibility/run";
+import { DEFAULT_CONCURRENCY, getAiVisibilitySettings } from "@/lib/ai-visibility/settings";
 import { PROMPT_INTENTS, type PromptIntent } from "@/lib/ai-visibility/types";
 
 /**
@@ -38,7 +39,33 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const RUN_NOW_TOTAL_BUDGET_MS = 240_000;
 const RUN_NOW_SLICE_BUDGET_MS = 60_000;
 const RUN_NOW_FINALIZE_MIN_MS = 10_000;
-const RUN_NOW_CONCURRENCY = Number(process.env.AI_VISIBILITY_CONCURRENCY ?? 12);
+/**
+ * The FALLBACK, used only when the tenant's own setting cannot be read.
+ *
+ * The knob is `ai_visibility_settings.concurrency`, whose default is
+ * `DEFAULT_CONCURRENCY` — imported, not restated. Read the comment on it before
+ * touching this: it is 3 and not 12 for an arithmetic reason, and a fallback
+ * that quietly disagreed with the default would apply a different concurrency
+ * on exactly the path where something has already gone wrong. The env var is
+ * kept only so an operator has a lever if the read fails.
+ *
+ * `positiveNumberFromEnv`-style parsing rather than bare `Number()`: an empty
+ * `AI_VISIBILITY_CONCURRENCY=` is `Number("") === 0`, and a concurrency of 0
+ * makes `batchSize` clamp to 1 — a 270-call run served one at a time.
+ */
+function fallbackConcurrency(): number {
+  const parsed = Number(process.env.AI_VISIBILITY_CONCURRENCY);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_CONCURRENCY;
+}
+
+/** The tenant's own setting, or the fallback if the row cannot be read. */
+async function concurrencyFor(tenantId: string): Promise<number> {
+  try {
+    return (await getAiVisibilitySettings(tenantId)).concurrency;
+  } catch {
+    return fallbackConcurrency();
+  }
+}
 
 /** Both surfaces show prompt state, so every write revalidates both. */
 function revalidateAll() {
@@ -298,10 +325,12 @@ export async function deletePromptAction(promptId: unknown): Promise<ActionResul
  * function's job is turning each `reason` into a sentence a human can act on —
  * and, on success, driving the run it just planned.
  *
- * There is no `no_engines` arm to translate: `getAiVisibilitySettings`
- * substitutes the full engine list for an empty one, so `planRun`'s refusal
- * union does not contain it and a branch here would be a state the UI can
- * never reach.
+ * `no_engines` IS a reachable refusal under BYOK, and on ship day it is the
+ * common one: `effectiveEngines` intersects the tenant's chosen engines with
+ * the engines holding a verified key of their own and — unlike
+ * `normalizeSettingsRow` — does not fall back to all three when that is empty.
+ * The page renders its own empty state for this, so a reader normally never
+ * meets the sentence below; it is here for the stale tab that clicks anyway.
  *
  * The run id this drives is the one `planRun` just created FOR THIS SESSION'S
  * TENANT — it is never read from a request, a form field or a URL, which is
@@ -325,6 +354,11 @@ export async function runNowAction(): Promise<ActionResult<{ runId: string }>> {
     switch (planned.reason) {
       case "disabled":
         return { ok: false, error: "AI visibility is off — turn it on in Company." };
+      case "no_engines":
+        return {
+          ok: false,
+          error: "No AI engine keys connected — add one in Settings to start measuring.",
+        };
       case "no_prompts":
         return { ok: false, error: "Approve some prompts first." };
       case "run_in_flight":
@@ -332,9 +366,9 @@ export async function runNowAction(): Promise<ActionResult<{ runId: string }>> {
       case "cap_reached":
         return {
           ok: false,
-          error: `Monthly cap reached ($${planned.spentUsd.toFixed(2)} of $${planned.capUsd.toFixed(
+          error: `Monthly engine budget reached ($${planned.spentUsd.toFixed(
             2
-          )}) — raise it in Settings, or wait for next month.`,
+          )} of $${planned.capUsd.toFixed(2)}) — raise it in Settings, or wait for next month.`,
         };
     }
   }
@@ -346,12 +380,13 @@ export async function runNowAction(): Promise<ActionResult<{ runId: string }>> {
   // own expected failures on the run row, so anything reaching its catch is
   // exceptional — logged, swallowed, and the daily sweep resumes whatever is
   // left `running`.
+  const concurrency = await concurrencyFor(session.user.tenantId);
   after(() =>
     driveRun(runId, {
       totalBudgetMs: RUN_NOW_TOTAL_BUDGET_MS,
       sliceBudgetMs: RUN_NOW_SLICE_BUDGET_MS,
       finalizeMinBudgetMs: RUN_NOW_FINALIZE_MIN_MS,
-      concurrency: RUN_NOW_CONCURRENCY,
+      concurrency,
       now: () => new Date(),
     })
   );
@@ -432,12 +467,13 @@ export async function resumeRunAction(): Promise<ActionResult<{ runId: string }>
   }
 
   const runId = target.runId;
+  const concurrency = await concurrencyFor(session.user.tenantId);
   after(() =>
     driveRun(runId, {
       totalBudgetMs: RUN_NOW_TOTAL_BUDGET_MS,
       sliceBudgetMs: RUN_NOW_SLICE_BUDGET_MS,
       finalizeMinBudgetMs: RUN_NOW_FINALIZE_MIN_MS,
-      concurrency: RUN_NOW_CONCURRENCY,
+      concurrency,
       now: () => new Date(),
     })
   );

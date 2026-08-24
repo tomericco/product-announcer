@@ -1,9 +1,15 @@
 import {
   asArray,
   isRecord,
-  isRetryableStatus,
   ENGINE_REQUEST_TIMEOUT_MS,
+  resolveEngineKey,
 } from "@/lib/ai-visibility/engines/shape";
+import {
+  classifyHttpFailure,
+  engineFailure,
+  logEngineFailure,
+} from "@/lib/ai-visibility/engines/failure";
+import { scrubError } from "@/lib/ai-visibility/scrub";
 import {
   engineSystemPrompt,
   type EngineAnswer,
@@ -62,7 +68,7 @@ export const GEMINI_DEFAULT_MODEL = "gemini-3.7-flash";
  */
 export const GEMINI_COST_PER_CALL_USD = 0.069;
 
-const GEMINI_MODELS_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models";
+export const GEMINI_MODELS_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models";
 
 type GeminiGroundingChunk = { web?: { uri?: string; title?: string } };
 type GeminiPart = { text?: string; thoughtSignature?: string };
@@ -122,13 +128,30 @@ function sanitizeRaw(raw: GeminiResponse): GeminiResponse {
   };
 }
 
+/**
+ * The KEY IS AN ARGUMENT, not an environment read.
+ *
+ * Under BYOK the call is billed to the tenant's own Google account, so the
+ * credential travels with the request rather than being ambient. `runSlice`
+ * resolves it from `ai_visibility_engine_keys` and always passes one; an engine
+ * whose stored key is missing, switched off, rejected or undecryptable is never
+ * asked, which is what makes "no fallback to our keys" a property of the code
+ * rather than a promise in a doc.
+ *
+ * `deps.apiKey` being ABSENT falls back to `GEMINI_API_KEY` — local development
+ * only, and the run path never takes that branch. An explicitly EMPTY
+ * `apiKey` does not fall back; it fails, because a caller that resolved a key
+ * and got nothing must not quietly spend our money instead.
+ */
 export async function askGemini(
   prompt: string,
-  deps: { fetchImpl?: typeof fetch } = {}
+  deps: { fetchImpl?: typeof fetch; apiKey?: string } = {}
 ): Promise<EngineAnswer | EngineError> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey || apiKey.trim().length === 0) {
-    return { kind: "error", message: "GEMINI_API_KEY is not set" };
+  const apiKey = resolveEngineKey("gemini", deps.apiKey);
+  if (apiKey === null) {
+    // See the note in `openai.ts`: a missing key and a rejected key have the
+    // same remedy, and the decryption-failure state belongs to the keys table.
+    return engineFailure("gemini", "invalid_key", { detail: "no key supplied" });
   }
   const fetchImpl = deps.fetchImpl ?? fetch;
   const model = process.env.AI_VISIBILITY_GEMINI_MODEL ?? GEMINI_DEFAULT_MODEL;
@@ -156,34 +179,49 @@ export async function askGemini(
   } catch (error) {
     // Transport, or the 60s abort. Nothing reached the model, so nothing was
     // billed and the next wave may well get through — see `EngineError.retryable`.
-    return { kind: "error", message: `gemini request failed: ${String(error)}`, retryable: true };
+    //
+    // `String(error)` stays out of the returned message: a fetch failure can
+    // carry the request it failed on, and that request has an `x-goog-api-key`
+    // header. Scrubbed server log instead.
+    // Scrubbed, and as a STRING: a fetch failure can carry the request it
+    // failed on, and that request has an `x-goog-api-key` header.
+    console.error(`[ai-visibility] gemini request failed: ${scrubError(error)}`);
+    return engineFailure("gemini", "provider_unavailable", {
+      detail: "request never completed",
+      retryable: true,
+    });
   }
 
+  // The body is read for the log and thrown away. A Google 400 carries an
+  // `API_KEY_INVALID` detail block; a 403 can name the project. Neither is
+  // stored or rendered — see `engines/failure.ts`.
   if (!response.ok) {
     const body = await response.text().catch(() => "");
-    return {
-      kind: "error",
-      message: `gemini ${response.status}: ${body.slice(0, 300)}`,
-      // Spread rather than `retryable: false`: terminal is the ABSENCE of the
-      // flag everywhere else in this file, and one path saying it a second way
-      // is how a reader concludes the two mean different things.
-      ...(isRetryableStatus(response.status) ? { retryable: true } : {}),
-    };
+    // Status AND body, and for Gemini the body is doing most of the work: a bad
+    // key comes back as 400 INVALID_ARGUMENT rather than 401, and a per-day or
+    // spend quota comes back as 429 RESOURCE_EXHAUSTED — the same status as an
+    // ordinary throughput limit, with a wait far longer than our ladder.
+    const failure = classifyHttpFailure("gemini", response.status, body, response.headers);
+    logEngineFailure("gemini", response.status, failure.code, body);
+    return engineFailure("gemini", failure.code, {
+      retryable: failure.retryable,
+      retryAfterMs: failure.retryAfterMs,
+    });
   }
 
   let raw: GeminiResponse;
   try {
     raw = (await response.json()) as GeminiResponse;
-  } catch (error) {
-    return { kind: "error", message: `gemini returned unparseable JSON: ${String(error)}` };
+  } catch {
+    return engineFailure("gemini", "bad_response", { detail: "unparseable JSON" });
   }
   if (!isRecord(raw)) {
-    return { kind: "error", message: "gemini returned a non-object body" };
+    return engineFailure("gemini", "bad_response", { detail: "non-object body" });
   }
 
   const candidate = asArray<GeminiCandidate>(raw.candidates)[0];
   if (!isRecord(candidate)) {
-    return { kind: "refused", message: "gemini returned no candidate" };
+    return engineFailure("gemini", "refused", { detail: "no candidate returned" });
   }
 
   // Same rule as the other engines: an answer that stopped because it ran out
@@ -193,22 +231,21 @@ export async function askGemini(
   // Every verdict from here on follows a complete, readable response, so the
   // call was billed whatever it says — see `EngineError.costUsd`.
   if (candidate.finishReason === "MAX_TOKENS") {
-    return {
-      kind: "error",
-      message: "gemini answer incomplete: MAX_TOKENS",
+    return engineFailure("gemini", "bad_response", {
+      detail: "truncated answer: MAX_TOKENS",
       costUsd: GEMINI_COST_PER_CALL_USD,
-    };
+    });
   }
 
   const text = asArray<GeminiPart>(candidate.content?.parts)
     .map((part) => (isRecord(part) && typeof part.text === "string" ? part.text : ""))
     .join("");
   if (text.trim().length === 0) {
-    return {
-      kind: "refused",
-      message: `gemini returned no answer text (finishReason: ${candidate.finishReason ?? "unknown"})`,
+    return engineFailure("gemini", "refused", {
+      // `finishReason` is a documented enum, not prose.
+      detail: `no answer text, finishReason ${candidate.finishReason ?? "unknown"}`,
       costUsd: GEMINI_COST_PER_CALL_USD,
-    };
+    });
   }
 
   const grounding = candidate.groundingMetadata;
@@ -251,11 +288,12 @@ export async function askGemini(
   // Grounding metadata that yields neither means we are reading the wrong
   // keys, not that the model stayed in its own memory — so fail loudly.
   if (!searchUsed && isRecord(grounding) && Object.keys(grounding).length > 0) {
-    return {
-      kind: "error",
-      message: `gemini returned grounding metadata we could not read (keys: ${Object.keys(grounding).sort().join(", ")})`,
+    return engineFailure("gemini", "bad_response", {
+      // The KEY NAMES, never a value: they are what tells the next reader which
+      // field was renamed, and they are the whole reason this canary exists.
+      detail: `unreadable grounding metadata, keys: ${Object.keys(grounding).sort().join(", ")}`,
       costUsd: GEMINI_COST_PER_CALL_USD,
-    };
+    });
   }
 
   return {

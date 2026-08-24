@@ -339,11 +339,11 @@ describe("RunNowButton", () => {
     rerender(
       <RunNowButton
         estimate={{ prompts: 28, engines: 3, samples: 3, calls: 252, usd: 3.12 }}
-        disabledReason="Paused — monthly cap reached ($20.00 of $20.00)."
+        disabledReason="Paused — monthly engine budget reached ($20.00 of $20.00)."
         disabledTone="destructive"
       />
     );
-    expect(screen.getByText("Paused — monthly cap reached ($20.00 of $20.00).").className).toContain(
+    expect(screen.getByText("Paused — monthly engine budget reached ($20.00 of $20.00).").className).toContain(
       "text-destructive"
     );
   });
@@ -396,7 +396,7 @@ describe("RunNowButton", () => {
   });
 
   it("offers no dialog at all while disabled — the reason is the whole answer", async () => {
-    render(<RunNowButton estimate={ESTIMATE} disabledReason="Paused — monthly cap reached." />);
+    render(<RunNowButton estimate={ESTIMATE} disabledReason="Paused — monthly engine budget reached." />);
 
     await click(screen.getByRole("button", { name: "Run now" }));
     expect(screen.queryByText(/≈ 28 prompts/)).not.toBeInTheDocument();

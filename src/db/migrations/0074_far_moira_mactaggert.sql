@@ -1,0 +1,1 @@
+ALTER TABLE "ai_visibility_settings" ADD COLUMN "concurrency" smallint DEFAULT 3 NOT NULL;

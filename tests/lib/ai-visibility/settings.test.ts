@@ -10,6 +10,7 @@ import {
   getAiVisibilitySource,
   setAiVisibilityEnabled,
   DEFAULT_AI_VISIBILITY_SETTINGS,
+  DEFAULT_CONCURRENCY,
   MIN_MONTHLY_CAP_USD,
   MAX_MONTHLY_CAP_USD,
 } from "../../../src/lib/ai-visibility/settings";
@@ -41,8 +42,42 @@ const VALID = {
   dayOfWeek: 3,
   engines: ["openai", "gemini"],
   samplesPerPrompt: 5,
+  concurrency: 3,
   monthlyCapUsd: 45,
 };
+
+describe("the concurrency default exists once", () => {
+  /**
+   * Four places used to say 3, and the two that decide what a run actually does
+   * — the sweep's fallback and the Run-now action's — said it as a literal.
+   * They are imports now, so this test is what holds the two that cannot be:
+   * the schema column default (this file takes no runtime dependency on
+   * `src/lib`; drizzle-kit bundles it outside Next's path resolution) and the
+   * migration that created it, which is frozen history.
+   *
+   * Read the comment on `DEFAULT_CONCURRENCY` before changing any of them. It
+   * is 3 and not 12 because OpenAI Tier 1 is 30,000 TPM and one grounded
+   * AI-visibility call is ~25,000 tokens.
+   */
+  it("is the same number in the schema column, the defaults object and the sweep fallback", async () => {
+    expect(aiVisibilitySettings.concurrency.default).toBe(DEFAULT_CONCURRENCY);
+    expect(DEFAULT_AI_VISIBILITY_SETTINGS.concurrency).toBe(DEFAULT_CONCURRENCY);
+
+    // Read with the env override unset, which is the state the fallback exists
+    // for. `actions.ts`'s twin is a private function with the same import and
+    // no seam to reach it through; the import is what makes it agree.
+    delete process.env.AI_VISIBILITY_CONCURRENCY;
+    const { SWEEP_CONCURRENCY } = await import("../../../src/lib/ai-visibility/sweep");
+    expect(SWEEP_CONCURRENCY).toBe(DEFAULT_CONCURRENCY);
+  });
+
+  it("a tenant row written without one comes back on it", async () => {
+    const tenant = await seedTenant(TENANT);
+    await db.insert(aiVisibilitySettings).values({ tenantId: tenant.id });
+
+    expect((await getAiVisibilitySettings(tenant.id)).concurrency).toBe(DEFAULT_CONCURRENCY);
+  });
+});
 
 describe("getAiVisibilitySettings", () => {
   it("returns the defaults when the tenant has no row", async () => {
@@ -55,6 +90,33 @@ describe("getAiVisibilitySettings", () => {
     // The defaults must not be the shared object — a caller mutating the
     // returned engines array would poison every later read in the process.
     expect(settings.engines).not.toBe(DEFAULT_AI_VISIBILITY_SETTINGS.engines);
+  });
+
+  it("defaults concurrency to 3 — the number a new provider account survives", async () => {
+    // 12 was sized against OUR account. OpenAI Tier 1 caps gpt-4o at 30,000
+    // TPM, and 30,000 / 12 is 2,500 tokens per request including output; a
+    // grounded AI-visibility answer is ~25,500. Twelve concurrent calls 429 a
+    // BYOK tenant on their first sweep.
+    const tenant = await seedTenant(TENANT);
+    expect((await getAiVisibilitySettings(tenant.id)).concurrency).toBe(3);
+
+    await db.insert(aiVisibilitySettings).values({ tenantId: tenant.id });
+    expect((await getAiVisibilitySettings(tenant.id)).concurrency).toBe(3);
+  });
+
+  it("clamps a concurrency out of range rather than snapping it back to the default", async () => {
+    // Clamping matters most on the high side: defaulting a 40 back to 3 would
+    // be a 13x change nobody asked for, where clamping to the ceiling is the
+    // nearest legal reading of what they wanted.
+    const tenant = await seedTenant(TENANT);
+    await db.insert(aiVisibilitySettings).values({ tenantId: tenant.id, concurrency: 40 });
+    expect((await getAiVisibilitySettings(tenant.id)).concurrency).toBe(12);
+
+    await db
+      .update(aiVisibilitySettings)
+      .set({ concurrency: 0 })
+      .where(eq(aiVisibilitySettings.tenantId, tenant.id));
+    expect((await getAiVisibilitySettings(tenant.id)).concurrency).toBe(1);
   });
 
   it("drops an engine id the row holds that we no longer support", async () => {
@@ -241,6 +303,36 @@ describe("saveAiVisibilitySettings", () => {
     expect(rows[0].engines).toEqual(["openai", "gemini"]);
   });
 
+  it("leaves concurrency alone when the form does not send it", async () => {
+    // The /settings form has no concurrency field. Folding an absent value into
+    // the write would reset every tenant's setting to the default on every
+    // unrelated save — the field is optional precisely so that cannot happen.
+    const tenant = await seedTenant(TENANT);
+    await saveAiVisibilitySettings(tenant.id, { ...VALID, concurrency: 6 });
+
+    const { concurrency, ...withoutConcurrency } = VALID;
+    void concurrency;
+    const result = await saveAiVisibilitySettings(tenant.id, {
+      ...withoutConcurrency,
+      monthlyCapUsd: 30,
+    });
+
+    expect(result.ok && result.settings.concurrency).toBe(6);
+    expect((await getAiVisibilitySettings(tenant.id)).concurrency).toBe(6);
+  });
+
+  it("validates concurrency when it IS sent, like every other field", async () => {
+    const tenant = await seedTenant(TENANT);
+    for (const bad of [0, -1, 13, 2.5, "many"]) {
+      expect(await saveAiVisibilitySettings(tenant.id, { ...VALID, concurrency: bad })).toEqual({
+        ok: false,
+        error: "concurrency",
+      });
+    }
+    const ok = await saveAiVisibilitySettings(tenant.id, { ...VALID, concurrency: 8 });
+    expect(ok.ok && ok.settings.concurrency).toBe(8);
+  });
+
   it("never touches `enabled` — that switch lives on the company card", async () => {
     const tenant = await seedTenant(TENANT);
     await db.insert(aiVisibilitySettings).values({ tenantId: tenant.id, enabled: true });
@@ -314,6 +406,7 @@ describe("saveAiVisibilitySettings", () => {
         dayOfWeek: 3,
         engines: ["openai", "gemini"],
         samplesPerPrompt: 5,
+        concurrency: 3,
         monthlyCapUsd: 45,
       },
     });
@@ -470,6 +563,7 @@ describe("saveAiVisibilitySettings", () => {
       dayOfWeek: 3,
       engines: ["openai", "gemini"],
       samplesPerPrompt: 5,
+      concurrency: 3,
       monthlyCapUsd: 45,
     });
   });
@@ -699,7 +793,7 @@ describe("setAiVisibilityEnabled", () => {
     await setAiVisibilityEnabled(tenant.id, true);
     await db
       .update(sources)
-      .set({ status: "failing", lastError: "Paused — monthly cap reached" })
+      .set({ status: "failing", lastError: "Paused — monthly engine budget reached" })
       .where(and(eq(sources.tenantId, tenant.id), eq(sources.type, "ai_visibility")));
 
     await setAiVisibilityEnabled(tenant.id, false);
@@ -707,7 +801,7 @@ describe("setAiVisibilityEnabled", () => {
       .select()
       .from(sources)
       .where(and(eq(sources.tenantId, tenant.id), eq(sources.type, "ai_visibility")));
-    expect(afterOff.lastError).toBe("Paused — monthly cap reached");
+    expect(afterOff.lastError).toBe("Paused — monthly engine budget reached");
 
     await setAiVisibilityEnabled(tenant.id, true);
     const [afterOn] = await db
@@ -745,6 +839,7 @@ describe("setAiVisibilityEnabled", () => {
       dayOfWeek: 3,
       engines: ["openai", "gemini"],
       samplesPerPrompt: 5,
+      concurrency: 3,
       monthlyCapUsd: 45,
     });
   });
@@ -781,6 +876,7 @@ describe("getAiVisibilitySettingsForTenants", () => {
       dayOfWeek: 3,
       engines: ["openai", "gemini"],
       samplesPerPrompt: 5,
+      concurrency: 3,
       monthlyCapUsd: 45,
     });
   });
@@ -864,7 +960,7 @@ describe("saveAiVisibilitySettings and the cap pause", () => {
 
     const [row] = await aiVisibilitySource(tenant.id);
     expect(row.status).toBe("failing");
-    expect(row.lastError).toContain("monthly cap");
+    expect(row.lastError).toContain("monthly engine budget");
   });
 
   it("never clears a failure that was not the cap", async () => {
@@ -899,7 +995,7 @@ describe("saveAiVisibilitySettings and the cap pause", () => {
 
     const [row] = await aiVisibilitySource(tenant.id);
     expect(row.status).toBe("failing");
-    expect(row.lastError).toContain("monthly cap");
+    expect(row.lastError).toContain("monthly engine budget");
   });
 
   it("does not clear a cap pause off last month's spend", async () => {

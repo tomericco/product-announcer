@@ -12,11 +12,16 @@ import {
   signals,
   sources,
 } from "../../../src/db/schema";
-import type { EngineAnswer, EngineClient, EngineError } from "../../../src/lib/ai-visibility/types";
+import type {
+  EngineAnswer,
+  EngineClient,
+  EngineError,
+  EngineId,
+} from "../../../src/lib/ai-visibility/types";
 import { cancelRun, finalizeRun, latestRun, planRun, runSlice } from "../../../src/lib/ai-visibility/run";
 import { engineMetrics } from "../../../src/lib/ai-visibility/metrics";
 import { MAX_ACTIVE_PROMPTS } from "../../../src/lib/ai-visibility/prompts";
-import { seedTenant, dropTenant } from "../../helpers/fixtures";
+import { seedTenant, dropTenant, seedEngineKey } from "../../helpers/fixtures";
 
 const TENANT = "AI Visibility Run Test Tenant";
 
@@ -27,18 +32,34 @@ afterEach(async () => {
   await dropTenant(TENANT);
 });
 
+/**
+ * Settings AND a verified key for every engine the row names.
+ *
+ * The keys are not incidental: under BYOK `planRun` gates on
+ * `effectiveEngines`, which is `settings.engines` intersected with the engines
+ * holding an enabled, verified key and does NOT fall back to all three when
+ * that is empty. A settings row on its own now plans nothing, so seeding one
+ * without keys would make every test in this file assert `no_engines`.
+ *
+ * Pass `withKeys: false` to get the un-keyed state deliberately — that is what
+ * the `no_engines` refusal is tested against.
+ */
 async function seedSettings(
   tenantId: string,
-  overrides: Partial<typeof aiVisibilitySettings.$inferInsert> = {}
+  overrides: Partial<typeof aiVisibilitySettings.$inferInsert> = {},
+  opts: { withKeys?: boolean } = {}
 ) {
+  const engines = (overrides.engines as EngineId[] | undefined) ?? ["openai", "gemini"];
   await db.insert(aiVisibilitySettings).values({
     tenantId,
     enabled: true,
-    engines: ["openai", "gemini"],
+    engines,
     samplesPerPrompt: 3,
     monthlyCapUsd: 20,
     ...overrides,
   });
+  if (opts.withKeys === false) return;
+  for (const engine of engines) await seedEngineKey(tenantId, engine);
 }
 
 async function seedPrompt(
@@ -403,8 +424,9 @@ describe("runSlice", () => {
   it("stores a refusal as refused and an error as error, without failing the slice", async () => {
     const { runId } = await planned();
     const openai = fakeEngine("openai", (_p, call) => {
-      if (call === 1) return { kind: "refused", message: "no search results" };
-      if (call === 2) return { kind: "error", message: "429 rate limited" };
+      if (call === 1) return { kind: "refused" as const, code: "refused" as const, message: "declined" };
+      if (call === 2)
+        return { kind: "error" as const, code: "rate_limited" as const, message: "rate limited" };
       return answer();
     });
 
@@ -418,7 +440,7 @@ describe("runSlice", () => {
     expect(outcome.remaining).toBe(0);
     const samples = await db.select().from(aiVisibilitySamples).where(eq(aiVisibilitySamples.runId, runId));
     expect(samples.map((s) => s.status).sort()).toEqual(["error", "ok", "refused"]);
-    expect(samples.find((s) => s.status === "error")?.error).toContain("429");
+    expect(samples.find((s) => s.status === "error")?.error).toContain("rate limited");
     // Only the successful call is billed.
     const [run] = await db.select().from(aiVisibilityRuns).where(eq(aiVisibilityRuns.id, runId));
     expect(run.costUsd).toBeCloseTo(0.01, 5);
@@ -430,7 +452,14 @@ describe("runSlice", () => {
     // the client says so when the provider told it enough. Treating that as
     // free is how the monthly cap silently under-counts.
     const openai = fakeEngine("openai", (_p, call) =>
-      call === 1 ? { kind: "error", message: "cut off at the token ceiling", costUsd: 0.007 } : answer()
+      call === 1
+        ? {
+            kind: "error" as const,
+            code: "bad_response" as const,
+            message: "cut off at the token ceiling",
+            costUsd: 0.007,
+          }
+        : answer()
     );
 
     await runSlice(
@@ -543,7 +572,7 @@ describe("runSlice", () => {
       .from(sources)
       .where(and(eq(sources.tenantId, tenant.id), eq(sources.type, "ai_visibility")));
     expect(source.status).toBe("failing");
-    expect(source.lastError).toContain("monthly cap");
+    expect(source.lastError).toContain("monthly engine budget");
   });
 
   it("aggregates what a cap-paused run already bought, so the samples still count", async () => {
@@ -751,7 +780,7 @@ describe("runSlice", () => {
 
   it("does not extract errored or refused samples", async () => {
     const { runId } = await planned();
-    const openai = fakeEngine("openai", () => ({ kind: "error", message: "boom" }) as const);
+    const openai = fakeEngine("openai", () => ({ kind: "error", code: "bad_response", message: "boom" }) as const);
     const extracted: string[] = [];
 
     await runSlice(
@@ -1301,25 +1330,88 @@ describe("planRun guards not covered above", () => {
     ).rejects.toThrow();
   });
 
-  it("plans every engine when the settings row holds an empty engine list", async () => {
+  it("still reads an empty engine list as all three — the keys are what narrow it", async () => {
     const tenant = await seedTenant(TENANT);
-    await seedSettings(tenant.id, { engines: [] });
+    await seedSettings(tenant.id, { engines: [] }, { withKeys: false });
     await seedPrompt(tenant.id);
+    for (const engine of ["openai", "gemini", "anthropic"] as const) {
+      await seedEngineKey(tenant.id, engine);
+    }
 
     const result = await planRun(tenant.id, { trigger: "manual", now: frozen("2026-03-02T09:00:00Z") });
 
-    // `getAiVisibilitySettings` substitutes the full engine list for an empty
-    // or entirely-unrecognised one, which is why `planRun` has no zero-engine
-    // refusal to reach. Pinned here because that substitution is the reason an
-    // enabled feature never plans zero calls behind a green badge — a change to
-    // it should show up as a failure here rather than as a tenant whose weekly
-    // run quietly does nothing.
+    // `normalizeSettingsRow` still substitutes the full engine list for an
+    // empty or entirely-unrecognised one, and that substitution is deliberately
+    // NOT what BYOK changed: `effectiveEngines` is a second, separate narrowing
+    // by key. Pinned here because the two are easy to conflate — with all three
+    // keyed, an empty engines column plans all three exactly as it always did.
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("unreachable");
     const samples = await db.select().from(aiVisibilitySamples).where(eq(aiVisibilitySamples.runId, result.runId));
     expect(new Set(samples.map((s) => s.engine))).toEqual(
       new Set(["openai", "gemini", "anthropic"])
     );
+  });
+
+  it("refuses with `no_engines` when nothing is keyed — no fallback to all three", async () => {
+    const tenant = await seedTenant(TENANT);
+    // The migration state, and every existing tenant on ship day: three
+    // engines switched on, zero keys. `normalizeSettingsRow` hands back all
+    // three; `effectiveEngines` intersects them with nothing and, unlike that
+    // function, does NOT fall back. Empty means empty — falling back here
+    // would plan a ~$6.20 run on OUR keys for a tenant who connected nothing,
+    // which is the one thing the hard gate exists to prevent.
+    await seedSettings(tenant.id, { engines: ["openai", "gemini", "anthropic"] }, { withKeys: false });
+    await seedPrompt(tenant.id);
+
+    expect(await planRun(tenant.id, { trigger: "manual", now: frozen("2026-03-02T09:00:00Z") })).toEqual({
+      ok: false,
+      reason: "no_engines",
+    });
+    // Nothing was planned, and nothing was charged.
+    expect(await db.select().from(aiVisibilitySamples).where(eq(aiVisibilitySamples.tenantId, tenant.id))).toEqual([]);
+  });
+
+  it("plans only the keyed engines, not every engine the settings row names", async () => {
+    const tenant = await seedTenant(TENANT);
+    await seedSettings(
+      tenant.id,
+      { engines: ["openai", "gemini", "anthropic"], samplesPerPrompt: 1 },
+      { withKeys: false }
+    );
+    await seedPrompt(tenant.id);
+    await seedEngineKey(tenant.id, "gemini");
+
+    const result = await planRun(tenant.id, { trigger: "manual", now: frozen("2026-03-02T09:00:00Z") });
+
+    // The design's own worked example: "A tenant with `engines: [openai,
+    // gemini, anthropic]` and one Gemini key runs Gemini, is quoted Gemini's
+    // price, and sees one tile."
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    const samples = await db.select().from(aiVisibilitySamples).where(eq(aiVisibilitySamples.runId, result.runId));
+    expect(new Set(samples.map((s) => s.engine))).toEqual(new Set(["gemini"]));
+    // And the run row records what it will actually ask, so the trend chart and
+    // the tiles read the same engine list the planner used.
+    const [run] = await db.select().from(aiVisibilityRuns).where(eq(aiVisibilityRuns.id, result.runId));
+    expect(run.engines).toEqual(["gemini"]);
+  });
+
+  it("ignores a key that is stored but switched off, and one that is not verified", async () => {
+    const tenant = await seedTenant(TENANT);
+    await seedSettings(tenant.id, { engines: ["openai", "gemini"] }, { withKeys: false });
+    await seedPrompt(tenant.id);
+    // "Saved, not in use" — the tenant paused ChatGPT for a month because it is
+    // 3.7x Gemini per call. Off must mean not sampled, not merely not billed.
+    await seedEngineKey(tenant.id, "openai", { enabled: false });
+    // Rejected by the provider on the last run. A non-verified status is the
+    // whole auto-pause mechanism: there is no separate paused flag.
+    await seedEngineKey(tenant.id, "gemini", { status: "invalid_key" });
+
+    expect(await planRun(tenant.id, { trigger: "manual", now: frozen("2026-03-02T09:00:00Z") })).toEqual({
+      ok: false,
+      reason: "no_engines",
+    });
   });
 });
 

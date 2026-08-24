@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull, lt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, lt, sql } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
 import {
   aiVisibilityAggregates,
@@ -221,6 +221,50 @@ export async function windowCounts(
     }
   }
   return total;
+}
+
+/**
+ * The engines this tenant has measurements for, in `ENGINE_IDS` order.
+ *
+ * Read for one purpose: deciding what a tenant who cannot RUN is still shown.
+ * `effectiveEngines` answers "what will be sampled next", and when it is empty
+ * — no key, a key that auto-failed, an engine paused for a month — that is not
+ * the same question as "what is on file". A page that answers the first
+ * question when it was asked the second suppresses everything the tenant has
+ * already paid for.
+ *
+ * Over the SAME window the tiles sum, so an engine that appears here has a tile
+ * with something in it. That is also why it does not need a wider window: runs
+ * stop happening when nothing is keyed, so the window stops advancing at the
+ * last run the tenant paid for.
+ *
+ * `n > 0` rather than "has a row": an aggregate row can exist for a run in
+ * which every sample errored, and a tile for it would read "Collecting
+ * baseline" forever.
+ */
+export async function measuredEngines(
+  tenantId: string,
+  database: typeof defaultDb = defaultDb
+): Promise<EngineId[]> {
+  const runIds = await windowRunIds(tenantId, WINDOW_RUNS, undefined, database);
+  if (runIds.length === 0) return [];
+
+  const rows = await database
+    .selectDistinct({ engine: aiVisibilityAggregates.engine })
+    .from(aiVisibilityAggregates)
+    .where(
+      and(
+        inArray(aiVisibilityAggregates.runId, runIds),
+        // Engine-level rows only — the prompt-level ones would double nothing
+        // here, but they are a different grain and this is the grain the tiles
+        // read.
+        isNull(aiVisibilityAggregates.promptId),
+        gt(aiVisibilityAggregates.n, 0)
+      )
+    );
+
+  const present = new Set(rows.map((row) => row.engine));
+  return ENGINE_IDS.filter((engine) => present.has(engine));
 }
 
 /**

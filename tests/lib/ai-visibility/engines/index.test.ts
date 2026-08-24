@@ -135,7 +135,18 @@ describe("every engine bounds its own request", () => {
       expect((init.signal as AbortSignal).aborted).toBe(false);
       // An error on one sample, not a throw: the sample is stored `error` and
       // excluded from every rate, and the run carries on.
-      expect(result).toMatchObject({ kind: "error", message: expect.stringContaining("TimeoutError") });
+      //
+      // The exception's own text is NOT in the message. A thrown fetch error
+      // stringifies with the request that failed attached, headers included, so
+      // the client reports `provider_unavailable` in its own words and sends
+      // the exception to a scrubbed server log instead.
+      expect(result).toMatchObject({
+        kind: "error",
+        code: "provider_unavailable",
+        retryable: true,
+        message: expect.stringContaining("request never completed"),
+      });
+      expect("message" in result && result.message).not.toContain("TimeoutError");
     }
   );
 });

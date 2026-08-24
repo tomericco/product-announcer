@@ -16,6 +16,33 @@ export type Cadence = (typeof CADENCES)[number];
 export const SAMPLE_CHOICES = [1, 3, 5] as const;
 export type SamplesPerPrompt = (typeof SAMPLE_CHOICES)[number];
 
+/**
+ * Engine calls in flight at once, per tenant.
+ *
+ * THE DEFAULT IS 3 AND THE ARITHMETIC IS WHY — do not raise it back to 12
+ * without redoing it. OpenAI Tier 1 (a brand-new paid account, the state every
+ * BYOK tenant starts in) caps `gpt-4o` at **30,000 TPM**:
+ *
+ *     30,000 TPM / 12 concurrent = 2,500 tokens per request, output included
+ *
+ * An AI-visibility call is a grounded answer: the retrieved page text lands in
+ * the INPUT, and the measured average is ~23,000 input + ~2,500 output tokens.
+ * One call exceeds that budget five times over, so twelve of them 429 the
+ * tenant on their first sweep. At 3 the same tenant has 10,000 tokens per
+ * request — still tight, and still the right side of the limit.
+ *
+ * RPM is not the binding constraint and never was: 12 concurrent calls at
+ * 10-30s each is roughly 24-72 RPM, comfortably under every published ceiling.
+ * TPM is what bites, and it is invisible from our own account because ours sits
+ * several tiers up.
+ *
+ * The ceiling of 12 is the old default, kept as the maximum a tenant on a
+ * mature account may opt into rather than as something anyone is given.
+ */
+export const MIN_CONCURRENCY = 1;
+export const MAX_CONCURRENCY = 12;
+export const DEFAULT_CONCURRENCY = 3;
+
 // Defined in `money.ts` so the /settings form can import them without
 // reaching `@/db`; re-exported here because this is where callers expect them.
 export { MIN_MONTHLY_CAP_USD, MAX_MONTHLY_CAP_USD };
@@ -27,10 +54,18 @@ export type AiVisibilitySettingsValues = {
   dayOfWeek: number;
   engines: EngineId[];
   samplesPerPrompt: SamplesPerPrompt;
+  /** Engine calls in flight at once. See `DEFAULT_CONCURRENCY`. */
+  concurrency: number;
   monthlyCapUsd: number;
 };
 
-export type SettingsField = "cadence" | "dayOfWeek" | "engines" | "samplesPerPrompt" | "monthlyCapUsd";
+export type SettingsField =
+  | "cadence"
+  | "dayOfWeek"
+  | "engines"
+  | "samplesPerPrompt"
+  | "concurrency"
+  | "monthlyCapUsd";
 
 export type SaveSettingsResult =
   | { ok: true; settings: AiVisibilitySettingsValues }
@@ -47,6 +82,7 @@ export const DEFAULT_AI_VISIBILITY_SETTINGS: AiVisibilitySettingsValues = {
   dayOfWeek: 1,
   engines: [...ENGINE_IDS],
   samplesPerPrompt: 3,
+  concurrency: DEFAULT_CONCURRENCY,
   monthlyCapUsd: 20,
 };
 
@@ -113,6 +149,14 @@ function normalizeSettingsRow(
   // Clamped like its neighbours, and rounded because the column is float4 —
   // see `roundUsd`. Without the rounding a cap saved as 20.10 reads back as
   // 20.100000381469727 and shows up in the settings field that way.
+  // Clamped rather than defaulted, so a row written by a future admin tool with
+  // a value out of range degrades to the nearest legal one instead of silently
+  // jumping back to 3 — the difference matters on the high side, where the
+  // fallback would be a 4x change nobody asked for.
+  const concurrency = Number.isInteger(row.concurrency)
+    ? Math.min(MAX_CONCURRENCY, Math.max(MIN_CONCURRENCY, row.concurrency))
+    : DEFAULT_CONCURRENCY;
+
   const monthlyCapUsd = Number.isFinite(row.monthlyCapUsd)
     ? Math.min(MAX_MONTHLY_CAP_USD, Math.max(MIN_MONTHLY_CAP_USD, roundUsd(row.monthlyCapUsd)))
     : DEFAULT_AI_VISIBILITY_SETTINGS.monthlyCapUsd;
@@ -123,6 +167,7 @@ function normalizeSettingsRow(
     dayOfWeek,
     engines,
     samplesPerPrompt: samples,
+    concurrency,
     monthlyCapUsd,
   };
 }
@@ -206,15 +251,29 @@ export async function saveAiVisibilitySettings(
     return { ok: false, error: "dayOfWeek" };
   }
 
-  if (!Array.isArray(raw.engines)) return { ok: false, error: "engines" };
-  const engines: EngineId[] = [];
-  for (const entry of raw.engines) {
-    if (typeof entry !== "string" || !isEngineId(entry)) return { ok: false, error: "engines" };
-    if (!engines.includes(entry)) engines.push(entry);
+  // OPTIONAL now, like `concurrency` beside it, and for the same reason: the
+  // /settings form no longer renders the engine switches — they moved into the
+  // AI-engines card, beside the key each engine depends on — so folding an
+  // absent value into `values` would let a cadence save silently undo a switch
+  // flipped there. Present means "change it"; absent means "leave it".
+  //
+  // Still validated and still non-empty WHEN PRESENT. The rule has not been
+  // relaxed for this function's own callers; what changed is that the two paths
+  // which legitimately empty the list — removing your last key, switching your
+  // last engine off — go through `engine-keys.ts` and write the column
+  // directly, because under BYOK "no engines" is a real, explained state with
+  // its own empty state on /ai-visibility rather than invalid input.
+  let engines: EngineId[] | undefined;
+  if (raw.engines !== undefined && raw.engines !== null) {
+    if (!Array.isArray(raw.engines)) return { ok: false, error: "engines" };
+    const parsed: EngineId[] = [];
+    for (const entry of raw.engines) {
+      if (typeof entry !== "string" || !isEngineId(entry)) return { ok: false, error: "engines" };
+      if (!parsed.includes(entry)) parsed.push(entry);
+    }
+    if (parsed.length === 0) return { ok: false, error: "engines" };
+    engines = parsed;
   }
-  // Non-empty, not merely a subset: an enabled feature with zero engines
-  // would plan zero calls behind a green badge. See the function comment.
-  if (engines.length === 0) return { ok: false, error: "engines" };
 
   const samples = toNumber(raw.samplesPerPrompt);
   if (samples === null || !(SAMPLE_CHOICES as readonly number[]).includes(samples)) {
@@ -226,11 +285,35 @@ export async function saveAiVisibilitySettings(
     return { ok: false, error: "monthlyCapUsd" };
   }
 
+  // OPTIONAL, unlike its neighbours, and deliberately so: the /settings form
+  // does not render a concurrency field, and folding an absent value into
+  // `values` would reset every tenant's setting to the default on every
+  // unrelated save. Present means "change it"; absent means "leave it".
+  //
+  // Validated when present, because the caller's argument is client input
+  // whatever TypeScript says — and because a concurrency of 0 plans a run that
+  // hands out no work, while a large one is the 429 this default exists to
+  // prevent.
+  let concurrency: number | undefined;
+  if (raw.concurrency !== undefined && raw.concurrency !== null && raw.concurrency !== "") {
+    const parsed = toNumber(raw.concurrency);
+    if (
+      parsed === null ||
+      !Number.isInteger(parsed) ||
+      parsed < MIN_CONCURRENCY ||
+      parsed > MAX_CONCURRENCY
+    ) {
+      return { ok: false, error: "concurrency" };
+    }
+    concurrency = parsed;
+  }
+
   const values = {
     cadence,
     dayOfWeek,
-    engines,
+    ...(engines !== undefined ? { engines } : {}),
     samplesPerPrompt: samples as SamplesPerPrompt,
+    ...(concurrency !== undefined ? { concurrency } : {}),
     // Rounded on the way in so the value we store, return, and later read back
     // through `getAiVisibilitySettings` are the same number. Without it a cap
     // saved as 20.999 renders as 20.999 now and 21 on the next load.
@@ -248,7 +331,7 @@ export async function saveAiVisibilitySettings(
 
   // Raising the cap is the documented way out of a cap pause, so it has to be
   // the thing that clears the red badge. Without this the source keeps reading
-  // "Paused — monthly cap reached" until the next run finishes or the /company
+  // "Paused — monthly engine budget reached" until the next run finishes or the /company
   // switch is toggled off and on — i.e. the user does the one action the error
   // asks for and nothing on screen changes.
   await clearCapPauseIfResolved(tenantId, values.monthlyCapUsd, now(), database);
@@ -259,8 +342,13 @@ export async function saveAiVisibilitySettings(
       enabled: row.enabled,
       cadence: values.cadence as Cadence,
       dayOfWeek: values.dayOfWeek,
-      engines: values.engines,
+      // Off the ROW, like `concurrency` below it, because `values` does not
+      // carry it on the ordinary save that left it alone.
+      engines: row.engines.filter(isEngineId),
       samplesPerPrompt: values.samplesPerPrompt,
+      // Read back off the row rather than off `values`, which does not carry it
+      // on the ordinary save that left it alone.
+      concurrency: row.concurrency,
       monthlyCapUsd: values.monthlyCapUsd,
     },
   };
@@ -395,7 +483,7 @@ export async function setAiVisibilityEnabled(
   await ensureAiVisibilitySource(tenantId, database, {
     status: enabled ? "active" : "disabled",
     // Enabling clears the stale complaint — the common path is reading
-    // "Paused — monthly cap reached", raising the cap, and re-toggling.
+    // "Paused — monthly engine budget reached", raising the budget, and re-toggling.
     // Disabling leaves it: that is exactly when an operator needs to see
     // the last failure.
     ...(enabled ? { lastError: null } : {}),

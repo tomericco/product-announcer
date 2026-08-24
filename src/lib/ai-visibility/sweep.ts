@@ -2,7 +2,7 @@ import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
 import { sources, aiVisibilityRuns, type Source } from "@/db/schema";
 import { capPausedMessage } from "@/lib/ai-visibility/cost";
-import { getAiVisibilitySettingsForTenants } from "@/lib/ai-visibility/settings";
+import { DEFAULT_CONCURRENCY, getAiVisibilitySettingsForTenants } from "@/lib/ai-visibility/settings";
 import { planRun, runSlice, finalizeRun, type Clock, type PlanRunRefusal } from "@/lib/ai-visibility/run";
 
 /**
@@ -36,13 +36,24 @@ export const SWEEP_BUDGET_MS = positiveNumberFromEnv(
 );
 
 /**
- * Engine calls in flight at once, per source.
+ * The FALLBACK number of engine calls in flight at once.
  *
- * Contract decision 3 targets 270 calls in one tick at concurrency 12–20. Held
- * at the low end of that: three different providers' rate limits are in play and
- * a 429 costs a sample outright, since there is no retry helper in this repo.
+ * The real knob is per-tenant now: `ai_visibility_settings.concurrency`, which
+ * `runFor` below reads for every source it drives. This constant is what a
+ * source falls back to when there is no settings row to read, and the env var
+ * is how an operator moves that fallback during an incident.
+ *
+ * The number itself is `DEFAULT_CONCURRENCY`, imported rather than restated.
+ * Read the comment on it before touching either: it is 3 and not 12 for an
+ * arithmetic reason (OpenAI Tier 1 is 30,000 TPM and one grounded call is
+ * ~25,000 tokens), and a fallback that quietly disagreed with the default would
+ * be a different concurrency for the tenants who most need the conservative
+ * one — the ones with no settings row.
  */
-export const SWEEP_CONCURRENCY = positiveNumberFromEnv(process.env.AI_VISIBILITY_CONCURRENCY, 12);
+export const SWEEP_CONCURRENCY = positiveNumberFromEnv(
+  process.env.AI_VISIBILITY_CONCURRENCY,
+  DEFAULT_CONCURRENCY
+);
 
 /** No source gets less than this, however many are waiting. */
 export const MIN_SOURCE_BUDGET_MS = 5_000;
@@ -131,6 +142,13 @@ function refusalMessage(refusal: PlanRunRefusal): string {
   switch (refusal.reason) {
     case "disabled":
       return "AI visibility is turned off for this workspace.";
+    case "no_engines":
+      // The BYOK hard gate, and on ship day this is EVERY tenant: three
+      // engines switched on, no keys connected. Recorded on the source so the
+      // health block says why nothing happened, rather than sitting green and
+      // silent — which, with no vendor-key fallback, is the failure mode this
+      // sentence exists to catch.
+      return "No AI engine keys connected — connect one in AI-visibility settings to start measuring.";
     case "no_prompts":
       return "No active prompts — approve a prompt set to start measuring.";
     case "run_in_flight":
@@ -176,7 +194,10 @@ export async function sweepAiVisibility(deps: SweepAiVisibilityDeps = {}): Promi
   const slice = deps.slice ?? runSlice;
   const finalize = deps.finalize ?? finalizeRun;
   const totalBudgetMs = deps.budgetMs ?? SWEEP_BUDGET_MS;
-  const concurrency = deps.concurrency ?? SWEEP_CONCURRENCY;
+  // An explicit override (tests, and an operator running the sweep by hand)
+  // applies to every source; otherwise each source uses its own tenant's
+  // setting, resolved per worker below.
+  const concurrencyOverride = deps.concurrency;
   const deadline = now().getTime() + totalBudgetMs;
 
   let candidates: Source[];
@@ -198,7 +219,7 @@ export async function sweepAiVisibility(deps: SweepAiVisibilityDeps = {}): Promi
   // Two queries, not two per source: the budget cannot be divided until every
   // candidate has been classified, and classifying them one round trip at a
   // time spends the budget before any work starts.
-  let workers: { source: Source; runId: string | null }[];
+  let workers: { source: Source; runId: string | null; concurrency: number }[];
   try {
     const tenantIds = candidates.map((source) => source.tenantId);
     const inFlightRows = await database
@@ -224,15 +245,23 @@ export async function sweepAiVisibility(deps: SweepAiVisibilityDeps = {}): Promi
         // refused while a run is in flight ("A run is already in progress."),
         // and the live `after()` loop of the run that started it only drives
         // its own run, only until its budget is gone.
-        const runId = inFlight.get(source.tenantId) ?? null;
-        if (runId) return { source, runId };
-
         const tenantSettings = settings.get(source.tenantId);
+        // Per TENANT, not per tick: the rate limit being respected belongs to
+        // the account the calls are billed to, which under BYOK is theirs.
+        const concurrency =
+          concurrencyOverride ?? tenantSettings?.concurrency ?? SWEEP_CONCURRENCY;
+
+        const runId = inFlight.get(source.tenantId) ?? null;
+        if (runId) return { source, runId, concurrency };
+
         if (!tenantSettings?.enabled) return null;
         if (!cadenceDue(tenantSettings, source.lastRunAt, now())) return null;
-        return { source, runId: null };
+        return { source, runId: null, concurrency };
       })
-      .filter((worker): worker is { source: Source; runId: string | null } => worker !== null);
+      .filter(
+        (worker): worker is { source: Source; runId: string | null; concurrency: number } =>
+          worker !== null
+      );
   } catch (error) {
     console.error("[ai-visibility-sweep] failed to classify candidate sources:", error);
     return;
@@ -306,7 +335,11 @@ export async function sweepAiVisibility(deps: SweepAiVisibilityDeps = {}): Promi
       }
 
       const sliceStartedAt = now().getTime();
-      const outcome = await slice(runId, { budgetMs, concurrency, now }, { database });
+      const outcome = await slice(
+        runId,
+        { budgetMs, concurrency: worker.concurrency, now },
+        { database }
+      );
 
       // Nothing left to ask, and the cap did not stop us: close the run out with
       // whatever this source's budget has left. `finalizeRun` is itself

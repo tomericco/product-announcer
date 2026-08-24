@@ -566,13 +566,10 @@ describe("VisibilityTrend", () => {
   });
 
   it("counts the span in RUNS, never in weeks — a fortnightly tenant reads twelve of these as six months", () => {
-    const { container } = render(<VisibilityTrend series={fourLines()} />);
+    render(<VisibilityTrend series={fourLines()} />);
 
-    // Both the visible caption and the data table's own, which are the same
-    // sentence deliberately: one string, so they cannot disagree.
-    expect(container.querySelector("figcaption")!.textContent).toContain(
-      "Mention rate — how often you were named — over the last 4 runs."
-    );
+    // Only the sr-only table carries this sentence now — see the "no visible
+    // figcaption" test below for why the visible one was dropped.
     expect(screen.getByRole("table").querySelector("caption")!.textContent).toContain("4 runs");
     expect(screen.queryByText(/weeks/)).not.toBeInTheDocument();
   });
@@ -589,15 +586,17 @@ describe("VisibilityTrend", () => {
     ]);
   });
 
-  it("leaves the pooling caveat to the section description, so it is written once", () => {
-    // It used to be appended to the figcaption, UNDER the chart. The chart is
-    // the page's first section now, so "the bold line is every engine pooled"
-    // has to reach the reader before the lines do — which is the page's
-    // CardDescription, above it. Two copies would be two places to fix.
+  it("has no visible figcaption — the section's title and description above the chart already say what it plots", () => {
+    // The metric name and the pooling caveat both used to repeat here, under
+    // the chart. The chart is the page's first section now: "Mention rate per
+    // run" as the title and the pooling sentence in the CardDescription above
+    // it already say what a reader needs before they reach the lines. A
+    // visible figcaption saying the same thing again, below, was the same
+    // sentence twice on one screen. The sr-only table keeps its own
+    // `<caption>` — a screen reader can land on the table directly without
+    // ever reading the section header above the figure.
     const { container } = render(<VisibilityTrend series={fourLines()} />);
 
-    expect(container.querySelector("figcaption")!.textContent).toBe(
-      "Mention rate — how often you were named — over the last 4 runs."
-    );
+    expect(container.querySelector("figcaption")).not.toBeInTheDocument();
   });
 });

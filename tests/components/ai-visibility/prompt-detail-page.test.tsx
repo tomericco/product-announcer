@@ -47,6 +47,7 @@ vi.mock("@/app/(dashboard)/ai-visibility/cited-domains-table", () => ({
 const {
   requireSession,
   getAiVisibilitySettings,
+  effectiveEngines,
   listCompetitors,
   getPrompt,
   promptSamples,
@@ -58,6 +59,8 @@ const {
 } = vi.hoisted(() => ({
   requireSession: vi.fn(),
   getAiVisibilitySettings: vi.fn(),
+  // BYOK: both pages read the EFFECTIVE engine list, not `settings.engines`.
+  effectiveEngines: vi.fn(async () => ["openai", "gemini", "anthropic"]),
   listCompetitors: vi.fn(),
   getPrompt: vi.fn(),
   promptSamples: vi.fn(),
@@ -77,6 +80,7 @@ vi.mock("@/db", () => ({
 vi.mock("@/lib/workspace/session", () => ({ requireSession }));
 vi.mock("@/lib/workspace/competitors", () => ({ listCompetitors }));
 vi.mock("@/lib/ai-visibility/settings", () => ({ getAiVisibilitySettings }));
+vi.mock("@/lib/ai-visibility/engine-keys", () => ({ effectiveEngines }));
 vi.mock("@/lib/ai-visibility/prompts", () => ({ getPrompt, MAX_ACTIVE_PROMPTS: 30 }));
 vi.mock("@/lib/ai-visibility/cited-domains", () => ({ citedDomains }));
 vi.mock("@/lib/briefs/query", () => ({ relatedPieces }));
@@ -119,6 +123,11 @@ function setup(overrides: Record<string, unknown> = {}) {
     monthlyCapUsd: 20,
     ...((o.settings as object) ?? {}),
   });
+  // The tabs are drawn from the EFFECTIVE engine list — the ones with a key —
+  // so an engine nobody is paying for gets no permanently empty panel.
+  effectiveEngines.mockResolvedValue(
+    (o.effectiveEngines as string[]) ?? ["openai", "gemini", "anthropic"]
+  );
   getPrompt.mockResolvedValue(
     "prompt" in overrides
       ? o.prompt
@@ -229,6 +238,47 @@ describe("prompt detail — the alias table", () => {
   });
 });
 
+describe("prompt detail — when nothing is keyed", () => {
+  it("shows the answers already collected rather than an empty page", async () => {
+    // THE REGRESSION. The tabs and the sparkline cards are drawn from the
+    // EFFECTIVE engine list, which is empty for a tenant with no usable key —
+    // so `engineGridClass(0)` drew nothing and `EngineTabs` opened with no
+    // tabs, over answers that were sitting right there in `promptSamples`.
+    //
+    // With no run possible, the engines shown are the ones that ANSWERED this
+    // prompt. No extra query: the answers are already loaded.
+    setup({
+      effectiveEngines: [],
+      samples: [sample(), sample({ id: "s2", engine: "gemini" })],
+    });
+    await renderPage();
+
+    expect(captured.tabs?.engines).toEqual(["openai", "gemini"]);
+    expect(captured.tabs?.initialEngine).toBe("openai");
+    expect(captured.tabs?.samples).toHaveLength(2);
+    // One card per engine that answered, so the history is still readable.
+    expect(captured.sparklines).toHaveLength(2);
+  });
+
+  it("says why nothing new is arriving, and routes to the keys", async () => {
+    setup({ effectiveEngines: [], samples: [sample()] });
+    await renderPage();
+
+    expect(screen.getByText(/Measuring is paused/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Connect an engine" })).toHaveAttribute(
+      "href",
+      "/settings#ai-engines"
+    );
+  });
+
+  it("says nothing about a pause while the engines are keyed", async () => {
+    setup();
+    await renderPage();
+
+    expect(screen.queryByText(/Measuring is paused/)).not.toBeInTheDocument();
+  });
+});
+
 describe("prompt detail — which engine tab opens", () => {
   it("opens the engine a matrix cell was about", async () => {
     setup();
@@ -238,7 +288,7 @@ describe("prompt detail — which engine tab opens", () => {
   });
 
   it("ignores an engine the tenant does not run rather than opening a tab that is not there", async () => {
-    setup({ settings: { engines: ["openai", "anthropic"] } });
+    setup({ effectiveEngines: ["openai", "anthropic"] });
     await renderPage({ engine: "gemini" });
 
     expect(captured.tabs!.engines).toEqual(["openai", "anthropic"]);
@@ -263,7 +313,7 @@ describe("prompt detail — which engine tab opens", () => {
 describe("prompt detail — the per-engine cards", () => {
   it("counts only runs at or above the three-sample floor, and breaks the line below it", async () => {
     setup({
-      settings: { engines: ["openai"] },
+      effectiveEngines: ["openai"],
       history: [
         { runId: "r1", runDate: "2026-08-03T09:00:00Z", hits: 0, n: 2, modelId: "gpt-5.1" },
         { runId: "r2", runDate: "2026-08-10T09:00:00Z", hits: 2, n: 3, modelId: "gpt-5.1" },
@@ -282,7 +332,7 @@ describe("prompt detail — the per-engine cards", () => {
 
   it("says so rather than claiming zero when no run has cleared the floor", async () => {
     setup({
-      settings: { engines: ["openai"] },
+      effectiveEngines: ["openai"],
       history: [{ runId: "r1", runDate: "2026-08-03T09:00:00Z", hits: 0, n: 1, modelId: null }],
     });
     await renderPage();
@@ -292,7 +342,7 @@ describe("prompt detail — the per-engine cards", () => {
 
   it("marks the run that could first have observed a publish, per engine", async () => {
     setup({
-      settings: { engines: ["openai"] },
+      effectiveEngines: ["openai"],
       history: [
         { runId: "r1", runDate: "2026-08-03T09:00:00Z", hits: 1, n: 3, modelId: null },
         { runId: "r2", runDate: "2026-08-10T09:00:00Z", hits: 2, n: 3, modelId: null },
@@ -306,7 +356,7 @@ describe("prompt detail — the per-engine cards", () => {
 
   it("marks nothing from an unpublished piece", async () => {
     setup({
-      settings: { engines: ["openai"] },
+      effectiveEngines: ["openai"],
       history: [{ runId: "r1", runDate: "2026-08-03T09:00:00Z", hits: 1, n: 3, modelId: null }],
       pieces: [{ pieceId: "pc1", title: "A draft", status: "drafting", publishedAt: null }],
     });
