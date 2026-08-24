@@ -10,6 +10,7 @@ import {
 } from "../../../src/db/schema";
 import { askOpenAi } from "../../../src/lib/ai-visibility/engines/openai";
 import { askAnthropic } from "../../../src/lib/ai-visibility/engines/anthropic";
+import { judgeRun } from "../../../src/lib/ai-visibility/judge";
 import { finalizeRun, planRun, runSlice } from "../../../src/lib/ai-visibility/run";
 import type { EngineClient } from "../../../src/lib/ai-visibility/types";
 import { seedTenant, dropTenant, seedEngineKey } from "../../helpers/fixtures";
@@ -275,5 +276,126 @@ describe("a provider error body never reaches storage", () => {
     const [sample] = await sampleErrors(runId);
     expect(sample.status).toBe("error");
     expect(sample.error).not.toContain("sk-proj-LEAKED9876");
+  });
+});
+
+/**
+ * The judge is the OTHER door into the same two columns.
+ *
+ * The engine clients were fixed by mapping provider failures to a closed set of
+ * codes at the client boundary. The judge has no such boundary: it calls the AI
+ * SDK's `generateObject`, and an `APICallError` from that SDK stringifies with
+ * the failing request and its response body attached — an Anthropic 401 body
+ * carrying `sk-ant-…` verbatim. That string is collected into `judged.errors`,
+ * joined onto `ai_visibility_runs.error`, and read from there onto
+ * `sources.lastError`, which /company renders.
+ *
+ * So the leak arrives by a different door into exactly the same rooms, and it
+ * needs its own test. `judgeRun` is driven with the real code and a `generate`
+ * that throws — the throw is the seam, not a stub of the scrubber.
+ *
+ * The judge still runs on OUR Anthropic key, which is the reason this is not
+ * covered by the BYOK tests and the reason it matters anyway: our key leaking
+ * into a page every member of every workspace can open is the same CWE-209.
+ */
+describe("the judge's own error path leaks nothing either", () => {
+  /** What an AI SDK `APICallError` actually stringifies to. */
+  const SDK_ERROR =
+    'AI_APICallError: Unauthorized\n' +
+    'url: https://api.anthropic.com/v1/messages\n' +
+    'requestBodyValues: {"headers":{"x-api-key":"sk-ant-api03-JUDGEKEY9876"}}\n' +
+    'responseBody: {"error":{"type":"authentication_error","message":"invalid x-api-key: sk-ant-api03-JUDGEKEY9876"}}';
+
+  // The KEY, and the echoed body that quotes it. Not the header NAME or the
+  // URL: `x-api-key` and `api.anthropic.com` are not secrets, and redacting
+  // them would leave an operator with a message that says nothing at all.
+  const JUDGE_FRAGMENTS = ["sk-ant-api03-JUDGEKEY9876", "JUDGEKEY9876"];
+
+  /** A run with one ANSWERED sample, which is what gives the judge work to do. */
+  async function runWithAnAnswer() {
+    const { tenant, runId } = await plannedRun("openai");
+    await runSlice(
+      runId,
+      { budgetMs: 60_000, concurrency: 1, now: frozen("2026-03-02T09:00:00Z") },
+      {
+        engines: {
+          openai: {
+            id: "openai",
+            label: "openai (answering)",
+            ask: async () => ({
+              text: "Linear is the best issue tracker for startups.",
+              modelId: "gpt-5.5",
+              citations: [],
+              searchUsed: false,
+              searchQueries: [],
+              raw: {},
+              costUsd: 0.25,
+            }),
+          },
+        },
+        extract: async () => {},
+      }
+    );
+    return { tenant, runId };
+  }
+
+  /** The real judge, with the one call it makes replaced by a throw. */
+  const leakingJudge: typeof judgeRun = (runId, opts, deps) =>
+    judgeRun(runId, opts, {
+      ...deps,
+      generate: async () => {
+        throw new Error(SDK_ERROR);
+      },
+    });
+
+  it("keeps the SDK's request dump out of `ai_visibility_runs.error`", async () => {
+    const { runId } = await runWithAnAnswer();
+
+    await finalizeRun(
+      runId,
+      { budgetMs: 60_000, now: frozen("2026-03-02T09:10:00Z") },
+      { judge: leakingJudge, emit: async () => ({ written: 0, considered: 0 }) }
+    );
+
+    const [run] = await db.select().from(aiVisibilityRuns).where(eq(aiVisibilityRuns.id, runId));
+    // It DID record a failure — this is redaction, not suppression, and a judge
+    // that silently drops its errors is how a run sits "Running…" for a week.
+    //
+    // Only the RUN row on this path: a chunk that failed leaves its samples
+    // unjudged, so `remaining > 0`, and `finalizeRun` returns "running" without
+    // touching the source. `sources.lastError` is reached by the throw path
+    // below, which is where it is asserted.
+    expect(run.error).toBeTruthy();
+    for (const fragment of JUDGE_FRAGMENTS) {
+      expect(run.error).not.toContain(fragment);
+    }
+  });
+
+  it("scrubs a judge that THROWS out of `finalizeRun` altogether", async () => {
+    // The judge promises to return its errors rather than throw them, so this
+    // is the path taken when that promise breaks — `finalizeRun`'s own catch,
+    // whose message goes to the run row and the source row unchanged otherwise.
+    const { tenant, runId } = await runWithAnAnswer();
+
+    await finalizeRun(
+      runId,
+      { budgetMs: 60_000, now: frozen("2026-03-02T09:10:00Z") },
+      {
+        judge: async () => {
+          throw new Error(SDK_ERROR);
+        },
+        emit: async () => ({ written: 0, considered: 0 }),
+      }
+    );
+
+    const [run] = await db.select().from(aiVisibilityRuns).where(eq(aiVisibilityRuns.id, runId));
+    const source = await sourceRow(tenant.id);
+    expect(run.status).toBe("failed");
+    for (const stored of [run.error, source.lastError]) {
+      expect(stored).toBeTruthy();
+      for (const fragment of JUDGE_FRAGMENTS) {
+        expect(stored).not.toContain(fragment);
+      }
+    }
   });
 });

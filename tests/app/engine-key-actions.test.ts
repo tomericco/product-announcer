@@ -388,6 +388,49 @@ describe("removeEngineKeyAction", () => {
   });
 });
 
+describe("the audit trail — Decision 10's checklist item nobody else ships", () => {
+  it("records every write with its actor, and names them apart", async () => {
+    // "Audit-log add / replace / delete / enable / disable with actor and
+    // timestamp. No surveyed product documents this for an LLM credential."
+    // Asserted as an ORDERED list, because a trail that logs five writes as
+    // five identical "changed" lines is not a trail.
+    await saveEngineKeyAction(saveForm("openai", GOOD_KEY));
+    await saveEngineKeyAction(saveForm("openai", `${GOOD_KEY}-two`));
+    await toggleEngineKeyAction("openai", false);
+    await toggleEngineKeyAction("openai", true);
+    await recheckEngineKeyAction("openai");
+    await removeEngineKeyAction("openai");
+
+    const trail = (await events()).sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+    expect(trail.map((entry) => entry.action)).toEqual([
+      "added",
+      "replaced",
+      "disabled",
+      "enabled",
+      "rechecked",
+      "removed",
+    ]);
+    // Every line names who did it. A trail that cannot answer "who" is a log.
+    expect(trail.every((entry) => entry.actorUserId === currentUserId)).toBe(true);
+    expect(trail.every((entry) => entry.createdAt instanceof Date)).toBe(true);
+    // …and no line carries anything longer than the last four.
+    const serialised = JSON.stringify(trail);
+    expect(serialised).not.toContain(GOOD_KEY);
+    expect(serialised).toContain("7f4A");
+  });
+
+  it("a failed save writes nothing at all — not even an attempt line", async () => {
+    // A key that never verified was never stored, so there is nothing to have
+    // a history of. An "attempted" line here would be a record of a secret the
+    // tenant typed, kept after we refused it.
+    verifyEngineKey.mockResolvedValue({ ok: false, status: "invalid_key" });
+
+    expect((await saveEngineKeyAction(saveForm("openai", GOOD_KEY))).ok).toBe(false);
+
+    expect(await events()).toEqual([]);
+  });
+});
+
 describe("owner-only for writes", () => {
   // Decision 8: 4 of 5 BYOK products are workspace-scoped and admin-only
   // wherever documented, and AirOps — same audience, same product shape — gives

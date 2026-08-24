@@ -7,6 +7,7 @@ import {
   aiVisibilitySamples,
   aiVisibilitySettings,
 } from "../../../src/db/schema";
+import { askOpenAi } from "../../../src/lib/ai-visibility/engines/openai";
 import type { EngineAnswer, EngineClient, EngineError } from "../../../src/lib/ai-visibility/types";
 import {
   MAX_SAMPLE_ATTEMPTS,
@@ -415,6 +416,73 @@ describe("runSlice — a 429 is not one thing", () => {
       { engines: { openai: engine } }
     );
     expect(second.processed).toBe(1);
+  });
+});
+
+/**
+ * The wire between the two halves that were each tested alone.
+ *
+ * `classifyHttpFailure` is tested against a `Headers` bag in
+ * `engines/failure.test.ts`; `runSlice`'s use of `EngineError.retryAfterMs` is
+ * tested above with a fake engine that sets the field by hand. Neither notices
+ * if the REAL client stops carrying the value from one to the other — a mutation
+ * that made `classifyHttpFailure` ignore `retry-after` entirely left every test
+ * in this file green, which is how this gap was found.
+ *
+ * So these two drive the actual `askOpenAi` with a canned 429 and read the
+ * sample row, joining header → classification → `EngineError` → `nextAttemptAt`
+ * in one assertion. The provider's own instruction is what this feature has
+ * instead of guessing: Anthropic warns that a nominal 60 RPM "might be enforced
+ * as 1 request per second", and under a hard gate the customer's 429 is our
+ * outage.
+ */
+describe("a real client carries `retry-after` all the way to the row", () => {
+  /** The real OpenAI client, given a fetch that returns one canned 429. */
+  function throttledOpenAi(headers: Record<string, string>, body = "{}"): EngineClient {
+    const fetchImpl = async () => new Response(body, { status: 429, headers });
+    return {
+      id: "openai",
+      label: "openai (canned 429)",
+      ask: (prompt) => askOpenAi(prompt, { fetchImpl, apiKey: "test-openai-key-0000" }),
+    };
+  }
+
+  it("waits the 5 seconds the header asked for, not the ladder's 30", async () => {
+    const { runId } = await plannedOneSample();
+    const startedAt = new Date("2026-03-02T09:00:00Z").getTime();
+    const now = controllableClock("2026-03-02T09:00:00Z");
+
+    await runSlice(
+      runId,
+      { budgetMs: 60_000, concurrency: 1, now },
+      { engines: { openai: throttledOpenAi({ "retry-after": "5" }) } }
+    );
+
+    const row = await sampleRow(runId);
+    expect(row.status).toBe("pending");
+    const waited = row.nextAttemptAt!.getTime() - startedAt;
+    expect(waited).toBeGreaterThanOrEqual(5_000);
+    // Strictly shorter than our own first rung, which is the whole point: a
+    // ladder that ignored the provider would sit here for 30 seconds.
+    expect(waited).toBeLessThan(sampleBackoffMs(1));
+  });
+
+  it("treats a wait longer than the whole ladder as terminal, and stops paying", async () => {
+    // A 429 asking for ten minutes is a spend cap wearing a throughput status —
+    // Gemini's $10-per-10-minutes cap is exactly this shape. Retrying it burns
+    // three attempts of the tenant's budget to fail identically.
+    const { runId } = await plannedOneSample();
+    const now = controllableClock("2026-03-02T09:00:00Z");
+    const client = throttledOpenAi({ "retry-after": "600" });
+
+    await runSlice(runId, { budgetMs: 60_000, concurrency: 1, now }, { engines: { openai: client } });
+
+    const row = await sampleRow(runId);
+    expect(row.status).toBe("error");
+    expect(row.nextAttemptAt).toBeNull();
+    // Named as what it is, so the badge sends them to billing rather than to
+    // waiting. And the provider's body never made it into the column.
+    expect(row.error).toContain("out of credit or has hit a spend cap");
   });
 });
 
