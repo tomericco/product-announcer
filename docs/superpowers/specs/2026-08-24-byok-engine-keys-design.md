@@ -74,6 +74,36 @@ integration, and the cross-surface dependency (key entered under Integrations,
 burned by LLM Observability) is one their docs never explain — the same
 unnarrated split we are trying to avoid. Recorded rather than dismissed.
 
+### Dissent recorded, and the trigger to revisit
+
+A fourth survey — 15 automation and LLM-ops platforms — counts it differently:
+**12 of 15 put credentials in a dedicated top-level area in the main left nav
+(Credentials / Connections / Providers), and 0 of 15 put them inside the
+feature only.** That is a real count against this decision and it should not be
+buried.
+
+Why we are not following it: in every one of those 12, credentials are **shared
+infrastructure** — one n8n credential serves any number of nodes across any
+number of workflows; one Zapier connection serves many Zaps. A top-level store
+is right when the credential outlives and out-scopes its consumer. We have
+three keys, one consuming feature, and no reuse. Note also that 3 of those 12
+are reached through a generic Settings parent anyway (Langfuse's *Project
+Settings › LLM Connections*, AirOps' *Settings › API Providers*), which is the
+shape we are adopting.
+
+**The strongest argument against us is Retool's direction of travel.** It moved
+*away* from a single `Settings › Retool AI` toggle toward first-class resource
+objects, and published the reason: *"finer-grained control: multiple API keys
+per provider, granular permissions, environment-specific configurations, and
+cleaner auditability."* Portkey moved the same way, from Virtual Keys to a
+Model Catalog. Both moved toward more structure, never less.
+
+**Revisit trigger:** the moment a *second* feature needs an LLM provider key —
+if the judge, prompt generation, or a future feature moves to customer keys —
+this decision inverts and the keys should be promoted to their own surface. The
+rule in Decision 1 predicts that: at that point the credential stops being one
+feature's input and becomes a shared system connection.
+
 ### Naming
 
 The card is titled **"AI engines"**, not "Credentials", "API keys" or "BYOK".
@@ -485,8 +515,17 @@ valuable — providers give you no per-project stop-loss.
 ## Deliberately not doing
 
 - **No free first run.** Product decision; revisit as a promotion.
-- **No vendor-key fallback.** 8 of 12 marketing products keep one and only n8n
-  hard-gates like this. Noted as against convention, decided anyway.
+- **No vendor-key fallback.** The evidence leans against this and the doc
+  should say so plainly: **9 of 15 platforms offer a vendor-key path, and all 6
+  that hard-gate are developer tools whose users already hold provider
+  accounts.** The two products closest to our audience both keep a vendor
+  default and make BYOK the opt-in — Zapier ships GPT-4.1 mini and lets you
+  upgrade with a key; Retool defaults to "Retool Managed". Glide, the most
+  non-technical product surveyed, has no BYOK at all. Decided anyway, on cost.
+  If it needs softening later, the shape to copy is OpenRouter's per-provider
+  opt-in with the consequence written into the label: *"Always use for this
+  provider… may result in rate limit errors if your keys are exhausted, but
+  ensures all requests go through your account."*
 - **No multiple keys per provider**, no load-balancing pools, no
   prioritized/fallback ordering (Dify, OpenRouter). One key per engine.
 - **No base URL, custom model names, adapters or extra headers.** Every field
