@@ -287,6 +287,41 @@
   margin: 1rem 0;
   border-radius: 0.5rem;
 }
+/* An engine answer is markdown too, but it is quoted evidence inside a card,
+   not a document: the .mdx-content scale (h1 at 1.875rem) would shout over the
+   page's own h1, and answers routinely open with an h2. Same rules, several
+   steps down, with the outer margins collapsed so the block sits flush in its
+   card. Unlayered like the .mdx-content rules above, for the same reason —
+   Tailwind's preflight would otherwise flatten every heading and bullet. */
+.answer-content h1 {
+  font-size: 1.0625rem;
+  margin: 0.75rem 0 0.375rem;
+}
+.answer-content h2 {
+  font-size: 1rem;
+  margin: 0.75rem 0 0.375rem;
+}
+.answer-content h3,
+.answer-content h4,
+.answer-content h5,
+.answer-content h6 {
+  font-size: 0.9375rem;
+  margin: 0.625rem 0 0.375rem;
+}
+.answer-content p,
+.answer-content ul,
+.answer-content ol,
+.answer-content blockquote {
+  margin: 0.5rem 0;
+  line-height: 1.6;
+}
+.answer-content > :first-child {
+  margin-top: 0;
+}
+.answer-content > :last-child {
+  margin-bottom: 0;
+}
+
 /* The brand palette is intentionally greyscale (every token is oklch(x 0 0)),
    so a link tinted with --primary reads as ordinary body text. Give links a
    real, recognizable link colour instead. Doubled class beats @mdxeditor's

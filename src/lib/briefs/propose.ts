@@ -4,6 +4,7 @@ import { resolveModel, modelId } from "@/lib/ai/model";
 import { recordLlmUsage } from "@/lib/ai/llm-usage";
 import type { RelevanceProfile } from "@/lib/signals/relevance";
 import { ProposedBriefSchema, type ProposedBrief } from "@/lib/briefs/ideate";
+import { fenceSignals, SIGNAL_FENCE_NOTE } from "@/lib/briefs/signal-fence";
 
 /**
  * Proposes exactly one brief from signals a human has already chosen.
@@ -86,21 +87,21 @@ function buildSystem(profile: RelevanceProfile): string {
     "   It is your confidence in the brief, and it is compared directly against",
     "   scores from other briefs, so a value on any other scale is not merely",
     "   imprecise, it outranks everything else permanently.",
+    "",
+    // Same trust boundary as `ideate`, and it matters at least as much here:
+    // the human chose these signals, so the model is told not to re-litigate
+    // them — which is exactly the posture an injected instruction inside one
+    // would like it to be in.
+    SIGNAL_FENCE_NOTE,
   ]
     .filter((l) => l !== null)
     .join("\n");
 }
 
 function buildPrompt(signals: ProposalInput[]): string {
-  // Same "publication date unknown" honesty as ideate: a signal with no known
-  // date is never rendered with today's, which would hand the model a false
-  // why-now to repeat as fact.
-  const sig = signals
-    .map(
-      (s) =>
-        `[${s.id}] (${s.kind}, ${s.occurredAt ? s.occurredAt.toISOString().slice(0, 10) : "publication date unknown"})\n  ${s.title}\n  ${s.excerpt ?? "(no excerpt)"}`
-    )
-    .join("\n\n");
+  // The same rendering ideate uses, from the same module: same fencing, and
+  // the same "publication date unknown" honesty rather than today's date.
+  const sig = fenceSignals(signals);
 
   return ["## Signals chosen for this brief", "", sig].join("\n");
 }

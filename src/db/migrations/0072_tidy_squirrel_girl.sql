@@ -1,0 +1,2 @@
+ALTER TABLE "ai_visibility_samples" ADD COLUMN "ask_attempts" smallint DEFAULT 0 NOT NULL;--> statement-breakpoint
+ALTER TABLE "ai_visibility_samples" ADD COLUMN "next_attempt_at" timestamp with time zone;

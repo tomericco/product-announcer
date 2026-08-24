@@ -1,5 +1,9 @@
-import { pgTable, pgEnum, uuid, text, timestamp, primaryKey, integer, smallint, jsonb, uniqueIndex, index, boolean, real } from "drizzle-orm/pg-core";
+import { pgTable, pgEnum, uuid, text, timestamp, primaryKey, integer, smallint, jsonb, uniqueIndex, index, boolean, real, type AnyPgColumn } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
+// Relative, not "@/…": drizzle-kit bundles this file outside Next's path
+// resolution. Type-only, so it is erased entirely and adds no runtime edge
+// from the schema into `src/lib`.
+import type { AiVisibilityPayload, SampleExtraction } from "../lib/ai-visibility/types";
 
 // A persona in a tenant's brand profile is either a live reference to a seeded
 // system persona (resolved against `system_personas` at read time) or a
@@ -334,9 +338,15 @@ export const competitors = pgTable(
 
 export type Competitor = typeof competitors.$inferSelect;
 
-export const signalKindEnum = pgEnum("signal_kind", ["shipped_work", "competitor_move", "market_news", "manual"]);
+export const signalKindEnum = pgEnum("signal_kind", [
+  "shipped_work",
+  "competitor_move",
+  "market_news",
+  "manual",
+  "ai_visibility",
+]);
 export const signalStatusEnum = pgEnum("signal_status", ["new", "used", "stale"]);
-export const sourceTypeEnum = pgEnum("source_type", ["competitor_web", "news"]);
+export const sourceTypeEnum = pgEnum("source_type", ["competitor_web", "news", "ai_visibility"]);
 export const sourceStatusEnum = pgEnum("source_status", ["active", "failing", "disabled"]);
 
 export const sources = pgTable(
@@ -444,6 +454,12 @@ export const signals = pgTable(
     relevanceScore: real("relevance_score"),
     relevanceRationale: text("relevance_rationale"),
     topics: text("topics").array().notNull().default([]),
+    // Kind-specific evidence. Null for every kind but `ai_visibility`, whose
+    // rows carry the prompt, engine, model, sample count, answer excerpt and
+    // cited URLs the evidence dialog and the brief agent read. jsonb rather
+    // than columns because only one kind uses it and its shape is owned by
+    // `AiVisibilityPayload`, not by this table.
+    payload: jsonb("payload").$type<AiVisibilityPayload>(),
     // `used` is a reporting and pruning flag, NOT a consumption gate: spec 5's
     // ideation happily re-reads a signal it cited last week, because that
     // signal can join a new cluster this week.
@@ -468,6 +484,457 @@ export const signals = pgTable(
 );
 
 export type Signal = typeof signals.$inferSelect;
+
+// ---- AI visibility (spec 2026-08-19-ai-visibility-design.md) ----
+//
+// The vocabularies here — cadence, intent, status, trigger, engine id,
+// domain class — are all `text()` and not pgEnum, matching the repo rule for
+// growing vocabularies: Postgres has no DROP VALUE, and every one of these is
+// expected to gain entries (a fourth engine, a v2 intent). The TypeScript
+// unions in `src/lib/ai-visibility/types.ts` are the real contract.
+
+export const aiVisibilitySettings = pgTable("ai_visibility_settings", {
+  // One row per tenant, so the tenant IS the key. Absence of a row is a
+  // meaningful state — `getAiVisibilitySettings` returns defaults for it —
+  // which is why nothing creates this row eagerly.
+  tenantId: uuid("tenant_id")
+    .primaryKey()
+    .references(() => tenants.id, { onDelete: "cascade" }),
+  enabled: boolean("enabled").notNull().default(false),
+  /** "weekly" | "fortnightly" | "off". */
+  cadence: text("cadence").notNull().default("weekly"),
+  /** 0 = Sunday, matching `Date#getUTCDay()`. Always UTC — the spec fixes the timezone. */
+  dayOfWeek: smallint("day_of_week").notNull().default(1),
+  engines: text("engines")
+    .array()
+    .notNull()
+    .default(["openai", "gemini", "anthropic"]),
+  samplesPerPrompt: smallint("samples_per_prompt").notNull().default(3),
+  /**
+   * Engine calls in flight at once for this tenant's runs.
+   *
+   * Per-tenant because the ceiling is per-ACCOUNT, and under BYOK the account
+   * is theirs, not ours. See `DEFAULT_CONCURRENCY` in
+   * `lib/ai-visibility/settings.ts` for the arithmetic behind the 3 — the short
+   * version is that OpenAI Tier 1 `gpt-4o` is 30,000 TPM, and 30,000 ÷ 12 is
+   * 2,500 tokens per request including output, which one grounded answer
+   * exceeds on its own.
+   *
+   * THE LITERAL IS DELIBERATE and it is the one copy of this number that is not
+   * an import. This file takes no runtime dependency on `src/lib` — drizzle-kit
+   * bundles it outside Next's path resolution, and the only other import here
+   * is type-only for exactly that reason. `tests/lib/ai-visibility/settings.test.ts`
+   * asserts this default equals `DEFAULT_CONCURRENCY`, so it cannot drift.
+   */
+  concurrency: smallint("concurrency").notNull().default(3),
+  monthlyCapUsd: real("monthly_cap_usd").notNull().default(20),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type AiVisibilitySettings = typeof aiVisibilitySettings.$inferSelect;
+
+/**
+ * One tenant-supplied provider key per engine — BYOK (design
+ * `2026-08-24-byok-engine-keys-design.md`, "Data").
+ *
+ * WRITE-ONCE BY CONSTRUCTION. The ciphertext columns are readable only by the
+ * run path and the re-check action; nothing renders, returns or logs the
+ * plaintext, and `last4` is the ONLY fragment any surface may show. That puts
+ * us with Cloudflare Secrets Store ("can no longer be decrypted or accessed via
+ * API or on the dashboard") rather than with an eye-toggle that reveals a
+ * stored secret in a browser.
+ *
+ * Same encryption as `webflowConnections` — AES-256-GCM through
+ * `src/lib/credentials/encryption.ts`, per-record IV and auth tag, key material
+ * in the environment and never in this database. There is deliberately no
+ * second scheme.
+ *
+ * `enabled` is not `status`. A key can be verified and switched off ("Saved,
+ * not in use"): OpenAI, Google and Anthropic each show a secret exactly once,
+ * so Remove is not undoable by the person who did it, while off is one click.
+ */
+export const aiVisibilityEngineKeys = pgTable(
+  "ai_visibility_engine_keys",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    /** "openai" | "gemini" | "anthropic" — `EngineId`, text like every other engine column. */
+    engine: text("engine").notNull(),
+    keyCiphertext: text("key_ciphertext").notNull(),
+    keyIv: text("key_iv").notNull(),
+    keyAuthTag: text("key_auth_tag").notNull(),
+    /**
+     * The last four characters of the key, for display. The only fragment that
+     * ever leaves the server, and short enough to identify a key to the person
+     * who pasted it without confirming it to anyone else.
+     */
+    last4: text("last4").notNull(),
+    /**
+     * `verified` | `invalid_key` | `quota_exceeded` | `rate_limited` |
+     * `provider_unavailable` | `unreadable`.
+     *
+     * Five failure states, never four: `unreadable` — we could not DECRYPT the
+     * stored key — must not collapse into `invalid_key`. Zed shipped that bug
+     * and told users to replace keys that were fine.
+     */
+    status: text("status").notNull().default("verified"),
+    enabled: boolean("enabled").notNull().default(true),
+    verifiedAt: timestamp("verified_at", { withTimezone: true }),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    /** The `EngineFailureCode` behind the last failed call, whether or not it moved `status`. */
+    lastFailureCode: text("last_failure_code"),
+    lastFailureAt: timestamp("last_failure_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    // Provenance — the industry blank. No surveyed product shows who added a
+    // key, and a three-person team genuinely needs to know which colleague
+    // pasted it. SET NULL so removing a member does not take the key with them.
+    createdByUserId: uuid("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  },
+  (table) => [
+    // One key per engine per tenant. No pools, no fallback ordering, no
+    // aliases — every extra field is a field a marketer can get wrong.
+    uniqueIndex("ai_visibility_engine_keys_tenant_engine_unique").on(table.tenantId, table.engine),
+  ]
+);
+
+export type AiVisibilityEngineKey = typeof aiVisibilityEngineKeys.$inferSelect;
+
+/**
+ * The audit trail for engine keys: add / replace / remove / enable / disable,
+ * with the actor and the timestamp.
+ *
+ * Security checklist item 7. No surveyed product documents an audit log for an
+ * LLM credential; this is the cheapest place to be ahead of all of them, and
+ * the row survives the key it describes (`ON DELETE SET NULL` on the actor,
+ * nothing at all on the key — the events are the record of a key that is gone).
+ *
+ * Carries no ciphertext and no fragment of one. `last4` is repeated so a
+ * removed key is still identifiable in the trail.
+ */
+export const aiVisibilityEngineKeyEvents = pgTable(
+  "ai_visibility_engine_key_events",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    engine: text("engine").notNull(),
+    /** "added" | "replaced" | "removed" | "enabled" | "disabled" | "rechecked" | "auto_failed". */
+    action: text("action").notNull(),
+    last4: text("last4"),
+    /** The resulting `status`, so the trail explains why a run stopped sampling. */
+    status: text("status"),
+    // Null for `auto_failed`: a run flipping a key on a provider's verdict has
+    // no human actor, and inventing one would misreport the trail.
+    actorUserId: uuid("actor_user_id").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("ai_visibility_engine_key_events_tenant_idx").on(table.tenantId, table.createdAt),
+  ]
+);
+
+export type AiVisibilityEngineKeyEvent = typeof aiVisibilityEngineKeyEvents.$inferSelect;
+
+export const aiVisibilityPrompts = pgTable(
+  "ai_visibility_prompts",
+  {
+    id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    text: text("text").notNull(),
+    // The case-folded key the unique index below is built on. Stored and
+    // generated by Postgres rather than written by the app, so it cannot drift
+    // from `text` and cannot be bypassed by a caller that forgets to fold.
+    //
+    // A generated COLUMN rather than a `lower(text)` expression index because
+    // drizzle's `onConflictDoNothing({ target })` only renders plain column
+    // names — it escapes `getColumnCasing(it)` — so an expression index would
+    // be unreachable from `ON CONFLICT`, leaving only an untargeted DO NOTHING
+    // (which swallows every constraint) or a throw that loses a whole batch.
+    textNormalized: text("text_normalized")
+      .generatedAlwaysAs(sql`lower("text")`)
+      .notNull(),
+    /** discovery | comparison | alternatives | how_to | brand_check | pricing. */
+    intent: text("intent").notNull(),
+    persona: text("persona"),
+    // SET NULL, not cascade: removing a competitor must not delete the
+    // history of what engines said while we were tracking them. The prompt
+    // is auto-paused instead (spec, "Profile edits").
+    competitorId: uuid("competitor_id").references(() => competitors.id, { onDelete: "set null" }),
+    /** Brand-check prompts name the tenant on purpose and are excluded from SOV. */
+    branded: boolean("branded").notNull().default(false),
+    /** "generated" | "user". */
+    origin: text("origin").notNull(),
+    /** "proposed" | "active" | "paused" | "rejected". */
+    status: text("status").notNull().default("proposed"),
+    /** The template this came from, so the monthly expansion can vary a cluster. */
+    cluster: text("cluster"),
+    // Editing wording creates a NEW row pointing at the old one and pauses
+    // the old one — history stays attached to the wording that produced it.
+    // SET NULL so deleting a run-less predecessor does not take its successor
+    // with it.
+    supersedesId: uuid("supersedes_id").references((): AnyPgColumn => aiVisibilityPrompts.id, {
+      onDelete: "set null",
+    }),
+    /** Human-readable bad-prompt reason, or null. Advisory: nothing is paused automatically. */
+    flagReason: text("flag_reason"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    approvedAt: timestamp("approved_at", { withTimezone: true }),
+    pausedAt: timestamp("paused_at", { withTimezone: true }),
+    approvedBy: uuid("approved_by").references(() => users.id, { onDelete: "set null" }),
+  },
+  (table) => [
+    index("ai_visibility_prompts_tenant_status_idx").on(table.tenantId, table.status),
+    // One live prompt per wording, CASE-INSENSITIVELY. "Best issue trackers"
+    // and "best issue trackers" are one question to every engine, so letting
+    // both in would split one prompt's history across two sparklines and pay
+    // twice to ask the same thing. `text` keeps whatever casing the human
+    // typed; only the key is folded.
+    //
+    // Partial on `status <> 'rejected'` because rejected rows are negatives fed
+    // back into the next generation, and a tenant can turn the same suggestion
+    // down more than once — they must not collide with each other or block a
+    // later hand-written prompt.
+    uniqueIndex("ai_visibility_prompts_tenant_text_unique")
+      .on(table.tenantId, table.textNormalized)
+      .where(sql`${table.status} <> 'rejected'`),
+  ]
+);
+
+export type AiVisibilityPrompt = typeof aiVisibilityPrompts.$inferSelect;
+
+export const aiVisibilityRuns = pgTable(
+  "ai_visibility_runs",
+  {
+    id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    // SET NULL for the same reason as `signals.sourceId`: the run is the
+    // durable record of what we observed, and it must outlive its source row.
+    sourceId: uuid("source_id").references(() => sources.id, { onDelete: "set null" }),
+    /**
+     * "pending" | "running" | "complete" | "failed" | "paused_by_cap" | "cancelled".
+     *
+     * `cancelled` is a human pressing Stop, and is terminal like the other
+     * three. It is deliberately NOT in the partial index below: freeing the
+     * tenant to plan a new run the instant they stop this one is most of the
+     * point of having a Stop at all.
+     */
+    status: text("status").notNull().default("pending"),
+    /** "scheduled" | "manual". */
+    trigger: text("trigger").notNull(),
+    // Snapshotted from settings at plan time, not read back from settings at
+    // read time: a tenant who turns Gemini off next week must not retroactively
+    // change what this run measured.
+    engines: text("engines").array().notNull(),
+    samplesPerPrompt: smallint("samples_per_prompt").notNull(),
+    plannedCalls: integer("planned_calls").notNull().default(0),
+    completedCalls: integer("completed_calls").notNull().default(0),
+    costUsd: real("cost_usd").notNull().default(0),
+    // engine id -> model id actually seen. A change between runs suppresses
+    // change-signals for that engine and puts a tick on the sparkline.
+    modelIds: jsonb("model_ids").$type<Record<string, string>>().notNull().default({}),
+    error: text("error"),
+    // The slice lease. One driver at a time may spend this run's work list:
+    // whoever compare-and-swaps this column into the future owns the run until
+    // it expires or is released. NOT `FOR UPDATE SKIP LOCKED` — a row lock dies
+    // with its transaction, and a slice holds its claim across minutes of
+    // engine HTTP calls that cannot run inside an open transaction.
+    //
+    // Expiry rather than a boolean so a driver that dies mid-slice cannot
+    // strand the run: the next tick takes the lease once the old one lapses.
+    sliceLeaseUntil: timestamp("slice_lease_until", { withTimezone: true }),
+    // Who holds the lease above. Written fresh every time it is taken, and
+    // compared on every renewal and release, so a driver whose lease lapsed
+    // cannot renew over the top of the successor that took it — or release a
+    // claim that is no longer its own.
+    sliceLeaseOwner: uuid("slice_lease_owner"),
+    // The last moment this run demonstrably made progress: planned, a slice
+    // claimed it, a batch of samples landed, or finalize took it on. This — not
+    // the presence of a lease — is what `runIsStalled` reads. A lease is
+    // released at the END of every healthy slice, so lease-presence made a
+    // perfectly live run look abandoned for the sub-second gap between slices;
+    // a timestamp of real work done says nothing about how the driver is
+    // implemented. Always written from the caller's injected clock, never the
+    // DB's, so a test can move it; the `defaultNow()` exists only so the
+    // migration can backfill rows that predate the column.
+    lastActivityAt: timestamp("last_activity_at", { withTimezone: true }).notNull().defaultNow(),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+  },
+  (table) => [
+    index("ai_visibility_runs_tenant_started_idx").on(table.tenantId, table.startedAt),
+    // One run in flight per tenant, enforced by Postgres rather than by
+    // `planRun` reading before it writes. Two drivers planning at the same
+    // moment both see no in-flight run and both insert; the second insert has
+    // to bounce, or the tenant pays for two full runs of the same prompt set.
+    uniqueIndex("ai_visibility_runs_tenant_in_flight_unique")
+      .on(table.tenantId)
+      .where(sql`${table.status} IN ('pending', 'running')`),
+  ]
+);
+
+export type AiVisibilityRun = typeof aiVisibilityRuns.$inferSelect;
+
+export const aiVisibilitySamples = pgTable(
+  "ai_visibility_samples",
+  {
+    id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    runId: uuid("run_id")
+      .notNull()
+      .references(() => aiVisibilityRuns.id, { onDelete: "cascade" }),
+    // Denormalised from the run so every read path — metrics, the prompt
+    // detail page, the 180-day purge — can filter by tenant without a join.
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    promptId: uuid("prompt_id")
+      .notNull()
+      .references(() => aiVisibilityPrompts.id, { onDelete: "cascade" }),
+    engine: text("engine").notNull(),
+    sampleIndex: smallint("sample_index").notNull(),
+    /** "pending" | "ok" | "error" | "refused". Rows are inserted `pending` by planRun. */
+    status: text("status").notNull().default("pending"),
+    answerText: text("answer_text"),
+    modelId: text("model_id"),
+    searchUsed: boolean("search_used").notNull().default(false),
+    searchQueries: text("search_queries").array().notNull().default([]),
+    raw: jsonb("raw"),
+    costUsd: real("cost_usd").notNull().default(0),
+    error: text("error"),
+    // How many times an engine has been ASKED this question and come back with
+    // a retryable failure — a 429, a 5xx, a dropped connection, a timeout.
+    // Deliberately the same shape as `judgeAttempts` below, because it is the
+    // same problem: something transient must not cost a data point outright,
+    // and something permanent must not be re-bought forever. At 5 prompts x 3
+    // samples an engine has n=15 in a run, so three lost samples put it under
+    // the trend chart's display floor and its line disappears for that run.
+    askAttempts: smallint("ask_attempts").notNull().default(0),
+    // Not before this instant may the row be handed to an engine again. NULL is
+    // "now" — every row is planned that way, so a first attempt waits for
+    // nothing. Without it `runSlice`'s batch query re-picks the row it just
+    // failed on the very next batch and hot-loops through the whole slice
+    // budget against a rate limit that has had no time to clear.
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }),
+    judged: boolean("judged").notNull().default(false),
+    // How many judge calls this row has been part of that came back an error.
+    // A chunk that fails is retried on the next tick, and without a ceiling a
+    // permanently un-judgeable answer keeps the run `running` forever — which
+    // blocks every future run for that tenant and re-pays for the chunk daily.
+    judgeAttempts: smallint("judge_attempts").notNull().default(0),
+    /** Deterministic and judged extraction disagreed. Excluded from rates. */
+    flagged: boolean("flagged").notNull().default(false),
+    extraction: jsonb("extraction").$type<SampleExtraction>(),
+    askedAt: timestamp("asked_at", { withTimezone: true }),
+  },
+  (table) => [
+    // The identity of a sample. `planRun` inserts the whole grid up front and
+    // `runSlice` may be re-entered after a timeout, so the insert must be
+    // idempotent or a resumed run would double its own call count.
+    uniqueIndex("ai_visibility_samples_identity_unique").on(
+      table.runId,
+      table.promptId,
+      table.engine,
+      table.sampleIndex
+    ),
+    // `runSlice`'s hot query: "give me the pending rows of this run".
+    index("ai_visibility_samples_run_status_idx").on(table.runId, table.status),
+    // The prompt-detail page and the rolling-window metrics.
+    index("ai_visibility_samples_tenant_prompt_engine_idx").on(table.tenantId, table.promptId, table.engine),
+  ]
+);
+
+export type AiVisibilitySample = typeof aiVisibilitySamples.$inferSelect;
+
+export const aiVisibilityCitations = pgTable(
+  "ai_visibility_citations",
+  {
+    id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    sampleId: uuid("sample_id")
+      .notNull()
+      .references(() => aiVisibilitySamples.id, { onDelete: "cascade" }),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    // Denormalised alongside sampleId so the cited-domain leaderboard can
+    // group by (runId, domain) without joining through samples.
+    runId: uuid("run_id")
+      .notNull()
+      .references(() => aiVisibilityRuns.id, { onDelete: "cascade" }),
+    url: text("url").notNull(),
+    /** eTLD+1, after redirect resolution. See `src/lib/ai-visibility/domains.ts`. */
+    domain: text("domain").notNull(),
+    /** 1-based position in the answer's citation list. Order is the signal. */
+    position: smallint("position").notNull(),
+    /** own | competitor | review | community | publisher | docs | wiki | other. */
+    domainClass: text("domain_class").notNull(),
+    competitorId: uuid("competitor_id").references(() => competitors.id, { onDelete: "set null" }),
+  },
+  (table) => [
+    index("ai_visibility_citations_tenant_domain_idx").on(table.tenantId, table.domain),
+    index("ai_visibility_citations_run_domain_idx").on(table.runId, table.domain),
+  ]
+);
+
+export type AiVisibilityCitation = typeof aiVisibilityCitations.$inferSelect;
+
+export const aiVisibilityAggregates = pgTable(
+  "ai_visibility_aggregates",
+  {
+    id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    runId: uuid("run_id")
+      .notNull()
+      .references(() => aiVisibilityRuns.id, { onDelete: "cascade" }),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    engine: text("engine").notNull(),
+    /** NULL means the engine-level row for this run. */
+    promptId: uuid("prompt_id").references(() => aiVisibilityPrompts.id, { onDelete: "cascade" }),
+    // COUNTS, never rates. The rolling 4-run window is a SUM over these rows,
+    // and rates are not summable — averaging four rates weights a run with 3
+    // samples the same as one with 30. Every rate in the UI is computed from
+    // these at read time.
+    n: integer("n").notNull(),
+    // Of those `n` samples, how many were GROUNDED — the engine ran a web
+    // search. The denominator for the citation-family metrics only: an engine
+    // that answered from memory cited nothing, so scoring it as "we were not
+    // cited" would be a lie about a sample where nothing at all was cited.
+    // Every other rate keeps `n` (ungrounded-answers design, decisions 4-5).
+    // Default 0 so historical rows read as "no grounded samples" rather than
+    // null; they are recomputable by re-running `computeAggregates`.
+    nGrounded: integer("n_grounded").notNull().default(0),
+    tenantMentions: integer("tenant_mentions").notNull(),
+    competitorMentions: jsonb("competitor_mentions").$type<Record<string, number>>().notNull().default({}),
+    ownCitations: integer("own_citations").notNull(),
+    recommendations: integer("recommendations").notNull(),
+  },
+  (table) => [
+    // Two partial uniques rather than one three-column unique, mirroring
+    // `sources`: Postgres treats NULLs as distinct, so a plain unique on
+    // (runId, engine, promptId) would give the engine-level rows — the ones
+    // with a NULL promptId — no uniqueness at all, and a re-run of
+    // `computeAggregates` would double every headline number.
+    uniqueIndex("ai_visibility_aggregates_run_engine_prompt_unique")
+      .on(table.runId, table.engine, table.promptId)
+      .where(sql`${table.promptId} IS NOT NULL`),
+    uniqueIndex("ai_visibility_aggregates_run_engine_null_prompt_unique")
+      .on(table.runId, table.engine)
+      .where(sql`${table.promptId} IS NULL`),
+  ]
+);
+
+export type AiVisibilityAggregate = typeof aiVisibilityAggregates.$inferSelect;
 
 export const briefOriginEnum = pgEnum("brief_origin", ["agent", "manual"]);
 export const briefStatusEnum = pgEnum("brief_status", ["new", "accepted", "dismissed", "expired"]);

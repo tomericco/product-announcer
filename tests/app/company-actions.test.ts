@@ -1,7 +1,8 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { db } from "../../src/db";
-import { tenants, companyProfiles, competitors, sources } from "../../src/db/schema";
+import { tenants, companyProfiles, competitors, sources, aiVisibilitySettings } from "../../src/db/schema";
+import { revalidatePath } from "next/cache";
 
 let currentTenantId = "";
 vi.mock("../../src/lib/workspace/session", () => ({
@@ -26,6 +27,7 @@ import {
   bootstrapFromWebsite,
   discoverSourcesAction,
   setNewsWatching,
+  setAiVisibilityWatching,
 } from "../../src/app/(dashboard)/company/actions";
 
 const TENANT = "Company Actions Test Tenant";
@@ -348,5 +350,99 @@ describe("setNewsWatching", () => {
       .from(sources)
       .where(and(eq(sources.tenantId, theirs.id), eq(sources.type, "news")));
     expect(theirRow.status).toBe("active");
+  });
+});
+
+describe("setAiVisibilityWatching", () => {
+  async function aiVisibilityRows(tenantId: string) {
+    return db
+      .select()
+      .from(sources)
+      .where(and(eq(sources.tenantId, tenantId), eq(sources.type, "ai_visibility")));
+  }
+
+  it("turning it on flips both halves: the settings row the sweep gates on and the source row the badge reads", async () => {
+    const tenant = await seed(TENANT);
+    currentTenantId = tenant.id;
+
+    await setAiVisibilityWatching(true);
+
+    const [settings] = await db
+      .select()
+      .from(aiVisibilitySettings)
+      .where(eq(aiVisibilitySettings.tenantId, tenant.id));
+    expect(settings.enabled).toBe(true);
+    const [source] = await aiVisibilityRows(tenant.id);
+    expect(source.status).toBe("active");
+  });
+
+  it("turning it off disables the source but keeps the history", async () => {
+    const tenant = await seed(TENANT);
+    currentTenantId = tenant.id;
+    await setAiVisibilityWatching(true);
+
+    await setAiVisibilityWatching(false);
+
+    const [settings] = await db
+      .select()
+      .from(aiVisibilitySettings)
+      .where(eq(aiVisibilitySettings.tenantId, tenant.id));
+    expect(settings.enabled).toBe(false);
+    const rows = await aiVisibilityRows(tenant.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe("disabled");
+  });
+
+  it("ignores a non-boolean rather than writing it into a boolean column", async () => {
+    // A Server Action argument is client input whatever TypeScript says. The
+    // switch sends `true`/`false`; anything else is a forged call, and the
+    // right answer is to do nothing rather than to guess which way to flip.
+    const tenant = await seed(TENANT);
+    currentTenantId = tenant.id;
+
+    await setAiVisibilityWatching("true" as unknown as boolean);
+    await setAiVisibilityWatching(1 as unknown as boolean);
+    await setAiVisibilityWatching(undefined as unknown as boolean);
+    await setAiVisibilityWatching(null as unknown as boolean);
+
+    expect(
+      await db
+        .select()
+        .from(aiVisibilitySettings)
+        .where(eq(aiVisibilitySettings.tenantId, tenant.id))
+    ).toHaveLength(0);
+    expect(await aiVisibilityRows(tenant.id)).toHaveLength(0);
+  });
+
+  it("does not touch another tenant's switch", async () => {
+    const mine = await seed(TENANT);
+    const theirs = await seed(OTHER);
+
+    currentTenantId = theirs.id;
+    await setAiVisibilityWatching(true);
+
+    currentTenantId = mine.id;
+    await setAiVisibilityWatching(true);
+    await setAiVisibilityWatching(false);
+
+    const [theirRow] = await aiVisibilityRows(theirs.id);
+    expect(theirRow.status).toBe("active");
+    const [theirSettings] = await db
+      .select()
+      .from(aiVisibilitySettings)
+      .where(eq(aiVisibilitySettings.tenantId, theirs.id));
+    expect(theirSettings.enabled).toBe(true);
+  });
+
+  it("revalidates both surfaces that show the switch's consequence", async () => {
+    const tenant = await seed(TENANT);
+    currentTenantId = tenant.id;
+    vi.mocked(revalidatePath).mockClear();
+
+    await setAiVisibilityWatching(true);
+
+    expect(vi.mocked(revalidatePath).mock.calls.flat()).toEqual(
+      expect.arrayContaining(["/company", "/ai-visibility"])
+    );
   });
 });

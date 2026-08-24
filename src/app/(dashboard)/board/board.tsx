@@ -486,6 +486,16 @@ export function Board({
       </div>
 
       <DndContext
+        // Pinned, because dnd-kit's fallback is not stable across a hydration
+        // boundary: `useUniqueId("DndDescribedBy", id)` reads and bumps a
+        // module-level counter when `id` is undefined, and the server's copy
+        // of that module counts separately from the browser's. Every drag
+        // handle then hydrates with a different `aria-describedby` than was
+        // serialized ("DndDescribedBy-0" against "DndDescribedBy-2"), which
+        // React reports as a mismatch it will not patch up. The same value
+        // also lands on the hidden description element the handles point at,
+        // so it has to be spelled once here rather than derived twice.
+        id="board-dnd"
         sensors={sensors}
         // Not closestCenter: it ranks every *enabled* droppable and always
         // returns one, so a release anywhere on the board resolves to a

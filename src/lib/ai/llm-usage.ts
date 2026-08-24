@@ -17,6 +17,14 @@ export type LlmOperation =
   | "ideation"
   | "brief_draft"
   | "brief_proposal"
+  // AI visibility spec. One call per prompt-set generation or monthly
+  // expansion — the engine calls themselves are raw fetch and are billed on
+  // `ai_visibility_runs.costUsd`, not here.
+  | "ai_visibility_prompts"
+  // AI visibility spec §"Extraction": one batched judge call per chunk of
+  // samples per run. Billed per run, not per answer, which is why the chunk
+  // size in judge.ts is a cost dial.
+  | "ai_visibility_judge"
   // Image spec §9. `illustration_plan` is a normal token row (the text model
   // planning which images a draft needs); `image_generation` bills per image
   // and sets `imageCount` instead of the token columns.

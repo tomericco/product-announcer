@@ -1,0 +1,1 @@
+ALTER TABLE "ai_visibility_runs" ADD COLUMN "slice_lease_owner" uuid;

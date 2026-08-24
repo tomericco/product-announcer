@@ -30,21 +30,60 @@ vi.mock("../../../src/lib/images/blob", async (importOriginal) => {
   };
 });
 
-// A controllable delay inserted into `getOrCreateCompanyProfile`, zero by
-// default. The Finding-4 concurrency test below uses it to force two
-// concurrent `retryFailedIllustration` calls to both pass their initial
-// `image.status !== "failed"` reads before either reaches the claim step —
-// reproducing genuine overlap deterministically. Without it, real
-// connection-pool timing tends to fully serialize the two calls (the first
-// finishes end-to-end before the second's own first query even runs), which
-// would make that test pass whether or not the claim fix exists.
-let profileReadDelayMs = 0;
+/**
+ * A barrier inserted into `getOrCreateCompanyProfile`, inactive by default.
+ *
+ * `retryFailedIllustration` reads the image's status (illustration-actions.ts:57),
+ * then reads the company profile (:68), then claims the row (:121). The
+ * Finding-4 concurrency test needs both callers past the *status read* before
+ * either reaches the *claim*, so that the claim is what refuses the loser —
+ * which is the thing that test exists to prove. Without help, real
+ * connection-pool timing tends to serialize the two calls entirely and the
+ * test would pass whether or not the claim fix exists.
+ *
+ * This used to be a fixed 15 ms sleep, which made the outcome a race: when the
+ * second caller's earlier awaits (auth, the piece select, `getImage`) ran long,
+ * the first caller claimed the row before the second's status read, so the
+ * second refused at :57 with a different message and the assertion failed —
+ * about 1 run in 8. Both refusals are correct production behaviour, so the
+ * fix is to stop leaving it to timing rather than to accept either message.
+ *
+ * Blocking here is what makes it deterministic: the profile read sits after
+ * the status read, so once both callers have arrived, both have provably
+ * passed :57 and neither has reached :121.
+ */
+let profileBarrier: { arrive: () => Promise<void> } | null = null;
+
+function armProfileBarrier(participants: number) {
+  let arrived = 0;
+  let release!: () => void;
+  const open = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  // A caller that never arrives (a regression that refuses before the profile
+  // read) would otherwise hang until vitest's timeout with nothing to read.
+  // Releasing after a generous wait turns that into an ordinary assertion
+  // failure that names the real problem. It is a safety net, never the
+  // mechanism — when the code is correct, `release()` below always wins.
+  const bail = setTimeout(() => release(), 5_000);
+  return {
+    arrive: async () => {
+      arrived += 1;
+      if (arrived >= participants) {
+        clearTimeout(bail);
+        release();
+      }
+      await open;
+    },
+  };
+}
+
 vi.mock("../../../src/lib/workspace/company-profile", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../src/lib/workspace/company-profile")>();
   return {
     ...actual,
     getOrCreateCompanyProfile: async (...args: Parameters<typeof actual.getOrCreateCompanyProfile>) => {
-      if (profileReadDelayMs > 0) await new Promise((r) => setTimeout(r, profileReadDelayMs));
+      if (profileBarrier) await profileBarrier.arrive();
       return actual.getOrCreateCompanyProfile(...args);
     },
   };
@@ -264,9 +303,9 @@ describe("retryFailedIllustration", () => {
     // implementation to always throw (mockClear in afterEach only clears
     // call history, not the implementation) — reset it to a normal success.
     renderImage.mockImplementation(async () => Buffer.from("PNG"));
-    // Force genuine overlap at the claim step — see profileReadDelayMs's doc
-    // comment above.
-    profileReadDelayMs = 15;
+    // Hold both callers between their status read and their claim — see
+    // `armProfileBarrier`'s doc comment above.
+    profileBarrier = armProfileBarrier(2);
 
     try {
       const [first, second] = await Promise.all([
@@ -279,6 +318,10 @@ describe("retryFailedIllustration", () => {
       const refused = results.filter((r) => !r.ok);
       expect(succeeded).toHaveLength(1);
       expect(refused).toHaveLength(1);
+      // Specifically the CLAIM's refusal, not the status read's. The barrier
+      // guarantees both callers were past the status read before either
+      // claimed, so "doesn't need a retry" here would mean the claim is no
+      // longer what serializes them.
       if (!refused[0].ok) expect(refused[0].error).toMatch(/already being retried/i);
       // Only the winner actually rendered — the claim refused the loser
       // before it ever called renderImage, so this is not a race on the
@@ -288,7 +331,7 @@ describe("retryFailedIllustration", () => {
       const [row] = await db.select().from(contentImages).where(eq(contentImages.id, image.id));
       expect(row.status).toBe("ready");
     } finally {
-      profileReadDelayMs = 0;
+      profileBarrier = null;
     }
   });
 

@@ -1,0 +1,1 @@
+ALTER TABLE "ai_visibility_aggregates" ADD COLUMN "n_grounded" integer DEFAULT 0 NOT NULL;

@@ -5,6 +5,10 @@ import { tenants, notionConnections, changeEvents } from "../../../src/db/schema
 import { encryptSecret } from "../../../src/lib/credentials/encryption";
 
 const TENANT = "Import Tasks Actions Test Tenant";
+/** File-unique: these rows are `active` with a `statusPropertyId`, which is
+ * exactly what the Notion webhook route fans out over — a shared workspace id
+ * inflated that route test's call counts. See its header. */
+const WORKSPACE = "ws-import-tasks";
 let currentTenantId = "";
 process.env.CREDENTIALS_ENCRYPTION_KEY = process.env.CREDENTIALS_ENCRYPTION_KEY ?? "a".repeat(64);
 
@@ -44,7 +48,7 @@ async function seedConnection(overrides: Partial<typeof notionConnections.$infer
     accessTokenCiphertext: at.ciphertext,
     accessTokenIv: at.iv,
     accessTokenAuthTag: at.authTag,
-    workspaceId: "ws-1",
+    workspaceId: WORKSPACE,
     databaseId: "db-1",
     databaseName: "Tasks",
     statusPropertyId: "prop-status",

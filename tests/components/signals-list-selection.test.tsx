@@ -48,6 +48,7 @@ function makeSignal(title: string): Signal {
     relevanceScore: 0.8,
     relevanceRationale: null,
     topics: [],
+    payload: null,
     status: "new",
     createdAt: new Date("2026-08-01T00:00:00.000Z"),
   } as Signal;

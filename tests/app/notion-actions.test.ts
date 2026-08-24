@@ -5,6 +5,10 @@ import { tenants, notionConnections } from "../../src/db/schema";
 import { encryptSecret } from "../../src/lib/credentials/encryption";
 
 const TENANT = "Notion Actions Test Tenant";
+/** File-unique: the Notion webhook route selects connections by workspace id
+ * with no tenant scope, so a shared id makes these rows part of another
+ * file's fan-out. See tests/app/api/webhooks/notion/route.test.ts. */
+const WORKSPACE = "ws-notion-actions";
 let currentTenantId = "";
 process.env.CREDENTIALS_ENCRYPTION_KEY = process.env.CREDENTIALS_ENCRYPTION_KEY ?? "a".repeat(64);
 
@@ -30,7 +34,7 @@ async function seed(status: "misconfigured" | "active" = "misconfigured", overri
     accessTokenCiphertext: at.ciphertext,
     accessTokenIv: at.iv,
     accessTokenAuthTag: at.authTag,
-    workspaceId: "ws-1",
+    workspaceId: WORKSPACE,
     status,
     ...overrides,
   });
