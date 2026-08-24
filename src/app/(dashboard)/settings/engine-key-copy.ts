@@ -59,7 +59,13 @@ export function engineKeyMessage(engine: EngineId, status: EngineKeyStatus): str
     case "invalid_key":
       return `${voice.product} rejected this key. Check you copied the whole thing, and that it's a secret key (starts \`${voice.prefix}\`) rather than an organization ID.`;
     case "quota_exceeded":
-      return `That key is valid, but the ${voice.provider} account behind it has no credit. Add a payment method at ${voice.billing} and top up about $10, then paste the key again.`;
+      // The design's table ends this "…then paste the key again", which is
+      // wrong once the card exists: the stored key is FINE — it is the account
+      // that ran dry — and it is still sitting here, encrypted, waiting.
+      // Re-check is the action; asking someone to mint a replacement for a
+      // working key is asking them to do the one irreversible thing on this
+      // card for no reason.
+      return `That key is valid, but the ${voice.provider} account behind it has no credit. Add a payment method at ${voice.billing} and top up about $10, then press Re-check — the key itself is fine.`;
     case "rate_limited":
       return `${voice.provider} is rate-limiting this key — the account is on a new-account tier with low throughput. Wait a few minutes and try Re-check.`;
     case "provider_unavailable":
