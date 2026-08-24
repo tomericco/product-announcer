@@ -373,6 +373,16 @@ export async function storeEngineKey(
     // status column reporting a problem that no longer exists.
     lastFailureCode: null,
     lastFailureAt: null,
+    // And so is "last used", for exactly the same reason. It is provenance
+    // about a SECRET, not about the row: the card renders "…7f4A · added 12 Aug
+    // by Dana · last used 20 Aug", and after a replacement every fragment on
+    // that line except the date belongs to the key that is there now. A key
+    // pasted a minute ago has never been used, and the honest reading is the
+    // one the card already has a sentence for — "never used yet".
+    //
+    // `verifiedAt` above is the counter-example that shows the rule: a
+    // replacement DID just verify, so that timestamp is true of the new key.
+    lastUsedAt: null,
   };
 
   await database.transaction(async (tx) => {

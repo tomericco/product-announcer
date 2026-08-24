@@ -359,6 +359,28 @@ describe("toggleEngineKeyAction", () => {
   });
 });
 
+describe("a replacement is a new secret, not an edit of the old one", () => {
+  it("clears `lastUsedAt`, so the provenance line stops describing a key that is gone", async () => {
+    // The card renders "…7f4A · added 12 Aug by Dana · last used 20 Aug". After
+    // a replacement every fragment on that line is about the key that is there
+    // NOW, so a `lastUsedAt` carried over from the key it replaced makes the
+    // row report a spend that never happened on this credential. `verifiedAt`
+    // is the counter-example: a replacement did just verify.
+    const usedAt = new Date("2026-08-20T09:00:00Z");
+    await seedEngineKey(currentTenantId, "openai", { lastUsedAt: usedAt });
+
+    expect((await saveEngineKeyAction(saveForm("openai", GOOD_KEY))).ok).toBe(true);
+
+    const row = await keyRow("openai");
+    expect(row.lastUsedAt).toBeNull();
+    expect(row.verifiedAt).not.toBeNull();
+    // And the view the card reads says the same, since that is the surface the
+    // sentence is composed from.
+    const [view] = (await listEngineKeys(currentTenantId)).filter((key) => key.engine === "openai");
+    expect(view.lastUsedAt).toBeNull();
+  });
+});
+
 describe("saving a key puts its engine back on the settings row", () => {
   it("re-adding a removed key measures again, rather than silently never running", async () => {
     // THE REGRESSION, in the order a person does it: remove ChatGPT, change
