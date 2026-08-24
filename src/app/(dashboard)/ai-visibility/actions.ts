@@ -16,7 +16,14 @@ import {
 // lives inside the core call that would breach it, so this file cannot
 // check-then-write across an await and let two tabs both squeeze past 30.
 import { generatePromptSet } from "@/lib/ai-visibility/generate-prompts";
-import { cancelRun, driveRun, findResumableRun, planRun } from "@/lib/ai-visibility/run";
+import {
+  cancelRun,
+  driveRun,
+  findResumableRun,
+  latestRun,
+  planRun,
+  runIsStalled,
+} from "@/lib/ai-visibility/run";
 import { DEFAULT_CONCURRENCY, getAiVisibilitySettings } from "@/lib/ai-visibility/settings";
 import { PROMPT_INTENTS, type PromptIntent } from "@/lib/ai-visibility/types";
 
@@ -361,6 +368,12 @@ export async function runNowAction(): Promise<ActionResult<{ runId: string }>> {
         };
       case "no_prompts":
         return { ok: false, error: "Approve some prompts first." };
+      case "not_ready":
+        // The blocks' own sentences, joined — they are written to be read by
+        // the person who pressed the button, and the dialog has already shown
+        // them the same list. Composing a second wording here would be the
+        // thing `preflight.ts` exists to prevent.
+        return { ok: false, error: planned.blocks.map((block) => block.message).join(" ") };
       case "run_in_flight":
         return { ok: false, error: "A run is already in progress." };
       case "cap_reached":
@@ -481,4 +494,54 @@ export async function resumeRunAction(): Promise<ActionResult<{ runId: string }>
   revalidatePath("/ai-visibility");
   revalidatePath("/company");
   return { ok: true, runId };
+}
+
+/**
+ * One reading of the in-flight run, for the header's live progress line.
+ *
+ * The counter this returns is the same `completedCalls` the server render puts
+ * in "Running… 41 / 270 calls". Before this existed, that line was only ever as
+ * fresh as the last navigation: `runNowAction` fired one `router.refresh()` at
+ * the moment the run was PLANNED — when the count is 0 of 270 by definition —
+ * and then nothing moved it for the several minutes the run takes. Watching a
+ * run meant reloading the page by hand to find out whether it was progressing
+ * or wedged.
+ *
+ * A read, so it deliberately does none of what the other three actions do: no
+ * `revalidatePath` (this is polled every few seconds, and busting the route
+ * cache on each tick would re-run the whole overview — a dozen aggregate
+ * queries — to update one string), and no cache tag.
+ *
+ * Takes no argument, like its neighbours: the run is derived from the session's
+ * tenant, so there is no id a client could substitute for someone else's.
+ */
+export type RunProgressSnapshot = {
+  /** `pending` or `running` — the two statuses that mean work is outstanding. */
+  inFlight: boolean;
+  /**
+   * In flight, but nothing written for `STALL_AFTER_MS` and no live lease.
+   * The poller stops on this: a stalled run's counter does not move again
+   * until somebody presses Resume, so continuing to ask is pure noise.
+   */
+  stalled: boolean;
+  completedCalls: number;
+  plannedCalls: number;
+};
+
+export async function pollRunProgressAction(): Promise<RunProgressSnapshot> {
+  const session = await requireSession();
+
+  const run = await latestRun(session.user.tenantId);
+  const now = new Date();
+  const inFlight = run !== null && (run.status === "pending" || run.status === "running");
+
+  return {
+    inFlight,
+    stalled: inFlight && runIsStalled(run, now),
+    // Off the run either way: when it is no longer in flight these are the
+    // final counts, and the client uses them for the one render it does
+    // between noticing the finish and the refresh landing.
+    completedCalls: run?.completedCalls ?? 0,
+    plannedCalls: run?.plannedCalls ?? 0,
+  };
 }

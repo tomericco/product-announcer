@@ -432,6 +432,41 @@ describe("sweepAiVisibility", () => {
     expect(source.lastError).toContain("prompt");
   });
 
+  it("records EVERY readiness block on the source, not just the first", async () => {
+    // The source's health block is the only place a SCHEDULED refusal is ever
+    // read. Being told about one missing thing, fixing it, and being refused
+    // again next week for the second is a worse week than being told both at
+    // once — so unlike the button's one-sentence line, this joins them.
+    const { tenant } = await seedSource();
+    const plan = planOnly(tenant.id, {
+      ok: false,
+      reason: "not_ready",
+      blocks: [
+        { id: "judge", level: "block", message: "Answer grading is not configured.", fix: null },
+        {
+          id: "brand_name",
+          level: "block",
+          message: "Your workspace name is too short to look for.",
+          fix: { label: "Name the workspace", href: "/settings" },
+        },
+      ],
+    });
+
+    await sweepAiVisibility({ now: clock(MONDAY), plan, slice: idleSlice(), finalize: vi.fn() });
+
+    const [source] = await db
+      .select()
+      .from(sources)
+      .where(and(eq(sources.tenantId, tenant.id), eq(sources.type, "ai_visibility")));
+    expect(source.lastError).toContain("Answer grading is not configured.");
+    expect(source.lastError).toContain("Your workspace name is too short to look for.");
+    // Not `failing`, for the reason `no_engines` is not: this is setup nobody
+    // has done, not spending that stopped.
+    expect(source.status).not.toBe("failing");
+    // And, like every refusal, it does not re-anchor the cadence.
+    expect(source.lastRunAt).toBeNull();
+  });
+
   it("skips disabled sources entirely", async () => {
     const { tenant } = await seedSource();
     await db.update(sources).set({ status: "disabled" }).where(eq(sources.tenantId, tenant.id));

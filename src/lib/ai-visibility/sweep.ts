@@ -4,6 +4,12 @@ import { sources, aiVisibilityRuns, type Source } from "@/db/schema";
 import { capPausedMessage } from "@/lib/ai-visibility/cost";
 import { DEFAULT_CONCURRENCY, getAiVisibilitySettingsForTenants } from "@/lib/ai-visibility/settings";
 import { planRun, runSlice, finalizeRun, type Clock, type PlanRunRefusal } from "@/lib/ai-visibility/run";
+// The schedule itself lives in a leaf module so surfaces that only need to
+// ASK about it — the overview page's "Next scan in 3 days" — do not pull this
+// file's database and run-driver imports along with it. Re-exported because
+// `cadenceDue` has always been part of this module's surface.
+import { cadenceDue } from "@/lib/ai-visibility/cadence";
+export { cadenceDue, nextScheduledRun, SWEEP_HOUR_UTC } from "@/lib/ai-visibility/cadence";
 
 /**
  * A knob read from the environment, or its default.
@@ -58,75 +64,6 @@ export const SWEEP_CONCURRENCY = positiveNumberFromEnv(
 /** No source gets less than this, however many are waiting. */
 export const MIN_SOURCE_BUDGET_MS = 5_000;
 
-/** Milliseconds in a day, for the elapsed tests below. */
-const DAY_MS = 24 * 60 * 60 * 1000;
-
-/** Nominal period of each cadence, in days. */
-const PERIOD_DAYS: Record<string, number> = { weekly: 7, fortnightly: 14 };
-
-/**
- * Fortnightly tolerance on the scheduled weekday. Two matching weekdays are
- * exactly 14 days apart, so a tick that fires a few minutes earlier than the
- * last one would fail a strict `>= 14 days` test and silently skip a whole
- * fortnight. 13 days makes the weekday match the real gate and the elapsed test
- * a guard against firing on consecutive weeks.
- */
-const FORTNIGHT_MIN_DAYS = 13;
-
-/**
- * Whether a scheduled run is due for this tenant right now.
- *
- * UTC throughout — `dayOfWeek` is documented as UTC in the settings schema and
- * on the settings card, because a per-tenant timezone would make "last ran
- * Monday" mean different things on the card and in the database.
- *
- * Two ways to be due, and the second one is the important one:
- *
- *  1. It is the configured weekday (and, for fortnightly, a fortnight has gone
- *     by). This is the schedule.
- *  2. A whole period has elapsed since the last run, whatever today is. This is
- *     the catch-up, and without it the product promises "a run a week" while
- *     delivering "an attempt a week": one cron tick that dies, times out, or
- *     never fires costs the tenant a full week, and every default tenant shares
- *     `dayOfWeek = 1`, so a truncated Monday is exactly the tick most likely to
- *     be lost.
- *
- * The catch-up threshold is a FULL period, not period − 1. Six days after a
- * Monday run is Sunday, so a 6-day catch-up would fire a day early every week
- * and walk the schedule backwards through the calendar — the schedule has to be
- * the weekday, with the elapsed test only ever recovering a miss.
- *
- * A tenant that has never run waits for its weekday rather than starting on
- * whatever day the feature was switched on; "Run now" is the control for
- * starting immediately, and it does not go through here.
- */
-export function cadenceDue(
-  settings: { cadence: string; dayOfWeek: number },
-  lastRunAt: Date | null,
-  now: Date
-): boolean {
-  if (settings.cadence === "off") return false;
-
-  // One run per UTC day, whichever arm below wants to fire. This is the guard
-  // against a cron that ticks twice, and against the catch-up arm re-firing
-  // beside a run that has already happened today.
-  const startOfToday = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
-  if (lastRunAt && lastRunAt.getTime() >= startOfToday) return false;
-
-  const elapsedMs = lastRunAt ? now.getTime() - lastRunAt.getTime() : Infinity;
-
-  if (now.getUTCDay() === settings.dayOfWeek) {
-    if (settings.cadence === "fortnightly") return elapsedMs >= FORTNIGHT_MIN_DAYS * DAY_MS;
-    return true;
-  }
-
-  // Off-weekday: only a missed period gets a run, and a tenant with no run to
-  // measure from has not missed anything yet.
-  if (!lastRunAt) return false;
-  const periodDays = PERIOD_DAYS[settings.cadence] ?? PERIOD_DAYS.weekly;
-  return elapsedMs >= periodDays * DAY_MS;
-}
-
 export type SweepAiVisibilityDeps = {
   database?: typeof defaultDb;
   now?: Clock;
@@ -157,6 +94,13 @@ function refusalMessage(refusal: PlanRunRefusal): string {
       return "A run is already in flight.";
     case "cap_reached":
       return capPausedMessage(refusal.spentUsd, refusal.capUsd);
+    case "not_ready":
+      // Every block, not just the first: the source's health block is the only
+      // place a SCHEDULED refusal is ever read, and fixing one of two missing
+      // things only to be refused again next week is a worse week than being
+      // told both at once. The Run-now dialog can afford a list; this column
+      // gets one sentence, so they are joined.
+      return refusal.blocks.map((block) => block.message).join(" ");
   }
 }
 

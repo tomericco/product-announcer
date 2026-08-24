@@ -26,6 +26,7 @@ import { extractSample, loadBrandTargets, type ExtractSampleDeps } from "@/lib/a
 import { judgeRun } from "@/lib/ai-visibility/judge";
 import { emitSignals } from "@/lib/ai-visibility/signals";
 import { MAX_ACTIVE_PROMPTS, RUNNABLE_ORDER } from "@/lib/ai-visibility/prompts";
+import { preflightRun, type PreflightItem } from "@/lib/ai-visibility/preflight";
 import { mapWithConcurrency } from "@/lib/concurrency";
 import { scrubSecrets } from "@/lib/ai-visibility/scrub";
 import { ENGINE_IDS, type EngineClient, type EngineId } from "@/lib/ai-visibility/types";
@@ -41,6 +42,8 @@ export type RunDeps = {
   fetchImpl?: typeof fetch;
   /** Injected only by tests that assert the slice does not extract; production always uses the real one. */
   extract?: (sampleId: string, deps?: ExtractSampleDeps) => Promise<void>;
+  /** Injected by tests; production runs the real readiness checks. */
+  preflight?: typeof preflightRun;
 };
 
 export type PlanRunRefusal =
@@ -50,6 +53,11 @@ export type PlanRunRefusal =
   // the day the feature ships.
   | { ok: false; reason: "no_engines" }
   | { ok: false; reason: "no_prompts" }
+  // Everything a run needs that is not the run itself: a reachable judge, a
+  // brand the extractor can look for. See `preflight.ts` — these are refusals
+  // rather than warnings because each one buys a full run's engine spend and
+  // returns nothing usable for it.
+  | { ok: false; reason: "not_ready"; blocks: PreflightItem[] }
   | { ok: false; reason: "run_in_flight"; runId: string }
   | { ok: false; reason: "cap_reached"; spentUsd: number; estimateUsd: number; capUsd: number };
 
@@ -328,6 +336,18 @@ export async function planRun(
 
   const inFlightBefore = await findInFlightRun(database, tenantId);
   if (inFlightBefore) return { ok: false, reason: "run_in_flight", runId: inFlightBefore };
+
+  // AFTER the cheap gates and before the cap, which is where it costs least: a
+  // readiness check is several queries, and there is nothing to be ready FOR if
+  // the feature is off, unkeyed, promptless or already running. The blocks it
+  // returns are the same items the Run-now dialog lists, computed by the same
+  // function — see the note at the top of `preflight.ts` on why that matters.
+  //
+  // `engine_keys` is one of its checks and is already refused above as
+  // `no_engines`; reaching here means it passed, so the blocks left are the
+  // ones only this gate catches.
+  const readiness = await (deps.preflight ?? preflightRun)(tenantId, { database });
+  if (readiness.blocked) return { ok: false, reason: "not_ready", blocks: readiness.blocks };
 
   // `engines`, not `settings.engines`: the tenant is quoted for, and gated on,
   // exactly what will run. A tenant with three engines on and one Gemini key

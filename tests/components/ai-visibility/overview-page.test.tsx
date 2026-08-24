@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import type { EngineId, EngineMetrics, WindowCounts } from "../../../src/lib/ai-visibility/types";
 import type { BrandShare } from "../../../src/app/(dashboard)/ai-visibility/competitor-bars";
@@ -36,6 +36,8 @@ const captured = {
     disabledReason: string | null;
     disabledTone?: string;
     label?: string;
+    footnote?: React.ReactNode;
+    warnings?: { id: string; level: string }[];
   } | null,
   generate: null as { disabledReason: string | null } | null,
   stop: null as { completedCalls: number; plannedCalls: number } | null,
@@ -73,16 +75,41 @@ vi.mock("@/app/(dashboard)/ai-visibility/cited-domains-table", () => ({
     return <div data-testid="cited-domains" />;
   },
 }));
+// `RunControls` is deliberately NOT stubbed: the reason line and the Stop /
+// Resume placement moved INTO it, so stubbing it would leave the page's
+// run-state assertions below testing nothing. Its server action is stubbed
+// instead — see the `actions` mock — and its polling has its own test file.
+//
+// This stub renders its inputs rather than swallowing them: "Running… 41 / 270
+// calls", the cap sentence and "Next scan in 3 days" are all strings the button
+// puts on screen now, and the assertions below read them off the page.
 vi.mock("@/app/(dashboard)/ai-visibility/run-now-button", () => ({
   RunNowButton: (props: {
     estimate: RunEstimate;
     disabledReason: string | null;
     disabledTone?: string;
     label?: string;
+    actions?: React.ReactNode;
+    footnote?: React.ReactNode;
+    warnings?: { id: string; level: string }[];
   }) => {
     captured.runNow = props;
-    return <div data-testid="run-now" />;
+    return (
+      <div data-testid="run-now">
+        {props.actions}
+        {props.disabledReason ?? props.footnote}
+      </div>
+    );
   },
+}));
+// `RunControls` is a client component and calls `useRouter` to refresh the page
+// when a run it is watching finishes. Nothing here navigates.
+vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: vi.fn(), push: vi.fn() }) }));
+// A promise that never settles: the poller fires once on mount, and a stub that
+// RESOLVED would push a second state through `RunControls` after the render
+// under test — turning every "Running…" assertion into a race with a microtask.
+vi.mock("@/app/(dashboard)/ai-visibility/actions", () => ({
+  pollRunProgressAction: vi.fn(() => new Promise(() => {})),
 }));
 vi.mock("@/app/(dashboard)/ai-visibility/resume-run-button", () => ({
   ResumeRunButton: () => {
@@ -106,6 +133,7 @@ vi.mock("@/app/(dashboard)/ai-visibility/generate-prompt-set-button", () => ({
 const {
   requireSession,
   getAiVisibilitySettings,
+  getAiVisibilitySource,
   getOrCreateCompanyProfile,
   listPrompts,
   listCompetitors,
@@ -120,10 +148,12 @@ const {
   everSignalledDomains,
   listSignals,
   effectiveEngines,
+  preflightRun,
   tenantRows,
 } = vi.hoisted(() => ({
   requireSession: vi.fn(),
   getAiVisibilitySettings: vi.fn(),
+  getAiVisibilitySource: vi.fn(),
   getOrCreateCompanyProfile: vi.fn(),
   listPrompts: vi.fn(),
   listCompetitors: vi.fn(),
@@ -143,6 +173,10 @@ const {
   // series, its estimate and its Run-now gate, and returning `[]` is a whole
   // state of its own — see "No engines connected" below.
   effectiveEngines: vi.fn(),
+  // Its own unit, with its own tests. What matters here is that the page hands
+  // its BLOCKS to the button as the disabled reason and its WARNINGS to the
+  // dialog — not how it decides them.
+  preflightRun: vi.fn(),
   tenantRows: { value: [{ name: "Versional" }] as { name: string }[] },
 }));
 
@@ -152,8 +186,12 @@ vi.mock("@/db", () => ({
 vi.mock("@/lib/workspace/session", () => ({ requireSession }));
 vi.mock("@/lib/workspace/company-profile", () => ({ getOrCreateCompanyProfile }));
 vi.mock("@/lib/workspace/competitors", () => ({ listCompetitors }));
-vi.mock("@/lib/ai-visibility/settings", () => ({ getAiVisibilitySettings }));
+// `getAiVisibilitySource` feeds the "Next scan in 3 days" line: the sweep
+// schedules off `sources.lastRunAt`, so the page reads the same column rather
+// than the run row's `startedAt`.
+vi.mock("@/lib/ai-visibility/settings", () => ({ getAiVisibilitySettings, getAiVisibilitySource }));
 vi.mock("@/lib/ai-visibility/engine-keys", () => ({ effectiveEngines }));
+vi.mock("@/lib/ai-visibility/preflight", () => ({ preflightRun }));
 // `runnablePrompts` is the real one: it is a pure slice, and stubbing it would
 // hide the very thing the page now depends on — that the run estimate prices
 // only the prompts a run will ask.
@@ -261,6 +299,19 @@ function run(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/** `preflightRun`'s shape, from a list of failing items. */
+function readiness(items: { id: string; level: string; message: string; fix: unknown }[]) {
+  return { items, blocks: items.filter((item) => item.level === "block"), blocked: items.some((i) => i.level === "block") };
+}
+
+/** The block a keyless workspace produces — the same sentence preflight writes. */
+const NO_KEYS_BLOCK = {
+  id: "engine_keys",
+  level: "block",
+  message: "No engine key is connected, so a run has nothing to ask with.",
+  fix: { label: "Connect an engine", href: "/settings#ai-engines" },
+};
+
 /** A lease a driver is currently holding — one of the two ways to not be Stalled. */
 const LIVE_LEASE = () => new Date(Date.now() + 60_000);
 
@@ -293,10 +344,25 @@ function setup(overrides: Record<string, unknown> = {}) {
   });
   // Fully connected by default, because that is the state the other 50 tests
   // are about. `effectiveEngines: []` is its own state and gets its own tests.
-  effectiveEngines.mockResolvedValue((o.effectiveEngines as unknown[]) ?? [...ALL_ENGINES]);
+  const engines = (o.effectiveEngines as unknown[]) ?? [...ALL_ENGINES];
+  effectiveEngines.mockResolvedValue(engines);
+  // Mirrors the one block the other fixtures can produce, so "no keys" keeps
+  // disabling Run now with the sentence it always did. Anything richer is
+  // stated per test through the `preflight` override.
+  preflightRun.mockResolvedValue(
+    "preflight" in overrides ? o.preflight : readiness(engines.length === 0 ? [NO_KEYS_BLOCK] : [])
+  );
   listPrompts.mockResolvedValue((o.prompts as unknown[]) ?? [prompt()]);
   listCompetitors.mockResolvedValue((o.competitors as unknown[]) ?? []);
   latestRun.mockResolvedValue("run" in overrides ? o.run : run());
+  // The schedule reads `sources.lastRunAt`, and the fixture run started
+  // 2026-08-17 (a Monday), so the default is "a weekly tenant that ran on its
+  // last scheduled day" — the state the next-scan line is normally read in.
+  getAiVisibilitySource.mockResolvedValue(
+    "source" in overrides
+      ? o.source
+      : { id: "s1", tenantId: "t1", type: "ai_visibility", lastRunAt: new Date("2026-08-17T09:00:00Z") }
+  );
   capExceeded.mockResolvedValue({
     spentUsd: 4.1,
     estimateUsd: 3.12,
@@ -632,7 +698,12 @@ describe("overview — the nine states, and that they are mutually exclusive", (
     });
     await renderPage();
 
-    expect(screen.getByText(/Paused — monthly engine budget reached \(\$20\.40 of \$20\.00\)\./)).toBeInTheDocument();
+    // Twice, deliberately: the header states the pause and routes out of it, and
+    // the line under the disabled button repeats it so the reason is readable
+    // without hovering the control. The button's stub renders that second copy.
+    expect(
+      screen.getAllByText(/Paused — monthly engine budget reached \(\$20\.40 of \$20\.00\)\./)
+    ).toHaveLength(2);
     expect(screen.getByRole("link", { name: "Raise it in Settings" })).toHaveAttribute(
       "href",
       "/settings#ai-visibility"
@@ -648,7 +719,7 @@ describe("overview — the nine states, and that they are mutually exclusive", (
     });
     await renderPage();
 
-    expect(screen.getByText(/Paused — monthly engine budget reached/)).toBeInTheDocument();
+    expect(screen.getAllByText(/Paused — monthly engine budget reached/).length).toBeGreaterThan(0);
   });
 
   it("A cap pause the calendar resolved is dated and muted, never the error tone", async () => {
@@ -1263,5 +1334,168 @@ describe("overview — what the tiles, the matrix and the domain table are hande
 
     const badge = screen.getByText("API-observed");
     expect(badge.closest("button")).not.toBeNull();
+  });
+});
+
+/**
+ * The line under "Run now" when nothing is blocking a run.
+ *
+ * `Date` is faked (and only `Date`): the sentence is a difference against the
+ * wall clock, so a test that did not pin one would pass in the week it was
+ * written and start failing on a Monday. Timers stay real — nothing in this
+ * block polls.
+ */
+describe("overview — the next scheduled scan", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("counts the days to the next cron tick, off the same column the sweep schedules on", async () => {
+    // Wednesday. Weekly on Mondays, last run the Monday before, so the next
+    // tick is Monday the 24th — five days out.
+    vi.setSystemTime(new Date("2026-08-19T12:00:00Z"));
+    setup({});
+    await renderPage();
+
+    expect(screen.getByText("Next scan in 5 days")).toBeInTheDocument();
+  });
+
+  it("says tomorrow rather than 'in 1 days'", async () => {
+    vi.setSystemTime(new Date("2026-08-23T08:00:00Z"));
+    setup({});
+    await renderPage();
+
+    expect(screen.getByText("Next scan tomorrow")).toBeInTheDocument();
+  });
+
+  it("says later today when the day's 09:00 UTC tick is still ahead", async () => {
+    // The scheduled Monday, an hour before the cron fires. Whole CALENDAR days
+    // is why this is not "in 0 days": the reader is 60 minutes from a scan.
+    vi.setSystemTime(new Date("2026-08-24T08:00:00Z"));
+    setup({});
+    await renderPage();
+
+    expect(screen.getByText("Next scan later today")).toBeInTheDocument();
+  });
+
+  it("names the fortnight's tick, not next week's — the cadence rules are asked, not re-derived", async () => {
+    // A fortnightly tenant that ran on Monday the 17th is NOT due on the 24th;
+    // `cadenceDue` wants 13 days. A hand-rolled "next matching weekday" would
+    // have said "in 5 days" here, which is the class of bug this line's
+    // implementation exists to avoid.
+    vi.setSystemTime(new Date("2026-08-19T12:00:00Z"));
+    setup({ settings: { cadence: "fortnightly", dayOfWeek: 1 } });
+    await renderPage();
+
+    expect(screen.getByText("Next scan in 12 days")).toBeInTheDocument();
+  });
+
+  it("says nothing is scheduled when the cadence is off, rather than showing no line at all", async () => {
+    // "No line" and "nothing is scheduled" look identical on screen and are not
+    // the same fact: the second is a setting somebody chose and can change.
+    vi.setSystemTime(new Date("2026-08-19T12:00:00Z"));
+    setup({ settings: { cadence: "off", dayOfWeek: 1 } });
+    await renderPage();
+
+    expect(screen.getByText("No scheduled scans — cadence is off")).toBeInTheDocument();
+  });
+
+  it("yields the slot to a run in progress — the schedule is not what the reader needs mid-run", async () => {
+    vi.setSystemTime(new Date("2026-08-19T12:00:00Z"));
+    setup({
+      run: run({ status: "running", completedCalls: 41, plannedCalls: 270, sliceLeaseUntil: LIVE_LEASE() }),
+    });
+    await renderPage();
+
+    expect(screen.getByText("Running… 41 / 270 calls")).toBeInTheDocument();
+    expect(screen.queryByText(/Next scan/)).not.toBeInTheDocument();
+  });
+
+  it("yields the slot to a missing engine key, which the reader needs first", async () => {
+    vi.setSystemTime(new Date("2026-08-19T12:00:00Z"));
+    setup({ effectiveEngines: [], measured: ["openai"] });
+    await renderPage();
+
+    expect(captured.runNow?.disabledReason).toMatch(/No engine key is connected/);
+    expect(screen.queryByText(/Next scan/)).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * What the page does with `preflightRun`'s answer.
+ *
+ * The checks themselves are `preflight.test.ts`'s subject. This is about the
+ * split: a BLOCK is the sentence under a button you cannot press, a WARNING is
+ * a line in the dialog you are about to confirm. Getting that backwards would
+ * either hide a run-wrecking misconfiguration behind a dialog nobody opens, or
+ * refuse a perfectly good run because a workspace has no competitors yet.
+ */
+describe("overview — readiness", () => {
+  const JUDGE_BLOCK = {
+    id: "judge",
+    level: "block",
+    message: "Answer grading is not configured, so a run would buy every engine answer and then never finish.",
+    fix: null,
+  };
+  const COMPETITORS_WARN = {
+    id: "competitors",
+    level: "warn",
+    message: "No competitors, so this run measures your mention rate but cannot benchmark it.",
+    fix: { label: "Add competitors", href: "/company#competitors" },
+  };
+
+  it("puts the first block under the button as the reason, and disables it", async () => {
+    setup({ preflight: readiness([JUDGE_BLOCK]) });
+    await renderPage();
+
+    expect(captured.runNow?.disabledReason).toBe(JUDGE_BLOCK.message);
+    expect(screen.getByText(JUDGE_BLOCK.message)).toBeInTheDocument();
+  });
+
+  it("shows the first block, not all of them — the button has room for one sentence", async () => {
+    setup({ preflight: readiness([NO_KEYS_BLOCK, JUDGE_BLOCK]) });
+    await renderPage();
+
+    // A key is missing before a judge is, and preflight's order is the fix order.
+    expect(captured.runNow?.disabledReason).toBe(NO_KEYS_BLOCK.message);
+  });
+
+  it("hands warnings to the dialog and never to the disabled reason", async () => {
+    setup({ preflight: readiness([COMPETITORS_WARN]) });
+    await renderPage();
+
+    expect(captured.runNow?.disabledReason).toBeNull();
+    expect(captured.runNow?.warnings).toEqual([COMPETITORS_WARN]);
+  });
+
+  it("keeps warnings out of the button when a block is also present", async () => {
+    setup({ preflight: readiness([JUDGE_BLOCK, COMPETITORS_WARN]) });
+    await renderPage();
+
+    expect(captured.runNow?.disabledReason).toBe(JUDGE_BLOCK.message);
+    // Still passed down — the dialog simply never opens while the button is
+    // disabled, so this costs nothing and needs no second branch.
+    expect(captured.runNow?.warnings).toEqual([COMPETITORS_WARN]);
+  });
+
+  it("yields the button's line to a run in progress, which outranks any block", async () => {
+    setup({
+      preflight: readiness([JUDGE_BLOCK]),
+      run: run({ status: "running", completedCalls: 41, plannedCalls: 270, sliceLeaseUntil: LIVE_LEASE() }),
+    });
+    await renderPage();
+
+    expect(captured.runNow?.disabledReason).toBe("Running… 41 / 270 calls");
+  });
+
+  it("says nothing about readiness when a workspace is ready", async () => {
+    setup({ preflight: readiness([]) });
+    await renderPage();
+
+    expect(captured.runNow?.disabledReason).toBeNull();
+    expect(captured.runNow?.warnings).toEqual([]);
   });
 });

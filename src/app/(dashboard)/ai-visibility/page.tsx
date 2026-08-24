@@ -18,11 +18,13 @@ import { tenants } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { getOrCreateCompanyProfile } from "@/lib/workspace/company-profile";
 import { listCompetitors } from "@/lib/workspace/competitors";
-import { getAiVisibilitySettings } from "@/lib/ai-visibility/settings";
+import { getAiVisibilitySettings, getAiVisibilitySource } from "@/lib/ai-visibility/settings";
 import { effectiveEngines } from "@/lib/ai-visibility/engine-keys";
 import { listPrompts, runnablePrompts } from "@/lib/ai-visibility/prompts";
 import { plannedCallsForPrompts } from "@/lib/ai-visibility/planned-calls";
 import { latestRun, runIsStalled } from "@/lib/ai-visibility/run";
+import { nextScheduledRun } from "@/lib/ai-visibility/cadence";
+import { preflightRun } from "@/lib/ai-visibility/preflight";
 import {
   brandMentionTotal,
   engineHistory,
@@ -45,13 +47,41 @@ import { GeneratePromptSetButton } from "./generate-prompt-set-button";
 import { AiVisibilityOffEmptyState } from "./off-empty-state";
 import { OverviewCards, type EngineTile } from "./overview-cards";
 import { PromptMatrix, type MatrixRow } from "./prompt-matrix";
+import { RunControls } from "./run-controls";
 import { RunNowButton, type RunEstimate } from "./run-now-button";
-import { ResumeRunButton } from "./resume-run-button";
-import { StopRunButton } from "./stop-run-button";
 import type { TrendSeries } from "./trend-points";
 import { VisibilityTrend } from "./visibility-trend";
 
 const DAY_LABEL = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"] as const;
+
+/** Milliseconds in a day, for the whole-day difference below. */
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * "Next scan in 3 days" — the line under "Run now" when nothing is blocking a
+ * run and none is in flight.
+ *
+ * Whole UTC DAYS apart, not `(tick - now) / DAY_MS` rounded: the cron fires at
+ * 09:00 UTC, so a reader at 23:00 on Sunday is 10 hours from Monday's tick, and
+ * "in 0 days" or "in 1 day" both come out of the elapsed arithmetic depending
+ * on rounding. Calendar days are what "in 3 days" means to the person reading
+ * it, and the schedule is a calendar schedule.
+ *
+ * `null` when there is no next scan to name — `cadence: "off"`, or a cadence
+ * whose next tick is past the horizon. The caller writes the off case, which
+ * has a different sentence and a different remedy.
+ */
+function nextScanNoteFor(next: Date | null, now: Date): string | null {
+  if (!next) return null;
+
+  const startOfToday = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const startOfNext = Date.UTC(next.getUTCFullYear(), next.getUTCMonth(), next.getUTCDate());
+  const days = Math.round((startOfNext - startOfToday) / DAY_MS);
+
+  if (days <= 0) return "Next scan later today";
+  if (days === 1) return "Next scan tomorrow";
+  return `Next scan in ${days} days`;
+}
 
 /**
  * The page title and its trust badge — every branch's, including the main one.
@@ -228,8 +258,17 @@ export default async function AiVisibilityPage() {
   // time-dependent agree with each other.
   const now = new Date();
 
-  const [lastRun, cap] = await Promise.all([
+  const [lastRun, aiVisibilitySource, readiness, cap] = await Promise.all([
     latestRun(tenantId),
+    // The sweep gates on `sources.lastRunAt`, not on the run row's
+    // `startedAt`, so the "next scan" line reads the same column the schedule
+    // does. A run that was planned but never recorded against the source would
+    // otherwise move the sentence without moving the schedule.
+    getAiVisibilitySource(tenantId),
+    // Everything a run needs that is not the run itself. The same function
+    // `planRun` refuses on, so the sentence under a disabled button and the
+    // refusal a click would get are one computation — see `preflight.ts`.
+    preflightRun(tenantId),
     capExceeded(
       tenantId,
       {
@@ -310,13 +349,30 @@ export default async function AiVisibilityPage() {
       ? `Stalled at ${inFlight.completedCalls} / ${inFlight.plannedCalls} calls — resume to finish it`
       : `Running… ${inFlight.completedCalls} / ${inFlight.plannedCalls} calls`
     : null;
-  // Nothing to ask with. `runNowAction` refuses this with `no_engines` anyway;
-  // this is the visible reason, stated before the click rather than after it,
-  // and it outranks the cap because a key is the thing missing first.
-  const blockedReason = runBlocked
-    ? "No engine key is connected, so a run has nothing to ask with."
-    : null;
+  // Not ready, in preflight's own words. Its blocks are ordered — a missing key
+  // first, then the judge, then a brand nothing can be matched against — so the
+  // first one is the thing to fix first, and it outranks the cap for the same
+  // reason it always did: a key is missing before a budget is.
+  //
+  // The sentence is preflight's rather than this file's on purpose. It used to
+  // be written out here AND enforced in `planRun`, which is two copies of one
+  // rule; now the disabled button quotes the refusal a click would actually
+  // get.
+  const blockedReason = readiness.blocks[0]?.message ?? null;
   const runDisabledReason = runningLine ?? blockedReason ?? capBlocking;
+
+  // What the schedule will do next, for the line under "Run now". Only the
+  // schedule: a run in flight, a missing key and the cap each occupy that same
+  // slot with a more immediate sentence, and `RunControls` decides between them
+  // — this is the fallback it falls back TO.
+  //
+  // The off case is written here rather than left as a null, because "no line
+  // at all" and "nothing is scheduled" look identical on screen and are not the
+  // same fact: the second one is a setting somebody chose and can change.
+  const nextScanNote =
+    settings.cadence === "off"
+      ? "No scheduled scans — cadence is off"
+      : nextScanNoteFor(nextScheduledRun(settings, aiVisibilitySource?.lastRunAt ?? null, now), now);
 
   // One estimate object for both places a run can be started from — the header
   // and the No-run-yet empty state — so the two can never quote different
@@ -637,8 +693,14 @@ export default async function AiVisibilityPage() {
   // about `n`, which is eligible samples after errors, refusals and brand-check
   // prompts are excluded. Two different numbers under one word, on the surface
   // whose whole claim is that you can check its arithmetic.
-  const lastRunLine = runningLine
-    ? runningLine
+  //
+  // In flight, this line is EMPTY rather than a second copy of "Running… 41 /
+  // 270 calls". The run cluster in the top-right owns that sentence now and
+  // keeps its counter moving; a server-rendered twin beside it would freeze at
+  // whatever the count was when the page was requested, and two numbers for one
+  // run — one live, one stuck — is worse than one.
+  const lastRunLine = inFlight
+    ? null
     : lastRun
     ? lastRun.status === "failed"
       ? `Last run ${DATE_FORMAT.format(lastRun.startedAt)} — failed`
@@ -655,7 +717,7 @@ export default async function AiVisibilityPage() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <Header>
-          <p className="text-sm text-muted-foreground">{lastRunLine}</p>
+          {lastRunLine && <p className="text-sm text-muted-foreground">{lastRunLine}</p>}
           {/* The two routes out of this page, which it otherwise had none of:
               every existing link to the prompt set and to the signals these
               runs produce lives inside an early-return branch, so the normal
@@ -692,21 +754,27 @@ export default async function AiVisibilityPage() {
             flight Run now is the disabled control carrying "Running… 41 / 270
             calls", and that line is the context the Stop button needs to be
             read against. It appears only in flight — there is nothing to stop
-            otherwise, and a permanently disabled Stop would be noise. */}
-        <div className="flex items-start gap-2">
-          {stalled && <ResumeRunButton />}
-          {inFlight && (
-            <StopRunButton
-              completedCalls={inFlight.completedCalls}
-              plannedCalls={inFlight.plannedCalls}
-            />
-          )}
-          <RunNowButton
-            estimate={runEstimate}
-            disabledReason={runDisabledReason}
-            disabledTone={runningLine ? "muted" : "destructive"}
-          />
-        </div>
+            otherwise, and a permanently disabled Stop would be noise.
+
+            A client component, and the only one on this page: the counter in
+            that line has to move while the run runs, and everything else here
+            is still computed above and passed in. The server's reading is the
+            seed and the authority — see the comment on `RunControls`. */}
+        <RunControls
+          initialProgress={{
+            inFlight: inFlight !== null,
+            stalled,
+            completedCalls: inFlight?.completedCalls ?? 0,
+            plannedCalls: inFlight?.plannedCalls ?? 0,
+          }}
+          estimate={runEstimate}
+          blockedReason={blockedReason}
+          capBlocking={capBlocking}
+          nextScanNote={nextScanNote}
+          // Warnings only. Blocks are already the sentence under the button,
+          // and a disabled button opens no dialog to list them in.
+          warnings={readiness.items.filter((item) => item.level === "warn")}
+        />
       </div>
 
       {/* ---- The run-blocked banner ----------------------------------------
@@ -765,6 +833,7 @@ export default async function AiVisibilityPage() {
               estimate={runEstimate}
               disabledReason={runDisabledReason}
               disabledTone={runningLine ? "muted" : "destructive"}
+              warnings={readiness.items.filter((item) => item.level === "warn")}
             />
           </EmptyStateActions>
         </EmptyState>
