@@ -1,9 +1,14 @@
 import {
   asArray,
   isRecord,
-  isRetryableStatus,
   ENGINE_REQUEST_TIMEOUT_MS,
 } from "@/lib/ai-visibility/engines/shape";
+import {
+  codeForStatus,
+  engineFailure,
+  isRetryableCode,
+  logEngineFailure,
+} from "@/lib/ai-visibility/engines/failure";
 import {
   engineSystemPrompt,
   type EngineAnswer,
@@ -136,7 +141,9 @@ export async function askAnthropic(
 ): Promise<EngineAnswer | EngineError> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey || apiKey.trim().length === 0) {
-    return { kind: "error", message: "ANTHROPIC_API_KEY is not set" };
+    // See the note in `openai.ts`: a missing key and a rejected key have the
+    // same remedy, and the decryption-failure state belongs to the keys table.
+    return engineFailure("anthropic", "invalid_key", { detail: "no key configured" });
   }
   const fetchImpl = deps.fetchImpl ?? fetch;
   const model = process.env.AI_VISIBILITY_ANTHROPIC_MODEL ?? ANTHROPIC_DEFAULT_MODEL;
@@ -177,50 +184,56 @@ export async function askAnthropic(
   } catch (error) {
     // Transport, or the 60s abort. Nothing reached the model, so nothing was
     // billed and the next wave may well get through — see `EngineError.retryable`.
-    return { kind: "error", message: `anthropic request failed: ${String(error)}`, retryable: true };
+    //
+    // `String(error)` stays out of the returned message: a fetch failure can
+    // carry the request it failed on, and that request has an `x-api-key`
+    // header. Scrubbed server log instead.
+    console.error(`[ai-visibility] anthropic request failed:`, error);
+    return engineFailure("anthropic", "provider_unavailable", {
+      detail: "request never completed",
+      retryable: true,
+    });
   }
 
+  // Body read for the log, then dropped. Anthropic's own error envelope is
+  // comparatively tame, but its RESPONSE HEADERS carry
+  // `anthropic-organization-id` — which is why only one named header is read
+  // here and `logEngineFailure` takes the body text rather than the response.
   if (!response.ok) {
     const body = await response.text().catch(() => "");
-    return {
-      kind: "error",
-      message: `anthropic ${response.status}: ${body.slice(0, 300)}`,
-      // Spread rather than `retryable: false`: terminal is the ABSENCE of the
-      // flag everywhere else in this file, and one path saying it a second way
-      // is how a reader concludes the two mean different things.
-      ...(isRetryableStatus(response.status) ? { retryable: true } : {}),
-    };
+    const code = codeForStatus(response.status);
+    logEngineFailure("anthropic", response.status, code, body);
+    return engineFailure("anthropic", code, {
+      requestId: response.headers.get("request-id"),
+      retryable: isRetryableCode(code),
+    });
   }
 
   let raw: AnthropicResponse;
   try {
     raw = (await response.json()) as AnthropicResponse;
-  } catch (error) {
-    return { kind: "error", message: `anthropic returned unparseable JSON: ${String(error)}` };
+  } catch {
+    return engineFailure("anthropic", "bad_response", { detail: "unparseable JSON" });
   }
   if (!isRecord(raw)) {
-    return { kind: "error", message: "anthropic returned a non-object body" };
+    return engineFailure("anthropic", "bad_response", { detail: "non-object body" });
   }
 
   // Every return below this point follows a complete, readable response, so the
   // call was billed whatever its verdict — see `EngineError.costUsd`.
   if (raw.stop_reason === "refusal") {
-    return {
-      kind: "refused",
-      message: "anthropic refused the prompt",
-      costUsd: ANTHROPIC_COST_PER_CALL_USD,
-    };
+    return engineFailure("anthropic", "refused", { costUsd: ANTHROPIC_COST_PER_CALL_USD });
   }
   // A cut-off answer is not a measurement: a brand named in the tail that never
   // got written would score as absent, which is a false negative in the
   // headline number. `pause_turn` is the same story — the turn is unfinished.
   // Both become coverage gaps rather than quiet zeroes.
   if (raw.stop_reason === "max_tokens" || raw.stop_reason === "pause_turn") {
-    return {
-      kind: "error",
-      message: `anthropic answer incomplete: ${raw.stop_reason}`,
+    return engineFailure("anthropic", "bad_response", {
+      // A documented enum value, not prose.
+      detail: `truncated answer: ${raw.stop_reason}`,
       costUsd: ANTHROPIC_COST_PER_CALL_USD,
-    };
+    });
   }
 
   const searchQueries: string[] = [];
@@ -253,11 +266,10 @@ export async function askAnthropic(
   }
 
   if (text.trim().length === 0) {
-    return {
-      kind: "refused",
-      message: "anthropic returned no answer text",
+    return engineFailure("anthropic", "refused", {
+      detail: "no answer text",
       costUsd: ANTHROPIC_COST_PER_CALL_USD,
-    };
+    });
   }
   // An answer written from the model's own memory is a real answer — what the
   // engine SAID is measurable, only what it CITED is not. `search_used` carries

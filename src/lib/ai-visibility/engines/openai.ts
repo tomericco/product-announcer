@@ -1,9 +1,14 @@
 import {
   asArray,
   isRecord,
-  isRetryableStatus,
   ENGINE_REQUEST_TIMEOUT_MS,
 } from "@/lib/ai-visibility/engines/shape";
+import {
+  codeForStatus,
+  engineFailure,
+  isRetryableCode,
+  logEngineFailure,
+} from "@/lib/ai-visibility/engines/failure";
 import {
   engineSystemPrompt,
   type EngineAnswer,
@@ -119,7 +124,11 @@ export async function askOpenAi(
 ): Promise<EngineAnswer | EngineError> {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey || apiKey.trim().length === 0) {
-    return { kind: "error", message: "OPENAI_API_KEY is not set" };
+    // No key configured is `invalid_key` rather than a code of its own: from
+    // the tenant's side the remedy is identical (supply a working key), and the
+    // design's fifth state — a stored key we could not DECRYPT — belongs to the
+    // engine-keys table, which does not exist yet. Add it there, not here.
+    return engineFailure("openai", "invalid_key", { detail: "no key configured" });
   }
   const fetchImpl = deps.fetchImpl ?? fetch;
   const model = process.env.AI_VISIBILITY_OPENAI_MODEL ?? OPENAI_DEFAULT_MODEL;
@@ -147,32 +156,44 @@ export async function askOpenAi(
   } catch (error) {
     // Transport, or the 60s abort. Nothing reached the model, so nothing was
     // billed and the next wave may well get through — see `EngineError.retryable`.
-    return { kind: "error", message: `openai request failed: ${String(error)}`, retryable: true };
+    //
+    // `String(error)` is deliberately NOT in the returned message: a fetch
+    // failure can carry the request it failed on, and that request has an
+    // Authorization header. It goes to the server log, scrubbed, instead.
+    console.error(`[ai-visibility] openai request failed:`, error);
+    return engineFailure("openai", "provider_unavailable", {
+      detail: "request never completed",
+      retryable: true,
+    });
   }
 
   // 429 and 5xx are errors, not misses: the sample is stored with status
   // `error` and excluded from every rate, so a rate-limited engine reads as a
   // coverage gap rather than as "they never named you".
+  //
+  // The BODY is read and thrown away: an OpenAI 401 body quotes the submitted
+  // key's prefix and last four characters, and a 4xx about the organization
+  // quotes the org id. It reaches a scrubbed server log and nothing else — see
+  // `engines/failure.ts`.
   if (!response.ok) {
     const body = await response.text().catch(() => "");
-    return {
-      kind: "error",
-      message: `openai ${response.status}: ${body.slice(0, 300)}`,
-      // Spread rather than `retryable: false`: terminal is the ABSENCE of the
-      // flag everywhere else in this file, and one path saying it a second way
-      // is how a reader concludes the two mean different things.
-      ...(isRetryableStatus(response.status) ? { retryable: true } : {}),
-    };
+    const code = codeForStatus(response.status);
+    logEngineFailure("openai", response.status, code, body);
+    return engineFailure("openai", code, {
+      // Not a secret, and the only handle OpenAI support can act on.
+      requestId: response.headers.get("x-request-id"),
+      retryable: isRetryableCode(code),
+    });
   }
 
   let raw: OpenAiResponse;
   try {
     raw = (await response.json()) as OpenAiResponse;
-  } catch (error) {
-    return { kind: "error", message: `openai returned unparseable JSON: ${String(error)}` };
+  } catch {
+    return engineFailure("openai", "bad_response", { detail: "unparseable JSON" });
   }
   if (!isRecord(raw)) {
-    return { kind: "error", message: "openai returned a non-object body" };
+    return engineFailure("openai", "bad_response", { detail: "non-object body" });
   }
 
   const searchQueries: string[] = [];
@@ -221,33 +242,29 @@ export async function askOpenAi(
   // call was billed whatever its verdict — see `EngineError.costUsd`. A
   // truncated answer is the priciest of the lot: it generated to the ceiling.
   if (raw.incomplete_details) {
-    return {
-      kind: "error",
-      message: `openai answer incomplete: ${raw.incomplete_details.reason ?? "unknown reason"}`,
+    return engineFailure("openai", "bad_response", {
+      // `reason` is an enum OpenAI documents ("max_output_tokens",
+      // "content_filter") rather than free prose, so it is safe to carry — and
+      // it still goes through the scrubber on the way out.
+      detail: `truncated answer: ${raw.incomplete_details.reason ?? "unknown reason"}`,
       costUsd: OPENAI_COST_PER_CALL_USD,
-    };
+    });
   }
   if (typeof raw.status === "string" && raw.status !== "completed") {
-    return {
-      kind: "error",
-      message: `openai response status ${raw.status}`,
+    return engineFailure("openai", "bad_response", {
+      detail: `response status ${raw.status}`,
       costUsd: OPENAI_COST_PER_CALL_USD,
-    };
+    });
   }
 
   if (refused) {
-    return {
-      kind: "refused",
-      message: "openai refused the prompt",
-      costUsd: OPENAI_COST_PER_CALL_USD,
-    };
+    return engineFailure("openai", "refused", { costUsd: OPENAI_COST_PER_CALL_USD });
   }
   if (text.trim().length === 0) {
-    return {
-      kind: "refused",
-      message: "openai returned no answer text",
+    return engineFailure("openai", "refused", {
+      detail: "no answer text",
       costUsd: OPENAI_COST_PER_CALL_USD,
-    };
+    });
   }
   // An answer written from the model's own memory is a real answer: it is what
   // a buyer asking this question would read, and it measures what the engine

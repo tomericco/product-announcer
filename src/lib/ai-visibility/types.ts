@@ -62,6 +62,38 @@ export type EngineAnswer = {
 
 export type EngineError = {
   kind: "error" | "refused";
+  /**
+   * WHICH of the six things went wrong — the closed set in
+   * `engines/failure.ts`.
+   *
+   * Required, not optional, and that is the whole point: the field exists so
+   * that a client cannot return a failure without having decided what kind it
+   * was, and so that everything downstream can branch on a value we control
+   * instead of on a provider's prose.
+   *
+   * Typed as a plain string union here rather than imported from
+   * `engines/failure.ts` because this module imports nothing — `src/db/schema.ts`
+   * reads two types out of it, so any import here becomes a schema dependency.
+   * `EngineFailureCode` is declared over the same six literals and the two are
+   * asserted identical in `tests/lib/ai-visibility/engines/failure.test.ts`.
+   */
+  code:
+    | "invalid_key"
+    | "quota_exceeded"
+    | "rate_limited"
+    | "provider_unavailable"
+    | "bad_response"
+    | "refused";
+  /**
+   * A sentence WE wrote, safe to store and to render.
+   *
+   * NEVER provider body text. A provider's own error message quotes the
+   * submitted credential back at you — an OpenAI 401 carries the key's prefix
+   * and its last four characters — and this string is written to
+   * `ai_visibility_samples.error`, summarised into `sources.lastError`, and
+   * interpolated into the overview page. Build it with `engineFailure()`, which
+   * composes it from the code and scrubs the result.
+   */
   message: string;
   /**
    * What the failed call still cost, when the provider gave us enough to say.

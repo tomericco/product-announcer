@@ -18,6 +18,7 @@ import { judgeRun } from "@/lib/ai-visibility/judge";
 import { emitSignals } from "@/lib/ai-visibility/signals";
 import { MAX_ACTIVE_PROMPTS, RUNNABLE_ORDER } from "@/lib/ai-visibility/prompts";
 import { mapWithConcurrency } from "@/lib/concurrency";
+import { scrubSecrets } from "@/lib/ai-visibility/scrub";
 import type { EngineClient, EngineId } from "@/lib/ai-visibility/types";
 
 /** Injected wall clock. Read repeatedly, never captured once — slices budget on it. */
@@ -567,7 +568,13 @@ export async function runSlice(
             .update(aiVisibilitySamples)
             .set({
               status: retrying ? "pending" : result.kind === "refused" ? "refused" : "error",
-              error: result.message,
+              // Scrubbed on the way into the column even though `engineFailure`
+              // already composed this from our own words. This is the last gate
+              // before the string becomes durable — it is read back into
+              // `sources.lastError` and rendered on two pages — and the clients
+              // are injectable, so "the client promised" is not a property this
+              // write can rely on. See `scrub.ts`.
+              error: scrubSecrets(result.message),
               // ACCUMULATED, not assigned. Every attempt the provider billed is
               // real money, and `reconcileRunCounters` re-derives the run's
               // total from these rows at finalize — an assignment here would
@@ -637,7 +644,15 @@ export async function runSlice(
         try {
           await database
             .update(aiVisibilitySamples)
-            .set({ status: "error", error: String(error), nextAttemptAt: null, askedAt: opts.now() })
+            // A throw escaping `ask()` is our bug, but the exception it threw
+            // is not necessarily ours: a fetch or SDK error stringifies to
+            // include the request that failed, headers and all. Scrubbed.
+            .set({
+              status: "error",
+              error: scrubSecrets(String(error)),
+              nextAttemptAt: null,
+              askedAt: opts.now(),
+            })
             .where(eq(aiVisibilitySamples.id, row.id));
         } catch {
           // The row stays pending and is retried next slice. Nothing better to do.
@@ -994,7 +1009,10 @@ export async function finalizeRun(
 
     return { status: "complete", judged: judged.judged, signals: emitted.written };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    // Scrubbed: finalize calls the judge, which calls a provider SDK, whose
+    // errors stringify with the failing request attached. This message is
+    // written to `ai_visibility_runs.error` and read back onto the source row.
+    const message = scrubSecrets(error instanceof Error ? error.message : String(error));
     try {
       await database
         .update(aiVisibilityRuns)

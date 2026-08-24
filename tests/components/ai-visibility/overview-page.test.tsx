@@ -552,6 +552,37 @@ describe("overview — the nine states, and that they are mutually exclusive", (
     expect(byEngine.get("all")!.failureNote).toBeNull();
   });
 
+  it("Partial failure: a legacy raw provider body is scrubbed before it reaches the tile", async () => {
+    // Sample rows written before the engine clients were taught to speak in
+    // codes still hold the provider's own 401 body — key prefix, masked middle,
+    // and the last four characters exposed. Nothing backfills those rows, and
+    // `runEngineHealth` still reads them into `lastError`, so the render is
+    // where they have to stop. The assertion is the ABSENCE of the fragment.
+    setup({
+      health: [
+        {
+          engine: "openai",
+          erroredPrompts: 4,
+          erroredPromptIds: ["p1"],
+          lastError:
+            "openai 401: Incorrect API key provided: sk-Eyftb****************************99vW. You can find your API key at https://platform.openai.com/account/api-keys.",
+          totalSamples: 12,
+          okSamples: 8,
+          erroredSamples: 4,
+          refusedSamples: 0,
+        },
+      ],
+    });
+    await renderPage();
+
+    const note = new Map(captured.tiles!.map((tile) => [tile.engine, tile])).get("openai")!
+      .failureNote!;
+    expect(note).not.toContain("sk-Eyftb");
+    expect(note).not.toContain("99vW");
+    // Still a usable sentence: the count survives, the secret does not.
+    expect(note).toContain("failed on 4 prompts");
+  });
+
   it("Model changed: the note stays on the tile of the engine it happened to", async () => {
     // The chart carries NO model ticks. Three engines over twelve runs is up to
     // 36 labelled dots on three 1px backdrop lines, and the hero can carry none

@@ -403,8 +403,9 @@ describe("runSlice", () => {
   it("stores a refusal as refused and an error as error, without failing the slice", async () => {
     const { runId } = await planned();
     const openai = fakeEngine("openai", (_p, call) => {
-      if (call === 1) return { kind: "refused", message: "no search results" };
-      if (call === 2) return { kind: "error", message: "429 rate limited" };
+      if (call === 1) return { kind: "refused" as const, code: "refused" as const, message: "declined" };
+      if (call === 2)
+        return { kind: "error" as const, code: "rate_limited" as const, message: "rate limited" };
       return answer();
     });
 
@@ -418,7 +419,7 @@ describe("runSlice", () => {
     expect(outcome.remaining).toBe(0);
     const samples = await db.select().from(aiVisibilitySamples).where(eq(aiVisibilitySamples.runId, runId));
     expect(samples.map((s) => s.status).sort()).toEqual(["error", "ok", "refused"]);
-    expect(samples.find((s) => s.status === "error")?.error).toContain("429");
+    expect(samples.find((s) => s.status === "error")?.error).toContain("rate limited");
     // Only the successful call is billed.
     const [run] = await db.select().from(aiVisibilityRuns).where(eq(aiVisibilityRuns.id, runId));
     expect(run.costUsd).toBeCloseTo(0.01, 5);
@@ -430,7 +431,14 @@ describe("runSlice", () => {
     // the client says so when the provider told it enough. Treating that as
     // free is how the monthly cap silently under-counts.
     const openai = fakeEngine("openai", (_p, call) =>
-      call === 1 ? { kind: "error", message: "cut off at the token ceiling", costUsd: 0.007 } : answer()
+      call === 1
+        ? {
+            kind: "error" as const,
+            code: "bad_response" as const,
+            message: "cut off at the token ceiling",
+            costUsd: 0.007,
+          }
+        : answer()
     );
 
     await runSlice(
@@ -751,7 +759,7 @@ describe("runSlice", () => {
 
   it("does not extract errored or refused samples", async () => {
     const { runId } = await planned();
-    const openai = fakeEngine("openai", () => ({ kind: "error", message: "boom" }) as const);
+    const openai = fakeEngine("openai", () => ({ kind: "error", code: "bad_response", message: "boom" }) as const);
     const extracted: string[] = [];
 
     await runSlice(

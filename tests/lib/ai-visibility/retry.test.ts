@@ -14,6 +14,7 @@ import {
   runSlice,
   sampleBackoffMs,
 } from "../../../src/lib/ai-visibility/run";
+import { engineFailureMessage } from "../../../src/lib/ai-visibility/engines/failure";
 import { seedTenant, dropTenant } from "../../helpers/fixtures";
 
 /**
@@ -54,6 +55,20 @@ function controllableClock(startIso: string, stepMs = 10) {
     },
   });
 }
+
+/**
+ * The sentences the clients actually produce now, rather than the provider's.
+ *
+ * A fake engine that replied `"openai 429: slow down"` was testing the retry
+ * ladder against a string no client can return any more — the message a
+ * failure carries is composed from its `code` by `engineFailure()`, and the
+ * provider's own body never leaves the client. Using the real copy here keeps
+ * these tests honest about what lands in `ai_visibility_samples.error`.
+ */
+const RATE_LIMITED = engineFailureMessage("openai", "rate_limited");
+const UNAVAILABLE = engineFailureMessage("openai", "provider_unavailable");
+const INVALID_KEY = engineFailureMessage("openai", "invalid_key");
+const REFUSED = engineFailureMessage("openai", "refused");
 
 function answer(overrides: Partial<EngineAnswer> = {}): EngineAnswer {
   return {
@@ -121,7 +136,7 @@ async function runRow(runId: string) {
 describe("runSlice — retrying a transient engine failure", () => {
   it("leaves a retryable failure pending, counted, and waiting on a backoff", async () => {
     const { runId } = await plannedOneSample();
-    const engine = fakeEngine(() => ({ kind: "error", message: "openai 429: slow down", retryable: true }));
+    const engine = fakeEngine(() => ({ kind: "error", code: "rate_limited", message: RATE_LIMITED, retryable: true }));
     const now = controllableClock("2026-03-02T09:00:00Z");
 
     const outcome = await runSlice(runId, { budgetMs: 60_000, concurrency: 1, now }, { engines: { openai: engine } });
@@ -132,7 +147,7 @@ describe("runSlice — retrying a transient engine failure", () => {
     // the trend chart's floor for the run.
     expect(row.status).toBe("pending");
     expect(row.askAttempts).toBe(1);
-    expect(row.error).toContain("429");
+    expect(row.error).toBe(RATE_LIMITED);
     expect(row.nextAttemptAt).not.toBeNull();
     expect(row.nextAttemptAt!.getTime()).toBeGreaterThan(new Date("2026-03-02T09:00:00Z").getTime());
     // Not finished, and not the budget's fault — the slice simply has nothing
@@ -148,7 +163,7 @@ describe("runSlice — retrying a transient engine failure", () => {
     // identical 429 comes back, and the slice burns its whole budget on one
     // sample against a rate limit that has had no time to clear.
     const { runId } = await plannedOneSample();
-    const engine = fakeEngine(() => ({ kind: "error", message: "openai 429: slow down", retryable: true }));
+    const engine = fakeEngine(() => ({ kind: "error", code: "rate_limited", message: RATE_LIMITED, retryable: true }));
     const now = controllableClock("2026-03-02T09:00:00Z");
 
     const outcome = await runSlice(runId, { budgetMs: 60_000, concurrency: 1, now }, { engines: { openai: engine } });
@@ -162,7 +177,9 @@ describe("runSlice — retrying a transient engine failure", () => {
   it("retries on a later slice, once the backoff has elapsed", async () => {
     const { runId } = await plannedOneSample();
     const engine = fakeEngine((call) =>
-      call === 1 ? { kind: "error", message: "openai 503: unavailable", retryable: true } : answer()
+      call === 1
+        ? { kind: "error", code: "provider_unavailable", message: UNAVAILABLE, retryable: true }
+        : answer()
     );
     const now = controllableClock("2026-03-02T09:00:00Z");
 
@@ -183,7 +200,7 @@ describe("runSlice — retrying a transient engine failure", () => {
 
   it("a slice that arrives DURING the backoff hands out nothing and leaves the run resumable", async () => {
     const { runId } = await plannedOneSample();
-    const engine = fakeEngine(() => ({ kind: "error", message: "openai 429: slow down", retryable: true }));
+    const engine = fakeEngine(() => ({ kind: "error", code: "rate_limited", message: RATE_LIMITED, retryable: true }));
     const now = controllableClock("2026-03-02T09:00:00Z");
 
     await runSlice(runId, { budgetMs: 60_000, concurrency: 1, now }, { engines: { openai: engine } });
@@ -201,8 +218,9 @@ describe("runSlice — retrying a transient engine failure", () => {
   it("gives up at MAX_SAMPLE_ATTEMPTS and records the LAST message", async () => {
     const { runId } = await plannedOneSample();
     const engine = fakeEngine((call) => ({
-      kind: "error",
-      message: `openai 429: attempt ${call}`,
+      kind: "error" as const,
+      code: "rate_limited" as const,
+      message: `${RATE_LIMITED} attempt ${call}`,
       retryable: true,
     }));
     const now = controllableClock("2026-03-02T09:00:00Z");
@@ -216,7 +234,7 @@ describe("runSlice — retrying a transient engine failure", () => {
     const row = await sampleRow(runId);
     expect(row.status).toBe("error");
     expect(row.askAttempts).toBe(MAX_SAMPLE_ATTEMPTS);
-    expect(row.error).toBe(`openai 429: attempt ${MAX_SAMPLE_ATTEMPTS}`);
+    expect(row.error).toBe(`${RATE_LIMITED} attempt ${MAX_SAMPLE_ATTEMPTS}`);
     expect(row.nextAttemptAt).toBeNull();
 
     // And it stays given up: a fourth slice finds nothing pending at all.
@@ -228,7 +246,7 @@ describe("runSlice — retrying a transient engine failure", () => {
   it("never retries a terminal failure — the money is spent to fail identically", async () => {
     const { runId } = await plannedOneSample();
     // A 401, a 404, a truncated answer: the client omits `retryable`.
-    const engine = fakeEngine(() => ({ kind: "error", message: "openai 401: invalid api key" }));
+    const engine = fakeEngine(() => ({ kind: "error", code: "invalid_key", message: INVALID_KEY }));
     const now = controllableClock("2026-03-02T09:00:00Z");
 
     const outcome = await runSlice(runId, { budgetMs: 60_000, concurrency: 1, now }, { engines: { openai: engine } });
@@ -242,7 +260,7 @@ describe("runSlice — retrying a transient engine failure", () => {
 
   it("never retries a refusal — the model read the prompt and declined", async () => {
     const { runId } = await plannedOneSample();
-    const engine = fakeEngine(() => ({ kind: "refused", message: "openai refused the prompt", costUsd: 0.252 }));
+    const engine = fakeEngine(() => ({ kind: "refused", code: "refused", message: REFUSED, costUsd: 0.252 }));
     const now = controllableClock("2026-03-02T09:00:00Z");
 
     const outcome = await runSlice(runId, { budgetMs: 60_000, concurrency: 1, now }, { engines: { openai: engine } });
@@ -259,7 +277,13 @@ describe("runSlice — retrying a transient engine failure", () => {
     // direction of error the monthly cap cannot survive.
     const engine = fakeEngine((call) =>
       call === 1
-        ? { kind: "error", message: "openai 500: internal", retryable: true, costUsd: 0.004 }
+        ? {
+            kind: "error" as const,
+            code: "provider_unavailable" as const,
+            message: UNAVAILABLE,
+            retryable: true,
+            costUsd: 0.004,
+          }
         : answer({ costUsd: 0.01 })
     );
     const now = controllableClock("2026-03-02T09:00:00Z");
@@ -278,7 +302,7 @@ describe("runSlice — retrying a transient engine failure", () => {
     // the failing row blocking the batch it is in.
     const { runId } = await plannedOneSample(3);
     const engine = fakeEngine((call) =>
-      call === 1 ? { kind: "error", message: "openai 429: slow down", retryable: true } : answer()
+      call === 1 ? { kind: "error", code: "rate_limited", message: RATE_LIMITED, retryable: true } : answer()
     );
     const now = controllableClock("2026-03-02T09:00:00Z");
 

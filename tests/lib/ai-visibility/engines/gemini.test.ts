@@ -84,7 +84,8 @@ describe("askGemini", () => {
     const unused = vi.fn();
     expect(await askGemini("x", { fetchImpl: unused as never })).toEqual({
       kind: "error",
-      message: expect.stringContaining("GEMINI_API_KEY"),
+      code: "invalid_key",
+      message: expect.stringContaining("no key configured"),
     });
     expect(unused).not.toHaveBeenCalled();
 
@@ -92,19 +93,25 @@ describe("askGemini", () => {
     const rateLimited = vi.fn(async () => new Response("quota", { status: 429 }));
     expect(await askGemini("x", { fetchImpl: rateLimited as never })).toEqual({
       kind: "error",
-      message: expect.stringContaining("429"),
-      // Retryable: a quota error clears, and the sample is asked again.
+      code: "rate_limited",
+      message: expect.stringContaining("rate-limiting"),
+      // Retryable: a throughput limit clears, and the sample is asked again.
       retryable: true,
     });
 
     const thrower = vi.fn(async () => {
       throw new Error("socket hang up");
     });
-    expect(await askGemini("x", { fetchImpl: thrower as never })).toEqual({
+    const threw = await askGemini("x", { fetchImpl: thrower as never });
+    expect(threw).toEqual({
       kind: "error",
-      message: expect.stringContaining("socket hang up"),
+      code: "provider_unavailable",
+      message: expect.stringContaining("request never completed"),
       retryable: true,
     });
+    // The thrown error can carry the request, and the request carries
+    // `x-goog-api-key`. It is logged, not returned.
+    expect("message" in threw && threw.message).not.toContain("socket hang up");
   });
 
   it("refuses a blocked or empty answer", async () => {
@@ -115,6 +122,7 @@ describe("askGemini", () => {
     );
     expect(await askGemini("x", { fetchImpl: blocked as never })).toEqual({
       kind: "refused",
+      code: "refused",
       message: expect.any(String),
       costUsd: GEMINI_COST_PER_CALL_USD,
     });
@@ -160,6 +168,7 @@ describe("askGemini", () => {
 
     expect(await askGemini("x", { fetchImpl: truncated as never })).toEqual({
       kind: "error",
+      code: "bad_response",
       message: expect.stringContaining("MAX_TOKENS"),
       costUsd: GEMINI_COST_PER_CALL_USD,
     });
@@ -178,7 +187,8 @@ describe("askGemini, the remaining error paths and extraction edges", () => {
 
     expect(await askGemini("x", { fetchImpl: fetchImpl as never })).toEqual({
       kind: "error",
-      message: expect.stringContaining("GEMINI_API_KEY"),
+      code: "invalid_key",
+      message: expect.stringContaining("no key configured"),
     });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
@@ -193,18 +203,27 @@ describe("askGemini, the remaining error paths and extraction edges", () => {
     expect(url).not.toContain("gem-secret");
   });
 
-  it("turns a 401, a 403 and a 500 into errors carrying the status and the body", async () => {
+  it("maps 401, 403, 404 and 500 to codes, and keeps every body out of them", async () => {
     vi.stubEnv("GEMINI_API_KEY", "gem-test");
 
-    const unauthorized = vi.fn(async () => new Response("API key not valid", { status: 401 }));
+    const unauthorized = vi.fn(
+      async () =>
+        new Response(
+          '{"error":{"code":400,"message":"API key not valid. Please pass a valid API key: AIzaSyTESTKEY000","status":"INVALID_ARGUMENT"}}',
+          { status: 401 }
+        )
+    );
     const result = await askGemini("x", { fetchImpl: unauthorized as never });
-    expect(result).toEqual({ kind: "error", message: expect.stringContaining("401") });
-    expect("kind" in result && result.message).toContain("API key not valid");
+    expect(result).toEqual({ kind: "error", code: "invalid_key", message: expect.any(String) });
+    const message = "message" in result ? result.message : "";
+    expect(message).not.toContain("AIzaSyTESTKEY000");
+    expect(message).not.toContain("API key not valid");
 
     const forbidden = vi.fn(async () => new Response("no access", { status: 403 }));
     expect(await askGemini("x", { fetchImpl: forbidden as never })).toEqual({
       kind: "error",
-      message: expect.stringContaining("403"),
+      code: "invalid_key",
+      message: expect.any(String),
     });
 
     // The shape a withdrawn model id produces — the exact failure the review
@@ -214,13 +233,15 @@ describe("askGemini, the remaining error paths and extraction edges", () => {
     );
     expect(await askGemini("x", { fetchImpl: notFound as never })).toEqual({
       kind: "error",
-      message: expect.stringContaining("404"),
+      code: "bad_response",
+      message: expect.any(String),
     });
 
     const broken = vi.fn(async () => new Response("boom", { status: 500 }));
     expect(await askGemini("x", { fetchImpl: broken as never })).toEqual({
       kind: "error",
-      message: expect.stringContaining("500"),
+      code: "provider_unavailable",
+      message: expect.stringContaining("Couldn't reach Google"),
       retryable: true,
     });
   });
@@ -231,12 +252,14 @@ describe("askGemini, the remaining error paths and extraction edges", () => {
     const empty = vi.fn(async () => new Response("", { status: 200 }));
     expect(await askGemini("x", { fetchImpl: empty as never })).toEqual({
       kind: "error",
+      code: "bad_response",
       message: expect.stringMatching(/unparseable/i),
     });
 
     const html = vi.fn(async () => new Response("<html>502</html>", { status: 200 }));
     expect(await askGemini("x", { fetchImpl: html as never })).toEqual({
       kind: "error",
+      code: "bad_response",
       message: expect.stringMatching(/unparseable/i),
     });
   });
@@ -275,6 +298,7 @@ describe("askGemini, the remaining error paths and extraction edges", () => {
       const fetchImpl = vi.fn(async () => json(body));
       expect(await askGemini("x", { fetchImpl: fetchImpl as never })).toEqual({
         kind: "refused",
+        code: "refused",
         message: expect.stringMatching(/candidate/i),
       });
     }
@@ -479,6 +503,7 @@ describe("askGemini, shapes that are not what the docs describe", () => {
     // reported non-answer rather than an exception.
     expect(result).toEqual({
       kind: "refused",
+      code: "refused",
       message: expect.any(String),
       costUsd: GEMINI_COST_PER_CALL_USD,
     });

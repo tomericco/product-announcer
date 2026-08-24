@@ -113,7 +113,8 @@ describe("askAnthropic", () => {
     const unused = vi.fn();
     expect(await askAnthropic("x", { fetchImpl: unused as never })).toEqual({
       kind: "error",
-      message: expect.stringContaining("ANTHROPIC_API_KEY"),
+      code: "invalid_key",
+      message: expect.stringContaining("no key configured"),
     });
     expect(unused).not.toHaveBeenCalled();
 
@@ -121,7 +122,8 @@ describe("askAnthropic", () => {
     const overloaded = vi.fn(async () => new Response("overloaded", { status: 529 }));
     expect(await askAnthropic("x", { fetchImpl: overloaded as never })).toEqual({
       kind: "error",
-      message: expect.stringContaining("529"),
+      code: "provider_unavailable",
+      message: expect.stringContaining("Couldn't reach Anthropic"),
       // Retryable: 529 is "overloaded", which is the definition of a moment.
       retryable: true,
     });
@@ -129,11 +131,16 @@ describe("askAnthropic", () => {
     const thrower = vi.fn(async () => {
       throw new Error("socket hang up");
     });
-    expect(await askAnthropic("x", { fetchImpl: thrower as never })).toEqual({
+    const threw = await askAnthropic("x", { fetchImpl: thrower as never });
+    expect(threw).toEqual({
       kind: "error",
-      message: expect.stringContaining("socket hang up"),
+      code: "provider_unavailable",
+      message: expect.stringContaining("request never completed"),
       retryable: true,
     });
+    // The thrown error can carry the request, and the request carries
+    // `x-api-key`. It is logged, not returned.
+    expect("message" in threw && threw.message).not.toContain("socket hang up");
   });
 
   it("refuses a refusal and an empty answer", async () => {
@@ -148,6 +155,7 @@ describe("askAnthropic", () => {
     );
     expect(await askAnthropic("x", { fetchImpl: refusal as never })).toEqual({
       kind: "refused",
+      code: "refused",
       message: expect.any(String),
       costUsd: ANTHROPIC_COST_PER_CALL_USD,
     });
@@ -161,6 +169,7 @@ describe("askAnthropic", () => {
     );
     expect(await askAnthropic("x", { fetchImpl: empty as never })).toEqual({
       kind: "refused",
+      code: "refused",
       message: expect.any(String),
       costUsd: ANTHROPIC_COST_PER_CALL_USD,
     });
@@ -232,6 +241,7 @@ describe("askAnthropic", () => {
     );
     expect(await askAnthropic("x", { fetchImpl: truncated as never })).toEqual({
       kind: "error",
+      code: "bad_response",
       message: expect.stringContaining("max_tokens"),
       costUsd: ANTHROPIC_COST_PER_CALL_USD,
     });
@@ -248,6 +258,7 @@ describe("askAnthropic", () => {
     );
     expect(await askAnthropic("x", { fetchImpl: paused as never })).toEqual({
       kind: "error",
+      code: "bad_response",
       message: expect.stringContaining("pause_turn"),
       costUsd: ANTHROPIC_COST_PER_CALL_USD,
     });
@@ -285,32 +296,45 @@ describe("askAnthropic, the remaining error paths and extraction edges", () => {
 
     expect(await askAnthropic("x", { fetchImpl: fetchImpl as never })).toEqual({
       kind: "error",
-      message: expect.stringContaining("ANTHROPIC_API_KEY"),
+      code: "invalid_key",
+      message: expect.stringContaining("no key configured"),
     });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it("turns a 401, a 429 and a 500 into errors carrying the status and the body", async () => {
+  it("maps 401, 429 and 500 to codes, and never carries a header or a body out", async () => {
     vi.stubEnv("ANTHROPIC_API_KEY", "sk-ant-test");
 
     const unauthorized = vi.fn(
-      async () => new Response('{"error":{"message":"invalid x-api-key"}}', { status: 401 })
+      async () =>
+        new Response('{"error":{"type":"authentication_error","message":"invalid x-api-key"}}', {
+          status: 401,
+          // `anthropic-organization-id` is a real response header on this API.
+          // Nothing may read the header bag wholesale, so nothing may leak it.
+          headers: { "anthropic-organization-id": "org-01ABCDEF", "request-id": "req_011CX" },
+        })
     );
     const result = await askAnthropic("x", { fetchImpl: unauthorized as never });
-    expect(result).toEqual({ kind: "error", message: expect.stringContaining("401") });
-    expect("kind" in result && result.message).toContain("invalid x-api-key");
+    expect(result).toEqual({ kind: "error", code: "invalid_key", message: expect.any(String) });
+    const message = "message" in result ? result.message : "";
+    expect(message).not.toContain("invalid x-api-key");
+    expect(message).not.toContain("org-01ABCDEF");
+    // The request id IS carried: not a secret, and the only handle support has.
+    expect(message).toContain("req_011CX");
 
     const rateLimited = vi.fn(async () => new Response("rate_limit_error", { status: 429 }));
     expect(await askAnthropic("x", { fetchImpl: rateLimited as never })).toEqual({
       kind: "error",
-      message: expect.stringContaining("429"),
+      code: "rate_limited",
+      message: expect.stringContaining("rate-limiting"),
       retryable: true,
     });
 
     const broken = vi.fn(async () => new Response("boom", { status: 500 }));
     expect(await askAnthropic("x", { fetchImpl: broken as never })).toEqual({
       kind: "error",
-      message: expect.stringContaining("500"),
+      code: "provider_unavailable",
+      message: expect.stringContaining("Couldn't reach Anthropic"),
       retryable: true,
     });
   });
@@ -321,12 +345,14 @@ describe("askAnthropic, the remaining error paths and extraction edges", () => {
     const empty = vi.fn(async () => new Response("", { status: 200 }));
     expect(await askAnthropic("x", { fetchImpl: empty as never })).toEqual({
       kind: "error",
+      code: "bad_response",
       message: expect.stringMatching(/unparseable/i),
     });
 
     const html = vi.fn(async () => new Response("<html>502</html>", { status: 200 }));
     expect(await askAnthropic("x", { fetchImpl: html as never })).toEqual({
       kind: "error",
+      code: "bad_response",
       message: expect.stringMatching(/unparseable/i),
     });
   });

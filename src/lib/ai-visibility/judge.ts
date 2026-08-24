@@ -14,6 +14,7 @@ import { mapWithConcurrency } from "@/lib/concurrency";
 import type { Clock } from "@/lib/ai-visibility/run";
 import { resolveModel, modelId } from "@/lib/ai/model";
 import { recordLlmUsage, type TokenUsage } from "@/lib/ai/llm-usage";
+import { scrubSecrets } from "@/lib/ai-visibility/scrub";
 import type { SampleExtraction } from "@/lib/ai-visibility/types";
 
 /**
@@ -277,7 +278,13 @@ export async function judgeChunk(
 
     return { labels };
   } catch (error) {
-    return { error: String(error) };
+    // Scrubbed, because this string travels: it is collected into
+    // `judged.errors`, joined onto `ai_visibility_runs.error`, and from there
+    // onto `sources.lastError`, which /company renders. An `APICallError` from
+    // the AI SDK stringifies with the failing request and its response body
+    // attached — an Anthropic 401 body is exactly the shape of leak the engine
+    // clients were just fixed for, arriving by a different door.
+    return { error: scrubSecrets(String(error)) };
   }
 }
 
@@ -527,7 +534,7 @@ export async function judgeRun(
           judged++;
           if (isFlagged) flagged++;
         } catch (error) {
-          errors.push(`could not store judgement for ${sampleId}: ${String(error)}`);
+          errors.push(scrubSecrets(`could not store judgement for ${sampleId}: ${String(error)}`));
         }
       }
 
@@ -549,7 +556,9 @@ export async function judgeRun(
             .where(inArray(aiVisibilitySamples.id, unlabelled));
           judged += unlabelled.length;
         } catch (error) {
-          errors.push(`could not close out ${unlabelled.length} unlabelled sample(s): ${String(error)}`);
+          errors.push(
+            scrubSecrets(`could not close out ${unlabelled.length} unlabelled sample(s): ${String(error)}`)
+          );
         }
       }
     }

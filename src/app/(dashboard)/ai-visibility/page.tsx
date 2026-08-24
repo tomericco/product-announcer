@@ -31,6 +31,7 @@ import {
 } from "@/lib/ai-visibility/metrics";
 import { citedDomains, everSignalledDomains } from "@/lib/ai-visibility/cited-domains";
 import { capExceeded, capPausedMessage } from "@/lib/ai-visibility/cost";
+import { scrubSecrets } from "@/lib/ai-visibility/scrub";
 import { listSignals } from "@/lib/signals/query";
 import type { EngineId, WindowCounts } from "@/lib/ai-visibility/types";
 import { DATE_FORMAT } from "../company/source-status";
@@ -357,10 +358,16 @@ export default async function AiVisibilityPage() {
       latest && previous && latest.modelId && latest.modelId !== previous.modelId ? latest.modelId : null;
 
     const engineHealth = key === "all" ? undefined : healthByEngine.get(key);
+    // `lastError` is now composed by the engine clients from a closed set of
+    // codes and our own sentences, so it carries no provider body text —
+    // `scrubSecrets` here is for the rows written BEFORE that was true. Every
+    // sample stored up to this change holds `openai 401: Incorrect API key
+    // provided: sk-…99vW`, and those rows are still what the last-run tiles
+    // read. Nothing backfills them; this is what keeps them off the screen.
     const failureNote =
       engineHealth && engineHealth.erroredPrompts > 0
         ? `${ENGINE_LABEL[engineHealth.engine]} failed on ${engineHealth.erroredPrompts} prompts${
-            engineHealth.lastError ? ` — ${engineHealth.lastError}` : ""
+            engineHealth.lastError ? ` — ${scrubSecrets(engineHealth.lastError)}` : ""
           }`
         : null;
 

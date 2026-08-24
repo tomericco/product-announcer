@@ -103,7 +103,9 @@ describe.each(ENGINES)("$name — retryable classification", (engine) => {
 
     const result = isError(await engine.ask("q", { fetchImpl: fetchImpl as never }));
     expect(result.retryable).toBe(true);
-    expect(result.message).toContain("socket hang up");
+    expect(result.code).toBe("provider_unavailable");
+    // And the exception's own text stays out of it — see `engines/failure.ts`.
+    expect(result.message).not.toContain("socket hang up");
   });
 
   it("leaves a refusal terminal: the model read the prompt, declined, and billed for it", async () => {
