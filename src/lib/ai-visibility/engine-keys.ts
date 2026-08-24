@@ -1,4 +1,4 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
 import {
   aiVisibilityEngineKeyEvents,
@@ -203,53 +203,20 @@ export async function effectiveEngines(
 }
 
 /**
- * `effectiveEngines` for many tenants in one round trip — the cron sweep's
- * shape, matching `getAiVisibilitySettingsForTenants`.
+ * There is deliberately NO batch `effectiveEnginesForTenants` beside this, and
+ * the sweep is why.
  *
- * A tenant with no usable key is present in the map with an empty array.
- * Absence of a key is a real state, not a missing map entry the caller has to
- * remember to handle.
+ * The obvious optimisation is to resolve every candidate tenant's engines in
+ * one round trip and drop the keyless ones before dividing the tick's budget.
+ * That would be wrong: a tenant filtered out there gets no refusal recorded on
+ * its source row, so it sits green and silent — which, under a hard gate with
+ * no vendor-key fallback, is indistinguishable from working. The sweep is
+ * supposed to be the thing that catches a run that stopped producing data.
+ *
+ * So every candidate goes through `planRun`, refuses with `no_engines`, and the
+ * sweep writes the sentence. One extra query per keyless tenant, on a path that
+ * is already one query per tenant, in exchange for the failure being visible.
  */
-export async function effectiveEnginesForTenants(
-  wanted: Map<string, readonly string[]>,
-  database: typeof defaultDb = defaultDb
-): Promise<Map<string, EngineId[]>> {
-  const tenantIds = [...wanted.keys()];
-  const byTenant = new Map<string, EngineId[]>(tenantIds.map((id) => [id, []]));
-  if (tenantIds.length === 0) return byTenant;
-
-  const rows = await database
-    .select({
-      tenantId: aiVisibilityEngineKeys.tenantId,
-      engine: aiVisibilityEngineKeys.engine,
-    })
-    .from(aiVisibilityEngineKeys)
-    .where(
-      and(
-        inArray(aiVisibilityEngineKeys.tenantId, tenantIds),
-        eq(aiVisibilityEngineKeys.enabled, true),
-        eq(aiVisibilityEngineKeys.status, "verified")
-      )
-    );
-
-  const usable = new Map<string, Set<string>>();
-  for (const row of rows) {
-    const set = usable.get(row.tenantId) ?? new Set<string>();
-    set.add(row.engine);
-    usable.set(row.tenantId, set);
-  }
-
-  for (const tenantId of tenantIds) {
-    const set = usable.get(tenantId) ?? new Set<string>();
-    byTenant.set(
-      tenantId,
-      [...new Set((wanted.get(tenantId) ?? []).filter(isEngineId))].filter((engine) =>
-        set.has(engine)
-      )
-    );
-  }
-  return byTenant;
-}
 
 export type LoadedEngineKey =
   | { ok: true; key: string }

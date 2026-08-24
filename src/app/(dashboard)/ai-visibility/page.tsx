@@ -19,6 +19,7 @@ import { requireSession } from "@/lib/workspace/session";
 import { getOrCreateCompanyProfile } from "@/lib/workspace/company-profile";
 import { listCompetitors } from "@/lib/workspace/competitors";
 import { getAiVisibilitySettings } from "@/lib/ai-visibility/settings";
+import { effectiveEngines } from "@/lib/ai-visibility/engine-keys";
 import { listPrompts, runnablePrompts } from "@/lib/ai-visibility/prompts";
 import { plannedCallsForPrompts } from "@/lib/ai-visibility/planned-calls";
 import { latestRun, runIsStalled } from "@/lib/ai-visibility/run";
@@ -123,6 +124,46 @@ export default async function AiVisibilityPage() {
     );
   }
 
+  // ---- State: No engines connected ----------------------------------------
+  //
+  // BYOK's hard gate, and on ship day this is EVERY existing tenant: three
+  // engines named on the settings row and zero keys.
+  // `effectiveEngines` does not fall back to all three when the intersection is
+  // empty, so this page must not render as though a run were possible — a
+  // dashboard offering "Run now" over a button that can only refuse is worse
+  // than one that says what is missing.
+  //
+  // Placed after the Off state and before the prompt states on purpose. Without
+  // keys, approving prompts buys nothing, so pointing someone at the prompt
+  // review first would be sending them down a path that dead-ends.
+  const runEngines = await effectiveEngines(tenantId, settings.engines);
+  if (runEngines.length === 0) {
+    return (
+      <div className="space-y-4">
+        <Header />
+        <EmptyState>
+          <EmptyStateIcon>
+            <ScanSearch />
+          </EmptyStateIcon>
+          <EmptyStateTitle>No AI engines connected</EmptyStateTitle>
+          <EmptyStateDescription>
+            Engine answers are collected with your own provider keys, billed to your accounts rather
+            than ours, so nothing runs until at least one key is connected. Anything already measured
+            is kept.
+          </EmptyStateDescription>
+          <EmptyStateActions>
+            {/* A styled Link, not `Button render={<Link/>}`: Base UI's Button
+                stamps role="button" on whatever it renders, and this only
+                navigates. */}
+            <Link href="/settings#ai-engines" className={buttonVariants()}>
+              Connect an engine
+            </Link>
+          </EmptyStateActions>
+        </EmptyState>
+      </div>
+    );
+  }
+
   const prompts = await listPrompts(tenantId, { status: ["proposed", "active", "paused"] });
   const activePrompts = prompts.filter((prompt) => prompt.status === "active");
   const proposals = prompts.filter((prompt) => prompt.status === "proposed");
@@ -170,7 +211,11 @@ export default async function AiVisibilityPage() {
     capExceeded(
       tenantId,
       {
-        engines: settings.engines,
+        // The engines that will actually run, so the gate, the estimate and the
+        // tiles are all reading the same list. Quoting a three-engine price to
+        // a tenant with one key would be wrong on the one screen whose job is
+        // to be checkable about money.
+        engines: runEngines,
         samplesPerPrompt: settings.samplesPerPrompt,
         monthlyCapUsd: settings.monthlyCapUsd,
       },
@@ -225,7 +270,7 @@ export default async function AiVisibilityPage() {
   const runnable = runnablePrompts(activePrompts);
 
   const plannedCalls = plannedCallsForPrompts(runnable, {
-    engineCount: settings.engines.length,
+    engineCount: runEngines.length,
     samplesPerPrompt: settings.samplesPerPrompt,
   });
 
@@ -250,14 +295,18 @@ export default async function AiVisibilityPage() {
   // money for the same click.
   const runEstimate: RunEstimate = {
     prompts: runnable.length,
-    engines: settings.engines.length,
+    engines: runEngines.length,
     samples: settings.samplesPerPrompt,
     calls: plannedCalls,
     // The gate's own number, not a second computation of it.
     usd: cap.estimateUsd,
   };
 
-  const shownEngines = ENGINE_ORDER.filter((engine) => settings.engines.includes(engine));
+  // The engines with a key, in display order — not everything the settings row
+  // names. An engine nobody is paying for gets no tile, no series and no matrix
+  // column: a permanent "Collecting baseline" for something that will never
+  // collect anything reads as broken rather than as unused.
+  const shownEngines = ENGINE_ORDER.filter((engine) => runEngines.includes(engine));
 
   const [engineCuts, matrix, domains, competitors, health, tenantRows] = await Promise.all([
     engineMetrics(tenantId),

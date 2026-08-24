@@ -120,9 +120,15 @@ export async function saveWorkspaceSchedule(formData: FormData) {
 }
 
 /**
- * Persists cadence, engines, samples and the cap. Deliberately does NOT
- * touch `enabled` — that switch lives on the Company card, and widening this
- * action would let a Settings save silently turn the feature back on.
+ * Persists cadence, samples and the monthly engine budget. Deliberately does
+ * NOT touch `enabled` — that switch lives on the Company card, and widening
+ * this action would let a Settings save silently turn the feature back on.
+ *
+ * `engines` is deliberately NOT posted either, and that is the second half of
+ * Decision 2: the engine switches moved into the AI-engines card, beside the
+ * key each one depends on, and there is exactly one place to enable an engine.
+ * `saveAiVisibilitySettings` reads an absent list as "leave it alone", so a
+ * stale tab saving a cadence here cannot undo a switch flipped there.
  *
  * The throw is what `ToastForm`-style handlers need in order NOT to fire a
  * success toast. The form validates the same fields client-side first, so a
@@ -133,7 +139,6 @@ export async function saveAiVisibilityConfig(formData: FormData): Promise<void> 
   const result = await saveAiVisibilitySettings(session.user.tenantId, {
     cadence: formData.get("cadence"),
     dayOfWeek: Number(formData.get("dayOfWeek")),
-    engines: formData.getAll("engines"),
     samplesPerPrompt: Number(formData.get("samplesPerPrompt")),
     monthlyCapUsd: Number(formData.get("monthlyCapUsd")),
   });

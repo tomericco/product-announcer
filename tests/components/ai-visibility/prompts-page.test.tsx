@@ -68,6 +68,7 @@ vi.mock("@/app/(dashboard)/ai-visibility/generate-prompt-set-button", () => ({
 const {
   requireSession,
   getAiVisibilitySettings,
+  effectiveEngines,
   getOrCreateCompanyProfile,
   listPrompts,
   listCompetitors,
@@ -78,6 +79,8 @@ const {
 } = vi.hoisted(() => ({
   requireSession: vi.fn(),
   getAiVisibilitySettings: vi.fn(),
+  // BYOK: both pages read the EFFECTIVE engine list, not `settings.engines`.
+  effectiveEngines: vi.fn(async () => ["openai", "gemini", "anthropic"]),
   getOrCreateCompanyProfile: vi.fn(),
   listPrompts: vi.fn(),
   listCompetitors: vi.fn(),
@@ -94,6 +97,7 @@ vi.mock("@/lib/workspace/session", () => ({ requireSession }));
 vi.mock("@/lib/workspace/company-profile", () => ({ getOrCreateCompanyProfile }));
 vi.mock("@/lib/workspace/competitors", () => ({ listCompetitors }));
 vi.mock("@/lib/ai-visibility/settings", () => ({ getAiVisibilitySettings }));
+vi.mock("@/lib/ai-visibility/engine-keys", () => ({ effectiveEngines }));
 vi.mock("@/lib/ai-visibility/prompts", () => ({ listPrompts, MAX_ACTIVE_PROMPTS: 5 }));
 vi.mock("@/lib/ai-visibility/metrics", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/ai-visibility/metrics")>();
@@ -415,6 +419,6 @@ describe("prompts page — the first-audit CTA", () => {
     setup({ run: null, cap: { spentUsd: 20, exceeded: true, reached: true } });
     await renderPage();
 
-    expect(captured.runNow!.disabledReason).toBe("Paused — monthly cap reached ($20.00 of $20.00).");
+    expect(captured.runNow!.disabledReason).toBe("Paused — monthly engine budget reached ($20.00 of $20.00).");
   });
 });

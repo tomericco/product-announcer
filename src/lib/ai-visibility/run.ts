@@ -1551,7 +1551,7 @@ export async function cancelRun(
  * The tenant's most recent run, whatever its status.
  *
  * Any status on purpose: the overview header has to render "Running… 41 / 270
- * calls" and "Paused — monthly cap reached" off this row, and filtering to
+ * calls" and "Paused — monthly engine budget reached" off this row, and filtering to
  * `complete` would make both states invisible on the one page that exists to
  * show them.
  */

@@ -364,9 +364,9 @@ export async function runNowAction(): Promise<ActionResult<{ runId: string }>> {
       case "cap_reached":
         return {
           ok: false,
-          error: `Monthly cap reached ($${planned.spentUsd.toFixed(2)} of $${planned.capUsd.toFixed(
+          error: `Monthly engine budget reached ($${planned.spentUsd.toFixed(
             2
-          )}) — raise it in Settings, or wait for next month.`,
+          )} of $${planned.capUsd.toFixed(2)}) — raise it in Settings, or wait for next month.`,
         };
     }
   }

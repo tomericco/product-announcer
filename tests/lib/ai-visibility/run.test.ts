@@ -572,7 +572,7 @@ describe("runSlice", () => {
       .from(sources)
       .where(and(eq(sources.tenantId, tenant.id), eq(sources.type, "ai_visibility")));
     expect(source.status).toBe("failing");
-    expect(source.lastError).toContain("monthly cap");
+    expect(source.lastError).toContain("monthly engine budget");
   });
 
   it("aggregates what a cap-paused run already bought, so the samples still count", async () => {

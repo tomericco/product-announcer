@@ -94,26 +94,31 @@ const ENGINE_VOICE: Record<
  * sufficient quota", which tells a marketer to check two things and fix
  * neither.
  *
- * Two deliberate departures from the design's table, both because the surface
- * it was written for does not exist yet:
+ * The card has landed, so these now name the controls that are actually on
+ * screen — Re-check, and pasting a replacement. They did not before, because
+ * naming a control that does not exist is worse than naming none.
  *
- *  - no "try Re-check" — there is no Re-check button until the engine-keys card
- *    ships, and naming a control that is not on screen is worse than naming
- *    none;
- *  - no "paste the key again" — same reason. The action a tenant can take today
- *    is on the provider's side, so that is what these say.
+ * One thing they still do NOT name: concurrency. It is a per-tenant column with
+ * a conservative default of 3, and it is deliberately not a field on the
+ * settings card — "cadence, day of week, samples per prompt, monthly budget"
+ * is the whole list that surface owns, and every extra number is a number a
+ * marketer can get wrong. So the `rate_limited` sentence says what a tenant can
+ * actually do about a Tier 1 throughput limit, which is wait.
  *
- * Update both when the card lands.
+ * These are the sentences a RUN writes onto a sample row. The card's own copy
+ * for a stored key lives in `settings/engine-key-copy.ts` — same six states,
+ * different room: one describes a call that failed hours ago, the other a
+ * credential someone is looking at right now.
  */
 export function engineFailureMessage(engine: EngineId, code: EngineFailureCode): string {
   const voice = ENGINE_VOICE[engine];
   switch (code) {
     case "invalid_key":
-      return `${voice.product} rejected the API key. Check it was copied whole, and that it is a secret key (starts \`${voice.keyPrefix}\`) ${voice.keyHint}.`;
+      return `${voice.product} rejected the API key. Check it was copied whole, and that it is a secret key (starts \`${voice.keyPrefix}\`) ${voice.keyHint} — then paste it again in AI-visibility settings.`;
     case "quota_exceeded":
-      return `The key is valid, but the ${voice.provider} account behind it is out of credit or has hit a spend cap. Top it up at ${voice.billingUrl} — retrying inside this run cannot help.`;
+      return `The key is valid, but the ${voice.provider} account behind it is out of credit or has hit a spend cap. Top it up at ${voice.billingUrl}, then press Re-check in AI-visibility settings — retrying inside this run cannot help.`;
     case "rate_limited":
-      return `${voice.provider} is rate-limiting this key — new accounts start on a low-throughput tier. Lower the concurrency in AI-visibility settings, or leave it: the next run tries again.`;
+      return `${voice.provider} is rate-limiting this key — new accounts start on a low-throughput tier, and the limit lifts as the account ages. Nothing to change: the next run tries again.`;
     case "provider_unavailable":
       return `Couldn't reach ${voice.provider} just now. This is usually temporary — the next run tries again.`;
     case "bad_response":

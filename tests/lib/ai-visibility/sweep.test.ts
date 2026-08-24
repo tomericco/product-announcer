@@ -387,11 +387,35 @@ describe("sweepAiVisibility", () => {
       .from(sources)
       .where(and(eq(sources.tenantId, tenant.id), eq(sources.type, "ai_visibility")));
     expect(source.status).toBe("failing");
-    expect(source.lastError).toContain("monthly cap");
+    expect(source.lastError).toContain("monthly engine budget");
     // A refusal is recorded but must NOT re-anchor the cadence: `lastRunAt`
     // is what the fortnight-elapsed test measures from, and only real runs
     // move it. A stamped refusal would make a cap-refused fortnightly tenant
     // re-wait 13 days after the month resets.
+    expect(source.lastRunAt).toBeNull();
+  });
+
+  it("records a no-keys refusal on the source rather than sitting green and silent", async () => {
+    // The BYOK hard gate, and on ship day this is EVERY tenant. With no
+    // vendor-key fallback, a sweep that quietly stops producing data is
+    // indistinguishable from one that is working — so the sentence has to land
+    // on the source row, which is what /company's health block renders.
+    const { tenant } = await seedSource();
+    const plan = planOnly(tenant.id, { ok: false, reason: "no_engines" });
+
+    await sweepAiVisibility({ now: clock(MONDAY), plan, slice: idleSlice(), finalize: vi.fn() });
+
+    const [source] = await db
+      .select()
+      .from(sources)
+      .where(and(eq(sources.tenantId, tenant.id), eq(sources.type, "ai_visibility")));
+    expect(source.lastError).toContain("No AI engine keys connected");
+    // Not `failing`. The cap is the one refusal that paints the source red,
+    // because that one is spending that stopped; this one is a setup step
+    // nobody has done yet, and a red badge on it would report a healthy new
+    // workspace as broken.
+    expect(source.status).not.toBe("failing");
+    // And, like every refusal, it does not re-anchor the cadence.
     expect(source.lastRunAt).toBeNull();
   });
 

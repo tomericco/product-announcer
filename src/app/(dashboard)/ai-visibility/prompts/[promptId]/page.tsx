@@ -12,6 +12,7 @@ import { citedDomains } from "@/lib/ai-visibility/cited-domains";
 import { MIN_N_PROMPT, promptHistory, promptSamples } from "@/lib/ai-visibility/metrics";
 import { getPrompt } from "@/lib/ai-visibility/prompts";
 import { getAiVisibilitySettings } from "@/lib/ai-visibility/settings";
+import { effectiveEngines } from "@/lib/ai-visibility/engine-keys";
 import type { PromptIntent } from "@/lib/ai-visibility/types";
 import { relatedPieces } from "@/lib/briefs/query";
 import { DATE_FORMAT } from "../../../company/source-status";
@@ -69,7 +70,11 @@ export default async function PromptDetailPage({
   ]);
   const tenantName = tenantRows[0]?.name ?? "";
 
-  const engines = ENGINE_ORDER.filter((engine) => settings.engines.includes(engine));
+  // The keyed engines, so the tabs match the tiles on the overview. A tab for
+  // an engine with no key would be a permanently empty panel for something
+  // nobody is paying for.
+  const runEngines = await effectiveEngines(tenantId, settings.engines);
+  const engines = ENGINE_ORDER.filter((engine) => runEngines.includes(engine));
   const requestedEngine = Array.isArray(query.engine) ? query.engine[0] : query.engine;
   const initialEngine = engines.find((engine) => engine === requestedEngine) ?? engines[0] ?? ENGINE_ORDER[0];
 

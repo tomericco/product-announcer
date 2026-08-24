@@ -14,6 +14,7 @@ import { getOrCreateCompanyProfile } from "@/lib/workspace/company-profile";
 import { listCompetitors } from "@/lib/workspace/competitors";
 import { MAX_ACTIVE_PROMPTS, listPrompts } from "@/lib/ai-visibility/prompts";
 import { getAiVisibilitySettings } from "@/lib/ai-visibility/settings";
+import { effectiveEngines } from "@/lib/ai-visibility/engine-keys";
 import { MIN_N_PROMPT, promptMatrix } from "@/lib/ai-visibility/metrics";
 import { plannedCallsForPrompts } from "@/lib/ai-visibility/planned-calls";
 import { latestRun } from "@/lib/ai-visibility/run";
@@ -146,11 +147,15 @@ export default async function PromptsPage({
    * `activeCount > 0`, so the empty and proposals-only states pay for neither.
    */
   const neverRun = activeCount > 0 && (await latestRun(tenantId)) === null;
+  // BYOK: the engines that will actually run, not everything the settings row
+  // names. Both the estimate and the button's own arithmetic read this, so the
+  // "Run first audit now" price is the price of the run that follows the click.
+  const runEngines = await effectiveEngines(tenantId, settings.engines);
   const firstAuditCap = neverRun
     ? await capExceeded(
         tenantId,
         {
-          engines: settings.engines,
+          engines: runEngines,
           samplesPerPrompt: settings.samplesPerPrompt,
           monthlyCapUsd: settings.monthlyCapUsd,
         },
@@ -164,7 +169,7 @@ export default async function PromptsPage({
   // with the settings card's monthly estimate.
   const firstAuditCalls = plannedCallsForPrompts(
     allPrompts.filter((prompt) => prompt.status === "active"),
-    { engineCount: settings.engines.length, samplesPerPrompt: settings.samplesPerPrompt }
+    { engineCount: runEngines.length, samplesPerPrompt: settings.samplesPerPrompt }
   );
 
   // The current query, re-serialised, so the filter bar MERGES into it rather
@@ -215,12 +220,16 @@ export default async function PromptsPage({
             The questions we ask each engine on your behalf. Paused prompts keep their history but are not run.
           </p>
         </div>
-        {firstAuditCap && (
+        {/* Nothing to run without a key, and the overview's own no-engines
+            empty state is where that is explained — a Run button here that can
+            only refuse would be the second place to learn it, in the worse
+            wording. */}
+        {firstAuditCap && runEngines.length > 0 && (
           <RunNowButton
             label="Run first audit now"
             estimate={{
               prompts: activeCount,
-              engines: settings.engines.length,
+              engines: runEngines.length,
               samples: settings.samplesPerPrompt,
               calls: firstAuditCalls,
               usd: firstAuditCap.estimateUsd,

@@ -118,6 +118,7 @@ const {
   citedDomains,
   everSignalledDomains,
   listSignals,
+  effectiveEngines,
   tenantRows,
 } = vi.hoisted(() => ({
   requireSession: vi.fn(),
@@ -134,6 +135,10 @@ const {
   citedDomains: vi.fn(),
   everSignalledDomains: vi.fn(),
   listSignals: vi.fn(),
+  // BYOK. The page reads this rather than `settings.engines` for its tiles, its
+  // series, its estimate and its Run-now gate, and returning `[]` is a whole
+  // state of its own — see "No engines connected" below.
+  effectiveEngines: vi.fn(),
   tenantRows: { value: [{ name: "Versional" }] as { name: string }[] },
 }));
 
@@ -144,6 +149,7 @@ vi.mock("@/lib/workspace/session", () => ({ requireSession }));
 vi.mock("@/lib/workspace/company-profile", () => ({ getOrCreateCompanyProfile }));
 vi.mock("@/lib/workspace/competitors", () => ({ listCompetitors }));
 vi.mock("@/lib/ai-visibility/settings", () => ({ getAiVisibilitySettings }));
+vi.mock("@/lib/ai-visibility/engine-keys", () => ({ effectiveEngines }));
 // `runnablePrompts` is the real one: it is a pure slice, and stubbing it would
 // hide the very thing the page now depends on — that the run estimate prices
 // only the prompts a run will ask.
@@ -280,6 +286,9 @@ function setup(overrides: Record<string, unknown> = {}) {
     updatedAt: new Date("2026-08-01T00:00:00Z"),
     ...((o.profile as object) ?? {}),
   });
+  // Fully connected by default, because that is the state the other 50 tests
+  // are about. `effectiveEngines: []` is its own state and gets its own tests.
+  effectiveEngines.mockResolvedValue((o.effectiveEngines as unknown[]) ?? [...ALL_ENGINES]);
   listPrompts.mockResolvedValue((o.prompts as unknown[]) ?? [prompt()]);
   listCompetitors.mockResolvedValue((o.competitors as unknown[]) ?? []);
   latestRun.mockResolvedValue("run" in overrides ? o.run : run());
@@ -321,6 +330,48 @@ beforeEach(() => {
   captured.generate = null;
   captured.stop = null;
   captured.resume = false;
+});
+
+describe("overview — the BYOK gate", () => {
+  it("No engines connected: says so and routes to the keys, before anything about prompts", async () => {
+    // On ship day this is EVERY existing tenant: three engines named on the
+    // settings row and zero keys. `effectiveEngines` does not fall back to all
+    // three, so the page must not render as though a run were possible.
+    setup({ effectiveEngines: [] });
+    await renderPage();
+
+    expect(screen.getByText("No AI engines connected")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Connect an engine" })).toHaveAttribute(
+      "href",
+      "/settings#ai-engines"
+    );
+    // And it stops there. Approving prompts buys nothing without a key, so
+    // sending someone to the prompt review first would dead-end them.
+    expect(listPrompts).not.toHaveBeenCalled();
+    expect(captured.runNow).toBeNull();
+  });
+
+  it("Off still wins over no engines — one state, not two stacked", async () => {
+    setup({ enabled: false, settings: { enabled: false }, effectiveEngines: [] });
+    await renderPage();
+
+    expect(screen.getByText("AI visibility is off")).toBeInTheDocument();
+    expect(screen.queryByText("No AI engines connected")).not.toBeInTheDocument();
+  });
+
+  it("prices, plans and tiles ONLY the keyed engines", async () => {
+    // The design's worked example: three engines named on the settings row, one
+    // Gemini key. One tile, one series, and an estimate for one engine — a
+    // three-engine price quoted to that tenant would be wrong on the one screen
+    // whose job is to be checkable about money.
+    setup({ effectiveEngines: ["gemini"] });
+    await renderPage();
+
+    expect(captured.runNow?.estimate.engines).toBe(1);
+    // One engine has no pooled cut to draw beside it — the "all" row IS that
+    // engine's row, so appending it would print the same numbers twice.
+    expect(captured.tiles?.map((tile) => tile.engine)).toEqual(["gemini"]);
+  });
 });
 
 describe("overview — the nine states, and that they are mutually exclusive", () => {
@@ -495,17 +546,17 @@ describe("overview — the nine states, and that they are mutually exclusive", (
   it("Paused by cap: quotes the run's own sentence, routes to Settings, and disables Run now destructively", async () => {
     setup({
       cap: { exceeded: true, reached: true, spentUsd: 20.4, capUsd: 20, estimateUsd: 3.12 },
-      run: run({ status: "paused_by_cap", error: "Paused — monthly cap reached ($20.40 of $20.00)." }),
+      run: run({ status: "paused_by_cap", error: "Paused — monthly engine budget reached ($20.40 of $20.00)." }),
     });
     await renderPage();
 
-    expect(screen.getByText(/Paused — monthly cap reached \(\$20\.40 of \$20\.00\)\./)).toBeInTheDocument();
+    expect(screen.getByText(/Paused — monthly engine budget reached \(\$20\.40 of \$20\.00\)\./)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Raise it in Settings" })).toHaveAttribute(
       "href",
       "/settings#ai-visibility"
     );
     expect(captured.runNow?.disabledTone).toBe("destructive");
-    expect(captured.runNow?.disabledReason).toContain("Paused — monthly cap reached");
+    expect(captured.runNow?.disabledReason).toContain("Paused — monthly engine budget reached");
   });
 
   it("Paused by cap with no sentence on the run: composes one rather than showing nothing", async () => {
@@ -515,13 +566,13 @@ describe("overview — the nine states, and that they are mutually exclusive", (
     });
     await renderPage();
 
-    expect(screen.getByText(/Paused — monthly cap reached/)).toBeInTheDocument();
+    expect(screen.getByText(/Paused — monthly engine budget reached/)).toBeInTheDocument();
   });
 
   it("A cap pause the calendar resolved is dated and muted, never the error tone", async () => {
     setup({
       cap: { exceeded: false, reached: false, spentUsd: 1.2, capUsd: 20, estimateUsd: 3.12 },
-      run: run({ status: "paused_by_cap", error: "Paused — monthly cap reached ($20.40 of $20.00)." }),
+      run: run({ status: "paused_by_cap", error: "Paused — monthly engine budget reached ($20.40 of $20.00)." }),
     });
     await renderPage();
 
@@ -706,7 +757,7 @@ describe("overview — the trend chart's series", () => {
 
   it("skips the pooling sentence for a one-engine tenant, who has no pooled line", async () => {
     setup({
-      settings: { engines: ["anthropic"] },
+      effectiveEngines: ["anthropic"],
       metrics: [metrics("anthropic"), metrics("all")],
       history: HISTORY,
     });
@@ -752,7 +803,7 @@ describe("overview — the trend chart's series", () => {
 
   it("draws no pooled line for a one-engine tenant, where it would be that engine twice", async () => {
     setup({
-      settings: { engines: ["anthropic"] },
+      effectiveEngines: ["anthropic"],
       metrics: [metrics("anthropic"), metrics("all")],
       history: HISTORY,
     });
@@ -893,7 +944,7 @@ describe("overview — the deleted-competitor remainder", () => {
 describe("overview — what the tiles, the matrix and the domain table are handed", () => {
   it("gives a tile to each engine the tenant runs, plus the pooled one, in that order", async () => {
     setup({
-      settings: { engines: ["gemini", "openai"] },
+      effectiveEngines: ["gemini", "openai"],
       metrics: [metrics("openai"), metrics("gemini"), metrics("all")],
     });
     await renderPage();
@@ -909,7 +960,7 @@ describe("overview — what the tiles, the matrix and the domain table are hande
     // unconditionally, so a tenant running one engine got that engine's cut
     // rendered side by side with itself under a second name.
     setup({
-      settings: { engines: ["anthropic"] },
+      effectiveEngines: ["anthropic"],
       metrics: [metrics("anthropic"), metrics("all")],
     });
     await renderPage();
@@ -922,7 +973,7 @@ describe("overview — what the tiles, the matrix and the domain table are hande
     // reads `n` and the display threshold off it, and losing that would make
     // the card contradict the tile above it.
     setup({
-      settings: { engines: ["anthropic"] },
+      effectiveEngines: ["anthropic"],
       metrics: [metrics("anthropic"), metrics("all", { n: 41 })],
     });
     await renderPage();
@@ -1042,7 +1093,7 @@ describe("overview — what the tiles, the matrix and the domain table are hande
     // so a switched-off engine left a permanent column of dashes that reads as
     // an outage rather than as something nobody is paying for.
     setup({
-      settings: { engines: ["openai", "anthropic"] },
+      effectiveEngines: ["openai", "anthropic"],
       matrix: [{ promptId: "p1", text: "q", branded: false, cells: [{ engine: "openai", hits: 2, n: 3 }] }],
       counts: counts({ tenantMentions: 20 }),
     });

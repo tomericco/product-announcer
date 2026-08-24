@@ -67,7 +67,7 @@ export const GEMINI_DEFAULT_MODEL = "gemini-3.7-flash";
  */
 export const GEMINI_COST_PER_CALL_USD = 0.069;
 
-const GEMINI_MODELS_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models";
+export const GEMINI_MODELS_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models";
 
 type GeminiGroundingChunk = { web?: { uri?: string; title?: string } };
 type GeminiPart = { text?: string; thoughtSignature?: string };

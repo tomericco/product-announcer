@@ -43,7 +43,7 @@ export function estimateSentence(estimate: RunEstimate): string {
  * offers the two navigation links and the on/off switch, and nothing that
  * spends money. Disabled states carry their reason twice on purpose: in a
  * `DisabledHint` for the pointer, and as a line under the button, because
- * "Paused — monthly cap reached" must be readable without hovering.
+ * "Paused — monthly engine budget reached" must be readable without hovering.
  */
 export function RunNowButton({
   estimate,

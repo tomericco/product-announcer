@@ -759,7 +759,7 @@ describe("setAiVisibilityEnabled", () => {
     await setAiVisibilityEnabled(tenant.id, true);
     await db
       .update(sources)
-      .set({ status: "failing", lastError: "Paused — monthly cap reached" })
+      .set({ status: "failing", lastError: "Paused — monthly engine budget reached" })
       .where(and(eq(sources.tenantId, tenant.id), eq(sources.type, "ai_visibility")));
 
     await setAiVisibilityEnabled(tenant.id, false);
@@ -767,7 +767,7 @@ describe("setAiVisibilityEnabled", () => {
       .select()
       .from(sources)
       .where(and(eq(sources.tenantId, tenant.id), eq(sources.type, "ai_visibility")));
-    expect(afterOff.lastError).toBe("Paused — monthly cap reached");
+    expect(afterOff.lastError).toBe("Paused — monthly engine budget reached");
 
     await setAiVisibilityEnabled(tenant.id, true);
     const [afterOn] = await db
@@ -926,7 +926,7 @@ describe("saveAiVisibilitySettings and the cap pause", () => {
 
     const [row] = await aiVisibilitySource(tenant.id);
     expect(row.status).toBe("failing");
-    expect(row.lastError).toContain("monthly cap");
+    expect(row.lastError).toContain("monthly engine budget");
   });
 
   it("never clears a failure that was not the cap", async () => {
@@ -961,7 +961,7 @@ describe("saveAiVisibilitySettings and the cap pause", () => {
 
     const [row] = await aiVisibilitySource(tenant.id);
     expect(row.status).toBe("failing");
-    expect(row.lastError).toContain("monthly cap");
+    expect(row.lastError).toContain("monthly engine budget");
   });
 
   it("does not clear a cap pause off last month's spend", async () => {

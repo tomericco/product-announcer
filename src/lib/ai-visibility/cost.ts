@@ -89,7 +89,19 @@ export async function monthToDateSpendUsd(
  * raising the cap should clear the red badge. Three call sites composing the
  * same string by hand is how that last one silently stops matching.
  */
-export const CAP_PAUSED_PREFIX = "Paused — monthly cap reached";
+/**
+ * Renamed with the cap itself: the budget is the TENANT's money under BYOK, and
+ * "monthly cap" was our word for our spend.
+ *
+ * `isCapPausedError` string-matches this prefix and `clearCapPauseIfResolved`
+ * depends on it, which is exactly why the constant changes and the call sites
+ * do not. One consequence is worth stating rather than discovering: rows
+ * written BEFORE this change hold the old sentence and will not match, so a
+ * source paused last month keeps its red badge until its next run rewrites the
+ * string. Nothing backfills it — a one-run staleness on a historical pause is
+ * cheaper than a migration that rewrites error text.
+ */
+export const CAP_PAUSED_PREFIX = "Paused — monthly engine budget reached";
 
 export function capPausedMessage(spentUsd: number, capUsd: number): string {
   return `${CAP_PAUSED_PREFIX} ($${spentUsd.toFixed(2)} of $${capUsd.toFixed(2)}).`;

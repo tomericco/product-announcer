@@ -251,15 +251,29 @@ export async function saveAiVisibilitySettings(
     return { ok: false, error: "dayOfWeek" };
   }
 
-  if (!Array.isArray(raw.engines)) return { ok: false, error: "engines" };
-  const engines: EngineId[] = [];
-  for (const entry of raw.engines) {
-    if (typeof entry !== "string" || !isEngineId(entry)) return { ok: false, error: "engines" };
-    if (!engines.includes(entry)) engines.push(entry);
+  // OPTIONAL now, like `concurrency` beside it, and for the same reason: the
+  // /settings form no longer renders the engine switches — they moved into the
+  // AI-engines card, beside the key each engine depends on — so folding an
+  // absent value into `values` would let a cadence save silently undo a switch
+  // flipped there. Present means "change it"; absent means "leave it".
+  //
+  // Still validated and still non-empty WHEN PRESENT. The rule has not been
+  // relaxed for this function's own callers; what changed is that the two paths
+  // which legitimately empty the list — removing your last key, switching your
+  // last engine off — go through `engine-keys.ts` and write the column
+  // directly, because under BYOK "no engines" is a real, explained state with
+  // its own empty state on /ai-visibility rather than invalid input.
+  let engines: EngineId[] | undefined;
+  if (raw.engines !== undefined && raw.engines !== null) {
+    if (!Array.isArray(raw.engines)) return { ok: false, error: "engines" };
+    const parsed: EngineId[] = [];
+    for (const entry of raw.engines) {
+      if (typeof entry !== "string" || !isEngineId(entry)) return { ok: false, error: "engines" };
+      if (!parsed.includes(entry)) parsed.push(entry);
+    }
+    if (parsed.length === 0) return { ok: false, error: "engines" };
+    engines = parsed;
   }
-  // Non-empty, not merely a subset: an enabled feature with zero engines
-  // would plan zero calls behind a green badge. See the function comment.
-  if (engines.length === 0) return { ok: false, error: "engines" };
 
   const samples = toNumber(raw.samplesPerPrompt);
   if (samples === null || !(SAMPLE_CHOICES as readonly number[]).includes(samples)) {
@@ -297,7 +311,7 @@ export async function saveAiVisibilitySettings(
   const values = {
     cadence,
     dayOfWeek,
-    engines,
+    ...(engines !== undefined ? { engines } : {}),
     samplesPerPrompt: samples as SamplesPerPrompt,
     ...(concurrency !== undefined ? { concurrency } : {}),
     // Rounded on the way in so the value we store, return, and later read back
@@ -317,7 +331,7 @@ export async function saveAiVisibilitySettings(
 
   // Raising the cap is the documented way out of a cap pause, so it has to be
   // the thing that clears the red badge. Without this the source keeps reading
-  // "Paused — monthly cap reached" until the next run finishes or the /company
+  // "Paused — monthly engine budget reached" until the next run finishes or the /company
   // switch is toggled off and on — i.e. the user does the one action the error
   // asks for and nothing on screen changes.
   await clearCapPauseIfResolved(tenantId, values.monthlyCapUsd, now(), database);
@@ -328,7 +342,9 @@ export async function saveAiVisibilitySettings(
       enabled: row.enabled,
       cadence: values.cadence as Cadence,
       dayOfWeek: values.dayOfWeek,
-      engines: values.engines,
+      // Off the ROW, like `concurrency` below it, because `values` does not
+      // carry it on the ordinary save that left it alone.
+      engines: row.engines.filter(isEngineId),
       samplesPerPrompt: values.samplesPerPrompt,
       // Read back off the row rather than off `values`, which does not carry it
       // on the ordinary save that left it alone.
@@ -467,7 +483,7 @@ export async function setAiVisibilityEnabled(
   await ensureAiVisibilitySource(tenantId, database, {
     status: enabled ? "active" : "disabled",
     // Enabling clears the stale complaint — the common path is reading
-    // "Paused — monthly cap reached", raising the cap, and re-toggling.
+    // "Paused — monthly engine budget reached", raising the budget, and re-toggling.
     // Disabling leaves it: that is exactly when an operator needs to see
     // the last failure.
     ...(enabled ? { lastError: null } : {}),
