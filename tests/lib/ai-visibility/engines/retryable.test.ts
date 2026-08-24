@@ -35,6 +35,11 @@ type Engine = {
   ask: (prompt: string, deps?: { fetchImpl?: typeof fetch }) => Promise<EngineAnswer | EngineError>;
   /** A complete, readable response in which the model declined to answer. */
   refusal: unknown;
+  /**
+   * A 429 body that means "out of money", not "too fast" — the published marker
+   * for each provider. See `QUOTA_MARKERS` in `engines/failure.ts`.
+   */
+  spendCapBody: string;
 };
 
 const ENGINES: Engine[] = [
@@ -47,6 +52,8 @@ const ENGINES: Engine[] = [
       status: "completed",
       output: [{ type: "message", content: [{ type: "refusal", refusal: "I can't help with that." }] }],
     },
+    spendCapBody:
+      '{"error":{"message":"You exceeded your current quota","type":"insufficient_quota","code":"insufficient_quota"}}',
   },
   {
     name: "gemini",
@@ -54,24 +61,64 @@ const ENGINES: Engine[] = [
     ask: askGemini,
     // No candidate at all is Gemini's shape for "nothing was answered".
     refusal: { modelVersion: "gemini-3.7-flash", candidates: [] },
+    // A per-day quota, which by definition cannot clear inside a 90s ladder.
+    spendCapBody:
+      '{"error":{"status":"RESOURCE_EXHAUSTED","details":[{"violations":[{"quotaId":"GenerateRequestsPerDayPerProjectPerModel"}]}]}}',
   },
   {
     name: "anthropic",
     keyEnv: "ANTHROPIC_API_KEY",
     ask: askAnthropic,
     refusal: { model: "claude-sonnet-5", stop_reason: "refusal", content: [] },
+    // Carries NO `retry-after` — the error code is the only signal.
+    spendCapBody:
+      '{"type":"error","error":{"type":"rate_limit_error","message":"limit reached","details":{"error_code":"enforced_spend_limit_reached"}}}',
   },
 ];
 
 describe.each(ENGINES)("$name — retryable classification", (engine) => {
-  it("marks 429 retryable: a rate limit is a moment, not a verdict", async () => {
+  it("marks a THROUGHPUT 429 retryable: a rate limit is a moment, not a verdict", async () => {
     vi.stubEnv(engine.keyEnv, "test-key");
     const fetchImpl = vi.fn(async () => body({ error: "rate limited" }, 429));
 
     const result = isError(await engine.ask("best issue tracker", { fetchImpl: fetchImpl as never }));
 
     expect(result.kind).toBe("error");
+    expect(result.code).toBe("rate_limited");
     expect(result.retryable).toBe(true);
+  });
+
+  it("leaves a SPEND-CAP 429 terminal: the same status, the opposite remedy", async () => {
+    // Every engine has one, and it wears the status of a throughput limit. Our
+    // ladder is 90 seconds; none of these caps clears in 90 seconds, so a
+    // retryable classification here spends three of the customer's calls to
+    // fail identically. Drift between the three engines on THIS is the
+    // expensive kind.
+    vi.stubEnv(engine.keyEnv, "test-key");
+    const fetchImpl = vi.fn(async () => new Response(engine.spendCapBody, { status: 429 }));
+
+    const result = isError(await engine.ask("q", { fetchImpl: fetchImpl as never }));
+
+    expect(result.code).toBe("quota_exceeded");
+    expect(result.retryable).not.toBe(true);
+    // Our sentence, and it names money rather than speed.
+    expect(result.message).toMatch(/credit|spend cap/i);
+  });
+
+  it("carries the provider's `retry-after` when it sends one", async () => {
+    vi.stubEnv(engine.keyEnv, "test-key");
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ error: "slow down" }), {
+          status: 429,
+          headers: { "retry-after": "12" },
+        })
+    );
+
+    const result = isError(await engine.ask("q", { fetchImpl: fetchImpl as never }));
+
+    expect(result.code).toBe("rate_limited");
+    expect(result.retryAfterMs).toBe(12_000);
   });
 
   it("marks 500 retryable: the provider is having a bad minute", async () => {
@@ -85,7 +132,9 @@ describe.each(ENGINES)("$name — retryable classification", (engine) => {
     vi.stubEnv(engine.keyEnv, "test-key");
     const fetchImpl = vi.fn(async () => body({ error: "invalid api key" }, 401));
 
-    expect(isError(await engine.ask("q", { fetchImpl: fetchImpl as never })).retryable).not.toBe(true);
+    const result = isError(await engine.ask("q", { fetchImpl: fetchImpl as never }));
+    expect(result.retryable).not.toBe(true);
+    expect(result.code).toBe("invalid_key");
   });
 
   it("leaves 404 terminal: a model id that no longer resolves will not start to", async () => {

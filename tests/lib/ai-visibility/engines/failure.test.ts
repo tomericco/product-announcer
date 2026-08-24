@@ -1,11 +1,14 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   ENGINE_FAILURE_CODES,
+  RETRY_WINDOW_MS,
+  classifyHttpFailure,
   codeForStatus,
   engineFailure,
   engineFailureMessage,
   isRetryableCode,
   logEngineFailure,
+  parseRetryAfterMs,
   type EngineFailureCode,
 } from "../../../../src/lib/ai-visibility/engines/failure";
 import { REDACTED } from "../../../../src/lib/ai-visibility/scrub";
@@ -145,5 +148,143 @@ describe("logEngineFailure", () => {
     logEngineFailure("gemini", 502, "provider_unavailable", "x".repeat(5_000));
 
     expect(spy.mock.calls[0].join(" ").length).toBeLessThan(500);
+  });
+});
+
+describe("parseRetryAfterMs", () => {
+  it("reads `retry-after` as seconds", () => {
+    expect(parseRetryAfterMs(new Headers({ "retry-after": "20" }), "")).toBe(20_000);
+    expect(parseRetryAfterMs(new Headers({ "retry-after": " 1.5 " }), "")).toBe(1_500);
+  });
+
+  it("reads `retry-after` as an HTTP-date, relative to the clock we pass in", () => {
+    const now = Date.parse("2026-03-02T09:00:00Z");
+    const headers = new Headers({ "retry-after": "Mon, 02 Mar 2026 09:00:45 GMT" });
+    expect(parseRetryAfterMs(headers, "", now)).toBe(45_000);
+  });
+
+  it("treats a date already in the past as zero, not as a wait of minus forever", () => {
+    const now = Date.parse("2026-03-02T09:01:00Z");
+    const headers = new Headers({ "retry-after": "Mon, 02 Mar 2026 09:00:00 GMT" });
+    expect(parseRetryAfterMs(headers, "", now)).toBe(0);
+  });
+
+  it("falls back to Google's `RetryInfo.retryDelay` in the body", () => {
+    // Gemini does not send a `retry-after` header; the wait is a detail block.
+    const body = '{"error":{"details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"58s"}]}}';
+    expect(parseRetryAfterMs(new Headers(), body)).toBe(58_000);
+  });
+
+  it("returns undefined when the provider said nothing — not zero", () => {
+    // "No guidance" and "retry immediately" are different instructions, and
+    // only one of them may replace our ladder.
+    expect(parseRetryAfterMs(new Headers(), "{}")).toBeUndefined();
+    expect(parseRetryAfterMs(undefined, "")).toBeUndefined();
+  });
+});
+
+describe("classifyHttpFailure — the 429 split", () => {
+  it("openai: a throughput 429 is retryable and carries the provider's wait", () => {
+    const failure = classifyHttpFailure(
+      "openai",
+      429,
+      '{"error":{"message":"Rate limit reached","type":"requests"}}',
+      new Headers({ "retry-after": "20" })
+    );
+    expect(failure).toEqual({ code: "rate_limited", retryable: true, retryAfterMs: 20_000 });
+  });
+
+  it("openai: `insufficient_quota` on the SAME status is terminal", () => {
+    // The account has no credit. Same 429, opposite remedy — this is the split
+    // the whole change exists for.
+    const failure = classifyHttpFailure(
+      "openai",
+      429,
+      '{"error":{"message":"You exceeded your current quota","code":"insufficient_quota"}}'
+    );
+    expect(failure).toEqual({ code: "quota_exceeded", retryable: false });
+  });
+
+  it("anthropic: the spend cap is terminal, and it arrives with no `retry-after`", () => {
+    // Anthropic's spend-cap 429 sends no wait at all — the error code is the
+    // only thing that distinguishes it from throughput.
+    const failure = classifyHttpFailure(
+      "anthropic",
+      429,
+      '{"type":"error","error":{"type":"rate_limit_error","message":"limit reached","details":{"error_code":"enforced_spend_limit_reached"}}}',
+      new Headers()
+    );
+    expect(failure).toEqual({ code: "quota_exceeded", retryable: false });
+  });
+
+  it("anthropic: an out-of-credit 400 is quota, not `bad_response`", () => {
+    // Status alone would call this our bug and tell the customer nothing.
+    const failure = classifyHttpFailure(
+      "anthropic",
+      400,
+      '{"error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API"}}'
+    );
+    expect(failure.code).toBe("quota_exceeded");
+  });
+
+  it("gemini: a per-day quota is terminal; an ordinary RESOURCE_EXHAUSTED is not", () => {
+    const perDay = classifyHttpFailure(
+      "gemini",
+      429,
+      '{"error":{"status":"RESOURCE_EXHAUSTED","details":[{"violations":[{"quotaId":"GenerateRequestsPerDayPerProjectPerModel"}]}]}}'
+    );
+    expect(perDay.code).toBe("quota_exceeded");
+
+    const throughput = classifyHttpFailure(
+      "gemini",
+      429,
+      '{"error":{"status":"RESOURCE_EXHAUSTED","message":"Resource has been exhausted"}}'
+    );
+    expect(throughput).toEqual({ code: "rate_limited", retryable: true });
+  });
+
+  it("a wait longer than the whole ladder is quota, whatever named it", () => {
+    // This is what catches Gemini's `$10 per rolling 10 minutes` cap, whose
+    // body shape is not published: the provider is telling us the wait outlasts
+    // every attempt we would make, so three attempts buy three failures.
+    const body = `{"error":{"details":[{"retryDelay":"${(RETRY_WINDOW_MS / 1000) + 10}s"}]}}`;
+    expect(classifyHttpFailure("gemini", 429, body).code).toBe("quota_exceeded");
+
+    // Exactly at the boundary is still retryable — the last attempt lands.
+    const atLimit = `{"error":{"details":[{"retryDelay":"${RETRY_WINDOW_MS / 1000}s"}]}}`;
+    expect(classifyHttpFailure("gemini", 429, atLimit).code).toBe("rate_limited");
+  });
+
+  it("gemini: a bad key wearing a 400 is `invalid_key`, not our bug", () => {
+    // Google rejects a bad key with 400 INVALID_ARGUMENT rather than 401, so
+    // without the body check a customer's typo reads as "ours to fix".
+    const failure = classifyHttpFailure(
+      "gemini",
+      400,
+      '{"error":{"code":400,"message":"API key not valid","status":"INVALID_ARGUMENT","details":[{"reason":"API_KEY_INVALID"}]}}'
+    );
+    expect(failure).toEqual({ code: "invalid_key", retryable: false });
+  });
+
+  it("leaves every non-429 status reading exactly as the status table says", () => {
+    expect(classifyHttpFailure("openai", 401, "{}").code).toBe("invalid_key");
+    expect(classifyHttpFailure("openai", 404, "{}")).toEqual({
+      code: "bad_response",
+      retryable: false,
+    });
+    expect(classifyHttpFailure("openai", 503, "{}")).toEqual({
+      code: "provider_unavailable",
+      retryable: true,
+    });
+  });
+
+  it("never returns anything drawn from the body", () => {
+    const failure = classifyHttpFailure(
+      "openai",
+      401,
+      '{"error":{"message":"Incorrect API key provided: sk-Eyftb****99vW"}}'
+    );
+    expect(JSON.stringify(failure)).not.toContain("sk-Eyftb");
+    expect(JSON.stringify(failure)).not.toContain("99vW");
   });
 });

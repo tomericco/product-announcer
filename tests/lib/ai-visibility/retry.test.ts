@@ -10,11 +10,16 @@ import {
 import type { EngineAnswer, EngineClient, EngineError } from "../../../src/lib/ai-visibility/types";
 import {
   MAX_SAMPLE_ATTEMPTS,
+  TOTAL_RETRY_WINDOW_MS,
   planRun,
+  retryWaitMs,
   runSlice,
   sampleBackoffMs,
 } from "../../../src/lib/ai-visibility/run";
-import { engineFailureMessage } from "../../../src/lib/ai-visibility/engines/failure";
+import {
+  RETRY_WINDOW_MS,
+  engineFailureMessage,
+} from "../../../src/lib/ai-visibility/engines/failure";
 import { seedTenant, dropTenant } from "../../helpers/fixtures";
 
 /**
@@ -315,5 +320,126 @@ describe("runSlice — retrying a transient engine failure", () => {
 
     const rows = await db.select().from(aiVisibilitySamples).where(eq(aiVisibilitySamples.runId, runId));
     expect(rows.every((row) => row.status === "ok")).toBe(true);
+  });
+});
+
+describe("runSlice — a 429 is not one thing", () => {
+  it("a SPEND-CAP 429 is terminal after ONE attempt", async () => {
+    // The whole point of the split. Anthropic's spend-cap 429 and Gemini's
+    // `$10 / 10 minutes` cap cannot clear inside a 90-second ladder, so the two
+    // extra attempts buy two identical failures at full price — on the
+    // customer's key, under a hard gate with no vendor fallback.
+    const { runId } = await plannedOneSample();
+    const engine = fakeEngine(() => ({
+      kind: "error" as const,
+      code: "quota_exceeded" as const,
+      message: engineFailureMessage("openai", "quota_exceeded"),
+    }));
+    const now = controllableClock("2026-03-02T09:00:00Z");
+
+    const outcome = await runSlice(
+      runId,
+      { budgetMs: 60_000, concurrency: 1, now },
+      { engines: { openai: engine } }
+    );
+
+    expect(engine.calls).toBe(1);
+    const row = await sampleRow(runId);
+    expect(row.status).toBe("error");
+    expect(row.askAttempts).toBe(1);
+    expect(row.nextAttemptAt).toBeNull();
+    expect(outcome.remaining).toBe(0);
+
+    // And it stays given up — no later driver picks it back up.
+    now.advance(TOTAL_RETRY_WINDOW_MS + 60_000);
+    const later = await runSlice(
+      runId,
+      { budgetMs: 60_000, concurrency: 1, now },
+      { engines: { openai: engine } }
+    );
+    expect(engine.calls).toBe(1);
+    expect(later.processed).toBe(0);
+  });
+
+  it("a THROUGHPUT 429 still retries — the two must not be collapsed", async () => {
+    const { runId } = await plannedOneSample();
+    const engine = fakeEngine((call) =>
+      call === 1
+        ? { kind: "error" as const, code: "rate_limited" as const, message: RATE_LIMITED, retryable: true }
+        : answer()
+    );
+    const now = controllableClock("2026-03-02T09:00:00Z");
+
+    await runSlice(runId, { budgetMs: 60_000, concurrency: 1, now }, { engines: { openai: engine } });
+    expect((await sampleRow(runId)).status).toBe("pending");
+
+    now.advance(sampleBackoffMs(1) + 1_000);
+    await runSlice(runId, { budgetMs: 60_000, concurrency: 1, now }, { engines: { openai: engine } });
+
+    expect(engine.calls).toBe(2);
+    expect((await sampleRow(runId)).status).toBe("ok");
+  });
+
+  it("honours the provider's `retry-after` instead of the ladder", async () => {
+    // Our ladder is one guess about three providers. `retry-after` is the
+    // provider telling us the answer for this key at this moment, and Anthropic
+    // warns a nominal 60 RPM "might be enforced as 1 request per second".
+    const { runId } = await plannedOneSample();
+    const engine = fakeEngine(() => ({
+      kind: "error" as const,
+      code: "rate_limited" as const,
+      message: RATE_LIMITED,
+      retryable: true,
+      retryAfterMs: 5_000,
+    }));
+    const startedAt = new Date("2026-03-02T09:00:00Z").getTime();
+    const now = controllableClock("2026-03-02T09:00:00Z");
+
+    await runSlice(runId, { budgetMs: 60_000, concurrency: 1, now }, { engines: { openai: engine } });
+
+    const row = await sampleRow(runId);
+    // 5s from the provider, not the ladder's 30s. Compared as a window rather
+    // than an instant: the clock steps a few ms per read inside the slice.
+    const waited = row.nextAttemptAt!.getTime() - startedAt;
+    expect(waited).toBeGreaterThanOrEqual(5_000);
+    expect(waited).toBeLessThan(sampleBackoffMs(1));
+
+    // And the row really is picked up once that shorter wait has passed.
+    now.advance(6_000);
+    const second = await runSlice(
+      runId,
+      { budgetMs: 60_000, concurrency: 1, now },
+      { engines: { openai: engine } }
+    );
+    expect(second.processed).toBe(1);
+  });
+});
+
+describe("retryWaitMs", () => {
+  it("uses the ladder when the provider said nothing", () => {
+    expect(retryWaitMs(undefined, 1)).toBe(sampleBackoffMs(1));
+    expect(retryWaitMs(undefined, 2)).toBe(sampleBackoffMs(2));
+  });
+
+  it("floors a zero or near-zero wait at a second", () => {
+    // `retry-after: 0`, or a header parsed off a skewed clock, would otherwise
+    // put the row back into the very next batch — the hot loop the
+    // `nextAttemptAt` filter exists to prevent.
+    expect(retryWaitMs(0, 1)).toBe(1_000);
+    expect(retryWaitMs(50, 1)).toBe(1_000);
+  });
+
+  it("caps a wait at the whole ladder, as a backstop", () => {
+    // A wait longer than this is classified `quota_exceeded` upstream and never
+    // reaches here; this is the guard for a client that sets the field by hand.
+    expect(retryWaitMs(TOTAL_RETRY_WINDOW_MS * 10, 1)).toBe(TOTAL_RETRY_WINDOW_MS);
+  });
+
+  it("keeps the ladder total and the classifier's threshold in step", () => {
+    // `engines/failure.ts` cannot import `run.ts`, so it restates the ladder
+    // total as a literal. If the ladder changes and that literal does not, the
+    // classifier starts calling recoverable waits terminal — or worse, the
+    // reverse. This assertion is the only thing joining them.
+    expect(RETRY_WINDOW_MS).toBe(TOTAL_RETRY_WINDOW_MS);
   });
 });

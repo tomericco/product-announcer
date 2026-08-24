@@ -97,10 +97,47 @@ export const MAX_SAMPLE_ATTEMPTS = 3;
  */
 const SAMPLE_RETRY_BACKOFF_MS = [30_000, 60_000] as const;
 
+/**
+ * The whole ladder, summed — 90 seconds.
+ *
+ * Exported because `engines/failure.ts` needs the same number to decide when a
+ * provider's `retry-after` outlasts every attempt we would make, and it cannot
+ * import this module (this module imports the engines). It restates the figure
+ * as `RETRY_WINDOW_MS`; `tests/lib/ai-visibility/retry.test.ts` asserts the two
+ * are equal, so changing the ladder without changing the threshold fails.
+ */
+export const TOTAL_RETRY_WINDOW_MS = SAMPLE_RETRY_BACKOFF_MS.reduce((sum, ms) => sum + ms, 0);
+
 /** The wait after `attempts` retryable failures. Clamped, so a ladder change cannot index off the end. */
 export function sampleBackoffMs(attempts: number): number {
   const index = Math.min(Math.max(attempts, 1), SAMPLE_RETRY_BACKOFF_MS.length) - 1;
   return SAMPLE_RETRY_BACKOFF_MS[index];
+}
+
+/**
+ * How long this sample actually waits: what the provider asked for, or our
+ * ladder when it asked for nothing.
+ *
+ * The ladder is a guess made once, in this file, about three providers at once.
+ * `retry-after` is the provider telling us the answer for this key at this
+ * moment, and design Decision 9 requires honouring it — Anthropic warns that a
+ * nominal 60 RPM "might be enforced as 1 request per second", which no fixed
+ * ladder can know.
+ *
+ * Two clamps, and both are load-bearing:
+ *
+ *  - a FLOOR of one second, because a `retry-after: 0` (or a header parsed off a
+ *    skewed clock) would put the row straight back into the very next batch,
+ *    which is the hot-loop the `nextAttemptAt` filter exists to prevent;
+ *  - a CEILING of the whole ladder, so a wait this run cannot survive cannot be
+ *    stamped on a row that the sweep would then keep re-reading. A provider
+ *    asking for longer than that is classified `quota_exceeded` and terminal
+ *    upstream, in `classifyHttpFailure` — this clamp is the backstop for a
+ *    client that sets `retryAfterMs` without going through it.
+ */
+export function retryWaitMs(retryAfterMs: number | undefined, attempts: number): number {
+  if (retryAfterMs === undefined) return sampleBackoffMs(attempts);
+  return Math.min(TOTAL_RETRY_WINDOW_MS, Math.max(1_000, retryAfterMs));
 }
 
 /**
@@ -554,13 +591,23 @@ export async function runSlice(
           // direction of error the cap can survive.
           const knownCost = result.costUsd ?? 0;
 
-          // A retryable failure — a 429, a 5xx, a timeout — is a moment, not a
-          // verdict. Written back `pending` with the attempt counted and a
-          // backoff stamped, so the row keeps its place in the work list
-          // instead of costing the engine a data point outright. `error` is
-          // still stored on the way past: if this turns out to be the last
-          // attempt, the message a human reads is the last thing that went
+          // A retryable failure — a THROUGHPUT 429, a 5xx, a timeout — is a
+          // moment, not a verdict. Written back `pending` with the attempt
+          // counted and a backoff stamped, so the row keeps its place in the
+          // work list instead of costing the engine a data point outright.
+          // `error` is still stored on the way past: if this turns out to be the
+          // last attempt, the message a human reads is the last thing that went
           // wrong, exactly as it was before.
+          //
+          // A SPEND-CAP 429 is not one of those. It arrives with the same status
+          // as a throughput limit and `classifyHttpFailure` tells them apart, so
+          // it lands here as `quota_exceeded` with no `retryable` — terminal on
+          // the first attempt. Retrying it would spend three calls and 90
+          // seconds of a customer's budget to fail identically, on a cap that by
+          // definition cannot clear inside the window.
+          //
+          // The WAIT is the provider's when the provider said, and ours only
+          // when it did not — see `retryWaitMs`.
           const attempts = row.askAttempts + 1;
           const retrying = result.retryable === true && attempts < MAX_SAMPLE_ATTEMPTS;
 
@@ -583,7 +630,7 @@ export async function runSlice(
               costUsd: sql`${aiVisibilitySamples.costUsd} + ${knownCost}`,
               askAttempts: attempts,
               nextAttemptAt: retrying
-                ? new Date(opts.now().getTime() + sampleBackoffMs(attempts))
+                ? new Date(opts.now().getTime() + retryWaitMs(result.retryAfterMs, attempts))
                 : null,
               askedAt: opts.now(),
             })

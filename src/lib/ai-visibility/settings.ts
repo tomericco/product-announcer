@@ -16,6 +16,33 @@ export type Cadence = (typeof CADENCES)[number];
 export const SAMPLE_CHOICES = [1, 3, 5] as const;
 export type SamplesPerPrompt = (typeof SAMPLE_CHOICES)[number];
 
+/**
+ * Engine calls in flight at once, per tenant.
+ *
+ * THE DEFAULT IS 3 AND THE ARITHMETIC IS WHY — do not raise it back to 12
+ * without redoing it. OpenAI Tier 1 (a brand-new paid account, the state every
+ * BYOK tenant starts in) caps `gpt-4o` at **30,000 TPM**:
+ *
+ *     30,000 TPM / 12 concurrent = 2,500 tokens per request, output included
+ *
+ * An AI-visibility call is a grounded answer: the retrieved page text lands in
+ * the INPUT, and the measured average is ~23,000 input + ~2,500 output tokens.
+ * One call exceeds that budget five times over, so twelve of them 429 the
+ * tenant on their first sweep. At 3 the same tenant has 10,000 tokens per
+ * request — still tight, and still the right side of the limit.
+ *
+ * RPM is not the binding constraint and never was: 12 concurrent calls at
+ * 10-30s each is roughly 24-72 RPM, comfortably under every published ceiling.
+ * TPM is what bites, and it is invisible from our own account because ours sits
+ * several tiers up.
+ *
+ * The ceiling of 12 is the old default, kept as the maximum a tenant on a
+ * mature account may opt into rather than as something anyone is given.
+ */
+export const MIN_CONCURRENCY = 1;
+export const MAX_CONCURRENCY = 12;
+export const DEFAULT_CONCURRENCY = 3;
+
 // Defined in `money.ts` so the /settings form can import them without
 // reaching `@/db`; re-exported here because this is where callers expect them.
 export { MIN_MONTHLY_CAP_USD, MAX_MONTHLY_CAP_USD };
@@ -27,10 +54,18 @@ export type AiVisibilitySettingsValues = {
   dayOfWeek: number;
   engines: EngineId[];
   samplesPerPrompt: SamplesPerPrompt;
+  /** Engine calls in flight at once. See `DEFAULT_CONCURRENCY`. */
+  concurrency: number;
   monthlyCapUsd: number;
 };
 
-export type SettingsField = "cadence" | "dayOfWeek" | "engines" | "samplesPerPrompt" | "monthlyCapUsd";
+export type SettingsField =
+  | "cadence"
+  | "dayOfWeek"
+  | "engines"
+  | "samplesPerPrompt"
+  | "concurrency"
+  | "monthlyCapUsd";
 
 export type SaveSettingsResult =
   | { ok: true; settings: AiVisibilitySettingsValues }
@@ -47,6 +82,7 @@ export const DEFAULT_AI_VISIBILITY_SETTINGS: AiVisibilitySettingsValues = {
   dayOfWeek: 1,
   engines: [...ENGINE_IDS],
   samplesPerPrompt: 3,
+  concurrency: DEFAULT_CONCURRENCY,
   monthlyCapUsd: 20,
 };
 
@@ -113,6 +149,14 @@ function normalizeSettingsRow(
   // Clamped like its neighbours, and rounded because the column is float4 —
   // see `roundUsd`. Without the rounding a cap saved as 20.10 reads back as
   // 20.100000381469727 and shows up in the settings field that way.
+  // Clamped rather than defaulted, so a row written by a future admin tool with
+  // a value out of range degrades to the nearest legal one instead of silently
+  // jumping back to 3 — the difference matters on the high side, where the
+  // fallback would be a 4x change nobody asked for.
+  const concurrency = Number.isInteger(row.concurrency)
+    ? Math.min(MAX_CONCURRENCY, Math.max(MIN_CONCURRENCY, row.concurrency))
+    : DEFAULT_CONCURRENCY;
+
   const monthlyCapUsd = Number.isFinite(row.monthlyCapUsd)
     ? Math.min(MAX_MONTHLY_CAP_USD, Math.max(MIN_MONTHLY_CAP_USD, roundUsd(row.monthlyCapUsd)))
     : DEFAULT_AI_VISIBILITY_SETTINGS.monthlyCapUsd;
@@ -123,6 +167,7 @@ function normalizeSettingsRow(
     dayOfWeek,
     engines,
     samplesPerPrompt: samples,
+    concurrency,
     monthlyCapUsd,
   };
 }
@@ -226,11 +271,35 @@ export async function saveAiVisibilitySettings(
     return { ok: false, error: "monthlyCapUsd" };
   }
 
+  // OPTIONAL, unlike its neighbours, and deliberately so: the /settings form
+  // does not render a concurrency field, and folding an absent value into
+  // `values` would reset every tenant's setting to the default on every
+  // unrelated save. Present means "change it"; absent means "leave it".
+  //
+  // Validated when present, because the caller's argument is client input
+  // whatever TypeScript says — and because a concurrency of 0 plans a run that
+  // hands out no work, while a large one is the 429 this default exists to
+  // prevent.
+  let concurrency: number | undefined;
+  if (raw.concurrency !== undefined && raw.concurrency !== null && raw.concurrency !== "") {
+    const parsed = toNumber(raw.concurrency);
+    if (
+      parsed === null ||
+      !Number.isInteger(parsed) ||
+      parsed < MIN_CONCURRENCY ||
+      parsed > MAX_CONCURRENCY
+    ) {
+      return { ok: false, error: "concurrency" };
+    }
+    concurrency = parsed;
+  }
+
   const values = {
     cadence,
     dayOfWeek,
     engines,
     samplesPerPrompt: samples as SamplesPerPrompt,
+    ...(concurrency !== undefined ? { concurrency } : {}),
     // Rounded on the way in so the value we store, return, and later read back
     // through `getAiVisibilitySettings` are the same number. Without it a cap
     // saved as 20.999 renders as 20.999 now and 21 on the next load.
@@ -261,6 +330,9 @@ export async function saveAiVisibilitySettings(
       dayOfWeek: values.dayOfWeek,
       engines: values.engines,
       samplesPerPrompt: values.samplesPerPrompt,
+      // Read back off the row rather than off `values`, which does not carry it
+      // on the ordinary save that left it alone.
+      concurrency: row.concurrency,
       monthlyCapUsd: values.monthlyCapUsd,
     },
   };

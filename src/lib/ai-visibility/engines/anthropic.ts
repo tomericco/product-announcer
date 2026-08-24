@@ -4,9 +4,8 @@ import {
   ENGINE_REQUEST_TIMEOUT_MS,
 } from "@/lib/ai-visibility/engines/shape";
 import {
-  codeForStatus,
+  classifyHttpFailure,
   engineFailure,
-  isRetryableCode,
   logEngineFailure,
 } from "@/lib/ai-visibility/engines/failure";
 import {
@@ -201,11 +200,16 @@ export async function askAnthropic(
   // here and `logEngineFailure` takes the body text rather than the response.
   if (!response.ok) {
     const body = await response.text().catch(() => "");
-    const code = codeForStatus(response.status);
-    logEngineFailure("anthropic", response.status, code, body);
-    return engineFailure("anthropic", code, {
+    // Status AND body. Anthropic's spend-cap 429 is the case that forced this:
+    // it carries no `retry-after` and is identified only by
+    // `error.details.error_code === "enforced_spend_limit_reached"`. Its
+    // out-of-credit case is a 400, which the status alone would call our bug.
+    const failure = classifyHttpFailure("anthropic", response.status, body, response.headers);
+    logEngineFailure("anthropic", response.status, failure.code, body);
+    return engineFailure("anthropic", failure.code, {
       requestId: response.headers.get("request-id"),
-      retryable: isRetryableCode(code),
+      retryable: failure.retryable,
+      retryAfterMs: failure.retryAfterMs,
     });
   }
 

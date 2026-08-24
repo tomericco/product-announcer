@@ -41,6 +41,7 @@ const VALID = {
   dayOfWeek: 3,
   engines: ["openai", "gemini"],
   samplesPerPrompt: 5,
+  concurrency: 3,
   monthlyCapUsd: 45,
 };
 
@@ -55,6 +56,33 @@ describe("getAiVisibilitySettings", () => {
     // The defaults must not be the shared object — a caller mutating the
     // returned engines array would poison every later read in the process.
     expect(settings.engines).not.toBe(DEFAULT_AI_VISIBILITY_SETTINGS.engines);
+  });
+
+  it("defaults concurrency to 3 — the number a new provider account survives", async () => {
+    // 12 was sized against OUR account. OpenAI Tier 1 caps gpt-4o at 30,000
+    // TPM, and 30,000 / 12 is 2,500 tokens per request including output; a
+    // grounded AI-visibility answer is ~25,500. Twelve concurrent calls 429 a
+    // BYOK tenant on their first sweep.
+    const tenant = await seedTenant(TENANT);
+    expect((await getAiVisibilitySettings(tenant.id)).concurrency).toBe(3);
+
+    await db.insert(aiVisibilitySettings).values({ tenantId: tenant.id });
+    expect((await getAiVisibilitySettings(tenant.id)).concurrency).toBe(3);
+  });
+
+  it("clamps a concurrency out of range rather than snapping it back to the default", async () => {
+    // Clamping matters most on the high side: defaulting a 40 back to 3 would
+    // be a 13x change nobody asked for, where clamping to the ceiling is the
+    // nearest legal reading of what they wanted.
+    const tenant = await seedTenant(TENANT);
+    await db.insert(aiVisibilitySettings).values({ tenantId: tenant.id, concurrency: 40 });
+    expect((await getAiVisibilitySettings(tenant.id)).concurrency).toBe(12);
+
+    await db
+      .update(aiVisibilitySettings)
+      .set({ concurrency: 0 })
+      .where(eq(aiVisibilitySettings.tenantId, tenant.id));
+    expect((await getAiVisibilitySettings(tenant.id)).concurrency).toBe(1);
   });
 
   it("drops an engine id the row holds that we no longer support", async () => {
@@ -241,6 +269,36 @@ describe("saveAiVisibilitySettings", () => {
     expect(rows[0].engines).toEqual(["openai", "gemini"]);
   });
 
+  it("leaves concurrency alone when the form does not send it", async () => {
+    // The /settings form has no concurrency field. Folding an absent value into
+    // the write would reset every tenant's setting to the default on every
+    // unrelated save — the field is optional precisely so that cannot happen.
+    const tenant = await seedTenant(TENANT);
+    await saveAiVisibilitySettings(tenant.id, { ...VALID, concurrency: 6 });
+
+    const { concurrency, ...withoutConcurrency } = VALID;
+    void concurrency;
+    const result = await saveAiVisibilitySettings(tenant.id, {
+      ...withoutConcurrency,
+      monthlyCapUsd: 30,
+    });
+
+    expect(result.ok && result.settings.concurrency).toBe(6);
+    expect((await getAiVisibilitySettings(tenant.id)).concurrency).toBe(6);
+  });
+
+  it("validates concurrency when it IS sent, like every other field", async () => {
+    const tenant = await seedTenant(TENANT);
+    for (const bad of [0, -1, 13, 2.5, "many"]) {
+      expect(await saveAiVisibilitySettings(tenant.id, { ...VALID, concurrency: bad })).toEqual({
+        ok: false,
+        error: "concurrency",
+      });
+    }
+    const ok = await saveAiVisibilitySettings(tenant.id, { ...VALID, concurrency: 8 });
+    expect(ok.ok && ok.settings.concurrency).toBe(8);
+  });
+
   it("never touches `enabled` — that switch lives on the company card", async () => {
     const tenant = await seedTenant(TENANT);
     await db.insert(aiVisibilitySettings).values({ tenantId: tenant.id, enabled: true });
@@ -314,6 +372,7 @@ describe("saveAiVisibilitySettings", () => {
         dayOfWeek: 3,
         engines: ["openai", "gemini"],
         samplesPerPrompt: 5,
+        concurrency: 3,
         monthlyCapUsd: 45,
       },
     });
@@ -470,6 +529,7 @@ describe("saveAiVisibilitySettings", () => {
       dayOfWeek: 3,
       engines: ["openai", "gemini"],
       samplesPerPrompt: 5,
+      concurrency: 3,
       monthlyCapUsd: 45,
     });
   });
@@ -745,6 +805,7 @@ describe("setAiVisibilityEnabled", () => {
       dayOfWeek: 3,
       engines: ["openai", "gemini"],
       samplesPerPrompt: 5,
+      concurrency: 3,
       monthlyCapUsd: 45,
     });
   });
@@ -781,6 +842,7 @@ describe("getAiVisibilitySettingsForTenants", () => {
       dayOfWeek: 3,
       engines: ["openai", "gemini"],
       samplesPerPrompt: 5,
+      concurrency: 3,
       monthlyCapUsd: 45,
     });
   });

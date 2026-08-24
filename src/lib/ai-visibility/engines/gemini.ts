@@ -4,9 +4,8 @@ import {
   ENGINE_REQUEST_TIMEOUT_MS,
 } from "@/lib/ai-visibility/engines/shape";
 import {
-  codeForStatus,
+  classifyHttpFailure,
   engineFailure,
-  isRetryableCode,
   logEngineFailure,
 } from "@/lib/ai-visibility/engines/failure";
 import {
@@ -179,9 +178,16 @@ export async function askGemini(
   // stored or rendered — see `engines/failure.ts`.
   if (!response.ok) {
     const body = await response.text().catch(() => "");
-    const code = codeForStatus(response.status);
-    logEngineFailure("gemini", response.status, code, body);
-    return engineFailure("gemini", code, { retryable: isRetryableCode(code) });
+    // Status AND body, and for Gemini the body is doing most of the work: a bad
+    // key comes back as 400 INVALID_ARGUMENT rather than 401, and a per-day or
+    // spend quota comes back as 429 RESOURCE_EXHAUSTED — the same status as an
+    // ordinary throughput limit, with a wait far longer than our ladder.
+    const failure = classifyHttpFailure("gemini", response.status, body, response.headers);
+    logEngineFailure("gemini", response.status, failure.code, body);
+    return engineFailure("gemini", failure.code, {
+      retryable: failure.retryable,
+      retryAfterMs: failure.retryAfterMs,
+    });
   }
 
   let raw: GeminiResponse;

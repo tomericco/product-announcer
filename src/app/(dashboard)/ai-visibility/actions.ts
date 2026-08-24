@@ -17,6 +17,7 @@ import {
 // check-then-write across an await and let two tabs both squeeze past 30.
 import { generatePromptSet } from "@/lib/ai-visibility/generate-prompts";
 import { cancelRun, driveRun, findResumableRun, planRun } from "@/lib/ai-visibility/run";
+import { getAiVisibilitySettings } from "@/lib/ai-visibility/settings";
 import { PROMPT_INTENTS, type PromptIntent } from "@/lib/ai-visibility/types";
 
 /**
@@ -38,7 +39,31 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const RUN_NOW_TOTAL_BUDGET_MS = 240_000;
 const RUN_NOW_SLICE_BUDGET_MS = 60_000;
 const RUN_NOW_FINALIZE_MIN_MS = 10_000;
-const RUN_NOW_CONCURRENCY = Number(process.env.AI_VISIBILITY_CONCURRENCY ?? 12);
+/**
+ * The FALLBACK, used only when the tenant's own setting cannot be read.
+ *
+ * The knob is `ai_visibility_settings.concurrency`, defaulting to 3 — see
+ * `SWEEP_CONCURRENCY` in `sweep.ts` for the TPM arithmetic that makes 12
+ * unsafe for a new provider account. This constant used to BE that default and
+ * is kept only so an operator has a lever if the read fails.
+ *
+ * `positiveNumberFromEnv`-style parsing rather than bare `Number()`: an empty
+ * `AI_VISIBILITY_CONCURRENCY=` is `Number("") === 0`, and a concurrency of 0
+ * makes `batchSize` clamp to 1 — a 270-call run served one at a time.
+ */
+function fallbackConcurrency(): number {
+  const parsed = Number(process.env.AI_VISIBILITY_CONCURRENCY);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 3;
+}
+
+/** The tenant's own setting, or the fallback if the row cannot be read. */
+async function concurrencyFor(tenantId: string): Promise<number> {
+  try {
+    return (await getAiVisibilitySettings(tenantId)).concurrency;
+  } catch {
+    return fallbackConcurrency();
+  }
+}
 
 /** Both surfaces show prompt state, so every write revalidates both. */
 function revalidateAll() {
@@ -346,12 +371,13 @@ export async function runNowAction(): Promise<ActionResult<{ runId: string }>> {
   // own expected failures on the run row, so anything reaching its catch is
   // exceptional — logged, swallowed, and the daily sweep resumes whatever is
   // left `running`.
+  const concurrency = await concurrencyFor(session.user.tenantId);
   after(() =>
     driveRun(runId, {
       totalBudgetMs: RUN_NOW_TOTAL_BUDGET_MS,
       sliceBudgetMs: RUN_NOW_SLICE_BUDGET_MS,
       finalizeMinBudgetMs: RUN_NOW_FINALIZE_MIN_MS,
-      concurrency: RUN_NOW_CONCURRENCY,
+      concurrency,
       now: () => new Date(),
     })
   );
@@ -432,12 +458,13 @@ export async function resumeRunAction(): Promise<ActionResult<{ runId: string }>
   }
 
   const runId = target.runId;
+  const concurrency = await concurrencyFor(session.user.tenantId);
   after(() =>
     driveRun(runId, {
       totalBudgetMs: RUN_NOW_TOTAL_BUDGET_MS,
       sliceBudgetMs: RUN_NOW_SLICE_BUDGET_MS,
       finalizeMinBudgetMs: RUN_NOW_FINALIZE_MIN_MS,
-      concurrency: RUN_NOW_CONCURRENCY,
+      concurrency,
       now: () => new Date(),
     })
   );

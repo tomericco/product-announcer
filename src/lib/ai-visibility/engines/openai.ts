@@ -4,9 +4,8 @@ import {
   ENGINE_REQUEST_TIMEOUT_MS,
 } from "@/lib/ai-visibility/engines/shape";
 import {
-  codeForStatus,
+  classifyHttpFailure,
   engineFailure,
-  isRetryableCode,
   logEngineFailure,
 } from "@/lib/ai-visibility/engines/failure";
 import {
@@ -177,12 +176,16 @@ export async function askOpenAi(
   // `engines/failure.ts`.
   if (!response.ok) {
     const body = await response.text().catch(() => "");
-    const code = codeForStatus(response.status);
-    logEngineFailure("openai", response.status, code, body);
-    return engineFailure("openai", code, {
+    // Status AND body: an OpenAI 429 is `insufficient_quota` (the account has
+    // no credit — terminal) or a throughput limit (retryable, and `retry-after`
+    // says for how long). Same status, opposite remedy.
+    const failure = classifyHttpFailure("openai", response.status, body, response.headers);
+    logEngineFailure("openai", response.status, failure.code, body);
+    return engineFailure("openai", failure.code, {
       // Not a secret, and the only handle OpenAI support can act on.
       requestId: response.headers.get("x-request-id"),
-      retryable: isRetryableCode(code),
+      retryable: failure.retryable,
+      retryAfterMs: failure.retryAfterMs,
     });
   }
 

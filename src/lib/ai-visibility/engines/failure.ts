@@ -148,6 +148,7 @@ export function engineFailure(
     detail?: string;
     requestId?: string | null;
     retryable?: boolean;
+    retryAfterMs?: number;
     costUsd?: number;
   } = {}
 ): EngineError {
@@ -163,6 +164,11 @@ export function engineFailure(
     // flag everywhere in this feature, and one path saying it a second way is
     // how a reader concludes the two mean different things.
     ...(opts.retryable ? { retryable: true as const } : {}),
+    // Only meaningful alongside `retryable` — a terminal failure has no next
+    // attempt to schedule — so it is dropped rather than stored on one.
+    ...(opts.retryable && opts.retryAfterMs !== undefined
+      ? { retryAfterMs: opts.retryAfterMs }
+      : {}),
     ...(opts.costUsd !== undefined ? { costUsd: opts.costUsd } : {}),
   };
 }
@@ -210,4 +216,168 @@ export function codeForStatus(status: number): EngineFailureCode {
 /** Whether a code is worth spending another call on. */
 export function isRetryableCode(code: EngineFailureCode): boolean {
   return code === "rate_limited" || code === "provider_unavailable";
+}
+
+/**
+ * The whole retry ladder for one sample, in milliseconds.
+ *
+ * `run.ts` owns the ladder itself (`SAMPLE_RETRY_BACKOFF_MS` = 30s then 60s);
+ * this is its total, restated here because `failure.ts` cannot import `run.ts`
+ * — `run.ts` imports the engines. `tests/lib/ai-visibility/retry.test.ts`
+ * asserts the two stay equal, so a change to the ladder fails loudly rather
+ * than silently moving this threshold.
+ *
+ * It is a THRESHOLD, not a budget: a provider that tells us to wait longer than
+ * this is telling us the run cannot recover, whatever the status code said.
+ */
+export const RETRY_WINDOW_MS = 90_000;
+
+/**
+ * Bodies that mean "out of money", not "too fast".
+ *
+ * This is the split design Decision 9 demands, and each entry is a specific
+ * published marker rather than a guess at prose:
+ *
+ *  - **OpenAI** returns 429 with `code: "insufficient_quota"` when the account
+ *    has no credit. Same status as a throughput limit, opposite remedy.
+ *  - **Anthropic's spend cap** is a 429 carrying NO `retry-after` at all,
+ *    identified by `error.details.error_code === "enforced_spend_limit_reached"`.
+ *    Its out-of-credit case is a 400 saying "credit balance is too low" — a
+ *    status that would otherwise read as `bad_response`, i.e. our bug.
+ *  - **Gemini's** per-day quotas name themselves in `quotaId`
+ *    (`…RequestsPerDayPerProject…`). A per-day quota cannot clear inside a
+ *    90-second ladder by definition.
+ *
+ * HONEST GAP: Gemini's `$10 per rolling 10 minutes` spend cap returns
+ * `429 RESOURCE_EXHAUSTED`, and no published sample of that body was available
+ * to match on. The retry-delay rule below is what catches it — Google's error
+ * envelope carries a `RetryInfo.retryDelay`, and a delay longer than the whole
+ * ladder is `quota_exceeded` regardless of which cap produced it. If that
+ * proves wrong in production, this is the table to add the marker to.
+ *
+ * Matched against the raw body, which is exactly why the raw body never leaves
+ * this module: reading it is safe, keeping it is not.
+ */
+const QUOTA_MARKERS: Record<EngineId, RegExp[]> = {
+  openai: [/insufficient_quota/i, /exceeded your current quota/i, /billing_not_active/i],
+  anthropic: [/enforced_spend_limit_reached/i, /credit balance is too low/i],
+  gemini: [/"quotaId"\s*:\s*"[^"]*PerDay/i, /billing account/i, /spend limit/i],
+};
+
+/**
+ * Bodies that name the KEY as the problem behind a status that does not.
+ *
+ * Only consulted for a status that would otherwise read as `bad_response`.
+ * Gemini is the reason this exists: it rejects a bad key with **400
+ * INVALID_ARGUMENT**, not 401, so without this a customer's typo would be
+ * reported as "that is ours to fix" and never get fixed.
+ */
+const INVALID_KEY_MARKERS: Record<EngineId, RegExp[]> = {
+  openai: [/invalid_api_key/i],
+  anthropic: [/authentication_error/i],
+  gemini: [/API_KEY_INVALID/i, /API key not valid/i],
+};
+
+function matchesAny(patterns: RegExp[], text: string): boolean {
+  return patterns.some((pattern) => {
+    pattern.lastIndex = 0;
+    return pattern.test(text);
+  });
+}
+
+/**
+ * How long the provider asked us to wait, in ms, if it said so at all.
+ *
+ * Two places to look, because the three engines do not agree:
+ *
+ *  - the `retry-after` HTTP header — seconds, or an HTTP-date (RFC 9110 allows
+ *    both, and OpenAI has been observed sending each);
+ *  - Google's `RetryInfo` detail in the body, spelled `"retryDelay": "58s"`.
+ *
+ * Anthropic's spend-cap 429 sends NEITHER, which is itself the signal — see
+ * `QUOTA_MARKERS`.
+ *
+ * Returns undefined rather than 0 when nothing was said: "no guidance" and
+ * "retry immediately" are different instructions, and only one of them should
+ * replace our ladder.
+ */
+export function parseRetryAfterMs(
+  headers: Headers | undefined,
+  bodyText: string,
+  now: number = Date.now()
+): number | undefined {
+  const header = headers?.get("retry-after");
+  if (header) {
+    const seconds = Number(header.trim());
+    if (Number.isFinite(seconds) && seconds >= 0) return Math.round(seconds * 1000);
+    const date = Date.parse(header);
+    // A date in the past is a clock skew, not an instruction to wait forever.
+    if (Number.isFinite(date)) return Math.max(0, date - now);
+  }
+
+  const retryDelay = /"retryDelay"\s*:\s*"(\d+(?:\.\d+)?)s"/.exec(bodyText);
+  if (retryDelay) return Math.round(Number(retryDelay[1]) * 1000);
+
+  return undefined;
+}
+
+export type HttpFailure = {
+  code: EngineFailureCode;
+  retryable: boolean;
+  /** What the provider asked for, when it asked. Absent means "use our ladder". */
+  retryAfterMs?: number;
+};
+
+/**
+ * The full reading of a non-2xx: status, then body, then the clock.
+ *
+ * ### Why 429 cannot be one thing
+ *
+ * `isRetryableStatus` treated every 429 as retryable and `MAX_SAMPLE_ATTEMPTS`
+ * spent three calls and 90 seconds on it. That is right for a throughput 429
+ * and wrong for a spend-cap 429, which cannot succeed inside the window by
+ * construction: Anthropic's carries no `retry-after` at all, and Gemini's
+ * `$10 / 10 minutes` cap needs a wait longer than our entire ladder. Retrying
+ * either burns three attempts of a customer's budget to fail identically, and
+ * — with the hard gate and no vendor-key fallback — the customer's 429 is our
+ * outage.
+ *
+ * So the order here is: a body that NAMES a cap wins over the status; then a
+ * wait longer than the whole ladder is treated as a cap whether or not it named
+ * itself; only what is left is throughput.
+ *
+ * The body is read and dropped. Nothing from it reaches the return value.
+ */
+export function classifyHttpFailure(
+  engine: EngineId,
+  status: number,
+  bodyText: string,
+  headers?: Headers,
+  now: number = Date.now()
+): HttpFailure {
+  // A named cap beats the status code. Anthropic's out-of-credit case is a 400,
+  // which `codeForStatus` would otherwise call our bug.
+  if (matchesAny(QUOTA_MARKERS[engine], bodyText)) {
+    return { code: "quota_exceeded", retryable: false };
+  }
+
+  const base = codeForStatus(status);
+
+  if (base === "bad_response" && matchesAny(INVALID_KEY_MARKERS[engine], bodyText)) {
+    return { code: "invalid_key", retryable: false };
+  }
+
+  if (base === "rate_limited") {
+    const retryAfterMs = parseRetryAfterMs(headers, bodyText, now);
+    // The provider says the wait outlasts every attempt we would make. Whatever
+    // kind of limit that is, this run cannot wait it out — and a sample that
+    // fails now is worth more than the same sample failing 90 seconds later
+    // with two more paid calls behind it.
+    if (retryAfterMs !== undefined && retryAfterMs > RETRY_WINDOW_MS) {
+      return { code: "quota_exceeded", retryable: false };
+    }
+    return { code: "rate_limited", retryable: true, ...(retryAfterMs !== undefined ? { retryAfterMs } : {}) };
+  }
+
+  return { code: base, retryable: isRetryableCode(base) };
 }

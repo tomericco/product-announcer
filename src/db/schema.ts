@@ -510,6 +510,16 @@ export const aiVisibilitySettings = pgTable("ai_visibility_settings", {
     .notNull()
     .default(["openai", "gemini", "anthropic"]),
   samplesPerPrompt: smallint("samples_per_prompt").notNull().default(3),
+  /**
+   * Engine calls in flight at once for this tenant's runs.
+   *
+   * Per-tenant because the ceiling is per-ACCOUNT, and under BYOK the account
+   * is theirs, not ours. See `SWEEP_CONCURRENCY` in `sweep.ts` for the
+   * arithmetic behind the default of 3 — the short version is that OpenAI
+   * Tier 1 `gpt-4o` is 30,000 TPM, and 30,000 ÷ 12 is 2,500 tokens per request
+   * including output, which one grounded answer exceeds on its own.
+   */
+  concurrency: smallint("concurrency").notNull().default(3),
   monthlyCapUsd: real("monthly_cap_usd").notNull().default(20),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

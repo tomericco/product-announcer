@@ -120,14 +120,17 @@ export type EngineError = {
    *
    * RETRYABLE — the call never produced an answer and the reason is about the
    * moment rather than the request:
-   *   - HTTP 429 (rate limited)
-   *   - any 5xx (provider fault)
-   *   - a transport failure, a dropped connection, or the 60s abort timeout
+   *   - `rate_limited`: a THROUGHPUT 429, and only that one
+   *   - `provider_unavailable`: any 5xx, a transport failure, a dropped
+   *     connection, or the 60s abort timeout
    *
    * TERMINAL (leave undefined) — asking again produces the same outcome:
-   *   - 4xx other than 429: 401 (bad or out-of-funds key), 404 (bad model id),
-   *     400 (a request we built wrong)
-   *   - a missing API key
+   *   - `quota_exceeded`: a SPEND-CAP 429, or an account with no credit. Same
+   *     status code as the retryable case and the opposite remedy — Anthropic's
+   *     carries no `retry-after` and Gemini's needs a wait longer than the
+   *     whole ladder, so three attempts buy three identical failures
+   *   - `invalid_key`: 401/403, a missing key, or a body naming the key
+   *   - `bad_response`: 404 (bad model id), 400 (a request we built wrong)
    *   - `kind: "refused"` — the model read the prompt and declined; that IS the
    *     measurement, and it is billed
    *   - a truncated answer (`incomplete_details`, `MAX_TOKENS`, `max_tokens`,
@@ -137,6 +140,21 @@ export type EngineError = {
    *     mean OUR reader is wrong about the shape, which no retry fixes
    */
   retryable?: boolean;
+  /**
+   * How long the PROVIDER asked us to wait before the next attempt, in ms.
+   *
+   * Set only alongside `retryable`, and only when the provider actually said —
+   * a `retry-after` header, or Google's `RetryInfo.retryDelay`. When it is
+   * absent `runSlice` uses its own ladder, which is a guess; when it is present
+   * the provider's number wins, because Anthropic warns that a nominal 60 RPM
+   * "might be enforced as 1 request per second" and no fixed ladder of ours can
+   * know that.
+   *
+   * Never longer than the whole ladder: a provider asking for more than that is
+   * classified `quota_exceeded` and terminal instead, because a run cannot wait
+   * it out.
+   */
+  retryAfterMs?: number;
 };
 
 export type EngineClient = {

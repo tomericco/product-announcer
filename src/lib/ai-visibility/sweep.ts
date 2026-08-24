@@ -36,13 +36,32 @@ export const SWEEP_BUDGET_MS = positiveNumberFromEnv(
 );
 
 /**
- * Engine calls in flight at once, per source.
+ * The FALLBACK number of engine calls in flight at once.
  *
- * Contract decision 3 targets 270 calls in one tick at concurrency 12–20. Held
- * at the low end of that: three different providers' rate limits are in play and
- * a 429 costs a sample outright, since there is no retry helper in this repo.
+ * The real knob is per-tenant now: `ai_visibility_settings.concurrency`, which
+ * `runFor` below reads for every source it drives. This constant is what a
+ * source falls back to when there is no settings row to read, and the env var
+ * is how an operator moves that fallback during an incident.
+ *
+ * IT IS 3, NOT 12, AND THE ARITHMETIC IS WHY. Contract decision 3 targeted 270
+ * calls in one tick at concurrency 12-20, sized against OUR account. A BYOK
+ * tenant's account is brand new, and OpenAI Tier 1 caps `gpt-4o` at
+ * **30,000 TPM**:
+ *
+ *     30,000 TPM / 12 concurrent = 2,500 tokens per request, output included
+ *
+ * A grounded AI-visibility call measures ~23,000 input + ~2,500 output tokens —
+ * the retrieved page text lands in the input — so one call blows that budget
+ * five times over and twelve of them 429 the tenant on their first sweep. At 3
+ * the same tenant has 10,000 tokens per request to work with.
+ *
+ * RPM was never the binding constraint: 12 concurrent calls at 10-30s each is
+ * roughly 24-72 RPM, under every published ceiling. TPM is what bites, and it
+ * is invisible from our own account because ours sits several tiers up.
+ *
+ * Do not raise this back to 12 without redoing that division.
  */
-export const SWEEP_CONCURRENCY = positiveNumberFromEnv(process.env.AI_VISIBILITY_CONCURRENCY, 12);
+export const SWEEP_CONCURRENCY = positiveNumberFromEnv(process.env.AI_VISIBILITY_CONCURRENCY, 3);
 
 /** No source gets less than this, however many are waiting. */
 export const MIN_SOURCE_BUDGET_MS = 5_000;
@@ -176,7 +195,10 @@ export async function sweepAiVisibility(deps: SweepAiVisibilityDeps = {}): Promi
   const slice = deps.slice ?? runSlice;
   const finalize = deps.finalize ?? finalizeRun;
   const totalBudgetMs = deps.budgetMs ?? SWEEP_BUDGET_MS;
-  const concurrency = deps.concurrency ?? SWEEP_CONCURRENCY;
+  // An explicit override (tests, and an operator running the sweep by hand)
+  // applies to every source; otherwise each source uses its own tenant's
+  // setting, resolved per worker below.
+  const concurrencyOverride = deps.concurrency;
   const deadline = now().getTime() + totalBudgetMs;
 
   let candidates: Source[];
@@ -198,7 +220,7 @@ export async function sweepAiVisibility(deps: SweepAiVisibilityDeps = {}): Promi
   // Two queries, not two per source: the budget cannot be divided until every
   // candidate has been classified, and classifying them one round trip at a
   // time spends the budget before any work starts.
-  let workers: { source: Source; runId: string | null }[];
+  let workers: { source: Source; runId: string | null; concurrency: number }[];
   try {
     const tenantIds = candidates.map((source) => source.tenantId);
     const inFlightRows = await database
@@ -224,15 +246,23 @@ export async function sweepAiVisibility(deps: SweepAiVisibilityDeps = {}): Promi
         // refused while a run is in flight ("A run is already in progress."),
         // and the live `after()` loop of the run that started it only drives
         // its own run, only until its budget is gone.
-        const runId = inFlight.get(source.tenantId) ?? null;
-        if (runId) return { source, runId };
-
         const tenantSettings = settings.get(source.tenantId);
+        // Per TENANT, not per tick: the rate limit being respected belongs to
+        // the account the calls are billed to, which under BYOK is theirs.
+        const concurrency =
+          concurrencyOverride ?? tenantSettings?.concurrency ?? SWEEP_CONCURRENCY;
+
+        const runId = inFlight.get(source.tenantId) ?? null;
+        if (runId) return { source, runId, concurrency };
+
         if (!tenantSettings?.enabled) return null;
         if (!cadenceDue(tenantSettings, source.lastRunAt, now())) return null;
-        return { source, runId: null };
+        return { source, runId: null, concurrency };
       })
-      .filter((worker): worker is { source: Source; runId: string | null } => worker !== null);
+      .filter(
+        (worker): worker is { source: Source; runId: string | null; concurrency: number } =>
+          worker !== null
+      );
   } catch (error) {
     console.error("[ai-visibility-sweep] failed to classify candidate sources:", error);
     return;
@@ -306,7 +336,11 @@ export async function sweepAiVisibility(deps: SweepAiVisibilityDeps = {}): Promi
       }
 
       const sliceStartedAt = now().getTime();
-      const outcome = await slice(runId, { budgetMs, concurrency, now }, { database });
+      const outcome = await slice(
+        runId,
+        { budgetMs, concurrency: worker.concurrency, now },
+        { database }
+      );
 
       // Nothing left to ask, and the cap did not stop us: close the run out with
       // whatever this source's budget has left. `finalizeRun` is itself
