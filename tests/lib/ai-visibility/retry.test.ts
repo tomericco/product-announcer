@@ -468,9 +468,9 @@ describe("a real client carries `retry-after` all the way to the row", () => {
   });
 
   it("treats a wait longer than the whole ladder as terminal, and stops paying", async () => {
-    // A 429 asking for ten minutes is a spend cap wearing a throughput status —
-    // Gemini's $10-per-10-minutes cap is exactly this shape. Retrying it burns
-    // three attempts of the tenant's budget to fail identically.
+    // A 429 asking for ten minutes cannot be waited out inside a 90-second
+    // ladder, so retrying it burns three attempts of the tenant's budget to
+    // fail identically. One attempt, no next one scheduled.
     const { runId } = await plannedOneSample();
     const now = controllableClock("2026-03-02T09:00:00Z");
     const client = throttledOpenAi({ "retry-after": "600" });
@@ -480,9 +480,14 @@ describe("a real client carries `retry-after` all the way to the row", () => {
     const row = await sampleRow(runId);
     expect(row.status).toBe("error");
     expect(row.nextAttemptAt).toBeNull();
-    // Named as what it is, so the badge sends them to billing rather than to
-    // waiting. And the provider's body never made it into the column.
-    expect(row.error).toContain("out of credit or has hit a spend cap");
+    // And it is named as a RATE LIMIT, not as money. The length of a wait says
+    // nothing about whether an account is funded, and this sentence is what the
+    // tenant reads on the sample: sending them to a billing page over a
+    // throughput limit is telling them to fix something that is not broken.
+    expect(row.error).toContain("rate-limiting this key");
+    expect(row.error).not.toContain("out of credit");
+    // The provider's body never made it into the column either.
+    expect(row.error).not.toContain("retry-after");
   });
 });
 
@@ -501,8 +506,10 @@ describe("retryWaitMs", () => {
   });
 
   it("caps a wait at the whole ladder, as a backstop", () => {
-    // A wait longer than this is classified `quota_exceeded` upstream and never
-    // reaches here; this is the guard for a client that sets the field by hand.
+    // A wait longer than this is returned TERMINAL upstream — still
+    // `rate_limited`, but with no `retryable`, so there is no next attempt to
+    // schedule and this function is never reached with it. The clamp is the
+    // guard for a client that sets the field by hand.
     expect(retryWaitMs(TOTAL_RETRY_WINDOW_MS * 10, 1)).toBe(TOTAL_RETRY_WINDOW_MS);
   });
 

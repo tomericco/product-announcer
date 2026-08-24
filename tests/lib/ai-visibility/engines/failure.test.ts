@@ -11,6 +11,7 @@ import {
   parseRetryAfterMs,
   type EngineFailureCode,
 } from "../../../../src/lib/ai-visibility/engines/failure";
+import { isCredentialFailure } from "../../../../src/lib/ai-visibility/engine-keys";
 import { REDACTED } from "../../../../src/lib/ai-visibility/scrub";
 import { ENGINE_IDS, type EngineError } from "../../../../src/lib/ai-visibility/types";
 
@@ -243,16 +244,80 @@ describe("classifyHttpFailure — the 429 split", () => {
     expect(throughput).toEqual({ code: "rate_limited", retryable: true });
   });
 
-  it("a wait longer than the whole ladder is quota, whatever named it", () => {
-    // This is what catches Gemini's `$10 per rolling 10 minutes` cap, whose
-    // body shape is not published: the provider is telling us the wait outlasts
-    // every attempt we would make, so three attempts buy three failures.
+  it("a wait longer than the whole ladder is TERMINAL, and still `rate_limited`", () => {
+    // The provider is telling us the wait outlasts every attempt we would make,
+    // so three attempts buy three failures — `retryable: false`, and this run
+    // stops asking.
+    //
+    // The CODE does not move. It used to become `quota_exceeded`, which is not
+    // a scheduling word: `isCredentialFailure` reads that one as a verdict on
+    // the key and pauses the engine until a human presses Re-check. A slow rate
+    // limit is a rate limit.
     const body = `{"error":{"details":[{"retryDelay":"${(RETRY_WINDOW_MS / 1000) + 10}s"}]}}`;
-    expect(classifyHttpFailure("gemini", 429, body).code).toBe("quota_exceeded");
+    expect(classifyHttpFailure("gemini", 429, body)).toEqual({
+      code: "rate_limited",
+      retryable: false,
+    });
 
     // Exactly at the boundary is still retryable — the last attempt lands.
     const atLimit = `{"error":{"details":[{"retryDelay":"${RETRY_WINDOW_MS / 1000}s"}]}}`;
     expect(classifyHttpFailure("gemini", 429, atLimit).code).toBe("rate_limited");
+  });
+
+  it("openai: a Tier 1 TPM 429 is never a credential verdict, however long the wait", () => {
+    // The regression. This body is the most likely first-run experience a BYOK
+    // tenant has (design Decision 9: OpenAI Tier 1 is 30,000 TPM and one
+    // grounded call is ~25,000 tokens), and it used to come back
+    // `quota_exceeded` — which writes `status: "quota_exceeded"` on the key row,
+    // drops the engine out of `effectiveEngines` for every future run, and puts
+    // a "No credit" badge in front of a fully-funded customer.
+    const failure = classifyHttpFailure(
+      "openai",
+      429,
+      '{"error":{"code":"rate_limit_exceeded","message":"Rate limit reached for gpt-5 in organization org-x on tokens per min (TPM). Limit 30000, Used 29984. Please try again in 120s."}}',
+      new Headers({ "retry-after": "120" })
+    );
+
+    expect(failure).toEqual({ code: "rate_limited", retryable: false });
+    // Said as the property that matters, not only as the code: the key row is
+    // flipped off `isCredentialFailure`, and nothing about throughput may reach
+    // it. `engine-keys.ts` holds the other half of this rule.
+    expect(isCredentialFailure(failure.code)).toBe(false);
+  });
+
+  it("gemini: `billing account` in a 503 body does not become a permanent verdict", () => {
+    // "Billing account" is the ordinary name of a Cloud Billing account and it
+    // turns up in bodies that have nothing to do with a spend cap. It was a
+    // guessed marker — no published sample of Gemini's cap body was ever
+    // available — and it beat the status code unconditionally, so a transient
+    // 503 mentioning one paused the engine permanently.
+    expect(
+      classifyHttpFailure(
+        "gemini",
+        503,
+        '{"error":{"code":503,"status":"UNAVAILABLE","message":"The service is temporarily unavailable for this billing account."}}'
+      )
+    ).toEqual({ code: "provider_unavailable", retryable: true });
+
+    // The published marker still wins on the status a cap actually wears.
+    expect(
+      classifyHttpFailure(
+        "gemini",
+        429,
+        '{"error":{"details":[{"violations":[{"quotaId":"GenerateRequestsPerDayPerProject"}]}]}}'
+      ).code
+    ).toBe("quota_exceeded");
+  });
+
+  it("a body naming BOTH the key and a quota reports the key", () => {
+    // Two remedies, and only one of them works. Paying an invoice does not fix
+    // a revoked key, so the credential reading has to be the one that survives.
+    const failure = classifyHttpFailure(
+      "gemini",
+      400,
+      '{"error":{"message":"API key not valid. Check the billing account quotaId PerDay for this project.","details":[{"reason":"API_KEY_INVALID"}]}}'
+    );
+    expect(failure).toEqual({ code: "invalid_key", retryable: false });
   });
 
   it("gemini: a bad key wearing a 400 is `invalid_key`, not our bug", () => {

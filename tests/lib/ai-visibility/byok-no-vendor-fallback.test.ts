@@ -680,4 +680,100 @@ describe("a run writes its verdict into the audit trail", () => {
         .where(eq(aiVisibilityEngineKeyEvents.tenantId, tenant.id))
     ).toEqual([]);
   });
+
+  it("a Tier 1 TPM 429 leaves the key verified, however long the wait it asks for", async () => {
+    // THE REGRESSION, end to end and through the real OpenAI client.
+    //
+    // OpenAI Tier 1 is 30,000 TPM and one grounded AI-visibility call is
+    // ~25,000 tokens, so a burst comes back as this body with `try again in
+    // 120s` — design Decision 9 names it as the most likely first-run
+    // experience a BYOK tenant has. The wait outlasts the 90-second ladder, so
+    // the run must stop asking; the ACCOUNT is fully funded, so the key row
+    // must not move.
+    //
+    // It used to move. `classifyHttpFailure` reclassified the long wait as
+    // `quota_exceeded`, `isCredentialFailure` read that as a verdict on the
+    // credential, and the engine dropped out of `effectiveEngines` for every
+    // future run behind a "No credit" badge.
+    const tenant = await seedTenant(TENANT);
+    await db.insert(aiVisibilitySettings).values({
+      tenantId: tenant.id,
+      enabled: true,
+      engines: ["openai"],
+      samplesPerPrompt: 1,
+      monthlyCapUsd: 20,
+    });
+    await db.insert(aiVisibilityPrompts).values({
+      tenantId: tenant.id,
+      text: "best issue tracker for startups",
+      intent: "discovery",
+      origin: "generated",
+      status: "active",
+    });
+    await seedEngineKey(tenant.id, "openai");
+    const planned = await planRun(tenant.id, { trigger: "manual", now: () => new Date() });
+    if (!planned.ok) throw new Error(`planRun refused: ${planned.reason}`);
+
+    const tpm429 = (async () =>
+      new Response(
+        JSON.stringify({
+          error: {
+            code: "rate_limit_exceeded",
+            type: "requests",
+            message:
+              "Rate limit reached for gpt-5 in organization org-x on tokens per min (TPM). Limit 30000, Used 29984. Please try again in 120s.",
+          },
+        }),
+        { status: 429, headers: { "retry-after": "120" } }
+      )) as unknown as typeof fetch;
+
+    await runSlice(
+      planned.runId,
+      { budgetMs: 60_000, concurrency: 1, now: () => new Date() },
+      {
+        database: db,
+        engines: {
+          // The REAL client, so the classification under test is the one that
+          // ships rather than a literal typed into a stub.
+          openai: {
+            id: "openai",
+            label: "openai (Tier 1 TPM)",
+            ask: (prompt, opts) => askOpenAi(prompt, { ...opts, fetchImpl: tpm429 }),
+          },
+        },
+        extract: async () => {},
+      }
+    );
+
+    const [key] = await db
+      .select()
+      .from(aiVisibilityEngineKeys)
+      .where(eq(aiVisibilityEngineKeys.tenantId, tenant.id));
+    expect(key.status).toBe("verified");
+    expect(key.enabled).toBe(true);
+    // Recorded, not escalated: the badge can say what happened on the last run
+    // without the engine having been taken off the board.
+    expect(key.lastFailureCode).toBe("rate_limited");
+    expect(key.lastFailureAt).not.toBeNull();
+
+    // And the engine is still one a run may plan.
+    expect(await effectiveEngines(tenant.id, ["openai"])).toEqual(["openai"]);
+
+    // No state changed, so nothing is audited.
+    expect(
+      await db
+        .select()
+        .from(aiVisibilityEngineKeyEvents)
+        .where(eq(aiVisibilityEngineKeyEvents.tenantId, tenant.id))
+    ).toEqual([]);
+
+    // The sample is terminal all the same — one attempt, no next one scheduled.
+    const [sample] = await db
+      .select()
+      .from(aiVisibilitySamples)
+      .where(eq(aiVisibilitySamples.runId, planned.runId));
+    expect(sample.status).toBe("error");
+    expect(sample.askAttempts).toBe(1);
+    expect(sample.nextAttemptAt).toBeNull();
+  });
 });

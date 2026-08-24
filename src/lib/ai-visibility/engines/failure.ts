@@ -27,9 +27,11 @@ import type { EngineError, EngineId } from "@/lib/ai-visibility/types";
  *  - `invalid_key` — 401/403, or a body that names the key as the problem. The
  *    credential is wrong, revoked, or expired.
  *  - `quota_exceeded` — the account is out of money or has hit a spend cap.
- *    TERMINAL: no wait inside a run's lifetime fixes it.
- *  - `rate_limited` — throughput. Retryable, and the provider may tell us how
- *    long to wait.
+ *    TERMINAL, and a verdict on the CREDENTIAL: `isCredentialFailure` flips the
+ *    stored key row over this one, so nothing may reach it on a guess.
+ *  - `rate_limited` — throughput. The account is fine and the key is fine; the
+ *    calls are arriving too fast. Whether another attempt is worth paying for
+ *    is `retryable`'s business, not this code's — see `classifyHttpFailure`.
  *  - `provider_unavailable` — 5xx, a timeout, a dropped connection. Nothing
  *    reached the model, or nothing came back.
  *  - `bad_response` — a request we built wrong, a model id that no longer
@@ -251,7 +253,16 @@ export function codeForStatus(status: number): EngineFailureCode {
   return "bad_response";
 }
 
-/** Whether a code is worth spending another call on. */
+/**
+ * Whether a code is worth spending another call on, from the code ALONE.
+ *
+ * The default, not the verdict. `classifyHttpFailure` can still return
+ * `rate_limited` with `retryable: false` — a provider that asks for a longer
+ * wait than the whole ladder has answered the retry question itself, and the
+ * code stays `rate_limited` because the code describes the LIMIT, not the
+ * schedule. Read `HttpFailure.retryable` for the decision; this is only what to
+ * assume when nothing said otherwise.
+ */
 export function isRetryableCode(code: EngineFailureCode): boolean {
   return code === "rate_limited" || code === "provider_unavailable";
 }
@@ -288,10 +299,21 @@ export const RETRY_WINDOW_MS = 90_000;
  *
  * HONEST GAP: Gemini's `$10 per rolling 10 minutes` spend cap returns
  * `429 RESOURCE_EXHAUSTED`, and no published sample of that body was available
- * to match on. The retry-delay rule below is what catches it — Google's error
- * envelope carries a `RetryInfo.retryDelay`, and a delay longer than the whole
- * ladder is `quota_exceeded` regardless of which cap produced it. If that
- * proves wrong in production, this is the table to add the marker to.
+ * to match on. It is therefore NOT matched here, and it is read as
+ * `rate_limited` — terminal for the run when the retry delay outlasts the
+ * ladder, but not a verdict on the key. Two guesses used to stand in for the
+ * missing sample and both have been withdrawn:
+ *
+ *  - `/billing account/i` and `/spend limit/i` were prose, not published
+ *    markers. "Billing account" is the ordinary name of a Cloud Billing
+ *    account and appears in bodies that have nothing to do with a cap, so any
+ *    503 or 403 quoting one flipped a funded key to "No credit".
+ *  - "a wait longer than the ladder is a cap" — see `classifyHttpFailure`. A
+ *    Tier 1 TPM 429 asking for 120 seconds is the most likely first-run
+ *    experience a BYOK tenant has (Decision 9), and it is not a cap.
+ *
+ * If a real sample of that body turns up, this is the table to add it to — a
+ * published marker, matched on a 429, is the only thing that belongs here.
  *
  * Matched against the raw body, which is exactly why the raw body never leaves
  * this module: reading it is safe, keeping it is not.
@@ -299,7 +321,7 @@ export const RETRY_WINDOW_MS = 90_000;
 const QUOTA_MARKERS: Record<EngineId, RegExp[]> = {
   openai: [/insufficient_quota/i, /exceeded your current quota/i, /billing_not_active/i],
   anthropic: [/enforced_spend_limit_reached/i, /credit balance is too low/i],
-  gemini: [/"quotaId"\s*:\s*"[^"]*PerDay/i, /billing account/i, /spend limit/i],
+  gemini: [/"quotaId"\s*:\s*"[^"]*PerDay/i],
 };
 
 /**
@@ -369,20 +391,40 @@ export type HttpFailure = {
 /**
  * The full reading of a non-2xx: status, then body, then the clock.
  *
- * ### Why 429 cannot be one thing
+ * ### The two questions, and why they are not one question
  *
- * `isRetryableStatus` treated every 429 as retryable and `MAX_SAMPLE_ATTEMPTS`
- * spent three calls and 90 seconds on it. That is right for a throughput 429
- * and wrong for a spend-cap 429, which cannot succeed inside the window by
- * construction: Anthropic's carries no `retry-after` at all, and Gemini's
- * `$10 / 10 minutes` cap needs a wait longer than our entire ladder. Retrying
- * either burns three attempts of a customer's budget to fail identically, and
- * — with the hard gate and no vendor-key fallback — the customer's 429 is our
- * outage.
+ * `code` answers **what went wrong, and whose fault it is**. `retryable`
+ * answers **whether another attempt inside this run is worth paying for**. They
+ * are independent, and the whole point of returning both is that neither has to
+ * lie on the other's behalf.
  *
- * So the order here is: a body that NAMES a cap wins over the status; then a
- * wait longer than the whole ladder is treated as a cap whether or not it named
- * itself; only what is left is throughput.
+ * They were conflated once, and it was expensive. A 429 whose `retry-after`
+ * outlasted the 90-second ladder was reclassified as `quota_exceeded` so that
+ * `runSlice` would stop retrying it — which worked, because `runSlice` reads
+ * that code as "terminal for this sample". But `flipEngineKeyOnFailure` reads
+ * the SAME code as a verdict on the credential: `quota_exceeded` writes
+ * `status: "quota_exceeded"` on the key row, which drops the engine out of
+ * `effectiveEngines` for every future run and puts a **"No credit"** badge in
+ * front of a customer whose account is fully funded.
+ *
+ * And a long `retry-after` is not a cap. OpenAI Tier 1 is 30,000 TPM and
+ * answers a burst with `try again in 120s`; Decision 9 names that as the most
+ * likely first-run experience a BYOK tenant has. So a throughput 429 now comes
+ * back as `{ code: "rate_limited", retryable: false }` when the wait outlasts
+ * the ladder — terminal for this run, silent about the key, exactly as
+ * `isCredentialFailure` already documents that it wants.
+ *
+ * ### The order
+ *
+ *  1. A body that names the KEY, on a status that does not know (Gemini rejects
+ *     a bad key with 400). Before the cap check, so a body naming both reports
+ *     the credential — a rejected key is not fixed by paying.
+ *  2. A body that names a CAP, on a status a cap can actually wear: a 429, or
+ *     the 400 Anthropic sends when the credit balance is too low. NOT on a 5xx
+ *     or a 403, where the status is the more reliable witness and a marker
+ *     matched in passing would be a permanent verdict drawn from prose.
+ *  3. Whatever the status says, with the provider's wait attached when it can
+ *     still be used.
  *
  * The body is read and dropped. Nothing from it reaches the return value.
  */
@@ -393,26 +435,35 @@ export function classifyHttpFailure(
   headers?: Headers,
   now: number = Date.now()
 ): HttpFailure {
-  // A named cap beats the status code. Anthropic's out-of-credit case is a 400,
-  // which `codeForStatus` would otherwise call our bug.
-  if (matchesAny(QUOTA_MARKERS[engine], bodyText)) {
-    return { code: "quota_exceeded", retryable: false };
-  }
-
   const base = codeForStatus(status);
 
   if (base === "bad_response" && matchesAny(INVALID_KEY_MARKERS[engine], bodyText)) {
     return { code: "invalid_key", retryable: false };
   }
 
+  // A named cap beats the status code, on the two statuses a cap arrives with.
+  // Anthropic's out-of-credit case is a 400, which `codeForStatus` would
+  // otherwise call our bug.
+  if (
+    (base === "rate_limited" || base === "bad_response") &&
+    matchesAny(QUOTA_MARKERS[engine], bodyText)
+  ) {
+    return { code: "quota_exceeded", retryable: false };
+  }
+
   if (base === "rate_limited") {
     const retryAfterMs = parseRetryAfterMs(headers, bodyText, now);
-    // The provider says the wait outlasts every attempt we would make. Whatever
-    // kind of limit that is, this run cannot wait it out — and a sample that
-    // fails now is worth more than the same sample failing 90 seconds later
-    // with two more paid calls behind it.
+    // The provider says the wait outlasts every attempt we would make. This run
+    // cannot wait it out, so it does not try: a sample that fails now is worth
+    // more than the same sample failing 90 seconds later with two more paid
+    // calls behind it.
+    //
+    // Still `rate_limited`, though. This is a SCHEDULING fact — the provider
+    // told us when, and the answer is "after this run ends" — and scheduling
+    // facts are not verdicts on a credential. Nothing downstream may read it as
+    // one; `retryable: false` is the whole of what it means.
     if (retryAfterMs !== undefined && retryAfterMs > RETRY_WINDOW_MS) {
-      return { code: "quota_exceeded", retryable: false };
+      return { code: "rate_limited", retryable: false };
     }
     return { code: "rate_limited", retryable: true, ...(retryAfterMs !== undefined ? { retryAfterMs } : {}) };
   }

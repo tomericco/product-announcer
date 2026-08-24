@@ -144,9 +144,10 @@ export function sampleBackoffMs(attempts: number): number {
  *    which is the hot-loop the `nextAttemptAt` filter exists to prevent;
  *  - a CEILING of the whole ladder, so a wait this run cannot survive cannot be
  *    stamped on a row that the sweep would then keep re-reading. A provider
- *    asking for longer than that is classified `quota_exceeded` and terminal
- *    upstream, in `classifyHttpFailure` — this clamp is the backstop for a
- *    client that sets `retryAfterMs` without going through it.
+ *    asking for longer than that is returned TERMINAL upstream, in
+ *    `classifyHttpFailure` — still `rate_limited`, because the key is fine, but
+ *    with no `retryable` and so no next attempt to schedule. This clamp is the
+ *    backstop for a client that sets `retryAfterMs` without going through it.
  */
 export function retryWaitMs(retryAfterMs: number | undefined, attempts: number): number {
   if (retryAfterMs === undefined) return sampleBackoffMs(attempts);
@@ -683,11 +684,17 @@ export async function runSlice(
           // wrong, exactly as it was before.
           //
           // A SPEND-CAP 429 is not one of those. It arrives with the same status
-          // as a throughput limit and `classifyHttpFailure` tells them apart, so
-          // it lands here as `quota_exceeded` with no `retryable` — terminal on
-          // the first attempt. Retrying it would spend three calls and 90
-          // seconds of a customer's budget to fail identically, on a cap that by
-          // definition cannot clear inside the window.
+          // as a throughput limit and `classifyHttpFailure` tells them apart by
+          // the marker the provider puts in the body, so it lands here as
+          // `quota_exceeded` with no `retryable` — terminal on the first
+          // attempt. Retrying it would spend three calls and 90 seconds of a
+          // customer's budget to fail identically, on a cap that by definition
+          // cannot clear inside the window.
+          //
+          // A throughput 429 asking for a two-minute wait is terminal for the
+          // same reason and is NOT that: it stays `rate_limited`, so the key row
+          // is left alone. Which of the two this is decides whether the tenant
+          // keeps their engine — see `isCredentialFailure`.
           //
           // The WAIT is the provider's when the provider said, and ours only
           // when it did not — see `retryWaitMs`.

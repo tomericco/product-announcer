@@ -118,17 +118,27 @@ export type EngineError = {
    * everything else; retrying a terminal failure spends real money to fail
    * identically, which is worse than the missing sample.
    *
+   * It is a SEPARATE fact from `code`, not a function of it. `code` says what
+   * went wrong and whose fault it is; this says whether another attempt inside
+   * this run is worth paying for. A `rate_limited` failure is terminal when the
+   * provider asks for a longer wait than the whole retry ladder — and it is
+   * still `rate_limited`, because the account and the key are both fine.
+   * Nothing may infer a credential verdict from a `retryable: false`.
+   *
    * RETRYABLE — the call never produced an answer and the reason is about the
    * moment rather than the request:
-   *   - `rate_limited`: a THROUGHPUT 429, and only that one
+   *   - `rate_limited`: a throughput 429 the run can still wait out
    *   - `provider_unavailable`: any 5xx, a transport failure, a dropped
    *     connection, or the 60s abort timeout
    *
-   * TERMINAL (leave undefined) — asking again produces the same outcome:
-   *   - `quota_exceeded`: a SPEND-CAP 429, or an account with no credit. Same
-   *     status code as the retryable case and the opposite remedy — Anthropic's
-   *     carries no `retry-after` and Gemini's needs a wait longer than the
-   *     whole ladder, so three attempts buy three identical failures
+   * TERMINAL (leave undefined) — this run gains nothing by asking again:
+   *   - `quota_exceeded`: a spend-cap 429 that NAMED itself, or an account with
+   *     no credit. Anthropic's carries no `retry-after` and identifies itself by
+   *     error code; OpenAI's says `insufficient_quota`. This code is a verdict
+   *     on the credential — it pauses the key — so only a published marker
+   *     reaches it
+   *   - `rate_limited` with a `retry-after` longer than the ladder: the wait
+   *     outlasts every attempt this run would make, and the key is untouched
    *   - `invalid_key`: 401/403, a missing key, or a body naming the key
    *   - `bad_response`: 404 (bad model id), 400 (a request we built wrong)
    *   - `kind: "refused"` — the model read the prompt and declined; that IS the
@@ -150,9 +160,11 @@ export type EngineError = {
    * "might be enforced as 1 request per second" and no fixed ladder of ours can
    * know that.
    *
-   * Never longer than the whole ladder: a provider asking for more than that is
-   * classified `quota_exceeded` and terminal instead, because a run cannot wait
-   * it out.
+   * Never longer than the whole ladder: a provider asking for more than that
+   * has said the run cannot wait it out, so the failure comes back terminal
+   * (`retryable` unset) and this field is dropped with the attempt it would
+   * have scheduled. The CODE is unchanged by that — a slow rate limit is still
+   * a rate limit.
    */
   retryAfterMs?: number;
 };
