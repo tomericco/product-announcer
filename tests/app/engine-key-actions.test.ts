@@ -62,6 +62,16 @@ import {
 } from "../../src/app/(dashboard)/settings/engine-key-actions";
 
 const GOOD_KEY = "sk-proj-a-perfectly-good-key-7f4A";
+const ALL_ENGINES = ["openai", "gemini", "anthropic"];
+
+/** The engine list a run would read — the stored one, not a literal. */
+async function settingsEngines(): Promise<string[]> {
+  const [row] = await db
+    .select({ engines: aiVisibilitySettings.engines })
+    .from(aiVisibilitySettings)
+    .where(eq(aiVisibilitySettings.tenantId, currentTenantId));
+  return row?.engines ?? ALL_ENGINES;
+}
 
 function saveForm(engine: string, key: string): FormData {
   const data = new FormData();
@@ -346,6 +356,70 @@ describe("toggleEngineKeyAction", () => {
     expect((await toggleEngineKeyAction("openai", true)).ok).toBe(true);
 
     expect(await effectiveEngines(currentTenantId, ["openai", "gemini"])).toEqual(["openai"]);
+  });
+});
+
+describe("saving a key puts its engine back on the settings row", () => {
+  it("re-adding a removed key measures again, rather than silently never running", async () => {
+    // THE REGRESSION, in the order a person does it: remove ChatGPT, change
+    // your mind, paste a new ChatGPT key.
+    //
+    // `removeEngineKey` drops the engine from `settings.engines`, and
+    // `effectiveEngines` is the INTERSECTION of that list with the usable keys.
+    // `storeEngineKey` used to write only the key, so the second paste rendered
+    // a green Verified badge over a switch that was on, quoted a per-run price,
+    // and was never sampled. Nothing on any screen said why — the settings list
+    // is not a control the card shows.
+    await seedEngineKey(currentTenantId, "openai");
+    await db.insert(aiVisibilitySettings).values({
+      tenantId: currentTenantId,
+      engines: ["openai", "gemini", "anthropic"],
+    });
+    await seedEngineKey(currentTenantId, "gemini");
+
+    expect((await removeEngineKeyAction("openai")).ok).toBe(true);
+    expect(await settingsEngines()).toEqual(["gemini", "anthropic"]);
+
+    expect((await saveEngineKeyAction(saveForm("openai", GOOD_KEY))).ok).toBe(true);
+
+    // The settings row names it again…
+    expect(await settingsEngines()).toEqual(expect.arrayContaining(["openai", "gemini"]));
+    // …which is what makes the intersection a run actually plans include it.
+    // Read through the stored list, exactly as `planRun` and the overview page
+    // read it — passing a literal here would test nothing.
+    // Sorted: `effectiveEngines` preserves the settings row's own order, and a
+    // re-added engine lands at the end of it. The pages sort by
+    // `ENGINE_ORDER`, so the ORDER here is not a fact worth pinning.
+    expect((await effectiveEngines(currentTenantId, await settingsEngines())).sort()).toEqual([
+      "gemini",
+      "openai",
+    ]);
+  });
+
+  it("adds the engine for any tenant whose settings row is a strict subset", async () => {
+    // Not only the remove-then-re-add path. A tenant who switched ChatGPT off
+    // in the settings form that shipped before BYOK has the same row, and the
+    // control that could put it back no longer exists.
+    await db.insert(aiVisibilitySettings).values({ tenantId: currentTenantId, engines: ["gemini"] });
+
+    expect((await saveEngineKeyAction(saveForm("openai", GOOD_KEY))).ok).toBe(true);
+
+    expect(await settingsEngines()).toEqual(expect.arrayContaining(["openai", "gemini"]));
+    expect(await effectiveEngines(currentTenantId, await settingsEngines())).toEqual(["openai"]);
+  });
+
+  it("leaves a tenant on the defaults alone — they already name all three", async () => {
+    // No settings row means the defaults apply, and those name every engine.
+    // Materialising a row here would be a write with nothing to say.
+    expect((await saveEngineKeyAction(saveForm("openai", GOOD_KEY))).ok).toBe(true);
+
+    expect(
+      await db
+        .select()
+        .from(aiVisibilitySettings)
+        .where(eq(aiVisibilitySettings.tenantId, currentTenantId))
+    ).toEqual([]);
+    expect(await effectiveEngines(currentTenantId, ALL_ENGINES)).toEqual(["openai"]);
   });
 });
 

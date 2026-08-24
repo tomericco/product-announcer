@@ -324,6 +324,17 @@ export async function recordEngineKeyEvent(
  * Storing always sets `enabled: true` and `status: "verified"`: the only way
  * here is a key that just answered a real grounded call, and a tenant who
  * pastes a replacement for a rejected key means to use it.
+ *
+ * And it puts the engine back on `ai_visibility_settings.engines`, in the same
+ * transaction — the mirror of what `removeEngineKey` and `setEngineKeyEnabled`
+ * already do, and it was the missing third. `effectiveEngines` is the
+ * INTERSECTION of that list with the usable keys, so without this write the
+ * sequence "remove ChatGPT, change your mind, paste a new ChatGPT key" left the
+ * card rendering a green Verified badge over a switch that was on, quoting a
+ * per-run price, for an engine that was never sampled again. Nothing on any
+ * screen could explain it, because the settings list is not a control the card
+ * shows. Same hole for any tenant whose `engines` was a strict subset for any
+ * other reason — an old settings form, a hand-edited row.
  */
 export async function storeEngineKey(
   entry: {
@@ -364,22 +375,29 @@ export async function storeEngineKey(
     lastFailureAt: null,
   };
 
-  await database
-    .insert(aiVisibilityEngineKeys)
-    .values({
-      tenantId: entry.tenantId,
-      engine: entry.engine,
-      createdByUserId: entry.actorUserId,
-      ...values,
-    })
-    .onConflictDoUpdate({
-      target: [aiVisibilityEngineKeys.tenantId, aiVisibilityEngineKeys.engine],
-      // `createdByUserId` and `createdAt` are NOT overwritten: they are the
-      // provenance of the row, and a replacement is a new key on the same row
-      // rather than a new relationship with the provider. The audit trail
-      // carries who replaced it and when.
-      set: values,
-    });
+  await database.transaction(async (tx) => {
+    await tx
+      .insert(aiVisibilityEngineKeys)
+      .values({
+        tenantId: entry.tenantId,
+        engine: entry.engine,
+        createdByUserId: entry.actorUserId,
+        ...values,
+      })
+      .onConflictDoUpdate({
+        target: [aiVisibilityEngineKeys.tenantId, aiVisibilityEngineKeys.engine],
+        // `createdByUserId` and `createdAt` are NOT overwritten: they are the
+        // provenance of the row, and a replacement is a new key on the same row
+        // rather than a new relationship with the provider. The audit trail
+        // carries who replaced it and when.
+        set: values,
+      });
+    // Both halves or neither, exactly as removal is. A stored key beside a
+    // settings row that does not name its engine is the same contradiction as a
+    // removed key beside one that does — it just fails silently instead of
+    // loudly.
+    await syncSettingsEngine(tx, entry.tenantId, entry.engine, true);
+  });
 
   await recordEngineKeyEvent(
     {
@@ -684,8 +702,9 @@ export async function removeEngineKey(
  * fully-explained state that the /ai-visibility page has its own empty state
  * for. Removing your last key must not be refused as invalid input.
  *
- * Takes the transaction as an argument so both callers get atomicity with the
- * key write beside it.
+ * Takes the transaction as an argument so every caller gets atomicity with the
+ * key write beside it. There are three — store, switch, remove — and that is
+ * the whole set of writes that can change whether an engine is measurable.
  */
 async function syncSettingsEngine(
   tx: Parameters<Parameters<typeof defaultDb.transaction>[0]>[0],
