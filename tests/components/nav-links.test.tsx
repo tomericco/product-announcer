@@ -26,7 +26,18 @@ beforeEach(() => usePathname.mockReturnValue("/signals"));
 
 // Every route in the sidebar, so "no other entry shows the count" is checked
 // against all of them rather than a hand-picked neighbour.
-const HREFS = ["/signals", "/ai-visibility", "/board", "/calendar", "/images", "/history", "/integrations", "/company"];
+const HREFS = [
+  "/signals",
+  "/board",
+  "/calendar",
+  "/history",
+  "/images",
+  "/ai-visibility",
+  "/ai-visibility/prompts",
+  "/company",
+  "/integrations",
+  "/settings",
+];
 
 function linkFor(container: HTMLElement, href: string) {
   const link = container.querySelector(`a[href="${href}"]`);
@@ -103,5 +114,70 @@ describe("NavLinks Company sections — auto expand/collapse, no independent tog
     for (const link of sectionLinks) {
       expect((link as HTMLAnchorElement).getAttribute("href")).toMatch(/^\/company#/);
     }
+  });
+});
+
+describe("NavLinks grouping", () => {
+  it("renders the three group headings, in frequency order", () => {
+    const { container } = render(<NavLinks boardCount={0} />);
+
+    const headings = Array.from(container.querySelectorAll("nav > div > div:first-child")).map(
+      (node) => node.textContent
+    );
+    expect(headings).toEqual(["Content", "AI visibility", "Workspace"]);
+  });
+
+  it("puts every nav link inside a group — nothing is left ungrouped", () => {
+    const { container } = render(<NavLinks boardCount={0} />);
+
+    // Each group is a direct child of <nav>; a link that escaped grouping
+    // would sit outside all of them.
+    const groups = Array.from(container.querySelectorAll("nav > div"));
+    const grouped = new Set(groups.flatMap((group) => Array.from(group.querySelectorAll("a"))));
+    for (const link of Array.from(container.querySelectorAll("a"))) {
+      expect(grouped.has(link), `${link.getAttribute("href")} is outside every group`).toBe(true);
+    }
+  });
+
+  it("reaches Settings from the nav rather than only from the workspace menu", () => {
+    const { container } = render(<NavLinks boardCount={0} />);
+
+    expect(linkFor(container, "/settings").textContent).toContain("Settings");
+  });
+});
+
+describe("NavLinks active item — most specific href wins", () => {
+  function activeHrefs(container: HTMLElement) {
+    return Array.from(container.querySelectorAll('a[aria-current="page"]')).map((link) =>
+      link.getAttribute("href")
+    );
+  }
+
+  it("tints Prompts alone at /ai-visibility/prompts, not its Overview prefix", () => {
+    usePathname.mockReturnValue("/ai-visibility/prompts");
+    const { container } = render(<NavLinks boardCount={0} />);
+
+    expect(activeHrefs(container)).toEqual(["/ai-visibility/prompts"]);
+  });
+
+  it("tints Overview at /ai-visibility itself", () => {
+    usePathname.mockReturnValue("/ai-visibility");
+    const { container } = render(<NavLinks boardCount={0} />);
+
+    expect(activeHrefs(container)).toEqual(["/ai-visibility"]);
+  });
+
+  it("still holds a parent active for a nested route that has no nav entry", () => {
+    usePathname.mockReturnValue("/board/some-brief");
+    const { container } = render(<NavLinks boardCount={0} />);
+
+    expect(activeHrefs(container)).toEqual(["/board"]);
+  });
+
+  it("tints nothing on a route outside the nav", () => {
+    usePathname.mockReturnValue("/onboarding");
+    const { container } = render(<NavLinks boardCount={0} />);
+
+    expect(activeHrefs(container)).toEqual([]);
   });
 });

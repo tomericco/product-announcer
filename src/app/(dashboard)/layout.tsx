@@ -1,20 +1,11 @@
-import { UnsavedChangesProvider, GuardedLink } from "./unsaved-changes";
+import { UnsavedChangesProvider } from "./unsaved-changes";
 import { eq } from "drizzle-orm";
 import { redirect } from "next/navigation";
-import { ChevronsUpDown } from "lucide-react";
 import { db } from "@/db";
 import { tenants } from "@/db/schema";
 import { readBoardNavCount } from "@/lib/content/board";
 import { requireSession } from "@/lib/workspace/session";
 import { isOnboardingComplete } from "@/lib/workspace/onboarding";
-import { Button } from "@/components/ui/button";
-import { Separator } from "@/components/ui/separator";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { NavLinks } from "./nav-links";
 import { UserMenu } from "./user-menu";
 import { Logo } from "@/components/brand/logo";
@@ -39,17 +30,14 @@ export default async function DashboardLayout({ children }: { children: React.Re
           <Logo />
         </div>
 
-        <DropdownMenu>
-          <DropdownMenuTrigger render={<Button variant="ghost" className="w-full justify-between font-semibold" />}>
-            {tenant?.name ?? "Workspace"}
-            <ChevronsUpDown className="size-4 text-muted-foreground" />
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className="w-[13rem]">
-            <DropdownMenuItem render={<GuardedLink href="/settings" />}>Settings</DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-
-        <Separator className="my-2" />
+        {/* Plain label, not a menu. Its only item was Settings, which now sits
+            in the nav's Workspace group next to Integrations — a menu holding
+            a link that is already one scroll below it is just a second place
+            to look. Becomes a trigger again the day there is more than one
+            workspace to switch between. */}
+        <div className="mb-3 truncate px-3 py-1.5 font-semibold" title={tenant?.name ?? undefined}>
+          {tenant?.name ?? "Workspace"}
+        </div>
 
         <NavLinks boardCount={boardCount} />
 
