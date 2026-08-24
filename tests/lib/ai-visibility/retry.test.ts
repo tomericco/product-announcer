@@ -20,7 +20,7 @@ import {
   RETRY_WINDOW_MS,
   engineFailureMessage,
 } from "../../../src/lib/ai-visibility/engines/failure";
-import { seedTenant, dropTenant } from "../../helpers/fixtures";
+import { seedTenant, dropTenant, seedEngineKey } from "../../helpers/fixtures";
 
 /**
  * Retrying a transient engine failure.
@@ -113,6 +113,9 @@ async function plannedOneSample(samplesPerPrompt = 1) {
     samplesPerPrompt,
     monthlyCapUsd: 20,
   });
+  // BYOK: without a verified key `planRun` refuses with `no_engines`, so every
+  // run fixture seeds one. The key is a fake and is never asserted on here.
+  await seedEngineKey(tenant.id, "openai");
   await db.insert(aiVisibilityPrompts).values({
     tenantId: tenant.id,
     text: "best issue tracker for startups",

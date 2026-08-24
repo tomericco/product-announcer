@@ -2,6 +2,7 @@ import {
   asArray,
   isRecord,
   ENGINE_REQUEST_TIMEOUT_MS,
+  resolveEngineKey,
 } from "@/lib/ai-visibility/engines/shape";
 import {
   classifyHttpFailure,
@@ -126,15 +127,30 @@ function sanitizeRaw(raw: GeminiResponse): GeminiResponse {
   };
 }
 
+/**
+ * The KEY IS AN ARGUMENT, not an environment read.
+ *
+ * Under BYOK the call is billed to the tenant's own Google account, so the
+ * credential travels with the request rather than being ambient. `runSlice`
+ * resolves it from `ai_visibility_engine_keys` and always passes one; an engine
+ * whose stored key is missing, switched off, rejected or undecryptable is never
+ * asked, which is what makes "no fallback to our keys" a property of the code
+ * rather than a promise in a doc.
+ *
+ * `deps.apiKey` being ABSENT falls back to `GEMINI_API_KEY` — local development
+ * only, and the run path never takes that branch. An explicitly EMPTY
+ * `apiKey` does not fall back; it fails, because a caller that resolved a key
+ * and got nothing must not quietly spend our money instead.
+ */
 export async function askGemini(
   prompt: string,
-  deps: { fetchImpl?: typeof fetch } = {}
+  deps: { fetchImpl?: typeof fetch; apiKey?: string } = {}
 ): Promise<EngineAnswer | EngineError> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey || apiKey.trim().length === 0) {
+  const apiKey = resolveEngineKey("gemini", deps.apiKey);
+  if (apiKey === null) {
     // See the note in `openai.ts`: a missing key and a rejected key have the
     // same remedy, and the decryption-failure state belongs to the keys table.
-    return engineFailure("gemini", "invalid_key", { detail: "no key configured" });
+    return engineFailure("gemini", "invalid_key", { detail: "no key supplied" });
   }
   const fetchImpl = deps.fetchImpl ?? fetch;
   const model = process.env.AI_VISIBILITY_GEMINI_MODEL ?? GEMINI_DEFAULT_MODEL;

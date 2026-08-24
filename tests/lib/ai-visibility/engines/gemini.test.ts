@@ -85,7 +85,7 @@ describe("askGemini", () => {
     expect(await askGemini("x", { fetchImpl: unused as never })).toEqual({
       kind: "error",
       code: "invalid_key",
-      message: expect.stringContaining("no key configured"),
+      message: expect.stringContaining("no key supplied"),
     });
     expect(unused).not.toHaveBeenCalled();
 
@@ -188,7 +188,7 @@ describe("askGemini, the remaining error paths and extraction edges", () => {
     expect(await askGemini("x", { fetchImpl: fetchImpl as never })).toEqual({
       kind: "error",
       code: "invalid_key",
-      message: expect.stringContaining("no key configured"),
+      message: expect.stringContaining("no key supplied"),
     });
     expect(fetchImpl).not.toHaveBeenCalled();
   });

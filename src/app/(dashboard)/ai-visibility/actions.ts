@@ -323,10 +323,12 @@ export async function deletePromptAction(promptId: unknown): Promise<ActionResul
  * function's job is turning each `reason` into a sentence a human can act on —
  * and, on success, driving the run it just planned.
  *
- * There is no `no_engines` arm to translate: `getAiVisibilitySettings`
- * substitutes the full engine list for an empty one, so `planRun`'s refusal
- * union does not contain it and a branch here would be a state the UI can
- * never reach.
+ * `no_engines` IS a reachable refusal under BYOK, and on ship day it is the
+ * common one: `effectiveEngines` intersects the tenant's chosen engines with
+ * the engines holding a verified key of their own and — unlike
+ * `normalizeSettingsRow` — does not fall back to all three when that is empty.
+ * The page renders its own empty state for this, so a reader normally never
+ * meets the sentence below; it is here for the stale tab that clicks anyway.
  *
  * The run id this drives is the one `planRun` just created FOR THIS SESSION'S
  * TENANT — it is never read from a request, a form field or a URL, which is
@@ -350,6 +352,11 @@ export async function runNowAction(): Promise<ActionResult<{ runId: string }>> {
     switch (planned.reason) {
       case "disabled":
         return { ok: false, error: "AI visibility is off — turn it on in Company." };
+      case "no_engines":
+        return {
+          ok: false,
+          error: "No AI engine keys connected — add one in Settings to start measuring.",
+        };
       case "no_prompts":
         return { ok: false, error: "Approve some prompts first." };
       case "run_in_flight":

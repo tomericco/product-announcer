@@ -161,7 +161,23 @@ export type EngineClient = {
   id: EngineId;
   /** e.g. "GPT-5.x API + web search". Carries "API" on purpose — see the spec's trust cues. */
   label: string;
-  ask(prompt: string, deps?: { fetchImpl?: typeof fetch }): Promise<EngineAnswer | EngineError>;
+  /**
+   * `apiKey` is the TENANT's key — BYOK, design "Data": "`askOpenAI`/`askGemini`/
+   * `askAnthropic` take the key as an argument instead of reading
+   * `process.env`. Env keys remain for local development only."
+   *
+   * Optional in the TYPE and mandatory in PRACTICE on the run path: `runSlice`
+   * resolves a key per engine before it asks anything, and an engine with no
+   * usable stored key has its samples failed rather than asked. Leaving it out
+   * falls back to the local-dev env var (see `resolveEngineKey`), which is what
+   * keeps a client callable from a script; passing an empty string does not
+   * fall back, so a caller that resolved a key and got nothing cannot silently
+   * spend ours.
+   */
+  ask(
+    prompt: string,
+    deps?: { fetchImpl?: typeof fetch; apiKey?: string }
+  ): Promise<EngineAnswer | EngineError>;
 };
 
 export type BrandHit = { brandId: string; name: string; isTenant: boolean };

@@ -124,6 +124,39 @@ export function engineFailureMessage(engine: EngineId, code: EngineFailureCode):
 }
 
 /**
+ * The sentence for a sample that was never ASKED, because the workspace has no
+ * usable key for its engine.
+ *
+ * A separate sentence from `engineFailureMessage("invalid_key")` on purpose:
+ * that one says the provider rejected a key, and here no provider was
+ * contacted. Telling a tenant that ChatGPT rejected a key they never pasted is
+ * the same class of lie as Zed's "invalid or has expired" over a keychain
+ * failure, and it sends them to fix the wrong thing.
+ *
+ * The four reasons get four remedies, which is Decision 4's rule applied to
+ * this layer — `unreadable` above all must not collapse into "your key is
+ * wrong", because the fault is in OUR key material and no key they paste will
+ * help until we fix it.
+ */
+export function engineKeyFailureMessage(
+  engine: string,
+  reason: "missing" | "disabled" | "unusable" | "unreadable"
+): string {
+  const voice = ENGINE_VOICE[engine as EngineId];
+  const product = voice?.product ?? engine;
+  switch (reason) {
+    case "missing":
+      return `No ${product} key is connected for this workspace, so this answer was not collected. Connect one in AI-visibility settings.`;
+    case "disabled":
+      return `The ${product} key is saved but switched off, so this answer was not collected.`;
+    case "unusable":
+      return `The ${product} key needs attention before it can be used again — see its status in AI-visibility settings.`;
+    case "unreadable":
+      return `This workspace's stored ${product} key could not be read. That is a fault on our side, not with your key — the key itself is fine, and re-pasting it will not help until we fix it.`;
+  }
+}
+
+/**
  * Builds the `EngineError` a client returns.
  *
  * The ONLY constructor clients use, so "no provider text leaves here" is one

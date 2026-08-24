@@ -114,7 +114,7 @@ describe("askAnthropic", () => {
     expect(await askAnthropic("x", { fetchImpl: unused as never })).toEqual({
       kind: "error",
       code: "invalid_key",
-      message: expect.stringContaining("no key configured"),
+      message: expect.stringContaining("no key supplied"),
     });
     expect(unused).not.toHaveBeenCalled();
 
@@ -297,7 +297,7 @@ describe("askAnthropic, the remaining error paths and extraction edges", () => {
     expect(await askAnthropic("x", { fetchImpl: fetchImpl as never })).toEqual({
       kind: "error",
       code: "invalid_key",
-      message: expect.stringContaining("no key configured"),
+      message: expect.stringContaining("no key supplied"),
     });
     expect(fetchImpl).not.toHaveBeenCalled();
   });

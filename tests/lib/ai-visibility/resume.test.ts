@@ -16,7 +16,7 @@ import {
   runIsStalled,
   type RunSliceResult,
 } from "../../../src/lib/ai-visibility/run";
-import { seedTenant, dropTenant } from "../../helpers/fixtures";
+import { seedTenant, dropTenant, seedEngineKey } from "../../helpers/fixtures";
 
 /**
  * Resuming a stalled run.
@@ -82,6 +82,9 @@ async function plannedRun(samplesPerPrompt = 3) {
     samplesPerPrompt,
     monthlyCapUsd: 20,
   });
+  // BYOK: without a verified key `planRun` refuses with `no_engines`, so every
+  // run fixture seeds one. The key is a fake and is never asserted on here.
+  await seedEngineKey(tenant.id, "openai");
   await db.insert(aiVisibilityPrompts).values({
     tenantId: tenant.id,
     text: "best issue tracker for startups",
@@ -241,6 +244,7 @@ describe("findResumableRun", () => {
       samplesPerPrompt: 3,
       monthlyCapUsd: 20,
     });
+    await seedEngineKey(tenant.id, "openai");
     await db.insert(aiVisibilityPrompts).values({
       tenantId: tenant.id,
       text: "best issue tracker for startups",

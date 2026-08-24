@@ -179,7 +179,7 @@ describe("askOpenAi", () => {
     expect(await askOpenAi("x", { fetchImpl: fetchImpl as never })).toEqual({
       kind: "error",
       code: "invalid_key",
-      message: expect.stringContaining("no key configured"),
+      message: expect.stringContaining("no key supplied"),
     });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
@@ -314,7 +314,7 @@ describe("askOpenAi, the remaining error paths and extraction edges", () => {
     expect(await askOpenAi("x", { fetchImpl: fetchImpl as never })).toEqual({
       kind: "error",
       code: "invalid_key",
-      message: expect.stringContaining("no key configured"),
+      message: expect.stringContaining("no key supplied"),
     });
     expect(fetchImpl).not.toHaveBeenCalled();
   });

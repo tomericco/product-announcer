@@ -12,7 +12,7 @@ import { askOpenAi } from "../../../src/lib/ai-visibility/engines/openai";
 import { askAnthropic } from "../../../src/lib/ai-visibility/engines/anthropic";
 import { finalizeRun, planRun, runSlice } from "../../../src/lib/ai-visibility/run";
 import type { EngineClient } from "../../../src/lib/ai-visibility/types";
-import { seedTenant, dropTenant } from "../../helpers/fixtures";
+import { seedTenant, dropTenant, seedEngineKey } from "../../helpers/fixtures";
 
 /**
  * A provider's error body must not survive into the database.
@@ -83,6 +83,10 @@ async function plannedRun(engine: "openai" | "anthropic") {
     samplesPerPrompt: 1,
     monthlyCapUsd: 20,
   });
+  // BYOK: a tenant with no verified key plans nothing at all, so every run
+  // test now seeds one. The key here is a fake — the assertions below are
+  // about the PROVIDER's body leaking, not this string.
+  await seedEngineKey(tenant.id, engine);
   await db.insert(aiVisibilityPrompts).values({
     tenantId: tenant.id,
     text: "best issue tracker for startups",

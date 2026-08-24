@@ -2,6 +2,7 @@ import {
   asArray,
   isRecord,
   ENGINE_REQUEST_TIMEOUT_MS,
+  resolveEngineKey,
 } from "@/lib/ai-visibility/engines/shape";
 import {
   classifyHttpFailure,
@@ -117,17 +118,33 @@ function sanitizeRaw(raw: OpenAiResponse): OpenAiResponse {
   };
 }
 
+/**
+ * The KEY IS AN ARGUMENT, not an environment read.
+ *
+ * Under BYOK the call is billed to the tenant's own OpenAI account, so the
+ * credential travels with the request rather than being ambient. `runSlice`
+ * resolves it from `ai_visibility_engine_keys` and always passes one; an engine
+ * whose stored key is missing, switched off, rejected or undecryptable is never
+ * asked, which is what makes "no fallback to our keys" a property of the code
+ * rather than a promise in a doc.
+ *
+ * `deps.apiKey` being ABSENT falls back to `OPENAI_API_KEY` — local development
+ * only, and the run path never takes that branch. An explicitly EMPTY
+ * `apiKey` does not fall back; it fails, because a caller that resolved a key
+ * and got nothing must not quietly spend our money instead.
+ */
 export async function askOpenAi(
   prompt: string,
-  deps: { fetchImpl?: typeof fetch } = {}
+  deps: { fetchImpl?: typeof fetch; apiKey?: string } = {}
 ): Promise<EngineAnswer | EngineError> {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey || apiKey.trim().length === 0) {
-    // No key configured is `invalid_key` rather than a code of its own: from
-    // the tenant's side the remedy is identical (supply a working key), and the
-    // design's fifth state — a stored key we could not DECRYPT — belongs to the
-    // engine-keys table, which does not exist yet. Add it there, not here.
-    return engineFailure("openai", "invalid_key", { detail: "no key configured" });
+  const apiKey = resolveEngineKey("openai", deps.apiKey);
+  if (apiKey === null) {
+    // No key to send is `invalid_key` rather than a code of its own: from the
+    // tenant's side the remedy is identical (supply a working key). The
+    // design's fifth state — a stored key we could not DECRYPT — belongs to
+    // `ai_visibility_engine_keys` and is decided before this function is
+    // reached; a client cannot tell the two apart from here.
+    return engineFailure("openai", "invalid_key", { detail: "no key supplied" });
   }
   const fetchImpl = deps.fetchImpl ?? fetch;
   const model = process.env.AI_VISIBILITY_OPENAI_MODEL ?? OPENAI_DEFAULT_MODEL;

@@ -150,6 +150,13 @@ function refusalMessage(refusal: PlanRunRefusal): string {
   switch (refusal.reason) {
     case "disabled":
       return "AI visibility is turned off for this workspace.";
+    case "no_engines":
+      // The BYOK hard gate, and on ship day this is EVERY tenant: three
+      // engines switched on, no keys connected. Recorded on the source so the
+      // health block says why nothing happened, rather than sitting green and
+      // silent — which, with no vendor-key fallback, is the failure mode this
+      // sentence exists to catch.
+      return "No AI engine keys connected — connect one in AI-visibility settings to start measuring.";
     case "no_prompts":
       return "No active prompts — approve a prompt set to start measuring.";
     case "run_in_flight":
