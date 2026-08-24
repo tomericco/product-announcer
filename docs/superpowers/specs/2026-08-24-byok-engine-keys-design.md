@@ -1,7 +1,7 @@
 # Bring Your Own Keys — Design
 
 **Date:** 2026-08-24
-**Status:** Draft — for review
+**Status:** Approved (hard gate confirmed — no vendor-key fallback)
 **Amends:** `2026-08-19-ai-visibility-design.md` ("Engines", "Cost & cap")
 
 ## Summary
