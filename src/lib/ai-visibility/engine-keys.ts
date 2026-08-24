@@ -7,6 +7,7 @@ import {
   users,
 } from "@/db/schema";
 import { decryptSecret, encryptSecret } from "@/lib/credentials/encryption";
+import { scrubError } from "@/lib/ai-visibility/scrub";
 import { ENGINE_IDS, type EngineId } from "@/lib/ai-visibility/types";
 
 /**
@@ -293,8 +294,12 @@ export async function loadEngineKeySecret(
   } catch (error) {
     // The error itself, never the key. `decryptSecret`'s throw carries no
     // plaintext (GCM fails before producing any), but the caller's log is the
-    // durable copy and this is the last place that is true.
-    console.error(`[ai-visibility] could not decrypt ${engine} key for tenant ${tenantId}:`, error);
+    // durable copy and this is the last place that is true — so it goes through
+    // the scrubber as a string rather than as an object the console formats
+    // past it.
+    console.error(
+      `[ai-visibility] could not decrypt ${engine} key for tenant ${tenantId}: ${scrubError(error)}`
+    );
     return { ok: false, reason: "unreadable" };
   }
 }

@@ -10,6 +10,8 @@ import {
 } from "../../../src/db/schema";
 import { askOpenAi } from "../../../src/lib/ai-visibility/engines/openai";
 import { askAnthropic } from "../../../src/lib/ai-visibility/engines/anthropic";
+import { probeEngineKey } from "../../../src/lib/ai-visibility/engines/verify";
+import { REDACTED } from "../../../src/lib/ai-visibility/scrub";
 import { judgeRun } from "../../../src/lib/ai-visibility/judge";
 import { finalizeRun, planRun, runSlice } from "../../../src/lib/ai-visibility/run";
 import type { EngineClient } from "../../../src/lib/ai-visibility/types";
@@ -298,6 +300,55 @@ describe("a provider error body never reaches storage", () => {
  * covered by the BYOK tests and the reason it matters anyway: our key leaking
  * into a page every member of every workspace can open is the same CWE-209.
  */
+/**
+ * The LOG is the durable copy, and it outlives the row.
+ *
+ * Three call sites carried a comment saying the error was logged "scrubbed"
+ * and then handed the raw `Error` to `console.error`, which formats the object
+ * itself — the scrubber never saw it. On a transport failure that object can
+ * carry the request that failed, and under BYOK that request has the tenant's
+ * key in a header.
+ */
+describe("the server log is scrubbed too", () => {
+  /** A `fetch` rejection shaped like the ones that carry the failed request. */
+  const throwingFetch = (key: string) =>
+    (async () => {
+      throw new Error(
+        `TypeError: fetch failed — POST https://api.openai.com/v1/responses {"authorization":"Bearer ${key}"}`
+      );
+    }) as unknown as typeof fetch;
+
+  const TENANT_KEY = "sk-proj-the-customers-own-secret-9Q2b";
+
+  /** Everything the spy was handed, as one string — arguments included. */
+  const logged = (spy: ReturnType<typeof vi.spyOn>) =>
+    spy.mock.calls.flat().map(String).join(" ");
+
+  it("keeps a transport failure's request dump out of the engine client's log", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await askOpenAi("q", { apiKey: TENANT_KEY, fetchImpl: throwingFetch(TENANT_KEY) });
+
+    expect(spy).toHaveBeenCalled();
+    expect(logged(spy)).not.toContain(TENANT_KEY);
+    expect(logged(spy)).not.toContain("sk-proj-");
+    expect(logged(spy)).toContain(REDACTED);
+    // The stack is still there — these logs are how our own bugs are found,
+    // and scrubbing is not an excuse for losing the line number.
+    expect(logged(spy)).toContain("fetch failed");
+  });
+
+  it("keeps it out of the key PROBE's log, which runs before anything is stored", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await probeEngineKey("openai", TENANT_KEY, { fetchImpl: throwingFetch(TENANT_KEY) });
+
+    expect(spy).toHaveBeenCalled();
+    expect(logged(spy)).not.toContain(TENANT_KEY);
+    expect(logged(spy)).toContain(REDACTED);
+  });
+});
+
 describe("the judge's own error path leaks nothing either", () => {
   /** What an AI SDK `APICallError` actually stringifies to. */
   const SDK_ERROR =

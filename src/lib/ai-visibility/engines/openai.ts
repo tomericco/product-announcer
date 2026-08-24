@@ -9,6 +9,7 @@ import {
   engineFailure,
   logEngineFailure,
 } from "@/lib/ai-visibility/engines/failure";
+import { scrubError } from "@/lib/ai-visibility/scrub";
 import {
   engineSystemPrompt,
   type EngineAnswer,
@@ -173,10 +174,12 @@ export async function askOpenAi(
     // Transport, or the 60s abort. Nothing reached the model, so nothing was
     // billed and the next wave may well get through — see `EngineError.retryable`.
     //
-    // `String(error)` is deliberately NOT in the returned message: a fetch
-    // failure can carry the request it failed on, and that request has an
-    // Authorization header. It goes to the server log, scrubbed, instead.
-    console.error(`[ai-visibility] openai request failed:`, error);
+    // The error is deliberately NOT in the returned message: a fetch failure
+    // can carry the request it failed on, and that request has an
+    // Authorization header. It goes to the server log, scrubbed, instead —
+    // through `scrubError`, because handing the object to `console.error`
+    // formats it without the scrubber ever seeing it.
+    console.error(`[ai-visibility] openai request failed: ${scrubError(error)}`);
     return engineFailure("openai", "provider_unavailable", {
       detail: "request never completed",
       retryable: true,

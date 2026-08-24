@@ -86,6 +86,27 @@ export function scrubSecrets(value: string): string {
 }
 
 /**
+ * A caught `unknown`, rendered as ONE scrubbed string for a log line.
+ *
+ * Exists because `console.error("…:", error)` does not go through
+ * `scrubSecrets` and cannot: the console formats the object itself, and a
+ * `fetch` rejection carries the request it failed on — headers included, which
+ * on a BYOK path is the tenant's key. Several call sites had a comment saying
+ * the error was logged "scrubbed" while handing the raw object to the console,
+ * which is the failure this function makes impossible to write by accident.
+ *
+ * The STACK is kept, not dropped. These logs are how our own bugs get
+ * diagnosed, and `String(error)` throws away the only part that says where the
+ * failure was — the whole stack goes through the scrubber instead, which is the
+ * cheaper of the two trades.
+ */
+export function scrubError(error: unknown): string {
+  const text =
+    error instanceof Error ? (error.stack ?? `${error.name}: ${error.message}`) : String(error);
+  return scrubSecrets(text);
+}
+
+/**
  * `scrubSecrets` for a value that may be null/undefined, preserving the gap.
  *
  * `sources.lastError` and `ai_visibility_samples.error` are both nullable and

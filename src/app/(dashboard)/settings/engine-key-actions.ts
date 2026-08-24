@@ -14,6 +14,7 @@ import {
   type EngineKeyView,
 } from "@/lib/ai-visibility/engine-keys";
 import { verifyEngineKey } from "@/lib/ai-visibility/engines/verify";
+import { scrubError } from "@/lib/ai-visibility/scrub";
 import { ENGINE_IDS, type EngineId } from "@/lib/ai-visibility/types";
 import { engineKeyMessage } from "./engine-key-copy";
 
@@ -113,7 +114,11 @@ export async function saveEngineKeyAction(formData: FormData): Promise<EngineKey
     // — so this is our bug rather than the tenant's. It must still not write:
     // "we could not confirm it" is the only honest outcome, and storing on a
     // crash would be storing without verifying.
-    console.error(`[ai-visibility] ${engine} key verification threw:`, error);
+    // Scrubbed, and as a string: `verifyEngineKey` is not supposed to throw at
+    // all, so whatever reaches here is unplanned — most likely a `fetch`
+    // rejection carrying the request that failed, and that request has the
+    // tenant's key in a header.
+    console.error(`[ai-visibility] ${engine} key verification threw: ${scrubError(error)}`);
     return {
       ok: false,
       error: engineKeyMessage(engine, "provider_unavailable"),
@@ -177,7 +182,7 @@ export async function recheckEngineKeyAction(engineInput: unknown): Promise<Engi
   try {
     verified = await verifyEngineKey(engine, loaded.key);
   } catch (error) {
-    console.error(`[ai-visibility] ${engine} key re-check threw:`, error);
+    console.error(`[ai-visibility] ${engine} key re-check threw: ${scrubError(error)}`);
     return {
       ok: false,
       error: engineKeyMessage(engine, "provider_unavailable"),

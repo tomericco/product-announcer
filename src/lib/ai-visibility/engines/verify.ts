@@ -7,6 +7,7 @@ import {
 import { ENGINE_REQUEST_TIMEOUT_MS } from "@/lib/ai-visibility/engines/shape";
 import { ANTHROPIC_API_VERSION } from "@/lib/ai-visibility/engines/anthropic";
 import { GEMINI_MODELS_ENDPOINT } from "@/lib/ai-visibility/engines/gemini";
+import { scrubError } from "@/lib/ai-visibility/scrub";
 import type { EngineId } from "@/lib/ai-visibility/types";
 import type { EngineKeyStatus } from "@/lib/ai-visibility/engine-keys";
 
@@ -103,10 +104,11 @@ export async function probeEngineKey(
       headers: probe.headers(apiKey),
     });
   } catch (error) {
-    // `String(error)` stays out of everything that leaves here: a fetch failure
-    // can carry the request it failed on, and that request has the key in a
-    // header. Scrubbed server log only.
-    console.error(`[ai-visibility] ${engine} key probe failed:`, error);
+    // The error stays out of everything that leaves here: a fetch failure can
+    // carry the request it failed on, and that request has the key in a header.
+    // Scrubbed server log only — through `scrubError`, because handing the
+    // object to `console.error` formats it without the scrubber ever seeing it.
+    console.error(`[ai-visibility] ${engine} key probe failed: ${scrubError(error)}`);
     return { ok: false, code: "provider_unavailable" };
   }
 

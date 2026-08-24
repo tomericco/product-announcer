@@ -9,6 +9,7 @@ import {
   engineFailure,
   logEngineFailure,
 } from "@/lib/ai-visibility/engines/failure";
+import { scrubError } from "@/lib/ai-visibility/scrub";
 import {
   engineSystemPrompt,
   type EngineAnswer,
@@ -182,7 +183,9 @@ export async function askGemini(
     // `String(error)` stays out of the returned message: a fetch failure can
     // carry the request it failed on, and that request has an `x-goog-api-key`
     // header. Scrubbed server log instead.
-    console.error(`[ai-visibility] gemini request failed:`, error);
+    // Scrubbed, and as a STRING: a fetch failure can carry the request it
+    // failed on, and that request has an `x-goog-api-key` header.
+    console.error(`[ai-visibility] gemini request failed: ${scrubError(error)}`);
     return engineFailure("gemini", "provider_unavailable", {
       detail: "request never completed",
       retryable: true,
