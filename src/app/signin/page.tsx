@@ -17,7 +17,7 @@ export default async function SignInPage({ searchParams }: { searchParams: Promi
               Sign in to Versional
             </h1>
             <p className="text-muted-foreground text-sm">
-              Once you&apos;re in, you&apos;ll see the signals worth turning into content.
+              Once you&apos;re in, you&apos;ll see the signals worth acting on — and whether it&apos;s getting you noticed.
             </p>
           </div>
         </div>

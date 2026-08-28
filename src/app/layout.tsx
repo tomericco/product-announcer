@@ -30,7 +30,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Versional | A new era for growth teams",
-  description: "Something new for growth teams. Join the waitlist.",
+  description: "A new era for growth teams. Join the waitlist to find out first.",
 };
 
 export default function RootLayout({
