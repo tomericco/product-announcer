@@ -21,7 +21,8 @@ vi.mock("../../src/lib/workspace/session", () => ({
   requireSession: vi.fn(async () => ({ user: { tenantId: currentTenantId, id: "user-1" } })),
 }));
 
-import { loadSourceEvidence, safeHttpUrl } from "../../src/app/(dashboard)/signals/source-evidence-actions";
+import { loadSourceEvidence } from "../../src/app/(dashboard)/signals/source-evidence-actions";
+import { safeHttpUrl } from "../../src/lib/signals/safe-url";
 
 let counter = 0;
 
