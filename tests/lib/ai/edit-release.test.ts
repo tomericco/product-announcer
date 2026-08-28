@@ -75,6 +75,57 @@ describe("runWholeEditForRelease", () => {
     expect(events.at(-1)).toEqual({ type: "done", updateId: release.id, body: "reviewed body" });
   });
 
+  it("records the review verdict, so a compose-time failure can be cleared by an edit", async () => {
+    // The columns were previously left at whatever the COMPOSE wrote, so a
+    // piece that failed review at compose stayed "failed" through every
+    // subsequent agent edit — including the one the failed-review notice
+    // offers to run.
+    const { user, release } = await seed();
+    await db
+      .update(contentPieces)
+      .set({ reviewStatus: "failed", reviewIssues: ["Too much jargon"] })
+      .where(eq(contentPieces.id, release.id));
+
+    const review = async (draft: { title: string; body: string }): Promise<ReviewOutcome> => ({
+      finalDraft: { title: draft.title, body: "clean body" },
+      status: "passed",
+      issues: [],
+    });
+
+    await runWholeEditForRelease(
+      { contentPieceId: release.id, instruction: "fix the jargon", fullBody: "live body", editedBy: user.id },
+      db,
+      undefined,
+      { generateEdit: async () => "generated body", review }
+    );
+
+    const row = await rowFor(release.id);
+    expect(row.reviewStatus).toBe("passed");
+    expect(row.reviewIssues).toEqual([]);
+    expect(row.reviewedAt).not.toBeNull();
+  });
+
+  it("records a still-failing verdict rather than clearing the flag optimistically", async () => {
+    const { user, release } = await seed();
+
+    const review = async (draft: { title: string; body: string }): Promise<ReviewOutcome> => ({
+      finalDraft: { title: draft.title, body: "still off-brand" },
+      status: "failed",
+      issues: ["Still too much jargon"],
+    });
+
+    await runWholeEditForRelease(
+      { contentPieceId: release.id, instruction: "fix the jargon", fullBody: "live body", editedBy: user.id },
+      db,
+      undefined,
+      { generateEdit: async () => "generated body", review }
+    );
+
+    const row = await rowFor(release.id);
+    expect(row.reviewStatus).toBe("failed");
+    expect(row.reviewIssues).toEqual(["Still too much jargon"]);
+  });
+
   it("returns null and emits an error when the content piece does not exist", async () => {
     const events: DraftProgressEvent[] = [];
     const result = await runWholeEditForRelease(
