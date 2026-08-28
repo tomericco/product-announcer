@@ -20,7 +20,7 @@ export function LandingPage() {
           Get noticed before they do.
         </h1>
         <p className="mt-4 max-w-md text-muted-foreground text-balance">
-          Something for growth teams. Coming soon.
+          A new era for growth teams...
         </p>
         <div className="mt-10">
           <WaitlistForm />
