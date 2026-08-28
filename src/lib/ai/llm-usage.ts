@@ -34,8 +34,9 @@ export type LlmOperation =
   // engine id.
   | "ai_visibility_engine"
   // Image spec §9. `illustration_plan` is a normal token row (the text model
-  // planning which images a draft needs); `image_generation` bills per image
-  // and sets `imageCount` instead of the token columns.
+  // planning which images a draft needs); `image_generation` rows carry real
+  // token usage like any text row (credits are computed from total_tokens),
+  // plus `imageCount` for the per-image count.
   | "illustration_plan"
   | "image_generation";
 

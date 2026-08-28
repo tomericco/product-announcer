@@ -135,12 +135,8 @@ export async function creditsByPeriod(
   return [...merged.values()];
 }
 
-export async function creditsByFeature(
-  tenantId: string,
-  granularity: Granularity,
-  now: Date = new Date()
-): Promise<{ feature: FeatureKey; credits: number }[]> {
-  const points = await creditsByPeriod(tenantId, granularity, now);
+/** Collapses already-fetched `creditsByPeriod` points to per-feature totals, descending. */
+export function aggregateByFeature(points: UsagePoint[]): { feature: FeatureKey; credits: number }[] {
   const totals = new Map<FeatureKey, number>();
   for (const point of points) {
     totals.set(point.feature, (totals.get(point.feature) ?? 0) + point.credits);
@@ -148,6 +144,15 @@ export async function creditsByFeature(
   return [...totals.entries()]
     .map(([feature, credits]) => ({ feature, credits }))
     .sort((a, b) => b.credits - a.credits);
+}
+
+export async function creditsByFeature(
+  tenantId: string,
+  granularity: Granularity,
+  now: Date = new Date()
+): Promise<{ feature: FeatureKey; credits: number }[]> {
+  const points = await creditsByPeriod(tenantId, granularity, now);
+  return aggregateByFeature(points);
 }
 
 export async function monthToDateCredits(tenantId: string, now: Date = new Date()): Promise<number> {

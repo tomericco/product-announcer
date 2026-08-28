@@ -87,26 +87,26 @@ export function UsageChart({
         </ChartContainer>
       )}
 
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>Feature</TableHead>
-            <TableHead className="text-right">Credits</TableHead>
-            <TableHead className="text-right">Share</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {totals.map((row) => (
-            <TableRow key={row.feature}>
-              <TableCell>{FEATURE_LABELS[row.feature]}</TableCell>
-              <TableCell className="text-right">{formatter.format(row.credits)}</TableCell>
-              <TableCell className="text-right">
-                {total === 0 ? "—" : `${Math.round((row.credits / total) * 100)}%`}
-              </TableCell>
+      {total > 0 && (
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Feature</TableHead>
+              <TableHead className="text-right">Credits</TableHead>
+              <TableHead className="text-right">Share</TableHead>
             </TableRow>
-          ))}
-        </TableBody>
-      </Table>
+          </TableHeader>
+          <TableBody>
+            {totals.map((row) => (
+              <TableRow key={row.feature}>
+                <TableCell>{FEATURE_LABELS[row.feature]}</TableCell>
+                <TableCell className="text-right">{formatter.format(row.credits)}</TableCell>
+                <TableCell className="text-right">{`${Math.round((row.credits / total) * 100)}%`}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      )}
     </div>
   );
 }

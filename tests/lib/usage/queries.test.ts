@@ -18,6 +18,7 @@ const NOW = new Date("2026-08-28T10:00:00Z"); // a Friday; ISO week starts Mon 2
 
 afterEach(async () => {
   await dropTenant(NAME);
+  await dropTenant(`${NAME} Neighbour`);
 });
 
 async function seedRow(
@@ -111,7 +112,6 @@ describe("creditsByPeriod", () => {
     await seedRow(other.id, { totalTokens: 777 });
     const points = await creditsByPeriod(tenant.id, "daily", NOW);
     expect(points).toHaveLength(0);
-    await dropTenant(`${NAME} Neighbour`);
   });
 });
 

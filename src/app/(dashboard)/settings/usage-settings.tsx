@@ -1,8 +1,8 @@
 import { requireSession } from "@/lib/workspace/session";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
+  aggregateByFeature,
   bucketKeys,
-  creditsByFeature,
   creditsByPeriod,
   monthToDateCredits,
   byokTokensByPeriod,
@@ -65,10 +65,8 @@ export async function UsageSettings() {
   const datasets = Object.fromEntries(
     await Promise.all(
       granularities.map(async (granularity) => {
-        const [points, totals] = await Promise.all([
-          creditsByPeriod(tenantId, granularity, now),
-          creditsByFeature(tenantId, granularity, now),
-        ]);
+        const points = await creditsByPeriod(tenantId, granularity, now);
+        const totals = aggregateByFeature(points);
         return [granularity, { rows: toRows(granularity, points, now), totals }];
       })
     )
@@ -79,6 +77,11 @@ export async function UsageSettings() {
     granularities.flatMap((g) => datasets[g].totals.map((t) => t.feature))
   );
   const features = FEATURE_ORDER.filter((feature) => present.has(feature));
+
+  const byokBuckets = bucketKeys("monthly", now).map((key) => ({
+    key,
+    label: bucketLabel("monthly", key),
+  }));
 
   return (
     <div className="space-y-8">
@@ -105,7 +108,7 @@ export async function UsageSettings() {
           <CardTitle>Your own API keys (AI visibility sweeps)</CardTitle>
         </CardHeader>
         <CardContent>
-          <ByokUsageChart monthToDate={byokMtd} points={byokMonthly} />
+          <ByokUsageChart monthToDate={byokMtd} points={byokMonthly} buckets={byokBuckets} />
         </CardContent>
       </Card>
     </div>

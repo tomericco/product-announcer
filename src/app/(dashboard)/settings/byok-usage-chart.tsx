@@ -16,7 +16,16 @@ const ENGINE_ORDER = ["GPT", "Gemini", "Claude"] as const;
  * sentence is rendered, not just documented, because the distinction is the
  * whole reason this card is separate.
  */
-export function ByokUsageChart({ monthToDate, points }: { monthToDate: number; points: ByokPoint[] }) {
+export function ByokUsageChart({
+  monthToDate,
+  points,
+  buckets,
+}: {
+  monthToDate: number;
+  points: ByokPoint[];
+  /** Monthly bucket skeleton (key + display label), zero-filled so sparse months don't collapse into adjacent bars. */
+  buckets: { key: string; label: string }[];
+}) {
   // Order-preserving dedupe: known engines first (in ENGINE_ORDER), then unknowns
   const engineSet = new Set(points.map((p) => p.engine));
   const engines: string[] = [
@@ -24,10 +33,9 @@ export function ByokUsageChart({ monthToDate, points }: { monthToDate: number; p
     ...Array.from(engineSet).filter((e) => !ENGINE_ORDER.includes(e as (typeof ENGINE_ORDER)[number])),
   ];
 
-  const buckets = [...new Set(points.map((p) => p.bucket))].sort();
-  const rows = buckets.map((bucket) => {
-    const row: Record<string, number | string> = { bucket };
-    for (const point of points.filter((p) => p.bucket === bucket)) {
+  const rows = buckets.map(({ key, label }) => {
+    const row: Record<string, number | string> = { bucket: key, label };
+    for (const point of points.filter((p) => p.bucket === key)) {
       row[point.engine] = ((row[point.engine] as number) ?? 0) + point.tokens;
     }
     return row;
@@ -54,7 +62,7 @@ export function ByokUsageChart({ monthToDate, points }: { monthToDate: number; p
       ) : (
         <ChartContainer config={config} className="h-40 w-full">
           <BarChart data={rows} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
-            <XAxis dataKey="bucket" tickLine={false} axisLine={false} tickMargin={8} />
+            <XAxis dataKey="label" tickLine={false} axisLine={false} tickMargin={8} />
             <YAxis tickFormatter={(v: number) => formatter.format(v)} tickLine={false} axisLine={false} width={64} />
             <ChartTooltip content={<ChartTooltipContent />} />
             {engines.map((engine) => (
