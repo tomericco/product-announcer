@@ -9,6 +9,7 @@ import {
   aiVisibilityCitations,
   aiVisibilitySettings,
   competitors,
+  llmUsage,
   signals,
   sources,
 } from "../../../src/db/schema";
@@ -419,6 +420,63 @@ describe("runSlice", () => {
     expect(run.costUsd).toBeCloseTo(0.03, 5);
     expect(run.modelIds).toEqual({ openai: "gpt-5.1-2026-01-01" });
     expect(tenant.id).toBe(run.tenantId);
+  });
+
+  it("records each engine sample's token usage as ai_visibility_engine rows", async () => {
+    const { tenant, runId } = await planned();
+    const openai = fakeEngine("openai", () =>
+      answer({ usage: { inputTokens: 100, outputTokens: 20, totalTokens: 120 } })
+    );
+
+    await runSlice(
+      runId,
+      { budgetMs: 60_000, concurrency: 1, now: advancingClock("2026-03-02T09:00:00Z", 10) },
+      { engines: { openai } }
+    );
+
+    const rows = await db
+      .select()
+      .from(llmUsage)
+      .where(eq(llmUsage.tenantId, tenant.id));
+    // samplesPerPrompt is 3 in planned()'s settings.
+    expect(rows).toHaveLength(3);
+    expect(rows.every((r) => r.operation === "ai_visibility_engine")).toBe(true);
+    expect(rows.every((r) => r.model === "gpt-5.1-2026-01-01")).toBe(true);
+    expect(rows.every((r) => r.totalTokens === 120)).toBe(true);
+  });
+
+  it("records usage on a billed failure and skips samples that reported none", async () => {
+    const { tenant, runId } = await planned();
+    const openai = fakeEngine("openai", (_p, call) => {
+      if (call === 1)
+        return {
+          kind: "refused" as const,
+          code: "refused" as const,
+          message: "declined",
+          costUsd: 0.01,
+          usage: { inputTokens: 50, outputTokens: 5, totalTokens: 55 },
+        };
+      if (call === 2)
+        return { kind: "error" as const, code: "provider_unavailable" as const, message: "down" };
+      return answer(); // no usage on this one
+    });
+
+    await runSlice(
+      runId,
+      { budgetMs: 60_000, concurrency: 1, now: advancingClock("2026-03-02T09:00:00Z", 10) },
+      { engines: { openai } }
+    );
+
+    const rows = await db.select().from(llmUsage).where(eq(llmUsage.tenantId, tenant.id));
+    // Only the refusal carried usage; the transport-style error and the
+    // usage-less answer record nothing.
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      operation: "ai_visibility_engine",
+      // A failure has no modelId; the engine id is the honest fallback.
+      model: "openai",
+      totalTokens: 55,
+    });
   });
 
   it("stores a refusal as refused and an error as error, without failing the slice", async () => {

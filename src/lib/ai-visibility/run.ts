@@ -9,6 +9,7 @@ import {
   type AiVisibilityRun,
 } from "@/db/schema";
 import { getAiVisibilitySettings, ensureAiVisibilitySource } from "@/lib/ai-visibility/settings";
+import { recordLlmUsage } from "@/lib/ai/llm-usage";
 import { computeAggregates } from "@/lib/ai-visibility/aggregate";
 import { capExceeded, capPausedMessage } from "@/lib/ai-visibility/cost";
 import { roundUsd } from "@/lib/ai-visibility/money";
@@ -746,6 +747,22 @@ export async function runSlice(
             })
             .where(eq(aiVisibilitySamples.id, row.id));
 
+          // Tokens the tenant's own key was billed for, when the provider said.
+          // Tracking only — never credits. `recordLlmUsage` never throws.
+          if (result.usage) {
+            await recordLlmUsage(
+              {
+                tenantId: run.tenantId,
+                operation: "ai_visibility_engine",
+                // An EngineError carries no modelId; the engine id is the
+                // honest fallback and the usage queries label it the same way.
+                model: row.engine,
+                usage: result.usage,
+              },
+              database
+            );
+          }
+
           // The provider's verdict on the KEY, written back to the key row.
           //
           // Only `invalid_key` and `quota_exceeded` move the row's status —
@@ -804,6 +821,18 @@ export async function runSlice(
             askedAt: opts.now(),
           })
           .where(eq(aiVisibilitySamples.id, row.id));
+
+        if (result.usage) {
+          await recordLlmUsage(
+            {
+              tenantId: run.tenantId,
+              operation: "ai_visibility_engine",
+              model: result.modelId,
+              usage: result.usage,
+            },
+            database
+          );
+        }
 
         // Extraction is part of answering, not of finalizing: a run that never
         // reaches finalizeRun (budget, cap, a dead cron) still has usable

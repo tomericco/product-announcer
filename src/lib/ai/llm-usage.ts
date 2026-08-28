@@ -18,13 +18,21 @@ export type LlmOperation =
   | "brief_draft"
   | "brief_proposal"
   // AI visibility spec. One call per prompt-set generation or monthly
-  // expansion — the engine calls themselves are raw fetch and are billed on
-  // `ai_visibility_runs.costUsd`, not here.
+  // expansion. The engine sweep calls are no longer absent from this table:
+  // their tokens land here as `ai_visibility_engine`, while their USD
+  // estimates stay on `ai_visibility_runs.costUsd`.
   | "ai_visibility_prompts"
   // AI visibility spec §"Extraction": one batched judge call per chunk of
   // samples per run. Billed per run, not per answer, which is why the chunk
   // size in judge.ts is a cost dial.
   | "ai_visibility_judge"
+  // AI-visibility ENGINE sweep calls — the raw-fetch BYOK calls to
+  // OpenAI/Gemini/Anthropic. Recorded for the settings usage tab so a tenant
+  // can track what the sweeps cost on their own keys; NEVER counted as
+  // credits and never subject to a credit limit (see the usage-tab spec).
+  // `model` holds the provider's reported snapshot id when known, else the
+  // engine id.
+  | "ai_visibility_engine"
   // Image spec §9. `illustration_plan` is a normal token row (the text model
   // planning which images a draft needs); `image_generation` bills per image
   // and sets `imageCount` instead of the token columns.
