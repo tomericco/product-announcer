@@ -16,6 +16,7 @@ import {
   type EngineCitation,
   type EngineClient,
   type EngineError,
+  type EngineUsage,
 } from "@/lib/ai-visibility/types";
 
 export const OPENAI_LABEL = "GPT-5.x API + web search";
@@ -92,6 +93,7 @@ type OpenAiResponse = {
   /** "completed" | "incomplete" | "failed" | … */
   status?: string;
   incomplete_details?: { reason?: string } | null;
+  usage?: { input_tokens?: unknown; output_tokens?: unknown; total_tokens?: unknown };
 };
 
 /**
@@ -117,6 +119,27 @@ function sanitizeRaw(raw: OpenAiResponse): OpenAiResponse {
       return copy;
     }),
   };
+}
+
+/** A count is only a count if it is a finite number; anything else is dropped. */
+function asCount(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+/**
+ * Token usage from the raw response, or undefined when it reported none.
+ * Undefined means "unknown", not zero — same contract as `costUsd`.
+ */
+function readUsage(raw: OpenAiResponse): EngineUsage | undefined {
+  if (!isRecord(raw.usage)) return undefined;
+  const usage: EngineUsage = {};
+  const input = asCount(raw.usage.input_tokens);
+  const output = asCount(raw.usage.output_tokens);
+  const total = asCount(raw.usage.total_tokens);
+  if (input !== undefined) usage.inputTokens = input;
+  if (output !== undefined) usage.outputTokens = output;
+  if (total !== undefined) usage.totalTokens = total;
+  return Object.keys(usage).length > 0 ? usage : undefined;
 }
 
 /**
@@ -271,22 +294,25 @@ export async function askOpenAi(
       // it still goes through the scrubber on the way out.
       detail: `truncated answer: ${raw.incomplete_details.reason ?? "unknown reason"}`,
       costUsd: OPENAI_COST_PER_CALL_USD,
+      usage: readUsage(raw),
     });
   }
   if (typeof raw.status === "string" && raw.status !== "completed") {
     return engineFailure("openai", "bad_response", {
       detail: `response status ${raw.status}`,
       costUsd: OPENAI_COST_PER_CALL_USD,
+      usage: readUsage(raw),
     });
   }
 
   if (refused) {
-    return engineFailure("openai", "refused", { costUsd: OPENAI_COST_PER_CALL_USD });
+    return engineFailure("openai", "refused", { costUsd: OPENAI_COST_PER_CALL_USD, usage: readUsage(raw) });
   }
   if (text.trim().length === 0) {
     return engineFailure("openai", "refused", {
       detail: "no answer text",
       costUsd: OPENAI_COST_PER_CALL_USD,
+      usage: readUsage(raw),
     });
   }
   // An answer written from the model's own memory is a real answer: it is what
@@ -310,6 +336,7 @@ export async function askOpenAi(
     searchQueries,
     raw: sanitizeRaw(raw),
     costUsd: OPENAI_COST_PER_CALL_USD,
+    usage: readUsage(raw),
   };
 }
 

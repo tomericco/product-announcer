@@ -52,6 +52,7 @@ const ANSWER = {
       ],
     },
   ],
+  usage: { input_tokens: 23_388, output_tokens: 2_948, total_tokens: 26_336 },
 };
 
 describe("askOpenAi", () => {
@@ -303,6 +304,54 @@ describe("askOpenAi", () => {
   it("exposes itself as an EngineClient", () => {
     expect(openaiEngine.id).toBe("openai");
     expect(openaiEngine.label).toContain("API");
+  });
+
+  describe("askOpenAi usage", () => {
+    it("returns token usage from a successful response", async () => {
+      vi.stubEnv("OPENAI_API_KEY", "sk-test");
+      const fetchImpl = vi.fn(async () => json(ANSWER));
+      const result = await askOpenAi("best issue tracker", { fetchImpl });
+      expect("kind" in result).toBe(false);
+      if ("kind" in result) return;
+      expect(result.usage).toEqual({ inputTokens: 23_388, outputTokens: 2_948, totalTokens: 26_336 });
+    });
+
+    it("returns token usage on a billed failure (truncation)", async () => {
+      vi.stubEnv("OPENAI_API_KEY", "sk-test");
+      const truncated = {
+        ...ANSWER,
+        status: "incomplete",
+        incomplete_details: { reason: "max_output_tokens" },
+        usage: { input_tokens: 100, output_tokens: 4_096, total_tokens: 4_196 },
+      };
+      const fetchImpl = vi.fn(async () => json(truncated));
+      const result = await askOpenAi("best issue tracker", { fetchImpl });
+      expect("kind" in result).toBe(true);
+      if (!("kind" in result)) return;
+      expect(result.usage).toEqual({ inputTokens: 100, outputTokens: 4_096, totalTokens: 4_196 });
+    });
+
+    it("omits usage on a transport failure", async () => {
+      vi.stubEnv("OPENAI_API_KEY", "sk-test");
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+      const fetchImpl = vi.fn(async () => {
+        throw new Error("network down");
+      });
+      const result = await askOpenAi("best issue tracker", { fetchImpl });
+      expect("kind" in result).toBe(true);
+      if (!("kind" in result)) return;
+      expect(result.usage).toBeUndefined();
+      consoleError.mockRestore();
+    });
+
+    it("drops non-finite counts instead of storing them", async () => {
+      vi.stubEnv("OPENAI_API_KEY", "sk-test");
+      const weird = { ...ANSWER, usage: { input_tokens: "many", output_tokens: 5 } };
+      const fetchImpl = vi.fn(async () => json(weird));
+      const result = await askOpenAi("best issue tracker", { fetchImpl });
+      if ("kind" in result) return;
+      expect(result.usage).toEqual({ outputTokens: 5 });
+    });
   });
 });
 

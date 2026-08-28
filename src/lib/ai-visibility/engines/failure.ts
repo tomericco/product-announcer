@@ -1,5 +1,5 @@
 import { scrubSecrets } from "@/lib/ai-visibility/scrub";
-import type { EngineError, EngineId } from "@/lib/ai-visibility/types";
+import type { EngineError, EngineId, EngineUsage } from "@/lib/ai-visibility/types";
 
 /**
  * The closed set of things that can go wrong with an engine call, and the only
@@ -190,6 +190,7 @@ export function engineFailure(
     retryable?: boolean;
     retryAfterMs?: number;
     costUsd?: number;
+    usage?: EngineUsage;
   } = {}
 ): EngineError {
   const parts = [engineFailureMessage(engine, code)];
@@ -210,6 +211,7 @@ export function engineFailure(
       ? { retryAfterMs: opts.retryAfterMs }
       : {}),
     ...(opts.costUsd !== undefined ? { costUsd: opts.costUsd } : {}),
+    ...(opts.usage !== undefined ? { usage: opts.usage } : {}),
   };
 }
 

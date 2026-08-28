@@ -50,6 +50,20 @@ export function engineSystemPrompt(): string | undefined {
 
 export type EngineCitation = { url: string; position: number };
 
+/**
+ * Token counts the provider reported for one call, normalised to camelCase.
+ *
+ * Structurally identical to `TokenUsage` in `src/lib/ai/llm-usage.ts` but
+ * declared here because this module deliberately imports nothing (see the
+ * header comment). Recorded into `llm_usage` for the settings usage tab —
+ * TRACKING of the tenant's own BYOK spend, never counted as credits.
+ */
+export type EngineUsage = {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+};
+
 export type EngineAnswer = {
   text: string;
   modelId: string;
@@ -58,6 +72,7 @@ export type EngineAnswer = {
   searchQueries: string[];
   raw: unknown;
   costUsd: number;
+  usage?: EngineUsage;
 };
 
 export type EngineError = {
@@ -110,6 +125,12 @@ export type EngineError = {
    * callers should treat it as an unmeasured cost, not a zero.
    */
   costUsd?: number;
+  /**
+   * Token counts, when the provider's response carried them. Present on the
+   * same responses that can carry `costUsd` — a complete response we could
+   * read — and absent on transport failures, where nothing was reported.
+   */
+  usage?: EngineUsage;
   /**
    * Whether asking this engine the same question again could plausibly work.
    *
