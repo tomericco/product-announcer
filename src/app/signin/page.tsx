@@ -17,7 +17,7 @@ export default async function SignInPage({ searchParams }: { searchParams: Promi
               Sign in to Versional
             </h1>
             <p className="text-muted-foreground text-sm">
-              Continue to your signal feed.
+              Continue with Google or GitHub — works whether you&apos;re new here or coming back.
             </p>
           </div>
         </div>
