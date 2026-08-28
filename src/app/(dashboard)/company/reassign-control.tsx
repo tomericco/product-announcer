@@ -8,6 +8,7 @@ import {
   DropdownMenu,
   DropdownMenuTrigger,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
@@ -113,16 +114,22 @@ export function ReassignControl({ eventId, currentAtomicUpdateId, openAtomicUpda
         <DropdownMenuContent align="end" className="w-56">
           {moveTargets.length > 0 && (
             <>
-              <DropdownMenuLabel>Move to</DropdownMenuLabel>
-              {moveTargets.map((au) => (
-                <DropdownMenuItem
-                  key={au.id}
-                  onClick={() => submit({ targetKind: "existing", atomicUpdateId: au.id })}
-                >
-                  <ArrowRightLeft />
-                  <span className="truncate">{au.title}</span>
-                </DropdownMenuItem>
-              ))}
+              {/* `DropdownMenuLabel` is Base UI's `Menu.GroupLabel`, which
+                  throws ("MenuGroupContext is missing") the moment the popup
+                  renders unless it sits inside a `Menu.Group` — so the label
+                  and the items it labels are wrapped together. */}
+              <DropdownMenuGroup>
+                <DropdownMenuLabel>Move to</DropdownMenuLabel>
+                {moveTargets.map((au) => (
+                  <DropdownMenuItem
+                    key={au.id}
+                    onClick={() => submit({ targetKind: "existing", atomicUpdateId: au.id })}
+                  >
+                    <ArrowRightLeft />
+                    <span className="truncate">{au.title}</span>
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuGroup>
               <DropdownMenuSeparator />
             </>
           )}

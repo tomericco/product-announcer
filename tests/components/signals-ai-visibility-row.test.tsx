@@ -1,10 +1,11 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, cleanup } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { signalKindEnum, type Signal } from "../../src/db/schema";
 
-const { loadSignalEvidence, loadAiVisibilityEvidence } = vi.hoisted(() => ({
+const { loadSignalEvidence, loadAiVisibilityEvidence, loadSourceEvidence } = vi.hoisted(() => ({
   loadSignalEvidence: vi.fn(async () => null),
   loadAiVisibilityEvidence: vi.fn(async () => null),
+  loadSourceEvidence: vi.fn(async () => null),
 }));
 vi.mock("../../src/app/(dashboard)/signals/evidence-actions", () => ({
   loadSignalEvidence,
@@ -12,6 +13,9 @@ vi.mock("../../src/app/(dashboard)/signals/evidence-actions", () => ({
 }));
 vi.mock("../../src/app/(dashboard)/signals/ai-visibility-actions", () => ({
   loadAiVisibilityEvidence,
+}));
+vi.mock("../../src/app/(dashboard)/signals/source-evidence-actions", () => ({
+  loadSourceEvidence,
 }));
 
 import { SignalRow } from "../../src/app/(dashboard)/signals/signal-row";
@@ -58,9 +62,15 @@ describe("an ai_visibility signal row", () => {
     expect(screen.queryByRole("button", { name: "Reassign" })).not.toBeInTheDocument();
   });
 
-  it("leaves the other kinds alone", () => {
+  it("does not hand its own dialog to a link-backed kind", () => {
+    // Every kind now offers an "Evidence" button, so the button's presence no
+    // longer distinguishes the three components behind it — only which loader
+    // fires does. A market_news row must reach `SourceEvidence`.
     renderRow({ kind: "market_news" });
-    expect(screen.queryByRole("button", { name: "Evidence" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Evidence" }));
+    expect(loadSourceEvidence).toHaveBeenCalled();
+    expect(loadAiVisibilityEvidence).not.toHaveBeenCalled();
+    expect(loadSignalEvidence).not.toHaveBeenCalled();
   });
 
   it("does not hand an ai_visibility row the atomic-update drawer's loader", () => {
@@ -87,9 +97,13 @@ describe("which control each kind offers", () => {
     evidence: boolean;
   }[] = [
     { kind: "shipped_work", label: "Shipped work", evidence: true },
-    { kind: "competitor_move", label: "Competitor move", evidence: false },
-    { kind: "market_news", label: "Market news", evidence: false },
-    { kind: "manual", label: "Manual", evidence: false },
+    // The link-backed three: their evidence is the web page in `signals.url`,
+    // reachable through `SourceEvidence`. They offered nothing at all until
+    // that component existed, which left a market-news row's source reachable
+    // only by guessing its title was a link.
+    { kind: "competitor_move", label: "Competitor move", evidence: true },
+    { kind: "market_news", label: "Market news", evidence: true },
+    { kind: "manual", label: "Manual", evidence: true },
     { kind: "ai_visibility", label: "AI visibility", evidence: true },
   ];
 

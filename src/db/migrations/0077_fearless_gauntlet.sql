@@ -1,0 +1,1 @@
+ALTER TABLE "signals" ADD COLUMN "fetched_url" text;

@@ -540,6 +540,13 @@
       "when": 1787916940834,
       "tag": "0076_yielding_the_phantom",
       "breakpoints": true
+    },
+    {
+      "idx": 77,
+      "version": "7",
+      "when": 1787927091383,
+      "tag": "0077_fearless_gauntlet",
+      "breakpoints": true
     }
   ]
 }

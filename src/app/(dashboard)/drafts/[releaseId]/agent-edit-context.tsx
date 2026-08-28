@@ -85,14 +85,25 @@ export type EditorOps = {
   replaceImageSrc: (oldUrl: string, newUrl: string, nodeKey?: string) => Promise<string>;
 };
 
-type AgentEditState = { mode: DialogMode; excerpt: string };
+/**
+ * `seed` prefills the modal's instruction box. Carried on the STATE rather
+ * than pushed into the dialog's own `instruction` state so the dialog can
+ * derive its value (`instruction ?? seed`) instead of setting state in an
+ * effect keyed on "did a new open happen" — the cascading-render pattern the
+ * react-hooks lint rule flags, and the same reason `EvidenceDrawer` seeds its
+ * drafts at the point the new state is computed.
+ */
+type AgentEditState = { mode: DialogMode; excerpt: string; seed?: string };
 
 type AgentEditContextValue = {
   ops: MutableRefObject<EditorOps | null>;
   registerOps: (ops: EditorOps | null) => void;
   state: AgentEditState | null;
   openSelectionEdit: () => void;
-  openWholeEdit: () => void;
+  /** `seed` prefills the instruction box — the failed-review notice passes the
+   * reviewer's own issues, so "run another iteration" starts from the feedback
+   * rather than from a blank textarea the user has to retype it into. */
+  openWholeEdit: (seed?: string) => void;
   openExtract: () => boolean;
   close: () => void;
 };
@@ -119,7 +130,10 @@ export function AgentEditProvider({ children }: { children: ReactNode }) {
     setState({ mode: "selection", excerpt });
   }, []);
 
-  const openWholeEdit = useCallback(() => setState({ mode: "whole", excerpt: "" }), []);
+  const openWholeEdit = useCallback(
+    (seed?: string) => setState({ mode: "whole", excerpt: "", seed }),
+    []
+  );
 
   /**
    * Opens the extract modal, snapshotting the selection first (the modal steals

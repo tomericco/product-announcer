@@ -8,6 +8,7 @@ import {
   DropdownMenu,
   DropdownMenuTrigger,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
@@ -125,16 +126,22 @@ export function ChangeEventsList({
               <DropdownMenuContent align="start" className="w-56">
                 {targets.length > 0 && (
                   <>
-                    <DropdownMenuLabel>Move to</DropdownMenuLabel>
-                    {targets.map((au) => (
-                      <DropdownMenuItem
-                        key={au.id}
-                        onClick={() => reassignSelected({ kind: "existing", atomicUpdateId: au.id })}
-                      >
-                        <ArrowRightLeft />
-                        <span className="truncate">{au.title}</span>
-                      </DropdownMenuItem>
-                    ))}
+                    {/* `DropdownMenuLabel` is Base UI's `Menu.GroupLabel`,
+                        which throws ("MenuGroupContext is missing") the moment
+                        the popup renders unless it sits inside a `Menu.Group`
+                        — so the label and its items are wrapped together. */}
+                    <DropdownMenuGroup>
+                      <DropdownMenuLabel>Move to</DropdownMenuLabel>
+                      {targets.map((au) => (
+                        <DropdownMenuItem
+                          key={au.id}
+                          onClick={() => reassignSelected({ kind: "existing", atomicUpdateId: au.id })}
+                        >
+                          <ArrowRightLeft />
+                          <span className="truncate">{au.title}</span>
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuGroup>
                     <DropdownMenuSeparator />
                   </>
                 )}

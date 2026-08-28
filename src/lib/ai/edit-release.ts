@@ -75,9 +75,24 @@ export async function runWholeEditForRelease(
   // Blank-guard mirrors `saveDraft`/`saveDraftBody`: never clobber a real body
   // with an empty one the review pipeline might hand back on a failure path.
   const body = finalBody.trim().length === 0 && release.body.trim().length > 0 ? release.body : finalBody;
+  // The review outcome is persisted, not just streamed. This pipeline runs the
+  // same reviewer the initial compose does, and `draft.ts` records its verdict
+  // — so without this the columns kept forever whatever the COMPOSE said, and
+  // a piece that failed review at compose stayed "failed" no matter how many
+  // agent edits fixed it. That is what the failed-review notice offers to act
+  // on, so a re-run that could not clear the flag would be a button that
+  // visibly does nothing.
+  const reviewedAt = new Date();
   await database
     .update(contentPieces)
-    .set({ body, editedBy: args.editedBy, bodyEditedAt: new Date() })
+    .set({
+      body,
+      editedBy: args.editedBy,
+      bodyEditedAt: reviewedAt,
+      reviewStatus: outcome.status,
+      reviewIssues: outcome.issues,
+      reviewedAt,
+    })
     .where(eq(contentPieces.id, release.id));
   emit({ type: "step", key: "saving", status: "done" });
 

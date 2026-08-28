@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Sparkles, Loader2 } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -38,13 +39,19 @@ import { requestAgentEdit, saveDraftBody } from "./actions";
  */
 export function AgentEditDialog({ contentPieceId }: { contentPieceId: string }) {
   const { state, close, ops } = useAgentEdit();
+  const router = useRouter();
   const { notifySaved } = useUnsavedChanges();
-  const [instruction, setInstruction] = useState("");
+  // `null` means "untouched", so the box shows `state.seed` — the reviewer's
+  // own feedback when the failed-review notice opened this — until the user
+  // types. Derived rather than seeded through an effect; see `AgentEditState`.
+  const [instruction, setInstruction] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [statuses, setStatuses] = useState<Record<DraftStepKey, StepStatus>>(() =>
     initialStepStatuses(EDIT_STEPS)
   );
   const [detail, setDetail] = useState("");
+
+  const text = instruction ?? state?.seed ?? "";
 
   // Only this modal's own modes. The provider's state is shared with the
   // extract flow, which has its own dialog — without this gate both would open
@@ -52,7 +59,7 @@ export function AgentEditDialog({ contentPieceId }: { contentPieceId: string }) 
   const open = state?.mode === "selection" || state?.mode === "whole";
 
   function reset() {
-    setInstruction("");
+    setInstruction(null);
     setStatuses(initialStepStatuses(EDIT_STEPS));
     setDetail("");
     close();
@@ -97,10 +104,15 @@ export function AgentEditDialog({ contentPieceId }: { contentPieceId: string }) 
     // editor and re-sync dirty tracking so the view and DB agree.
     await editorOps.applyEdit("whole", finalBody);
     notifySaved();
+    // The pipeline also re-records `reviewStatus`/`reviewIssues`, which only
+    // the server component reads. Without this the failed-review notice would
+    // still be on screen after the run that cleared it — the one outcome the
+    // notice's own button exists to produce.
+    router.refresh();
   }
 
   function submit() {
-    if (!state || !instruction.trim()) return;
+    if (!state || !text.trim()) return;
     const editorOps = ops.current;
     if (!editorOps) {
       toast.error("The editor isn't ready yet — try again in a moment.");
@@ -109,7 +121,7 @@ export function AgentEditDialog({ contentPieceId }: { contentPieceId: string }) 
     const fullBody = editorOps.getMarkdown();
     const mode = state.mode;
     const excerpt = state.excerpt;
-    const trimmed = instruction.trim();
+    const trimmed = text.trim();
 
     setBusy(true);
     void (async () => {
@@ -172,7 +184,7 @@ export function AgentEditDialog({ contentPieceId }: { contentPieceId: string }) 
             <Textarea
               autoFocus
               rows={4}
-              value={instruction}
+              value={text}
               onChange={(e) => setInstruction(e.target.value)}
               placeholder="e.g. Make this more concise and benefit-led"
               onKeyDown={(e) => {
@@ -184,7 +196,7 @@ export function AgentEditDialog({ contentPieceId }: { contentPieceId: string }) 
 
         <DialogFooter>
           <DialogClose render={<Button variant="ghost" disabled={busy} />}>Cancel</DialogClose>
-          <Button onClick={submit} disabled={busy || !instruction.trim()}>
+          <Button onClick={submit} disabled={busy || !text.trim()}>
             {busy ? "Working…" : "Apply"}
           </Button>
         </DialogFooter>

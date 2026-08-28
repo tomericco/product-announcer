@@ -51,6 +51,7 @@ function makeSignal(title: string): Signal {
     kind: "market_news",
     externalId: crypto.randomUUID(),
     url: null,
+    fetchedUrl: null,
     title,
     excerpt: "An excerpt",
     occurredAt: new Date("2026-08-01T00:00:00.000Z"),

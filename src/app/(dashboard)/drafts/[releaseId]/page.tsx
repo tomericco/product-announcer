@@ -6,6 +6,7 @@ import { db } from "@/db";
 import { contentPieces, webflowConnections } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { reviewStatusLabel } from "@/lib/ai/review-status";
+import { ReviewIssuesNotice } from "./review-issues-notice";
 import { Badge } from "@/components/ui/badge";
 import { GenerateDraftButton } from "./generate-draft-button";
 import { GeneratingBadge } from "@/components/generating-badge";
@@ -285,18 +286,18 @@ export default async function DraftDetailPage({ params }: { params: Promise<{ re
             <SourceToggleButton />
           </div>
 
-          {statusLabel && (
-            <div className="space-y-1 text-sm text-muted-foreground">
-              <p>{statusLabel}</p>
-              {update.reviewStatus === "failed" && update.reviewIssues.length > 0 && (
-                <ul className="list-disc space-y-0.5 pl-5">
-                  {update.reviewIssues.map((issue, i) => (
-                    <li key={i}>{issue}</li>
-                  ))}
-                </ul>
-              )}
-            </div>
+          {/* A failed review is NOT a status label. It is the one outcome on
+              this page a human is expected to act on, so it gets a warning box
+              with the action attached (below, alongside the other notices)
+              rather than a line of grey text up here. `reviewStatusLabel`
+              still owns the "error" case — a review that could not run has no
+              feedback to address, so there is nothing to offer a button for.
+              */}
+          {statusLabel && update.reviewStatus !== "failed" && (
+            <p className="text-sm text-muted-foreground">{statusLabel}</p>
           )}
+
+          {update.reviewStatus === "failed" && <ReviewIssuesNotice issues={update.reviewIssues} />}
 
           {/* status here is "draft", "review", "scheduled" or "published"
               (the "brief" branch returns above) — generationError is only

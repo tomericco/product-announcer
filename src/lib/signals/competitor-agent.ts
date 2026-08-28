@@ -195,6 +195,15 @@ export async function runCompetitorSource(source: Source, deps: CompetitorAgentD
           // it's genuinely the same event.
           externalId: `${page.finalUrl}:${block.hash}`,
           url: source.url,
+          // The page the fetch actually landed on, which is routinely NOT
+          // `source.url`: the agent prefers a competitor's `.md` variant or
+          // llms.txt when one exists. `url` stays the human-facing configured
+          // page (it is what the signals row links its title to), and this is
+          // what was actually read — the evidence dialog offers both, because
+          // checking a signal against its source means reading the text the
+          // agent saw. Previously this survived only inside `externalId`, an
+          // identity key nothing should be parsing back apart.
+          fetchedUrl: page.finalUrl,
           title: block.title,
           excerpt: block.text,
           // First-seen time -- see the function doc for why this is correct
