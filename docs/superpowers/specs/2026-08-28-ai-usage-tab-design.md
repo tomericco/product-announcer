@@ -42,7 +42,7 @@ AI-visibility sweeps BYOK. (A full-BYOK mode was considered and deferred.)
 | Question | Decision |
 |---|---|
 | Unit & naming | Tab named **"AI usage"**; unit is **credits**, 1 credit = 1 token. The existing "show dollars, never credits" comments apply to the BYOK spend UI only and stay untouched. |
-| Images | `image_generation` rows have no tokens; they cost a flat **5,000 credits per image** (`imageCount × 5000`), a named constant so the rate is one edit. |
+| Images | Token-priced like everything else: `generateImage` reports real token usage and `renderImage` already persists it (`src/lib/ai/images.ts:141`). No per-image constant. Image rows whose token columns are null (provider omitted usage, or rows predating usage capture) count 0 credits. |
 | BYOK sweep tokens | Included in the tab, tracked in `llm_usage`, displayed in their own clearly-labeled section, **excluded from all credit math**. |
 | Settings layout | Convert the settings page to two tabs: **Workspace** (all existing cards, unchanged) and **AI usage**. Deep link via `?tab=usage`; Workspace is the default so existing `#ai-engines` / `#ai-visibility` anchors keep working. |
 | Limit prep | Query/UI seam only. `getMonthlyCreditLimit(tenantId)` returns `null` today; no schema, no enforcement. |
@@ -76,6 +76,10 @@ Anthropic `usage`); the clients parse it and return it.
 
 Nothing about `costUsd`, `monthlyCapUsd`, or the cap-pause flow changes.
 
+While here: correct the stale comment on `LlmOperation` in
+`src/lib/ai/llm-usage.ts` claiming `image_generation` "sets `imageCount`
+instead of the token columns" — it sets both.
+
 ### 2. Migration
 
 One migration (`npm run db:generate`, applied by `db:migrate` and
@@ -89,18 +93,13 @@ No new tables, no new columns.
 ### 3. Query module: `src/lib/usage/`
 
 All functions take `tenantId` and are tenant-scoped SQL over `llm_usage`.
-Credits math is one shared SQL expression:
-
-```
-credits = CASE WHEN operation = 'image_generation'
-               THEN COALESCE(image_count, 0) * 5000
-               ELSE COALESCE(total_tokens, 0) END
-```
+Credits math is one shared SQL expression: `credits = COALESCE(total_tokens,
+0)` — uniform across operations, images included (image calls report token
+usage too).
 
 Rows with `operation = 'ai_visibility_engine'` are **excluded** from every
 credit aggregate and **selected exclusively** by the BYOK functions.
 
-- `IMAGE_CREDITS_PER_IMAGE = 5000` — exported constant.
 - `creditsByPeriod(tenantId, granularity)` — `granularity: "daily" | "weekly"
   | "monthly"`; fixed windows: daily = last 30 days, weekly = last 12 ISO
   weeks, monthly = last 12 calendar months. Returns
@@ -190,7 +189,7 @@ with the rest of settings being visible, and there is nothing to edit).
 - `tests/lib/usage/*.test.ts` — real-Postgres tests (per repo convention:
   unique tenant name per file as the cleanup key). Seed `llm_usage` rows
   across operations/dates and assert: bucket math (ISO weeks, UTC months),
-  zero-filling, image credit conversion, `ai_visibility_engine` exclusion
+  zero-filling, null-token rows counting 0, `ai_visibility_engine` exclusion
   from credits and inclusion in BYOK functions, feature-map fallback to
   "Other".
 - Engine tests (`tests/lib/ai-visibility/engines/…`) — mocked `fetch`
