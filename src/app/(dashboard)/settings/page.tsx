@@ -1,4 +1,5 @@
 import { SettingsTabs, type SettingsTab } from "./settings-tabs";
+import { UsageSettings } from "./usage-settings";
 import { WorkspaceSettings } from "./workspace-settings";
 
 /**
@@ -18,11 +19,7 @@ export default async function SettingsPage({
   return (
     <div className="space-y-6">
       <SettingsTabs active={active} />
-      {active === "usage" ? (
-        <p className="text-sm text-muted-foreground">AI usage — coming in the next task.</p>
-      ) : (
-        <WorkspaceSettings />
-      )}
+      {active === "usage" ? <UsageSettings /> : <WorkspaceSettings />}
     </div>
   );
 }
