@@ -7,6 +7,7 @@ import {
   CalendarDays,
   ChevronDown,
   Columns3,
+  Gauge,
   History,
   Images,
   MessageSquareQuote,
@@ -66,6 +67,7 @@ const NAV_GROUPS = [
     items: [
       { href: "/company", label: "Company", icon: Building2, children: COMPANY_SECTIONS },
       { href: "/integrations", label: "Integrations", icon: Plug },
+      { href: "/usage", label: "AI usage", icon: Gauge },
       // Was reachable only from the workspace-name dropdown in `layout.tsx`,
       // which sat next to Integrations in kind but not in place.
       { href: "/settings", label: "Settings", icon: Settings },

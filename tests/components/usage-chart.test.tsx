@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { UsageChart } from "../../src/app/(dashboard)/settings/usage-chart";
+import { UsageChart } from "../../src/app/(dashboard)/usage/usage-chart";
 
 /**
  * The brief assumed recharts draws nothing in jsdom (zero-size container),

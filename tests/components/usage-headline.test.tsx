@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { UsageHeadline } from "../../src/app/(dashboard)/settings/usage-headline";
+import { UsageHeadline } from "../../src/app/(dashboard)/usage/usage-headline";
 
 describe("UsageHeadline", () => {
   it("renders a plain total when there is no limit", () => {
