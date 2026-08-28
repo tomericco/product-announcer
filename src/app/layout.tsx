@@ -29,8 +29,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "versional | Automate your product updates",
-  description: "Turn your GitHub activity into product-update announcements, automatically.",
+  title: "Versional — AI Content Growth Engine for B2B SaaS",
+  description:
+    "Versional turns what you ship, your competitors, the market, and AI mentions into scored, evidence-backed briefs you approve in seconds.",
 };
 
 export default function RootLayout({

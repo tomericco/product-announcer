@@ -14,10 +14,10 @@ export default async function SignInPage({ searchParams }: { searchParams: Promi
           <Logo />
           <div className="space-y-1.5">
             <h1 className="font-heading text-4xl leading-[1.15] tracking-[0.015em] text-balance">
-              Automate your product updates
+              Sign in to Versional
             </h1>
             <p className="text-muted-foreground text-sm">
-              Turn GitHub activity into announcements, automatically.
+              Continue to your signal feed.
             </p>
           </div>
         </div>
