@@ -133,7 +133,14 @@ describe("runCompetitorSource", () => {
     expect(rows[0].excerpt).toContain("SAML SSO");
     expect(rows[0].competitorId).toBe(source.competitorId);
     expect(rows[0].sourceId).toBe(source.id);
+    // `url` stays the configured, human-facing page — it is what the signals
+    // row links its title to — while `fetchedUrl` records where the fetch
+    // actually landed. The two differ here (the source has a `.md` variant),
+    // which is the whole reason the column exists: before it, the page the
+    // agent actually read survived only inside `externalId`.
     expect(rows[0].url).toBe("https://rival.com/changelog");
+    expect(rows[0].fetchedUrl).toBe("https://rival.com/changelog.md");
+    expect(rows[0].externalId.startsWith(`${rows[0].fetchedUrl}:`)).toBe(true);
   });
 
   it("writes nothing when the document has not changed", async () => {

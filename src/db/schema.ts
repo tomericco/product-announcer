@@ -437,6 +437,22 @@ export const signals = pgTable(
     url: text("url"),
     title: text("title").notNull(),
     excerpt: text("excerpt"),
+    // Where the fetch that produced this signal actually LANDED, when that is
+    // not the same as `url`. Set only by `competitor-agent.ts`, whose `url` is
+    // the source's configured (human-facing) page while the text it actually
+    // read comes from `page.finalUrl` — the `.md` variant or site-wide
+    // llms.txt a competitor publishes for machines, resolved once at
+    // discovery. The two genuinely differ, and only this one answers "what
+    // did the agent read", which is what the evidence dialog has to show for
+    // someone checking a signal against its source.
+    //
+    // It was previously recoverable only by parsing it back out of
+    // `externalId` (`${finalUrl}:${hash}`) — an identity key, not a data
+    // column, and one whose format is explicitly frozen for dedupe. Rows
+    // written before this column existed keep a null here; nothing backfills
+    // them, so the dialog falls back to the source's own agentUrl/url for
+    // those, exactly as it did for every row before.
+    fetchedUrl: text("fetched_url"),
     // When the thing happened, as distinct from when we noticed it. Ranking in
     // spec 5 decays on this, so a backfilled old post must not read as fresh.
     occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),

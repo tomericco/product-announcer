@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 import type { Signal } from "@/db/schema";
 import { EvidenceDrawer } from "./evidence-drawer";
 import { AiVisibilityEvidence } from "./ai-visibility-evidence";
+import { SourceEvidence } from "./source-evidence";
 
 const KIND_LABEL: Record<Signal["kind"], string> = {
   shipped_work: "Shipped work",
@@ -153,12 +154,18 @@ export function SignalRow({
           {row.status !== "new" && <Badge variant="outline">{STATUS_LABEL[row.status]}</Badge>}
           <ScoreBadge score={row.relevanceScore} rationale={row.relevanceRationale} />
           <span className="text-xs text-muted-foreground">{DATE_FORMAT.format(row.occurredAt)}</span>
-          {/* Only `shipped_work` signals mirror an atomic update; `ai_visibility`
-              signals carry their evidence in the row's own `payload`. Every other
-              kind has nothing behind it, so no control is offered rather than one
-              that can only ever open an empty state. */}
+          {/* Three different things are behind a signal, so three components
+              rather than one branching on kind: `shipped_work` mirrors an
+              atomic update and its change events (and is the only CURATION
+              surface of the three), `ai_visibility` carries its evidence in
+              the row's own `payload`, and the rest — news, competitor moves,
+              manual entries — are based on a web page recorded in
+              `signals.url`. */}
           {row.kind === "shipped_work" && <EvidenceDrawer signalId={row.id} title={row.title} />}
           {row.kind === "ai_visibility" && <AiVisibilityEvidence signalId={row.id} title={row.title} />}
+          {(row.kind === "market_news" || row.kind === "competitor_move" || row.kind === "manual") && (
+            <SourceEvidence signalId={row.id} title={row.title} />
+          )}
         </div>
       </div>
     </div>
