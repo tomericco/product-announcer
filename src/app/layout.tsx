@@ -29,9 +29,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Versional — AI Content Growth Engine for B2B SaaS",
-  description:
-    "Versional turns what you ship, your competitors, the market, and AI mentions into scored, evidence-backed briefs you approve in seconds.",
+  title: "Versional | A new era for growth teams",
+  description: "Something new for growth teams. Join the waitlist.",
 };
 
 export default function RootLayout({
