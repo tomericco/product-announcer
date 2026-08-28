@@ -26,6 +26,7 @@ import {
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
@@ -254,16 +255,22 @@ function EventRow({
         <DropdownMenuContent align="end" className="w-56">
           {targets.length > 0 && (
             <>
-              <DropdownMenuLabel>Move to</DropdownMenuLabel>
-              {targets.map((target) => (
-                <DropdownMenuItem
-                  key={target.id}
-                  onClick={() => onReassign({ kind: "existing", atomicUpdateId: target.id })}
-                >
-                  <ArrowRightLeft />
-                  <span className="truncate">{target.title}</span>
-                </DropdownMenuItem>
-              ))}
+              {/* `DropdownMenuLabel` is Base UI's `Menu.GroupLabel`, which
+                  throws ("MenuGroupContext is missing") the moment the popup
+                  renders unless it sits inside a `Menu.Group` — so the label
+                  and the items it labels are wrapped together. */}
+              <DropdownMenuGroup>
+                <DropdownMenuLabel>Move to</DropdownMenuLabel>
+                {targets.map((target) => (
+                  <DropdownMenuItem
+                    key={target.id}
+                    onClick={() => onReassign({ kind: "existing", atomicUpdateId: target.id })}
+                  >
+                    <ArrowRightLeft />
+                    <span className="truncate">{target.title}</span>
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuGroup>
               <DropdownMenuSeparator />
             </>
           )}
@@ -534,7 +541,7 @@ export function EvidenceDrawer({ signalId, title }: { signalId: string; title: s
             </Button>
           }
         />
-        <DialogContent className="flex flex-col gap-4 sm:max-w-md">
+        <DialogContent className="flex flex-col gap-4 sm:max-w-4xl">
           <DialogHeader>
             <DialogTitle>{title}</DialogTitle>
             <DialogDescription>The atomic update and change events behind this signal.</DialogDescription>
