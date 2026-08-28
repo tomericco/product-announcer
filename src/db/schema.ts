@@ -1305,24 +1305,31 @@ export const deliveryAttempts = pgTable(
   ]
 );
 
-export const llmUsage = pgTable("llm_usage", {
-  id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
-  tenantId: uuid("tenant_id")
-    .notNull()
-    .references(() => tenants.id, { onDelete: "cascade" }),
-  // Plain text, not an enum: this list will grow, and Postgres has no DROP VALUE.
-  operation: text("operation").notNull(),
-  model: text("model").notNull(),
-  // Nullable: the SDK types these as `number | undefined`, and a provider that
-  // omits a count shouldn't cost us the row.
-  inputTokens: integer("input_tokens"),
-  outputTokens: integer("output_tokens"),
-  totalTokens: integer("total_tokens"),
-  // Image renders bill per image, not per token. Set on "image_generation"
-  // rows; null on every text row, whose token columns stay populated instead.
-  imageCount: integer("image_count"),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+export const llmUsage = pgTable(
+  "llm_usage",
+  {
+    id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    // Plain text, not an enum: this list will grow, and Postgres has no DROP VALUE.
+    operation: text("operation").notNull(),
+    model: text("model").notNull(),
+    // Nullable: the SDK types these as `number | undefined`, and a provider that
+    // omits a count shouldn't cost us the row.
+    inputTokens: integer("input_tokens"),
+    outputTokens: integer("output_tokens"),
+    totalTokens: integer("total_tokens"),
+    // Image renders also set the token columns (gpt-image models are
+    // token-priced); imageCount is the per-image count on top of that.
+    imageCount: integer("image_count"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    // Every usage-tab query is `WHERE tenant_id = ? AND created_at >= ?`.
+    index("llm_usage_tenant_created_idx").on(table.tenantId, table.createdAt),
+  ]
+);
 
 export const webflowAuthTypeEnum = pgEnum("webflow_auth_type", ["site_token", "oauth"]);
 export const webflowPublishModeEnum = pgEnum("webflow_publish_mode", ["draft", "live"]);
