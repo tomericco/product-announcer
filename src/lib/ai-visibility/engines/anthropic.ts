@@ -16,6 +16,7 @@ import {
   type EngineCitation,
   type EngineClient,
   type EngineError,
+  type EngineUsage,
 } from "@/lib/ai-visibility/types";
 
 export const ANTHROPIC_LABEL = "Claude API + web search";
@@ -92,7 +93,12 @@ type AnthropicBlock = {
   /** Present on `web_search_tool_result`: the raw hits behind the answer. */
   content?: AnthropicSearchResult[];
 };
-type AnthropicResponse = { model?: string; stop_reason?: string; content?: AnthropicBlock[] };
+type AnthropicResponse = {
+  model?: string;
+  stop_reason?: string;
+  content?: AnthropicBlock[];
+  usage?: { input_tokens?: unknown; output_tokens?: unknown };
+};
 
 /**
  * A copy of the response with the bulk dropped.
@@ -134,6 +140,27 @@ function sanitizeRaw(raw: AnthropicResponse): AnthropicResponse {
       return copy;
     }),
   };
+}
+
+/** A count is only a count if it is a finite number; anything else is dropped. */
+function asCount(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+/**
+ * Token usage from the raw response, or undefined when it reported none.
+ * Anthropic reports no total — compute it only when both halves are real.
+ * Undefined means "unknown", not zero — same contract as `costUsd`.
+ */
+function readUsage(raw: AnthropicResponse): EngineUsage | undefined {
+  if (!isRecord(raw.usage)) return undefined;
+  const usage: EngineUsage = {};
+  const input = asCount(raw.usage.input_tokens);
+  const output = asCount(raw.usage.output_tokens);
+  if (input !== undefined) usage.inputTokens = input;
+  if (output !== undefined) usage.outputTokens = output;
+  if (input !== undefined && output !== undefined) usage.totalTokens = input + output;
+  return Object.keys(usage).length > 0 ? usage : undefined;
 }
 
 /**
@@ -245,7 +272,7 @@ export async function askAnthropic(
   // Every return below this point follows a complete, readable response, so the
   // call was billed whatever its verdict — see `EngineError.costUsd`.
   if (raw.stop_reason === "refusal") {
-    return engineFailure("anthropic", "refused", { costUsd: ANTHROPIC_COST_PER_CALL_USD });
+    return engineFailure("anthropic", "refused", { costUsd: ANTHROPIC_COST_PER_CALL_USD, usage: readUsage(raw) });
   }
   // A cut-off answer is not a measurement: a brand named in the tail that never
   // got written would score as absent, which is a false negative in the
@@ -256,6 +283,7 @@ export async function askAnthropic(
       // A documented enum value, not prose.
       detail: `truncated answer: ${raw.stop_reason}`,
       costUsd: ANTHROPIC_COST_PER_CALL_USD,
+      usage: readUsage(raw),
     });
   }
 
@@ -292,6 +320,7 @@ export async function askAnthropic(
     return engineFailure("anthropic", "refused", {
       detail: "no answer text",
       costUsd: ANTHROPIC_COST_PER_CALL_USD,
+      usage: readUsage(raw),
     });
   }
   // An answer written from the model's own memory is a real answer — what the
@@ -312,6 +341,7 @@ export async function askAnthropic(
     searchQueries,
     raw: sanitizeRaw(raw),
     costUsd: ANTHROPIC_COST_PER_CALL_USD,
+    usage: readUsage(raw),
   };
 }
 

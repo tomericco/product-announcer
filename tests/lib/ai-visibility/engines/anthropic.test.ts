@@ -51,6 +51,7 @@ const ANSWER = {
       ],
     },
   ],
+  usage: { input_tokens: 17_882, output_tokens: 1_204 },
 };
 
 describe("askAnthropic", () => {
@@ -286,6 +287,45 @@ describe("askAnthropic", () => {
   it("exposes itself as an EngineClient", () => {
     expect(anthropicEngine.id).toBe("anthropic");
     expect(anthropicEngine.label).toContain("API");
+  });
+
+  describe("askAnthropic usage", () => {
+    it("returns token usage with the total computed from input + output", async () => {
+      vi.stubEnv("ANTHROPIC_API_KEY", "sk-ant-test");
+      const fetchImpl = vi.fn(async () => json(ANSWER));
+      const result = await askAnthropic("best issue tracker", { fetchImpl });
+      expect("kind" in result).toBe(false);
+      if ("kind" in result) return;
+      expect(result.usage).toEqual({ inputTokens: 17_882, outputTokens: 1_204, totalTokens: 19_086 });
+    });
+
+    it("returns token usage on a billed refusal", async () => {
+      vi.stubEnv("ANTHROPIC_API_KEY", "sk-ant-test");
+      const refusal = {
+        model: "claude-sonnet-5",
+        stop_reason: "refusal",
+        content: [{ type: "text", text: "I can't help." }],
+        usage: { input_tokens: 17_882, output_tokens: 1_204 },
+      };
+      const fetchImpl = vi.fn(async () => json(refusal));
+      const result = await askAnthropic("best issue tracker", { fetchImpl });
+      expect("kind" in result).toBe(true);
+      if (!("kind" in result)) return;
+      expect(result.usage).toEqual({ inputTokens: 17_882, outputTokens: 1_204, totalTokens: 19_086 });
+    });
+
+    it("omits usage on a transport failure", async () => {
+      vi.stubEnv("ANTHROPIC_API_KEY", "sk-ant-test");
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+      const fetchImpl = vi.fn(async () => {
+        throw new Error("network down");
+      });
+      const result = await askAnthropic("best issue tracker", { fetchImpl });
+      expect("kind" in result).toBe(true);
+      if (!("kind" in result)) return;
+      expect(result.usage).toBeUndefined();
+      consoleError.mockRestore();
+    });
   });
 });
 

@@ -36,6 +36,7 @@ const ANSWER = {
       },
     },
   ],
+  usageMetadata: { promptTokenCount: 21_652, candidatesTokenCount: 2_992, totalTokenCount: 24_644 },
 };
 
 describe("askGemini", () => {
@@ -177,6 +178,49 @@ describe("askGemini", () => {
   it("exposes itself as an EngineClient", () => {
     expect(geminiEngine.id).toBe("gemini");
     expect(geminiEngine.label).toContain("API");
+  });
+
+  describe("askGemini usage", () => {
+    it("returns token usage from a successful response", async () => {
+      vi.stubEnv("GEMINI_API_KEY", "gem-test");
+      const fetchImpl = vi.fn(async () => json(ANSWER));
+      const result = await askGemini("best issue tracker", { fetchImpl });
+      expect("kind" in result).toBe(false);
+      if ("kind" in result) return;
+      expect(result.usage).toEqual({ inputTokens: 21_652, outputTokens: 2_992, totalTokens: 24_644 });
+    });
+
+    it("returns token usage on a MAX_TOKENS truncation", async () => {
+      vi.stubEnv("GEMINI_API_KEY", "gem-test");
+      const truncated = {
+        modelVersion: "gemini-3-pro-002",
+        candidates: [
+          {
+            content: { parts: [{ text: "Partial answer" }] },
+            finishReason: "MAX_TOKENS",
+          },
+        ],
+        usageMetadata: { promptTokenCount: 21_652, candidatesTokenCount: 2_992, totalTokenCount: 24_644 },
+      };
+      const fetchImpl = vi.fn(async () => json(truncated));
+      const result = await askGemini("best issue tracker", { fetchImpl });
+      expect("kind" in result).toBe(true);
+      if (!("kind" in result)) return;
+      expect(result.usage).toEqual({ inputTokens: 21_652, outputTokens: 2_992, totalTokens: 24_644 });
+    });
+
+    it("omits usage on a transport failure", async () => {
+      vi.stubEnv("GEMINI_API_KEY", "gem-test");
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+      const fetchImpl = vi.fn(async () => {
+        throw new Error("network down");
+      });
+      const result = await askGemini("best issue tracker", { fetchImpl });
+      expect("kind" in result).toBe(true);
+      if (!("kind" in result)) return;
+      expect(result.usage).toBeUndefined();
+      consoleError.mockRestore();
+    });
   });
 });
 

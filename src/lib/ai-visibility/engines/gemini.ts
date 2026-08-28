@@ -16,6 +16,7 @@ import {
   type EngineCitation,
   type EngineClient,
   type EngineError,
+  type EngineUsage,
 } from "@/lib/ai-visibility/types";
 
 export const GEMINI_LABEL = "Gemini API, grounded";
@@ -82,7 +83,11 @@ type GeminiCandidate = {
     searchEntryPoint?: unknown;
   };
 };
-type GeminiResponse = { modelVersion?: string; candidates?: GeminiCandidate[] };
+type GeminiResponse = {
+  modelVersion?: string;
+  candidates?: GeminiCandidate[];
+  usageMetadata?: { promptTokenCount?: unknown; candidatesTokenCount?: unknown; totalTokenCount?: unknown };
+};
 
 /**
  * A copy of the response without the two heavyweight fields.
@@ -126,6 +131,27 @@ function sanitizeRaw(raw: GeminiResponse): GeminiResponse {
       return copy;
     }),
   };
+}
+
+/** A count is only a count if it is a finite number; anything else is dropped. */
+function asCount(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+/**
+ * Token usage from the raw response, or undefined when it reported none.
+ * Undefined means "unknown", not zero — same contract as `costUsd`.
+ */
+function readUsage(raw: GeminiResponse): EngineUsage | undefined {
+  if (!isRecord(raw.usageMetadata)) return undefined;
+  const usage: EngineUsage = {};
+  const input = asCount(raw.usageMetadata.promptTokenCount);
+  const output = asCount(raw.usageMetadata.candidatesTokenCount);
+  const total = asCount(raw.usageMetadata.totalTokenCount);
+  if (input !== undefined) usage.inputTokens = input;
+  if (output !== undefined) usage.outputTokens = output;
+  if (total !== undefined) usage.totalTokens = total;
+  return Object.keys(usage).length > 0 ? usage : undefined;
 }
 
 /**
@@ -221,7 +247,7 @@ export async function askGemini(
 
   const candidate = asArray<GeminiCandidate>(raw.candidates)[0];
   if (!isRecord(candidate)) {
-    return engineFailure("gemini", "refused", { detail: "no candidate returned" });
+    return engineFailure("gemini", "refused", { detail: "no candidate returned", usage: readUsage(raw) });
   }
 
   // Same rule as the other engines: an answer that stopped because it ran out
@@ -234,6 +260,7 @@ export async function askGemini(
     return engineFailure("gemini", "bad_response", {
       detail: "truncated answer: MAX_TOKENS",
       costUsd: GEMINI_COST_PER_CALL_USD,
+      usage: readUsage(raw),
     });
   }
 
@@ -245,6 +272,7 @@ export async function askGemini(
       // `finishReason` is a documented enum, not prose.
       detail: `no answer text, finishReason ${candidate.finishReason ?? "unknown"}`,
       costUsd: GEMINI_COST_PER_CALL_USD,
+      usage: readUsage(raw),
     });
   }
 
@@ -293,6 +321,7 @@ export async function askGemini(
       // field was renamed, and they are the whole reason this canary exists.
       detail: `unreadable grounding metadata, keys: ${Object.keys(grounding).sort().join(", ")}`,
       costUsd: GEMINI_COST_PER_CALL_USD,
+      usage: readUsage(raw),
     });
   }
 
@@ -307,6 +336,7 @@ export async function askGemini(
     searchQueries,
     raw: sanitizeRaw(raw),
     costUsd: GEMINI_COST_PER_CALL_USD,
+    usage: readUsage(raw),
   };
 }
 
