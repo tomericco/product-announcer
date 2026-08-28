@@ -4,6 +4,8 @@ import { revalidatePath } from "next/cache";
 import { requireSession } from "@/lib/workspace/session";
 import { createManualSignal } from "@/lib/signals/manual";
 import type { ManualSignalInput, ManualSignalResult } from "@/lib/signals/manual";
+import { deleteSignals as deleteSignalRows } from "@/lib/signals/delete";
+import type { DeleteSignalsResult } from "@/lib/signals/delete";
 
 /**
  * The add-signal form's server action: records a signal a human found —
@@ -18,6 +20,19 @@ import type { ManualSignalInput, ManualSignalResult } from "@/lib/signals/manual
 export async function addSignal(input: ManualSignalInput): Promise<ManualSignalResult> {
   const session = await requireSession();
   const result = await createManualSignal(session.user.tenantId, input);
+  if (result.ok) revalidatePath("/signals");
+  return result;
+}
+
+/**
+ * The signals browser's bulk-delete action, backing the floating selection
+ * bar's "Delete selected" button. `ids` arrives from the browser (the
+ * client's `selected` Set), so `deleteSignalRows` re-scopes to the session's
+ * tenant itself rather than trusting the caller.
+ */
+export async function deleteSignals(ids: string[]): Promise<DeleteSignalsResult> {
+  const session = await requireSession();
+  const result = await deleteSignalRows(session.user.tenantId, ids);
   if (result.ok) revalidatePath("/signals");
   return result;
 }

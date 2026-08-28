@@ -107,7 +107,7 @@ export function SignalRow({
   return (
     <div
       className={cn(
-        "flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3",
+        "flex items-start gap-3 rounded-lg border p-3",
         row.status === "stale" && "dashed-outline border-transparent opacity-85"
       )}
     >
@@ -123,8 +123,25 @@ export function SignalRow({
           checkbox
         )}
       </div>
+      {/* Content gets the row's full remaining width — the metadata cluster
+          (kind, source, timestamp, score, evidence) lives in its own wrapped
+          row underneath instead of squeezing the title from the right. */}
       <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-        <div className="flex flex-wrap items-center gap-2">
+        {row.url ? (
+          <a
+            href={row.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="truncate font-medium hover:underline"
+          >
+            {row.title}
+          </a>
+        ) : (
+          <span className="truncate font-medium">{row.title}</span>
+        )}
+        {row.excerpt && <p className="truncate text-xs text-muted-foreground">{row.excerpt}</p>}
+
+        <div className="flex flex-wrap items-center gap-2 pt-0.5">
           <Badge variant="secondary" className="shrink-0">
             {KIND_LABEL[row.kind]}
           </Badge>
@@ -133,31 +150,16 @@ export function SignalRow({
               {competitorName}
             </Badge>
           )}
-          {row.url ? (
-            <a
-              href={row.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="truncate font-medium hover:underline"
-            >
-              {row.title}
-            </a>
-          ) : (
-            <span className="truncate font-medium">{row.title}</span>
-          )}
+          {row.status !== "new" && <Badge variant="outline">{STATUS_LABEL[row.status]}</Badge>}
+          <ScoreBadge score={row.relevanceScore} rationale={row.relevanceRationale} />
+          <span className="text-xs text-muted-foreground">{DATE_FORMAT.format(row.occurredAt)}</span>
+          {/* Only `shipped_work` signals mirror an atomic update; `ai_visibility`
+              signals carry their evidence in the row's own `payload`. Every other
+              kind has nothing behind it, so no control is offered rather than one
+              that can only ever open an empty state. */}
+          {row.kind === "shipped_work" && <EvidenceDrawer signalId={row.id} title={row.title} />}
+          {row.kind === "ai_visibility" && <AiVisibilityEvidence signalId={row.id} title={row.title} />}
         </div>
-        {row.excerpt && <p className="truncate text-xs text-muted-foreground">{row.excerpt}</p>}
-      </div>
-      <div className="flex shrink-0 items-center gap-2">
-        <span className="text-xs text-muted-foreground">{DATE_FORMAT.format(row.occurredAt)}</span>
-        <ScoreBadge score={row.relevanceScore} rationale={row.relevanceRationale} />
-        {row.status !== "new" && <Badge variant="outline">{STATUS_LABEL[row.status]}</Badge>}
-        {/* Only `shipped_work` signals mirror an atomic update; `ai_visibility`
-            signals carry their evidence in the row's own `payload`. Every other
-            kind has nothing behind it, so no control is offered rather than one
-            that can only ever open an empty state. */}
-        {row.kind === "shipped_work" && <EvidenceDrawer signalId={row.id} title={row.title} />}
-        {row.kind === "ai_visibility" && <AiVisibilityEvidence signalId={row.id} title={row.title} />}
       </div>
     </div>
   );

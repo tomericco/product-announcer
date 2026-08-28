@@ -15,7 +15,7 @@ vi.mock("../../src/lib/workspace/session", () => ({
 
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 
-import { addSignal } from "../../src/app/(dashboard)/signals/actions";
+import { addSignal, deleteSignals } from "../../src/app/(dashboard)/signals/actions";
 import { revalidatePath } from "next/cache";
 
 afterEach(async () => {
@@ -73,5 +73,46 @@ describe("addSignal", () => {
     expect(theirs).toHaveLength(0);
     const rows = await db.select().from(signals).where(eq(signals.tenantId, mine.id));
     expect(rows).toHaveLength(1);
+  });
+});
+
+describe("deleteSignals", () => {
+  it("deletes the given signals under the session's tenant and revalidates /signals", async () => {
+    const tenant = await seedTenant();
+    const added = await addSignal({ title: "To delete", url: "https://example.com/x" });
+    vi.mocked(revalidatePath).mockClear();
+    if (!added.ok) throw new Error("setup failed");
+
+    const result = await deleteSignals([added.id]);
+
+    expect(result).toEqual({ ok: true, deletedCount: 1 });
+    expect(await db.select().from(signals).where(eq(signals.tenantId, tenant.id))).toHaveLength(0);
+    expect(revalidatePath).toHaveBeenCalledWith("/signals");
+  });
+
+  it("does not delete another tenant's signal, and does not revalidate on a no-op", async () => {
+    const mine = await seedTenant();
+    const [other] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const otherTenantId = other.id;
+    currentTenantId = otherTenantId;
+    const theirs = await addSignal({ title: "Theirs" });
+    if (!theirs.ok) throw new Error("setup failed");
+
+    currentTenantId = mine.id;
+    vi.mocked(revalidatePath).mockClear();
+    const result = await deleteSignals([theirs.id]);
+
+    expect(result).toEqual({ ok: true, deletedCount: 0 });
+    expect(await db.select().from(signals).where(eq(signals.tenantId, otherTenantId))).toHaveLength(1);
+  });
+
+  it("refuses an empty selection and does not revalidate", async () => {
+    await seedTenant();
+    vi.mocked(revalidatePath).mockClear();
+
+    const result = await deleteSignals([]);
+
+    expect(result).toEqual({ ok: false, error: "No signals selected." });
+    expect(revalidatePath).not.toHaveBeenCalled();
   });
 });

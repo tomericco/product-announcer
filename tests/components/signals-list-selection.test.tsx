@@ -8,16 +8,26 @@ import type { Signal } from "../../src/db/schema";
  * lives in a prop handed from one component to the other, so extracting a
  * helper and testing that would prove nothing about it.
  *
- * Two `"use server"` modules are mocked because they reach `@/db` and a model,
- * and the jsdom project has no DATABASE_URL — not to dodge an assertion.
- * `evidence-actions` is only pulled in transitively by `SignalRow`'s drawer
- * and is never called here.
+ * Three `"use server"`-backed things are mocked because they reach `@/db` (and,
+ * for propose, a model), and the jsdom project has no DATABASE_URL — not to
+ * dodge an assertion. `evidence-actions` is only pulled in transitively by
+ * `SignalRow`'s drawer and is never called here. `next/navigation` and `sonner`
+ * are mocked because `SignalsList` now calls `useRouter()` and `toast` for its
+ * delete flow (covered in `signals-list-delete.test.tsx`), and `useRouter`
+ * throws outside a mounted App Router.
  */
-const { proposeAndCreateBrief } = vi.hoisted(() => ({ proposeAndCreateBrief: vi.fn() }));
+const { proposeAndCreateBrief, deleteSignals, router, toast } = vi.hoisted(() => ({
+  proposeAndCreateBrief: vi.fn(),
+  deleteSignals: vi.fn(),
+  router: { refresh: vi.fn(), push: vi.fn() },
+  toast: { success: vi.fn(), error: vi.fn() },
+}));
 
 vi.mock("../../src/app/(dashboard)/signals/propose-actions", () => ({
   proposeAndCreateBrief: (signalIds: string[]) => proposeAndCreateBrief(signalIds),
 }));
+
+vi.mock("../../src/app/(dashboard)/signals/actions", () => ({ deleteSignals }));
 
 vi.mock("../../src/app/(dashboard)/signals/evidence-actions", () => ({
   loadSignalEvidence: vi.fn(),
@@ -29,6 +39,9 @@ vi.mock("../../src/app/(dashboard)/signals/evidence-actions", () => ({
   reassignEvidenceEvent: vi.fn(),
   removeEvidenceEvent: vi.fn(),
 }));
+
+vi.mock("next/navigation", () => ({ useRouter: () => router }));
+vi.mock("sonner", () => ({ toast }));
 
 import { SignalsList } from "../../src/app/(dashboard)/signals/signals-list";
 
@@ -82,7 +95,7 @@ describe("SignalsList — the selection after a brief is made", () => {
     renderList();
     await select("Signal one");
     await select("Signal two");
-    expect(screen.getByText("2 of 10 selected")).toBeInTheDocument();
+    expect(screen.getByText("2 of 10 signals selected")).toBeInTheDocument();
 
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Create brief" }));
@@ -93,7 +106,7 @@ describe("SignalsList — the selection after a brief is made", () => {
     // unmount the modal the user is reading, since this bar only renders
     // while something is selected.
     await waitFor(() => expect(screen.getByRole("button", { name: "Open brief" })).toBeInTheDocument());
-    expect(screen.getByText("2 of 10 selected")).toBeInTheDocument();
+    expect(screen.getByText("2 of 10 signals selected")).toBeInTheDocument();
 
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Close" }));
@@ -102,7 +115,7 @@ describe("SignalsList — the selection after a brief is made", () => {
     // The evidence has been spent. The old flow navigated to /briefs/new and
     // unmounted this list; the modal comes back here, so a second click would
     // otherwise commission a second brief from the same signals.
-    await waitFor(() => expect(screen.queryByText("2 of 10 selected")).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText("2 of 10 signals selected")).not.toBeInTheDocument());
     expect(screen.queryByRole("button", { name: "Create brief" })).not.toBeInTheDocument();
     expect(screen.getByLabelText("Select Signal one")).not.toBeChecked();
   });
@@ -122,7 +135,7 @@ describe("SignalsList — the selection after a brief is made", () => {
       fireEvent.click(screen.getByRole("button", { name: "Close" }));
     });
 
-    expect(screen.getByText("1 of 10 selected")).toBeInTheDocument();
+    expect(screen.getByText("1 of 10 signals selected")).toBeInTheDocument();
     expect(screen.getByLabelText("Select Signal one")).toBeChecked();
   });
 });

@@ -1,12 +1,26 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
+import { toast } from "sonner";
+import { X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { groupByMonth } from "@/lib/group-by-month";
 import { retainVisible } from "@/lib/signals/selection";
+import { cn } from "@/lib/utils";
 import type { Signal } from "@/db/schema";
 import { SignalRow } from "./signal-row";
 import { CreateBriefModal } from "./create-brief-modal";
+import { deleteSignals } from "./actions";
 
 /**
  * The signals browser's list, plus selection (spec 6: turning a chosen set
@@ -39,7 +53,10 @@ export function SignalsList({
   competitorsById: Map<string, string>;
   maxSelectable: number;
 }) {
+  const router = useRouter();
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [pendingDelete, setPendingDelete] = useState(false);
+  const [deleting, startDelete] = useTransition();
 
   // Filters navigate via `router.push` — a soft navigation — so this
   // component is never remounted when `rows` narrows; without this,
@@ -94,39 +111,113 @@ export function SignalsList({
     return null;
   }
 
+  // Captures the current selection at confirm time — `confirmDelete` is only
+  // ever invoked from the dialog this same render produced, so `selected`
+  // here is exactly what the dialog's "Delete N signals" copy showed.
+  function confirmDelete() {
+    const ids = [...selected];
+    startDelete(async () => {
+      try {
+        const result = await deleteSignals(ids);
+        if (!result.ok) {
+          toast.error(result.error);
+          return;
+        }
+        toast.success(`Deleted ${result.deletedCount} signal${result.deletedCount === 1 ? "" : "s"}`);
+        setPendingDelete(false);
+        setSelected(new Set());
+        router.refresh();
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Something went wrong. Nothing was deleted.");
+      }
+    });
+  }
+
   const monthGroups = groupByMonth(rows, (row) => row.occurredAt);
   const selectedIds = [...selected];
 
   return (
-    <div className="space-y-3">
+    // `pb-20` only while the (fixed, out-of-flow) bar is showing, so it
+    // never hides the last rows underneath it — the same reason a bar this
+    // tall can't just rely on the page's ordinary bottom padding.
+    <div className={cn("space-y-3", selectedIds.length > 0 && "pb-20")}>
+      {/* `fixed`, not `sticky`: `sticky` still occupies its own box in
+          normal flow, so mounting/unmounting it as the selection goes
+          from/to empty would shift every row below it. `fixed` removes it
+          from flow entirely — rows never reposition when the bar appears or
+          disappears.
+          `left-60` mirrors the sidebar's own `w-60` (`layout.tsx`) so the
+          bar's box spans exactly the content area next to it, not the full
+          viewport; the inner `max-w-4xl` mirrors `MainContainer`'s content
+          column on this (non-wide) route, so the bar lines up with the rows
+          above it instead of a differently-centered box. */}
       {selectedIds.length > 0 && (
-        <div className="flex flex-wrap items-center gap-3 rounded-lg border bg-muted/40 p-3">
-          <span className="text-sm font-medium">
-            {selectedIds.length} of {maxSelectable} selected
-          </span>
-          {atCap && <span className="text-xs text-muted-foreground">Maximum reached — deselect one to add another.</span>}
-          <div className="ml-auto flex items-center gap-2">
-            <Button variant="ghost" size="sm" onClick={() => setSelected(new Set())}>
-              Clear
-            </Button>
-            {/* Was a Link to /briefs/new?signals=… , whose server render
-                awaited a model call to pre-fill the form — a frozen
-                navigation with no feedback. The modal creates the brief in
-                place and reports the wait (spec B).
+        <div className="pointer-events-none fixed bottom-6 left-60 right-0 z-20 flex justify-center px-8">
+          <div className="pointer-events-auto flex w-full max-w-4xl flex-wrap items-center gap-3 rounded-xl border bg-background/95 p-3 shadow-lg backdrop-blur-sm">
+            <span className="text-sm font-medium">
+              {selectedIds.length} of {maxSelectable} signals selected
+            </span>
+            {atCap && (
+              <span className="text-xs text-muted-foreground">
+                Maximum reached — deselect one to add another.
+              </span>
+            )}
+            <div className="ml-auto flex items-center gap-2">
+              <Button variant="destructive" size="sm" onClick={() => setPendingDelete(true)}>
+                Delete selected
+              </Button>
+              {/* Was a Link to /briefs/new?signals=… , whose server render
+                  awaited a model call to pre-fill the form — a frozen
+                  navigation with no feedback. The modal creates the brief in
+                  place and reports the wait (spec B).
 
-                The selection is dropped once a brief has been made from it.
-                The old flow navigated away to `/briefs/new`, which unmounted
-                this component and cleared it; the modal returns here with
-                every row still ticked and the same button still live, so
-                clicking again would commission a second brief from the same
-                evidence. `onBriefCreated` fires when the modal is finished
-                showing the result, not the instant the row exists — clearing
-                sooner would unmount the modal out from under the user (this
-                bar only renders while something is selected). */}
-            <CreateBriefModal signalIds={selectedIds} onBriefCreated={() => setSelected(new Set())} />
+                  The selection is dropped once a brief has been made from it.
+                  The old flow navigated away to `/briefs/new`, which unmounted
+                  this component and cleared it; the modal returns here with
+                  every row still ticked and the same button still live, so
+                  clicking again would commission a second brief from the same
+                  evidence. `onBriefCreated` fires when the modal is finished
+                  showing the result, not the instant the row exists — clearing
+                  sooner would unmount the modal out from under the user (this
+                  bar only renders while something is selected). */}
+              <CreateBriefModal signalIds={selectedIds} onBriefCreated={() => setSelected(new Set())} />
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Clear selection"
+                onClick={() => setSelected(new Set())}
+              >
+                <X />
+              </Button>
+            </div>
           </div>
         </div>
       )}
+
+      {/* Same confirm shape as `board.tsx`'s delete dialog: a destructive
+          action gets a named count and an explicit "can't be undone" rather
+          than firing on the bar's click alone. */}
+      <Dialog open={pendingDelete} onOpenChange={(next) => !next && !deleting && setPendingDelete(false)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              Delete {selectedIds.length} signal{selectedIds.length === 1 ? "" : "s"}?
+            </DialogTitle>
+            <DialogDescription>
+              This can&rsquo;t be undone. Any of these cited in a brief lose that evidence link — the brief
+              itself stays.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <DialogClose render={<Button type="button" variant="ghost" disabled={deleting} />}>
+              Cancel
+            </DialogClose>
+            <Button type="button" variant="destructive" onClick={confirmDelete} disabled={deleting}>
+              {deleting ? "Deleting…" : "Delete"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {monthGroups.map((group) => (
         <section key={group.key} className="space-y-2">
