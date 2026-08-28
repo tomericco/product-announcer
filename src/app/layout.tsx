@@ -29,8 +29,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "versional | Automate your product updates",
-  description: "Turn your GitHub activity into product-update announcements, automatically.",
+  title: "Versional | A new era for growth teams",
+  description: "A new era for growth teams. Join the waitlist to find out first.",
 };
 
 export default function RootLayout({
