@@ -8,7 +8,10 @@ import {
   creditsByPeriod,
   monthToDateCredits,
   windowStart,
+  byokTokensByPeriod,
+  byokTokensMonthToDate,
 } from "../../../src/lib/usage/queries";
+import { getMonthlyCreditLimit } from "../../../src/lib/usage/limit";
 
 const NAME = "Usage Queries Test Tenant";
 const NOW = new Date("2026-08-28T10:00:00Z"); // a Friday; ISO week starts Mon 2026-08-24
@@ -141,5 +144,53 @@ describe("windowStart", () => {
     expect(windowStart("daily", NOW).toISOString()).toBe("2026-07-30T00:00:00.000Z");
     expect(windowStart("weekly", NOW).toISOString()).toBe("2026-06-08T00:00:00.000Z");
     expect(windowStart("monthly", NOW).toISOString()).toBe("2025-09-01T00:00:00.000Z");
+  });
+});
+
+describe("byokTokensByPeriod", () => {
+  it("selects only ai_visibility_engine rows, grouped by engine label", async () => {
+    const tenant = await seedTenant(NAME);
+    await seedRow(tenant.id, { totalTokens: 100 }); // credit row — excluded here
+    await seedRow(tenant.id, {
+      operation: "ai_visibility_engine",
+      model: "gpt-5.5-2026-04-23",
+      totalTokens: 200,
+    });
+    await seedRow(tenant.id, {
+      operation: "ai_visibility_engine",
+      model: "openai", // failure-path fallback model — same engine
+      totalTokens: 50,
+    });
+    await seedRow(tenant.id, {
+      operation: "ai_visibility_engine",
+      model: "claude-sonnet-4-5",
+      totalTokens: 30,
+    });
+
+    const points = await byokTokensByPeriod(tenant.id, "monthly", NOW);
+    expect(points).toContainEqual({ bucket: "2026-08", engine: "GPT", tokens: 250 });
+    expect(points).toContainEqual({ bucket: "2026-08", engine: "Claude", tokens: 30 });
+    expect(points.some((p) => p.engine === "Gemini")).toBe(false);
+  });
+});
+
+describe("byokTokensMonthToDate", () => {
+  it("sums the current UTC month's engine rows only", async () => {
+    const tenant = await seedTenant(NAME);
+    await seedRow(tenant.id, { totalTokens: 100 });
+    await seedRow(tenant.id, { operation: "ai_visibility_engine", totalTokens: 40 });
+    await seedRow(tenant.id, {
+      operation: "ai_visibility_engine",
+      totalTokens: 999,
+      createdAt: new Date("2026-07-15T00:00:00Z"),
+    });
+    expect(await byokTokensMonthToDate(tenant.id, NOW)).toBe(40);
+  });
+});
+
+describe("getMonthlyCreditLimit", () => {
+  it("returns null — no package model exists yet", async () => {
+    const tenant = await seedTenant(NAME);
+    expect(await getMonthlyCreditLimit(tenant.id)).toBeNull();
   });
 });

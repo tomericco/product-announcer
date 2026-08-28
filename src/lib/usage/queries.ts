@@ -1,7 +1,7 @@
 import { and, eq, gte, ne, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { llmUsage } from "@/db/schema";
-import { featureForOperation, type FeatureKey } from "@/lib/usage/features";
+import { featureForOperation, byokEngineLabel, type FeatureKey } from "@/lib/usage/features";
 
 /**
  * The usage tab's read side. Live GROUP BY over `llm_usage` — no rollup
@@ -163,4 +163,60 @@ export async function monthToDateCredits(tenantId: string, now: Date = new Date(
       )
     );
   return row?.credits ?? 0;
+}
+
+export type ByokPoint = { bucket: string; engine: string; tokens: number };
+
+/**
+ * The BYOK channel: tokens the AI-visibility sweeps spent on the TENANT'S OWN
+ * keys. Tracking only — never credits, never limited. Grouped by engine label
+ * because `model` holds a snapshot id on success and the engine id on billed
+ * failures; `byokEngineLabel` folds both onto one engine.
+ */
+export async function byokTokensByPeriod(
+  tenantId: string,
+  granularity: Granularity,
+  now: Date = new Date()
+): Promise<ByokPoint[]> {
+  const bucket = bucketExpr(granularity);
+  const rows = await db
+    .select({
+      bucket,
+      model: llmUsage.model,
+      tokens: sql<number>`coalesce(sum(coalesce(${llmUsage.totalTokens}, 0)), 0)::int`,
+    })
+    .from(llmUsage)
+    .where(
+      and(
+        eq(llmUsage.tenantId, tenantId),
+        eq(llmUsage.operation, BYOK_OPERATION),
+        gte(llmUsage.createdAt, windowStart(granularity, now))
+      )
+    )
+    .groupBy(bucket, llmUsage.model);
+
+  const merged = new Map<string, ByokPoint>();
+  for (const row of rows) {
+    const engine = byokEngineLabel(row.model);
+    const key = `${row.bucket}|${engine}`;
+    const existing = merged.get(key);
+    if (existing) existing.tokens += row.tokens;
+    else merged.set(key, { bucket: row.bucket, engine, tokens: row.tokens });
+  }
+  return [...merged.values()];
+}
+
+export async function byokTokensMonthToDate(tenantId: string, now: Date = new Date()): Promise<number> {
+  const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  const [row] = await db
+    .select({ tokens: sql<number>`coalesce(sum(coalesce(${llmUsage.totalTokens}, 0)), 0)::int` })
+    .from(llmUsage)
+    .where(
+      and(
+        eq(llmUsage.tenantId, tenantId),
+        eq(llmUsage.operation, BYOK_OPERATION),
+        gte(llmUsage.createdAt, monthStart)
+      )
+    );
+  return row?.tokens ?? 0;
 }
