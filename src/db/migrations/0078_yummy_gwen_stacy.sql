@@ -1,0 +1,1 @@
+ALTER TABLE "company_profiles" ADD COLUMN "product_update_template" text;

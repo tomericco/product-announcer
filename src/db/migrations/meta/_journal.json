@@ -547,6 +547,13 @@
       "when": 1787927091383,
       "tag": "0077_fearless_gauntlet",
       "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "7",
+      "when": 1788123380723,
+      "tag": "0078_yummy_gwen_stacy",
+      "breakpoints": true
     }
   ]
 }
