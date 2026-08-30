@@ -87,8 +87,18 @@ export async function loadOpenAtomicUpdates(
   return [...byId.values()];
 }
 
-/** Merge threshold for two same-batch `create` titles. */
-const TITLE_SIMILARITY_THRESHOLD = 0.8;
+/**
+ * A near-miss title may add or drop at most this many tokens (after
+ * normalization) and still be treated as the same change.
+ */
+const MAX_TITLE_TOKEN_DIFFERENCE = 1;
+
+/**
+ * Below this many tokens in the SHORTER title, a one-token difference is not
+ * a near-miss — it's a different, shorter title being subsumed by a longer
+ * one that happens to contain it (e.g. "Search" vs. "Faster search").
+ */
+const MIN_TITLE_TOKENS = 2;
 
 function titleTokens(title: string): Set<string> {
   return new Set(
@@ -108,17 +118,33 @@ function titleTokens(title: string): Set<string> {
  * the SAME title, so this is a tolerance band on an intended exact match, not
  * open-ended clustering — which is what makes widening the old exact-string
  * comparison safe. Merging two genuinely different updates is worse than
- * splitting one, so the threshold is deliberately strict, it applies only
- * within one batch's creates, and it never touches `assign`.
+ * splitting one, so the band is deliberately narrow, it applies only within
+ * one batch's creates, and it never touches `assign`.
+ *
+ * This used to be scored by token-set Jaccard similarity (shared / union) at
+ * a 0.8 threshold, but that metric is length-dependent: a one-word difference
+ * on a short title — the common case, since TITLE_SUMMARY_STYLE asks for a
+ * 2-3 token noun phrase — scores well below 0.8 and never merges, while the
+ * identical one-word difference on a long (~9+ token) title clears 0.8 and
+ * does merge. Whether a near-duplicate merged ended up depending more on
+ * title length than on how similar the titles actually were.
+ *
+ * Replaced with a bounded symmetric difference, which is length-independent:
+ * merge when the two token sets differ by at most MAX_TITLE_TOKEN_DIFFERENCE
+ * token, provided the smaller set has at least MIN_TITLE_TOKENS tokens. A
+ * 2-token pair and a 9-token pair are held to exactly the same standard. The
+ * minimum-size guard exists so a single-token title isn't merged into any
+ * longer title that contains it as a subset.
  */
 export function titlesMatch(a: string, b: string): boolean {
   const left = titleTokens(a);
   const right = titleTokens(b);
-  if (left.size === 0 || right.size === 0) return false;
+  if (Math.min(left.size, right.size) < MIN_TITLE_TOKENS) return false;
+
   let shared = 0;
   for (const token of left) if (right.has(token)) shared += 1;
-  const union = left.size + right.size - shared;
-  return shared / union >= TITLE_SIMILARITY_THRESHOLD;
+  const symmetricDifference = left.size + right.size - 2 * shared;
+  return symmetricDifference <= MAX_TITLE_TOKEN_DIFFERENCE;
 }
 
 /**

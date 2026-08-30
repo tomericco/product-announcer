@@ -294,12 +294,14 @@ describe("titlesMatch", () => {
     expect(titlesMatch("Shared Dashboards!", "  shared   dashboards ")).toBe(true);
   });
 
-  // "dashboards" and "dashboard" are different tokens, so token-set Jaccard
-  // scores 1/3 and does not merge. That is the honest outcome of the chosen
-  // algorithm, not a bug: merging two genuinely different atomic updates is a
-  // worse failure than leaving two near-duplicates unmerged, so the threshold
-  // is not tuned to catch this case.
-  it("does not merge a singular/plural near-miss — different tokens score 1/3", () => {
+  // "dashboards" and "dashboard" are different tokens: "shared" is the only
+  // token in common, so the symmetric difference is 2 (drops "dashboards",
+  // adds "dashboard") — over the MAX_TITLE_TOKEN_DIFFERENCE of 1, so this does
+  // not merge. That is the honest outcome of the chosen algorithm, not a bug:
+  // merging two genuinely different atomic updates is a worse failure than
+  // leaving two near-duplicates unmerged, so the bound is not tuned to catch
+  // this case.
+  it("does not merge a singular/plural near-miss — symmetric difference is 2", () => {
     expect(titlesMatch("Shared dashboards", "Shared dashboard")).toBe(false);
   });
 
@@ -310,5 +312,29 @@ describe("titlesMatch", () => {
   it("does NOT match two genuinely different changes", () => {
     expect(titlesMatch("Shared dashboards", "CSV export")).toBe(false);
     expect(titlesMatch("Faster search", "Faster export")).toBe(false);
+  });
+
+  // The whole point of the symmetric-difference rewrite: a one-word
+  // difference merges the same way regardless of title length, unlike the
+  // old Jaccard threshold which only fired on longer titles.
+  it("merges a one-word difference on a short title (2 vs 3 tokens)", () => {
+    expect(titlesMatch("Faster search", "Much faster search")).toBe(true);
+  });
+
+  it("merges a one-word difference on a long title (8 vs 9 tokens)", () => {
+    expect(
+      titlesMatch(
+        "One two three four five six seven eight",
+        "One two three four five six seven eight nine"
+      )
+    ).toBe(true);
+  });
+
+  // Without the MIN_TITLE_TOKENS guard, a single-token title would be
+  // subsumed by any longer title that contains it as a substring of tokens —
+  // symmetric difference here is 1, but "Search" is not the same change as
+  // "Faster search".
+  it("does not merge a one-token title into a longer title that contains it", () => {
+    expect(titlesMatch("Search", "Faster search")).toBe(false);
   });
 });
