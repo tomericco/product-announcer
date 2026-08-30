@@ -5,7 +5,11 @@ import type { UpdateDraft } from "./generation";
 import { resolveModel, modelId } from "./model";
 import { recordLlmUsage } from "./llm-usage";
 import type { OnDraftProgress } from "@/lib/drafting/draft-progress";
-import { truncateGuidelines } from "./compose-prompt";
+import {
+  fenceGuidelines,
+  GROUNDING_RULE,
+  NO_INVENTED_LINKS_RULE,
+} from "./prompt-rules";
 
 type BrandProfileRow = typeof companyProfiles.$inferSelect;
 
@@ -55,21 +59,19 @@ const REVIEW_SYSTEM = [
   "Do not rewrite the draft — only critique it.",
 ].join(" ");
 
-const REVISION_SYSTEM = [
+export const REVISION_SYSTEM = [
   "You are a product-update editor.",
   "Rewrite the draft to fix the listed brand-compliance issues while keeping the same facts.",
+  GROUNDING_RULE,
+  NO_INVENTED_LINKS_RULE,
   "Return only the revised title and body.",
 ].join(" ");
 
-// Wrapped in the same <brand-guidelines> delimiters buildSystemPrompt uses,
-// for the same reason: the document is the team's prose, not instructions to
-// the model, and it may itself contain a line like "Draft to review:" that
-// would otherwise be misread as part of this prompt's own structure.
+// The framing stays here; only the fence is shared. A tenant with no
+// guidelines still needs this fallback sentence, which prompt-rules has no
+// business knowing about.
 function brandRubric(brandProfile: BrandProfileRow): string {
-  const guidelines = truncateGuidelines(brandProfile.guidelines);
-  return guidelines
-    ? `<brand-guidelines>\n${guidelines}\n</brand-guidelines>`
-    : "No specific brand requirements are configured.";
+  return fenceGuidelines(brandProfile.guidelines) ?? "No specific brand requirements are configured.";
 }
 
 export function buildReviewPrompt(draft: UpdateDraft, brandProfile: BrandProfileRow): string {

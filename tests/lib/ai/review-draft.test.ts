@@ -3,7 +3,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 vi.mock("ai", () => ({ generateObject: vi.fn() }));
 
 import { generateObject } from "ai";
-import { buildReviewPrompt, buildRevisionPrompt, reviewAndReconcile } from "../../../src/lib/ai/review-draft";
+import { buildReviewPrompt, buildRevisionPrompt, reviewAndReconcile, REVISION_SYSTEM } from "../../../src/lib/ai/review-draft";
+import { GROUNDING_RULE, NO_INVENTED_LINKS_RULE } from "../../../src/lib/ai/prompt-rules";
 
 const draft = { title: "Big news!!!", body: "Buy now." };
 const brand = { guidelines: "Tone: calm. Do: be factual. Avoid: hype.", industry: null, userPersonas: [] };
@@ -126,5 +127,15 @@ describe("reviewAndReconcile", () => {
     expect(out.status).toBe("error");
     expect(out.finalDraft).toEqual(draft);
     expect(generateObject).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe("REVISION_SYSTEM", () => {
+  it("carries the grounding rule", () => {
+    expect(REVISION_SYSTEM).toContain(GROUNDING_RULE);
+  });
+
+  it("carries the no-invented-links rule", () => {
+    expect(REVISION_SYSTEM).toContain(NO_INVENTED_LINKS_RULE);
   });
 });

@@ -1,12 +1,10 @@
 import type { companyProfiles, ResolvedPersona, systemContentExamples } from "@/db/schema";
 import { contentTypeEnum } from "@/db/schema";
+import { DEFAULT_MAX_PROMPT_CHARS, fenceGuidelines, GROUNDING_RULE, NO_INVENTED_LINKS_RULE, truncateForPrompt } from "./prompt-rules";
 
 type BrandProfileRow = typeof companyProfiles.$inferSelect;
 type ExampleRow = typeof systemContentExamples.$inferSelect;
 export type ContentType = (typeof contentTypeEnum.enumValues)[number];
-
-const DEFAULT_MAX_PROMPT_CHARS = 24000;
-const MAX_GUIDELINES_CHARS = 6000;
 
 function renderExample(example: ExampleRow): string {
   const label = example.category ? `Example (${example.category}):` : "Example:";
@@ -15,20 +13,6 @@ function renderExample(example: ExampleRow): string {
 
 function renderPersona(persona: ResolvedPersona): string {
   return persona.description ? `${persona.name} (${persona.description}): ${persona.brief}` : `${persona.name}: ${persona.brief}`;
-}
-
-/**
- * The team's brand guidelines document, prepared for prompt injection: trimmed,
- * and capped so a very long document can't crowd out the material being
- * summarized. Returns null when nothing is configured, so callers omit the
- * block entirely rather than injecting an empty one.
- */
-export function truncateGuidelines(guidelines: string | null): string | null {
-  const trimmed = guidelines?.trim();
-  if (!trimmed) return null;
-  return trimmed.length > MAX_GUIDELINES_CHARS
-    ? `${trimmed.slice(0, MAX_GUIDELINES_CHARS)}\n…(truncated)`
-    : trimmed;
 }
 
 const ROLE_LINES: Record<ContentType, string> = {
@@ -63,8 +47,8 @@ export function buildSystemPrompt(
     contentType === "product_update"
       ? "Write only about this company's own product. Never name, compare to, or reference competitors or other companies."
       : "You may name other companies and respond to what they published or shipped, but only as the source material describes them. Never state a comparison, ranking, or claim about another company that the source material does not support.",
-    "Ground every statement strictly in the source material you are given. Only describe changes that appear in that material; never invent or embellish features, capabilities, benefits, use cases, metrics, numbers, dates, version names, quotes, or any other specifics. If a detail is not in the source, leave it out rather than guessing — an omission is always better than a fabrication.",
-    "Never fabricate links. Only include a URL if it appears verbatim in the source material; do not construct, complete, shorten, or recall a URL from memory, and do not guess a plausible one. If a link would be helpful but no verified URL is present in the source, write the literal placeholder [add link] in its place so an editor can fill it in — never emit a made-up or guessed URL.",
+    GROUNDING_RULE,
+    NO_INVENTED_LINKS_RULE,
     brandProfile.industry ? `Industry: ${brandProfile.industry}.` : null,
     personas.length > 0
       ? `Audience personas — tailor the update to appeal to each: ${personas.map(renderPersona).join(" ")}`
@@ -91,7 +75,7 @@ export function buildSystemPrompt(
   // So for other content types the guidelines are introduced as VOICE ONLY.
   // They are still the team's own words about how the company sounds; it is
   // their structural conventions that do not transfer.
-  const guidelines = truncateGuidelines(brandProfile.guidelines);
+  const guidelines = fenceGuidelines(brandProfile.guidelines);
   if (guidelines) {
     const framing =
       contentType === "product_update"
@@ -103,7 +87,7 @@ export function buildSystemPrompt(
             "do not add a category label, a date line, or a sign-off, and do not cite performance percentages or metrics.",
             "Never invent a detail in order to match a format they describe.",
           ].join(" ");
-    blocks.push(`${framing}\n<brand-guidelines>\n${guidelines}\n</brand-guidelines>`);
+    blocks.push(`${framing}\n${guidelines}`);
   }
 
   if (examples.length > 0) {
@@ -219,10 +203,7 @@ export function composeMergePrompt(args: {
   const base = buildSystemPrompt(args.brandProfile, args.personas, args.examples);
   const system = `${base}\n\nYou are revising an existing draft release note to fold in new material — you are not writing a fresh one. Preserve the current body's existing wording and structure wherever it still applies; integrate the new and changed items by editing and extending that text rather than rewriting it from scratch.`;
 
-  const currentBody =
-    args.currentBody.length > DEFAULT_MAX_PROMPT_CHARS
-      ? `${args.currentBody.slice(0, DEFAULT_MAX_PROMPT_CHARS)}\n…(truncated)`
-      : args.currentBody;
+  const currentBody = truncateForPrompt(args.currentBody);
 
   const sections = [`Current body (preserve this wording and structure where it still applies):\n${currentBody}`];
   if (args.newItems.length > 0) {
@@ -254,10 +235,7 @@ export function composeScopedEditPrompt(args: {
   const base = buildSystemPrompt(args.brandProfile, args.personas, args.examples);
   const system = `${base}\n\nYou are revising ONE excerpt of an existing product update, not writing a fresh one. Return only the revised excerpt as Markdown — no surrounding text, no explanation, no code fences. Match the voice and formatting of the rest of the update, and change only what the instruction asks; keep the facts and meaning otherwise intact.`;
 
-  const fullBody =
-    args.fullBody.length > DEFAULT_MAX_PROMPT_CHARS
-      ? `${args.fullBody.slice(0, DEFAULT_MAX_PROMPT_CHARS)}\n…(truncated)`
-      : args.fullBody;
+  const fullBody = truncateForPrompt(args.fullBody);
 
   const prompt = `Full update, for context only — do not return it:\n${fullBody}\n\nExcerpt to revise:\n${args.excerpt}\n\nInstruction: ${args.instruction}\n\nReturn only the revised excerpt.`;
   return { system, prompt };
@@ -279,10 +257,7 @@ export function composeWholeEditPrompt(args: {
   const base = buildSystemPrompt(args.brandProfile, args.personas, args.examples);
   const system = `${base}\n\nYou are revising an existing product update per an instruction — not writing a fresh one. Preserve the current wording and structure wherever the instruction doesn't call for a change; edit and extend rather than rewrite from scratch. Return the full revised body as Markdown — no explanation, no code fences.`;
 
-  const currentBody =
-    args.currentBody.length > DEFAULT_MAX_PROMPT_CHARS
-      ? `${args.currentBody.slice(0, DEFAULT_MAX_PROMPT_CHARS)}\n…(truncated)`
-      : args.currentBody;
+  const currentBody = truncateForPrompt(args.currentBody);
 
   const prompt = `Apply this instruction to the product update below and return the full revised body. Format as Markdown (short paragraphs, and bullet lists where helpful).\n\nInstruction: ${args.instruction}\n\nCurrent body:\n${currentBody}`;
   return { system, prompt };
@@ -311,10 +286,7 @@ export function composeExtractPrompt(args: {
     `Stay grounded strictly in the passage: keep every change it describes, and add no feature, benefit, ` +
     `metric, or detail that is not already there.`;
 
-  const excerpt =
-    args.excerpt.length > DEFAULT_MAX_PROMPT_CHARS
-      ? `${args.excerpt.slice(0, DEFAULT_MAX_PROMPT_CHARS)}\n…(truncated)`
-      : args.excerpt;
+  const excerpt = truncateForPrompt(args.excerpt);
 
   const sections = [`Passage to rewrite as its own update:\n${excerpt}`];
   const instruction = args.instruction.trim();
