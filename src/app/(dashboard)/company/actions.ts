@@ -48,6 +48,27 @@ export async function saveGuidelines(formData: FormData) {
 }
 
 /**
+ * Persists the product update template. Scoped to that one column for the same
+ * reason `saveGuidelines` is — see its comment: every card on this page saves
+ * itself, so widening this would read another card's absent fields as empty and
+ * null its column.
+ */
+export async function saveProductUpdateTemplate(formData: FormData) {
+  const session = await requireSession();
+  const profile = await getOrCreateCompanyProfile(session.user.tenantId);
+
+  await db
+    .update(companyProfiles)
+    .set({
+      productUpdateTemplate: (formData.get("productUpdateTemplate") as string)?.trim() || null,
+      updatedAt: new Date(),
+    })
+    .where(eq(companyProfiles.id, profile.id));
+
+  revalidatePath("/company");
+}
+
+/**
  * Persists the industry on its own, as soon as one is picked. Writes only its
  * own column, so it can't disturb an in-progress guidelines edit.
  */

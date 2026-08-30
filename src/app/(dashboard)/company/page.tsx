@@ -6,7 +6,7 @@ import { listCompetitors } from "@/lib/workspace/competitors";
 import { listCompetitorSources, getNewsSource } from "@/lib/signals/sources";
 import { getAiVisibilitySettings, getAiVisibilitySource } from "@/lib/ai-visibility/settings";
 import { listPrompts } from "@/lib/ai-visibility/prompts";
-import { saveGuidelines } from "./actions";
+import { saveGuidelines, saveProductUpdateTemplate } from "./actions";
 import { BrandStyleImport } from "./brand-style-import";
 import { CompanyContextForm } from "./company-context-form";
 import { CompetitorsEditor } from "./competitors-editor";
@@ -15,6 +15,7 @@ import { NewsToggle } from "./news-toggle";
 import { AiVisibilityCard } from "./ai-visibility-card";
 import { PersonasEditor } from "./personas-editor";
 import { GuidelinesEditor } from "./guidelines-editor";
+import { ProductUpdateTemplateEditor } from "./product-update-template-editor";
 import { VisualIdentityEditor } from "./visual-identity-editor";
 import { ChangeEventsSection } from "./change-events-section";
 import { AtomicUpdatesSection } from "./atomic-updates-section";
@@ -235,6 +236,36 @@ export default async function CompanyPage({
                 replaced Settings card used (`key={brandProfile.tone ?? ""}` etc). */}
             <GuidelinesEditor key={brandProfile.guidelines ?? ""} defaultValue={brandProfile.guidelines} />
 
+            <Button type="submit" variant="outline">
+              Save
+            </Button>
+          </ToastForm>
+        </CardContent>
+      </Card>
+
+      <Card id="product-update-template">
+        <CardHeader>
+          <CardTitle>Product update template</CardTitle>
+          <CardDescription>
+            The shape your product updates take — headings, section order, sign-off. Written as Markdown.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <ToastForm
+            action={saveProductUpdateTemplate}
+            successMessage="Product update template saved"
+            className="space-y-4"
+          >
+            {/* Keyed on the server value for the same reason as GuidelinesEditor
+                above: a brand re-import overwrites this column and refreshes the
+                page, but the editor seeds its own useState once and never looks
+                at `defaultValue` again -- without a key here it would keep
+                showing pre-import text, and the next Save would write that
+                stale text back over the freshly-derived template. */}
+            <ProductUpdateTemplateEditor
+              key={brandProfile.productUpdateTemplate ?? ""}
+              defaultValue={brandProfile.productUpdateTemplate}
+            />
             <Button type="submit" variant="outline">
               Save
             </Button>
