@@ -162,7 +162,7 @@ describe("usePacedStatuses — a deterministic step is held long enough to read"
     expect(statusOf("Collecting pending changes")).toBe("active");
 
     tick(MIN_STEP_VISIBLE_MS);
-    expect(statusOf("Preparing brand profile & examples")).toBe("active");
+    expect(statusOf("Preparing brand profile")).toBe("active");
     expect(statusOf("Generating the draft")).toBe("pending");
 
     tick(MIN_STEP_VISIBLE_MS);
@@ -235,7 +235,7 @@ describe("usePacedStatuses — the model call is never paced", () => {
     );
 
     announce(0);
-    expect(statusOf("Preparing brand profile & examples")).toBe("active");
+    expect(statusOf("Preparing brand profile")).toBe("active");
 
     tick(MIN_STEP_VISIBLE_MS);
     expect(statusOf("Generating the draft")).toBe("active");
@@ -368,7 +368,7 @@ describe("usePacedStatuses — terminal states are never paced", () => {
     // would walk the checklist forward underneath a result already on screen.
     tick(MIN_STEP_VISIBLE_MS * 2);
     expect(statusOf("Collecting pending changes")).toBe("active");
-    expect(statusOf("Preparing brand profile & examples")).toBe("pending");
+    expect(statusOf("Preparing brand profile")).toBe("pending");
   });
 
   it("resets to all-pending at once, so a fresh run starts from a clean checklist", () => {

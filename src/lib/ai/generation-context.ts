@@ -13,14 +13,15 @@ type Database = typeof defaultDb;
  * assembled this identically before it was shared — the compose run, the
  * whole-update edit, the extract split, and the scoped agent edit.
  *
- * `categories` biases example selection toward the kinds of changes being
- * written about. Only the compose run has categories to offer (from its atomic
- * updates); prose-driven callers pass none.
+ * The `categories` argument is gone. Its only caller was the release
+ * composition, which biased example selection by the categories of the atomic
+ * updates it was about to write up — and the release path no longer sends
+ * few-shot examples at all: the tenant's own product update template is the
+ * structural exemplar now. Nothing else ever had categories to offer.
  */
 export async function prepareGenerationContext(
   tenantId: string,
   database: Database = defaultDb,
-  categories: string[] = [],
   contentType: ContentType = "product_update"
 ): Promise<{
   brandProfile: typeof companyProfiles.$inferSelect;
@@ -35,7 +36,7 @@ export async function prepareGenerationContext(
     industry: brandProfile.industry,
     personaKeys: systemPersonaKeys(brandProfile.userPersonas),
     contentType,
-    categories,
+    categories: [],
   });
   return { brandProfile, personas, examples };
 }

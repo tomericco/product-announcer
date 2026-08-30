@@ -329,11 +329,11 @@ describe("the board's drop onto Draft, into the modal", () => {
 
     // The first poll fires on mount, with no interval to wait out.
     expect(statusOf(modal(), "Collecting pending changes")).toBe("active");
-    expect(statusOf(modal(), "Preparing brand profile & examples")).toBe("pending");
+    expect(statusOf(modal(), "Preparing brand profile")).toBe("pending");
 
     await advance(POLL_INTERVAL_MS);
     expect(statusOf(modal(), "Collecting pending changes")).toBe("done");
-    expect(statusOf(modal(), "Preparing brand profile & examples")).toBe("active");
+    expect(statusOf(modal(), "Preparing brand profile")).toBe("active");
 
     await advance(POLL_INTERVAL_MS);
     expect(statusOf(modal(), "Generating the draft")).toBe("active");
@@ -341,7 +341,7 @@ describe("the board's drop onto Draft, into the modal", () => {
     await advance(POLL_INTERVAL_MS);
     for (const label of [
       "Collecting pending changes",
-      "Preparing brand profile & examples",
+      "Preparing brand profile",
       "Generating the draft",
       "Reviewing against brand guidelines",
       "Saving the draft",
@@ -370,15 +370,15 @@ describe("the board's drop onto Draft, into the modal", () => {
     // The poll jumped. The checklist does not: the unsampled step is shown,
     // and the model call it skipped to is still pending.
     expect(statusOf(modal(), "Collecting pending changes")).toBe("done");
-    expect(statusOf(modal(), "Preparing brand profile & examples")).toBe("active");
+    expect(statusOf(modal(), "Preparing brand profile")).toBe("active");
     expect(statusOf(modal(), "Generating the draft")).toBe("pending");
 
     // Held for the full floor — one millisecond short, it is still there.
     await advance(MIN_STEP_VISIBLE_MS - 1);
-    expect(statusOf(modal(), "Preparing brand profile & examples")).toBe("active");
+    expect(statusOf(modal(), "Preparing brand profile")).toBe("active");
 
     await advance(1);
-    expect(statusOf(modal(), "Preparing brand profile & examples")).toBe("done");
+    expect(statusOf(modal(), "Preparing brand profile")).toBe("done");
     expect(statusOf(modal(), "Generating the draft")).toBe("active");
   });
 

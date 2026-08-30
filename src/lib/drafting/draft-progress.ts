@@ -37,7 +37,7 @@ export type ProgressStep<K extends string> = {
 
 export const DRAFT_STEPS: ProgressStep<DraftStepKey>[] = [
   { key: "collecting", label: "Collecting pending changes" },
-  { key: "preparing", label: "Preparing brand profile & examples" },
+  { key: "preparing", label: "Preparing brand profile" },
   // The model call the whole checklist is really waiting on.
   { key: "generating", label: "Generating the draft", slow: true },
   // Also a real model call, not bookkeeping: `generateDraftForPiece` runs

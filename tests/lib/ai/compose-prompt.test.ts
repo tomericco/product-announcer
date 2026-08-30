@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { buildSystemPrompt } from "../../../src/lib/ai/compose-prompt";
-import { serializeAtomicUpdates, composeReleasePrompt, composeMergePrompt } from "../../../src/lib/ai/compose-prompt";
+import { serializeAtomicUpdates, composeReleasePrompt, composeMergePrompt, fillTemplate } from "../../../src/lib/ai/compose-prompt";
 import { composeBriefPrompt, serializeBriefEvidence } from "../../../src/lib/ai/compose-prompt";
 
 describe("buildSystemPrompt", () => {
@@ -56,8 +56,8 @@ describe("buildSystemPrompt", () => {
 });
 
 const AUS = [
-  { id: "a1", title: "CSV export", summary: "Export reports as CSV.", category: "new" as const, size: "m" as const },
-  { id: "a2", title: "Faster search", summary: "Search returns in under a second.", category: "improvement" as const, size: "m" as const },
+  { id: "a1", title: "CSV export", summary: "Export reports as CSV.", category: "new" as const, size: "m" as const, sizeEditedAt: null, latestEvidenceAt: null },
+  { id: "a2", title: "Faster search", summary: "Search returns in under a second.", category: "improvement" as const, size: "m" as const, sizeEditedAt: null, latestEvidenceAt: null },
 ];
 
 describe("serializeAtomicUpdates", () => {
@@ -72,6 +72,7 @@ describe("serializeAtomicUpdates", () => {
   it("drops trailing items past maxChars with a note, keeping at least one", () => {
     const many = Array.from({ length: 50 }, (_, i) => ({
       id: `a${i}`, title: `Feature ${i}`, summary: "x".repeat(200), category: "new" as const, size: "m" as const,
+      sizeEditedAt: null, latestEvidenceAt: null,
     }));
     const text = serializeAtomicUpdates(many, 500);
     expect(text).toMatch(/more updates not shown/);
@@ -88,6 +89,7 @@ describe("composeReleasePrompt", () => {
       brandProfile: BASE_BRAND,
       personas: [],
       examples: [],
+      template: null,
     });
     expect(system).toContain("product update");
     expect(prompt).toContain("CSV export");
@@ -103,6 +105,7 @@ describe("composeMergePrompt", () => {
       brandProfile: BASE_BRAND,
       personas: [],
       examples: [],
+      template: null,
     });
     expect(prompt).toContain("We shipped CSV export last week.");
     expect(prompt).toContain("Faster search");
@@ -117,6 +120,7 @@ describe("composeMergePrompt", () => {
       brandProfile: BASE_BRAND,
       personas: [],
       examples: [],
+      template: null,
     });
     expect(prompt).toContain("CSV export");
     expect(prompt).toContain("Export reports as CSV.");
@@ -130,6 +134,7 @@ describe("composeMergePrompt", () => {
       brandProfile: BASE_BRAND,
       personas: [],
       examples: [],
+      template: null,
     });
     expect(system).toContain("product update");
     expect(system.toLowerCase()).toContain("preserve");
@@ -141,13 +146,14 @@ describe("size-aware composition", () => {
   it("serializes size + category and includes the size guidance", () => {
     const { prompt } = composeReleasePrompt({
       items: [
-        { id: "1", title: "Big feature", summary: "…", category: "new", size: "xl" },
-        { id: "2", title: "Tiny fix", summary: "…", category: "fix", size: "s" },
-        { id: "3", title: "Unsized", summary: "…", category: "improvement", size: null },
+        { id: "1", title: "Big feature", summary: "…", category: "new", size: "xl", sizeEditedAt: null, latestEvidenceAt: null },
+        { id: "2", title: "Tiny fix", summary: "…", category: "fix", size: "s", sizeEditedAt: null, latestEvidenceAt: null },
+        { id: "3", title: "Unsized", summary: "…", category: "improvement", size: null, sizeEditedAt: null, latestEvidenceAt: null },
       ],
       brandProfile: BASE_BRAND,
       personas: [],
       examples: [],
+      template: null,
     });
     expect(prompt).toContain(`"Big feature" (new, XL)`);
     expect(prompt).toContain(`"Tiny fix" (fix, S)`);
@@ -386,5 +392,120 @@ describe("serializeBriefEvidence", () => {
 
   it("handles an item with no excerpt", () => {
     expect(() => serializeBriefEvidence([{ title: "T", kind: "shipped_work", excerpt: null }])).not.toThrow();
+  });
+});
+
+const TEMPLATE_ITEM = {
+  id: "a1",
+  title: "Shared dashboards",
+  summary: "Share a dashboard with your team.",
+  category: "new" as const,
+  size: "l" as const,
+  sizeEditedAt: null,
+  latestEvidenceAt: new Date("2026-08-20T00:00:00Z"),
+};
+
+const EXAMPLE = {
+  category: "new",
+  title: "Dark mode",
+  body: "We shipped dark mode across the whole app.",
+} as never as Parameters<typeof buildSystemPrompt>[2][number];
+
+describe("composeReleasePrompt with a template", () => {
+  const base = { items: [TEMPLATE_ITEM], brandProfile: PROFILE, personas: [], examples: [] };
+
+  it("fences the template", () => {
+    const { prompt } = composeReleasePrompt({ ...base, template: "# Updates\n\n## Highlights\n" });
+    expect(prompt).toContain("<template>");
+    expect(prompt).toContain("</template>");
+    expect(prompt).toContain("## Highlights");
+  });
+
+  it("substitutes variables before the model sees them", () => {
+    const { prompt } = composeReleasePrompt({ ...base, template: "# {count} updates in {month}\n" });
+    expect(prompt).toContain("1 updates in August");
+    expect(prompt).not.toContain("{count}");
+    expect(prompt).not.toContain("{month}");
+  });
+
+  it("orders items most-significant-first", () => {
+    const small = { ...TEMPLATE_ITEM, id: "a2", title: "Tiny fix", size: "s" as const };
+    const { prompt } = composeReleasePrompt({ ...base, items: [small, TEMPLATE_ITEM], template: "## Highlights\n" });
+    expect(prompt.indexOf("Shared dashboards")).toBeLessThan(prompt.indexOf("Tiny fix"));
+  });
+
+  it("tells the model the numbers are authoritative", () => {
+    const { prompt } = composeReleasePrompt({ ...base, template: "# {count} updates\n" });
+    expect(prompt.toLowerCase()).toContain("authoritative");
+  });
+
+  it("lets a human-pinned size win a tie against an unpinned one", () => {
+    const pinned = { ...TEMPLATE_ITEM, id: "a3", title: "Pinned change", sizeEditedAt: new Date("2026-08-01T00:00:00Z") };
+    const { prompt } = composeReleasePrompt({ ...base, items: [TEMPLATE_ITEM, pinned], template: "## Highlights\n" });
+    expect(prompt.indexOf("Pinned change")).toBeLessThan(prompt.indexOf("Shared dashboards"));
+  });
+
+  it("dates the period from the work's evidence, not the composition date", () => {
+    // {month}/{year} describe the period the work landed in. A changelog
+    // written in September about August work says August.
+    const { prompt } = composeReleasePrompt({ ...base, template: "# {month} {year}\n" });
+    expect(prompt).toContain("August 2026");
+  });
+});
+
+describe("fillTemplate", () => {
+  it("derives the evidence date itself, so a caller cannot get it wrong", () => {
+    const older = { ...TEMPLATE_ITEM, id: "a4", latestEvidenceAt: new Date("2026-07-01T00:00:00Z") };
+    // Task 7's reviewer calls this on the same items and must agree with the
+    // composer about what {count} and {month} were.
+    expect(fillTemplate("{count} in {month}", [TEMPLATE_ITEM, older])).toBe("2 in August");
+  });
+
+  it("falls back to the composition date when no item carries evidence", () => {
+    const undated = { ...TEMPLATE_ITEM, latestEvidenceAt: null };
+    const thisYear = String(new Date().getUTCFullYear());
+    expect(fillTemplate("{year}", [undated])).toBe(thisYear);
+  });
+});
+
+describe("composeMergePrompt with a template", () => {
+  it("fences the template and frames it as the shape the body already follows", () => {
+    const { system, prompt } = composeMergePrompt({
+      currentBody: "## Highlights\n\nExisting text.",
+      newItems: [TEMPLATE_ITEM],
+      changedItems: [],
+      brandProfile: PROFILE,
+      personas: [],
+      examples: [],
+      template: "## Highlights\n\n## Fixes\n",
+    });
+    expect(prompt + system).toContain("## Fixes");
+  });
+
+  it("renders today's prompt when no template is configured", () => {
+    const { prompt } = composeMergePrompt({
+      currentBody: "body", newItems: [TEMPLATE_ITEM], changedItems: [],
+      brandProfile: PROFILE, personas: [], examples: [], template: null,
+    });
+    expect(prompt).not.toContain("<template>");
+  });
+});
+
+describe("composeReleasePrompt without a template", () => {
+  it("renders exactly what it rendered before templates existed", () => {
+    const withNull = composeReleasePrompt({
+      items: [TEMPLATE_ITEM], brandProfile: PROFILE, personas: [], examples: [], template: null,
+    });
+    expect(withNull.prompt).toContain("Here are the changes to summarize into one product update.");
+    expect(withNull.prompt).not.toContain("<template>");
+  });
+});
+
+describe("buildSystemPrompt for product updates", () => {
+  it("no longer carries few-shot examples", () => {
+    const { system } = composeReleasePrompt({
+      items: [TEMPLATE_ITEM], brandProfile: PROFILE, personas: [], examples: [EXAMPLE], template: null,
+    });
+    expect(system).not.toContain(EXAMPLE.body);
   });
 });

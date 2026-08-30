@@ -75,19 +75,18 @@ describe("prepareGenerationContext", () => {
     }
   });
 
-  it("passes categories through to example selection", async () => {
+  it("selects examples without a category bias", async () => {
     const tenant = await seedTenant(TENANT_NAME);
 
     try {
-      // Both rows share an industry unique to this test, so both score
-      // identically (industry match, no persona match) and both are
-      // candidates regardless of `categories` — `selectExamples` filters
-      // candidates by industry/persona match, then RANKS them by category
-      // match as a tiebreaker (see src/lib/ai/select-examples.ts). So the
-      // observable effect of `categories` here is ranking, not inclusion:
-      // the "new" example has the lower sort_order, so it sorts first when
-      // no category is requested; requesting "fix" should promote the fix
-      // example ahead of it despite its higher sort_order.
+      // The `categories` argument is gone (spec 2026-08-30, task 6): its only
+      // caller was the release composition, and that path no longer sends
+      // few-shot examples at all — the tenant's own product update template is
+      // the structural exemplar now. What survives is the rest of the
+      // selection: both rows share an industry unique to this test, so both
+      // score identically (industry match, no persona match) and both are
+      // candidates; with no category left to tip the ranking, the lower
+      // sort_order leads.
       await db.insert(systemContentExamples).values([
         {
           key: EXAMPLE_KEY_NEW,
@@ -116,11 +115,10 @@ describe("prepareGenerationContext", () => {
         .set({ industry: EXAMPLE_INDUSTRY })
         .where(eq(companyProfiles.tenantId, tenant.id));
 
-      const withNone = await prepareGenerationContext(tenant.id, db);
-      const withFix = await prepareGenerationContext(tenant.id, db, ["fix"]);
+      const context = await prepareGenerationContext(tenant.id, db);
 
-      expect(withNone.examples[0]?.key).toBe(EXAMPLE_KEY_NEW);
-      expect(withFix.examples[0]?.key).toBe(EXAMPLE_KEY_FIX);
+      expect(context.examples.map((e) => e.key)).toContain(EXAMPLE_KEY_FIX);
+      expect(context.examples[0]?.key).toBe(EXAMPLE_KEY_NEW);
     } finally {
       await db.delete(systemContentExamples).where(eq(systemContentExamples.key, EXAMPLE_KEY_NEW));
       await db.delete(systemContentExamples).where(eq(systemContentExamples.key, EXAMPLE_KEY_FIX));

@@ -22,21 +22,28 @@ export type StartOverDeps = {
   generateDraft?: typeof generateReleaseDraft;
 };
 
+/**
+ * `latestEvidenceAt` is deliberately null here. It is a MAX() over the atomic
+ * update's linked change events, and both of this module's queries read plain
+ * `atomicUpdates` rows — `computeReleaseDelta`'s two concurrent sub-queries and
+ * `startOverRelease`'s in-transaction read-back — neither of which can carry
+ * the join without being restructured around it. Null is a real degradation
+ * path, not a stub: the template's {month}/{year} then describe the
+ * composition date instead of the work's period, which for a catch-up (run
+ * days after the original composition, on work that just landed) is off by at
+ * most a month boundary. `src/lib/briefs/draft.ts` — the path that composes
+ * from scratch, where the period actually matters — does carry the aggregate.
+ */
 function toPromptItem(row: AtomicUpdateRow): AtomicUpdateForPrompt {
-  return { id: row.id, title: row.title, summary: row.summary, category: row.category, size: row.size };
-}
-
-/** Distinct non-null categories among a set of atomic updates, used to bias
- * example selection toward examples about the same kinds of changes — mirrors
- * `atomicUpdateCategories` in `src/lib/briefs/draft.ts` (which is where it moved
- * when `src/lib/drafting/compose-draft.ts` retired with the atomic-updates
- * drafting path). */
-function distinctCategories(items: { category: string | null }[]): string[] {
-  const seen = new Set<string>();
-  for (const item of items) {
-    if (item.category !== null) seen.add(item.category);
-  }
-  return [...seen];
+  return {
+    id: row.id,
+    title: row.title,
+    summary: row.summary,
+    category: row.category,
+    size: row.size,
+    sizeEditedAt: row.sizeEditedAt,
+    latestEvidenceAt: null,
+  };
 }
 
 async function loadPromptContext(tenantId: string) {
@@ -105,7 +112,7 @@ export async function catchUpRelease(contentPieceId: string, deps: CatchUpDeps =
     industry: brandProfile.industry,
     personaKeys: systemPersonaKeys(brandProfile.userPersonas),
     contentType: "product_update",
-    categories: distinctCategories([...newItems, ...changedItems]),
+    categories: [],
   });
 
   const draft = await mergeDraft({
@@ -115,6 +122,7 @@ export async function catchUpRelease(contentPieceId: string, deps: CatchUpDeps =
     brandProfile,
     personas,
     examples,
+    template: brandProfile.productUpdateTemplate,
   });
 
   // Replace any unresolvable link with an [add link] placeholder before the
@@ -178,10 +186,12 @@ export async function startOverRelease(contentPieceId: string, deps: StartOverDe
     industry: brandProfile.industry,
     personaKeys: systemPersonaKeys(brandProfile.userPersonas),
     contentType: "product_update",
-    categories: distinctCategories(fullItems),
+    categories: [],
   });
 
-  const draft = await generateDraft(fullItems, brandProfile, personas, examples);
+  // Positional, so the empty `evidence` slot is explicit: a catch-up has no
+  // brief evidence to carry, and the template is the sixth argument.
+  const draft = await generateDraft(fullItems, brandProfile, personas, examples, [], brandProfile.productUpdateTemplate);
 
   const { body: validatedBody } = await validateDraftLinks(draft.body);
 

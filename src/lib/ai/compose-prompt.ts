@@ -1,6 +1,15 @@
 import type { companyProfiles, ResolvedPersona, systemContentExamples } from "@/db/schema";
 import { contentTypeEnum } from "@/db/schema";
-import { DEFAULT_MAX_PROMPT_CHARS, fenceGuidelines, GROUNDING_RULE, NO_INVENTED_LINKS_RULE, truncateForPrompt } from "./prompt-rules";
+import {
+  DEFAULT_MAX_PROMPT_CHARS,
+  fenceGuidelines,
+  GROUNDING_RULE,
+  NO_INVENTED_LINKS_RULE,
+  SIZE_RANK,
+  truncateForPrompt,
+  type SizeKey,
+} from "./prompt-rules";
+import { parseTemplate, substituteVariables } from "./template";
 
 type BrandProfileRow = typeof companyProfiles.$inferSelect;
 type ExampleRow = typeof systemContentExamples.$inferSelect;
@@ -108,7 +117,46 @@ export type AtomicUpdateForPrompt = {
   summary: string;
   category: "new" | "improvement" | "fix" | "announcement" | null;
   size: "s" | "m" | "l" | "xl" | null;
+  // Non-null means a human set the size. Breaks ties in the composer's sort:
+  // a human who picked a size is a stronger signal than a Haiku call on a
+  // one-line summary.
+  sizeEditedAt: Date | null;
+  // The most recent real-world date among this update's evidence. Feeds
+  // {month}/{year}, which must describe the work's period, not the
+  // composition date.
+  latestEvidenceAt: Date | null;
 };
+
+/**
+ * Most significant first. A sort, not an assignment: which change leads is the
+ * model's editorial call, but it should read them in the order that matters.
+ * An earlier design assigned items to named template slots deterministically —
+ * cut, because a template with fixed sections already prevents the failure that
+ * motivated it. See the spec's Part 1.
+ */
+function bySignificance(a: AtomicUpdateForPrompt, b: AtomicUpdateForPrompt): number {
+  const rank = (item: AtomicUpdateForPrompt) => SIZE_RANK[(item.size ?? "m") as SizeKey];
+  return (
+    rank(b) - rank(a) ||
+    Number(Boolean(b.sizeEditedAt)) - Number(Boolean(a.sizeEditedAt))
+  );
+}
+
+/**
+ * The template as the model will see it: variables replaced from these items.
+ *
+ * Exported, and deriving `latestEvidenceAt` itself, because the reviewer needs
+ * the SAME substituted string the composer produced. Two call sites each
+ * assembling their own `TemplateFacts` is how the composer and the reviewer end
+ * up disagreeing about what `{count}` was.
+ */
+export function fillTemplate(template: string, items: AtomicUpdateForPrompt[]): string {
+  const latestEvidenceAt = items.reduce<Date | null>(
+    (max, item) => (item.latestEvidenceAt && (!max || item.latestEvidenceAt > max) ? item.latestEvidenceAt : max),
+    null
+  );
+  return substituteVariables(template, { items, latestEvidenceAt });
+}
 
 function formatAtomicUpdate(item: AtomicUpdateForPrompt, index: number): string {
   const parts = [item.category, item.size ? item.size.toUpperCase() : null].filter(Boolean);
@@ -165,6 +213,18 @@ export function serializeAtomicUpdates(
  * It is fenced as context, not as material to announce: a news article a brief
  * cited is background for how the update is framed, not something this company
  * shipped.
+ *
+ * `template` is the tenant's product update template, or null when they have
+ * none — which is every tenant that has not re-imported since the template was
+ * introduced. The NULL BRANCH MUST RENDER BYTE-FOR-BYTE what this function
+ * rendered before templates existed: it is the live path, and a refactor that
+ * drifts it silently changes every existing tenant's output.
+ *
+ * `examples` is still accepted but no longer reaches the system prompt on this
+ * path (see the `[]` below). A tenant with a real template does not need a
+ * stranger's changelog to imitate, and a tenant without one was getting generic
+ * exemplars fighting their own guidelines. The parameter stays because blog and
+ * social still use it.
  */
 export function composeReleasePrompt(args: {
   items: AtomicUpdateForPrompt[];
@@ -172,6 +232,7 @@ export function composeReleasePrompt(args: {
   personas: ResolvedPersona[];
   examples: ExampleRow[];
   evidence?: BriefEvidenceForPrompt[];
+  template: string | null;
 }): { system: string; prompt: string } {
   const evidence = args.evidence ?? [];
   const context =
@@ -179,9 +240,32 @@ export function composeReleasePrompt(args: {
       ? `\n\nBackground the brief cited — context for framing only. None of it is work this company shipped, so do not announce any of it as a change; ground anything you take from it strictly in what it says.\n<sources>\n${serializeBriefEvidence(evidence)}\n</sources>`
       : "";
 
+  const system = buildSystemPrompt(args.brandProfile, args.personas, [], "product_update");
+
+  if (!args.template) {
+    return {
+      system,
+      prompt: `Here are the changes to summarize into one product update. Format the body as Markdown (short paragraphs, and bullet lists where helpful). ${SIZE_GUIDANCE}\n\n${serializeAtomicUpdates(args.items)}${context}`,
+    };
+  }
+
+  const sorted = [...args.items].sort(bySignificance);
+  const { titlePattern, bodySkeleton } = parseTemplate(fillTemplate(args.template, sorted));
+
+  const instruction = [
+    "Write one product update following the template below.",
+    "Reproduce the template's structure exactly — its sections, their order, its headings and any sign-off —",
+    "placing each change where it belongs. Omit a section you have nothing to put in rather than inventing filler,",
+    "and add no section the template does not have.",
+    titlePattern
+      ? `The title must follow this pattern: ${titlePattern}`
+      : "Write a title in the company's usual style; the template does not prescribe one.",
+    "Any number already present in the template is authoritative: never recompute it, and never adjust it to match your own prose.",
+  ].join(" ");
+
   return {
-    system: buildSystemPrompt(args.brandProfile, args.personas, args.examples),
-    prompt: `Here are the changes to summarize into one product update. Format the body as Markdown (short paragraphs, and bullet lists where helpful). ${SIZE_GUIDANCE}\n\n${serializeAtomicUpdates(args.items)}${context}`,
+    system,
+    prompt: `${instruction}\n\n<template>\n${bodySkeleton}\n</template>\n\nThe changes to place into it, most significant first:\n${serializeAtomicUpdates(sorted)}${context}`,
   };
 }
 
@@ -199,9 +283,27 @@ export function composeMergePrompt(args: {
   brandProfile: BrandProfileRow;
   personas: ResolvedPersona[];
   examples: ExampleRow[];
+  template: string | null;
 }): { system: string; prompt: string } {
-  const base = buildSystemPrompt(args.brandProfile, args.personas, args.examples);
-  const system = `${base}\n\nYou are revising an existing draft release note to fold in new material — you are not writing a fresh one. Preserve the current body's existing wording and structure wherever it still applies; integrate the new and changed items by editing and extending that text rather than rewriting it from scratch.`;
+  const base = buildSystemPrompt(args.brandProfile, args.personas, [], "product_update");
+
+  // The template is framed as the shape the body ALREADY has, not as a target
+  // to restructure toward — this call's whole stance is "revise, don't
+  // rewrite", and handing the model a skeleton without that framing invites it
+  // to reformat prose a human may have edited.
+  //
+  // Only the body skeleton is carried: the title is preserved on this path, so
+  // a title pattern has nothing to act on. Variables are substituted over the
+  // DELTA's items, not the release's full set, because the delta is all this
+  // call is given — so a count in the skeleton describes the fold-in, not the
+  // finished piece. Harmless in practice (headline counts live in the H1, which
+  // `parseTemplate` strips here) and still better than showing the model a raw
+  // `{count}` to guess at.
+  const templateNote = args.template
+    ? `\n\nThe current body follows the company's product update template, reproduced below. Fold the new material into its existing sections rather than adding sections of your own; do not restructure text that already fits.\n<template>\n${parseTemplate(fillTemplate(args.template, [...args.newItems, ...args.changedItems])).bodySkeleton}\n</template>`
+    : "";
+
+  const system = `${base}\n\nYou are revising an existing draft release note to fold in new material — you are not writing a fresh one. Preserve the current body's existing wording and structure wherever it still applies; integrate the new and changed items by editing and extending that text rather than rewriting it from scratch.${templateNote}`;
 
   const currentBody = truncateForPrompt(args.currentBody);
 
