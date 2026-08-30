@@ -102,6 +102,7 @@ describe("composeMergePrompt", () => {
       currentBody: "## What's new\nWe shipped CSV export last week.",
       newItems: [AUS[1]],
       changedItems: [],
+      releaseItems: AUS,
       brandProfile: BASE_BRAND,
       personas: [],
       examples: [],
@@ -117,6 +118,7 @@ describe("composeMergePrompt", () => {
       currentBody: "Existing body.",
       newItems: [],
       changedItems: [AUS[0]],
+      releaseItems: AUS,
       brandProfile: BASE_BRAND,
       personas: [],
       examples: [],
@@ -131,6 +133,7 @@ describe("composeMergePrompt", () => {
       currentBody: "Existing body.",
       newItems: [AUS[0]],
       changedItems: [],
+      releaseItems: AUS,
       brandProfile: BASE_BRAND,
       personas: [],
       examples: [],
@@ -474,6 +477,7 @@ describe("composeMergePrompt with a template", () => {
       currentBody: "## Highlights\n\nExisting text.",
       newItems: [TEMPLATE_ITEM],
       changedItems: [],
+      releaseItems: [TEMPLATE_ITEM],
       brandProfile: PROFILE,
       personas: [],
       examples: [],
@@ -482,9 +486,67 @@ describe("composeMergePrompt with a template", () => {
     expect(prompt + system).toContain("## Fixes");
   });
 
+  it("counts the whole release, not just the delta being folded in", () => {
+    // The delta is what the model is asked to fold in; the template's numbers
+    // describe the FINISHED piece. Substituting over the delta put "1 updates"
+    // into the skeleton of a three-update release — invisible in the H1 (which
+    // `parseTemplate` strips) but not in a body section.
+    const others = [
+      { ...TEMPLATE_ITEM, id: "b1", title: "Already written up" },
+      { ...TEMPLATE_ITEM, id: "b2", title: "Also already written up" },
+    ];
+    const { system } = composeMergePrompt({
+      currentBody: "## This month\n\n2 updates this month.",
+      newItems: [TEMPLATE_ITEM],
+      changedItems: [],
+      releaseItems: [...others, TEMPLATE_ITEM],
+      brandProfile: PROFILE,
+      personas: [],
+      examples: [],
+      template: "## {count} updates this month\n",
+    });
+    expect(system).toContain("3 updates this month");
+    expect(system).not.toContain("1 updates this month");
+  });
+
+  it("tells the model the numbers are authoritative, as the release path does", () => {
+    const { system } = composeMergePrompt({
+      currentBody: "body",
+      newItems: [TEMPLATE_ITEM],
+      changedItems: [],
+      releaseItems: [TEMPLATE_ITEM],
+      brandProfile: PROFILE,
+      personas: [],
+      examples: [],
+      template: "## {count} updates\n",
+    });
+    expect(system.toLowerCase()).toContain("authoritative");
+  });
+
+  it("drops the size guidance when a template is present, and keeps it when it is not", () => {
+    // SIZE_GUIDANCE prescribes its own structure ("gather them into a single
+    // bulleted list"), which contradicts a skeleton's literal sections. The
+    // release path already omits it under a template; these must not disagree.
+    const base = {
+      currentBody: "body",
+      newItems: [TEMPLATE_ITEM],
+      changedItems: [],
+      releaseItems: [TEMPLATE_ITEM],
+      brandProfile: PROFILE,
+      personas: [],
+      examples: [],
+    };
+    const templated = composeMergePrompt({ ...base, template: "## Highlights\n" });
+    expect(templated.prompt).not.toContain("gather them into a single bulleted list");
+
+    const untemplated = composeMergePrompt({ ...base, template: null });
+    expect(untemplated.prompt).toContain("gather them into a single bulleted list");
+  });
+
   it("renders today's prompt when no template is configured", () => {
     const { prompt } = composeMergePrompt({
       currentBody: "body", newItems: [TEMPLATE_ITEM], changedItems: [],
+      releaseItems: [TEMPLATE_ITEM],
       brandProfile: PROFILE, personas: [], examples: [], template: null,
     });
     expect(prompt).not.toContain("<template>");

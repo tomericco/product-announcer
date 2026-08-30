@@ -853,6 +853,38 @@ describe("generateDraftForPiece — release fork", () => {
     expect(items[0].latestEvidenceAt?.toISOString()).toBe(newest.toISOString());
   });
 
+  it("ignores a change event belonging to another tenant", async () => {
+    // `changeEvents.atomicUpdateId` is a plain FK, exactly like
+    // `signals.atomicUpdateId` — a bad or migrated row can point across the
+    // tenant boundary. Without the tenant predicate on the join, another
+    // tenant's date decides this tenant's {month}/{year}.
+    const tenant = await seedTenant();
+    // Same fixture name, so the afterEach's delete-by-name cleans both.
+    const other = await seedTenant();
+    const { piece, brief } = await seedProductUpdate(tenant.id);
+    const { atomicUpdate } = await seedShippedWork({ tenantId: tenant.id, briefId: brief.id });
+
+    await db.insert(changeEvents).values({
+      tenantId: other.id,
+      type: "pull_request" as const,
+      provider: "github" as const,
+      externalId: `pr-foreign-${atomicUpdate.id}`,
+      atomicUpdateId: atomicUpdate.id,
+      mergedAt: new Date("2026-08-20T00:00:00Z"),
+    });
+
+    const generateRelease = vi.fn(async () => ({ title: "Release title", body: "Release body." }));
+    await generateDraftForPiece(piece.id, tenant.id, {
+      database: db,
+      generate: vi.fn(async () => ({ title: "Brief title", body: "Brief body." })),
+      generateRelease,
+      review: passingReview,
+    });
+
+    const [items] = generateRelease.mock.calls[0] as unknown as [{ latestEvidenceAt: Date | null }[]];
+    expect(items[0].latestEvidenceAt).toBeNull();
+  });
+
   it("leaves the evidence date null when the atomic update has no dated change events", async () => {
     const tenant = await seedTenant();
     const { piece, brief } = await seedProductUpdate(tenant.id);

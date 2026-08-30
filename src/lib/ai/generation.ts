@@ -70,6 +70,8 @@ export async function mergeReleaseDraft(args: {
   currentBody: string;
   newItems: AtomicUpdateForPrompt[];
   changedItems: AtomicUpdateForPrompt[];
+  /** Every atomic update the finished release carries; see `composeMergePrompt`. */
+  releaseItems: AtomicUpdateForPrompt[];
   brandProfile: BrandProfileRow;
   personas?: ResolvedPersona[];
   examples?: ExampleRow[];
@@ -79,6 +81,7 @@ export async function mergeReleaseDraft(args: {
     currentBody: args.currentBody,
     newItems: args.newItems,
     changedItems: args.changedItems,
+    releaseItems: args.releaseItems,
     brandProfile: args.brandProfile,
     personas: args.personas ?? [],
     examples: args.examples ?? [],

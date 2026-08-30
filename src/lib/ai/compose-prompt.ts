@@ -280,6 +280,18 @@ export function composeMergePrompt(args: {
   currentBody: string;
   newItems: AtomicUpdateForPrompt[];
   changedItems: AtomicUpdateForPrompt[];
+  /**
+   * EVERY atomic update the finished release will carry — the ones already
+   * written up plus the delta being folded in — not just the delta.
+   *
+   * The template's variables are computed from this, and only from this. A
+   * `{count}` substituted over the delta would put "2 updates this month" into
+   * the skeleton of a nine-update release: `parseTemplate` strips the leading
+   * H1, so a headline count never reaches the model, but a count inside a body
+   * section does. Required rather than optional so a caller has to go and find
+   * the full set instead of defaulting to the delta it already has in hand.
+   */
+  releaseItems: AtomicUpdateForPrompt[];
   brandProfile: BrandProfileRow;
   personas: ResolvedPersona[];
   examples: ExampleRow[];
@@ -293,14 +305,12 @@ export function composeMergePrompt(args: {
   // to reformat prose a human may have edited.
   //
   // Only the body skeleton is carried: the title is preserved on this path, so
-  // a title pattern has nothing to act on. Variables are substituted over the
-  // DELTA's items, not the release's full set, because the delta is all this
-  // call is given — so a count in the skeleton describes the fold-in, not the
-  // finished piece. Harmless in practice (headline counts live in the H1, which
-  // `parseTemplate` strips here) and still better than showing the model a raw
-  // `{count}` to guess at.
+  // a title pattern has nothing to act on. The authoritative-numbers clause is
+  // the same one `composeReleasePrompt` uses, and for the same reason — the
+  // substitution already happened in code, so a model recomputing a number is
+  // a model introducing an error.
   const templateNote = args.template
-    ? `\n\nThe current body follows the company's product update template, reproduced below. Fold the new material into its existing sections rather than adding sections of your own; do not restructure text that already fits.\n<template>\n${parseTemplate(fillTemplate(args.template, [...args.newItems, ...args.changedItems])).bodySkeleton}\n</template>`
+    ? `\n\nThe current body follows the company's product update template, reproduced below. Fold the new material into its existing sections rather than adding sections of your own; do not restructure text that already fits. Any number already present in the template is authoritative: never recompute it, and never adjust it to match your own prose.\n<template>\n${parseTemplate(fillTemplate(args.template, args.releaseItems)).bodySkeleton}\n</template>`
     : "";
 
   const system = `${base}\n\nYou are revising an existing draft release note to fold in new material — you are not writing a fresh one. Preserve the current body's existing wording and structure wherever it still applies; integrate the new and changed items by editing and extending that text rather than rewriting it from scratch.${templateNote}`;
@@ -315,7 +325,12 @@ export function composeMergePrompt(args: {
     sections.push(`Changes whose details were updated since the current body was written:\n${serializeAtomicUpdates(args.changedItems)}`);
   }
 
-  const prompt = `Update the product release note below to incorporate the new material, preserving as much of the existing wording and structure as still applies. Format the body as Markdown (short paragraphs, and bullet lists where helpful). ${SIZE_GUIDANCE}\n\n${sections.join("\n\n")}`;
+  // `SIZE_GUIDANCE` prescribes its own structure ("gather S updates into a
+  // single bulleted list"), which directly contradicts a skeleton's literal
+  // sections. `composeReleasePrompt` omits it when a template is present for
+  // exactly this reason; the two paths must not disagree.
+  const sizeGuidance = args.template ? "" : ` ${SIZE_GUIDANCE}`;
+  const prompt = `Update the product release note below to incorporate the new material, preserving as much of the existing wording and structure as still applies. Format the body as Markdown (short paragraphs, and bullet lists where helpful).${sizeGuidance}\n\n${sections.join("\n\n")}`;
 
   return { system, prompt };
 }

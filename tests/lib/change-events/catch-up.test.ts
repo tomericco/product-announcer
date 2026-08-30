@@ -51,6 +51,57 @@ describe("catchUpRelease", () => {
     expect(call.changedItems).toEqual([]);
   });
 
+  it("sends the FULL release as releaseItems while the model still only sees the delta", async () => {
+    // The template's {count} is computed over `releaseItems`, so it has to be
+    // the finished piece, not the fold-in: substituting over the delta put
+    // "1 updates" into the skeleton of a three-update release. The link
+    // happens in the closing transaction, AFTER the model call, so the
+    // not-yet-linked membership delta has to be unioned in by hand here.
+    const [t] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const [r] = await db
+      .insert(contentPieces)
+      .values({ tenantId: t.id, title: "R", body: "Old body", composedAt: T })
+      .returning();
+    // Already written up, and not part of any delta.
+    const [existingAu] = await db
+      .insert(atomicUpdates)
+      .values({
+        tenantId: t.id,
+        contentPieceId: r.id,
+        title: "Already written up",
+        summary: "Shipped earlier.",
+        createdAt: new Date(T.getTime() - 2000),
+        updatedAt: new Date(T.getTime() - 2000),
+      })
+      .returning();
+    // Linked, and ALSO an evidence-delta row — must appear exactly once.
+    const [changedAu] = await db
+      .insert(atomicUpdates)
+      .values({
+        tenantId: t.id,
+        contentPieceId: r.id,
+        title: "Changed thing",
+        summary: "Updated summary.",
+        createdAt: new Date(T.getTime() - 1000),
+        updatedAt: AFTER,
+      })
+      .returning();
+    const [newAu] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: t.id, title: "New thing", summary: "A new thing shipped.", createdAt: AFTER })
+      .returning();
+
+    const mergeDraft = vi.fn().mockResolvedValue({ title: "ignored", body: "Merged body" });
+    await catchUpRelease(r.id, { mergeDraft });
+
+    const call = mergeDraft.mock.calls[0][0];
+    const releaseIds = (call.releaseItems as { id: string }[]).map((i) => i.id).sort();
+    expect(releaseIds).toEqual([existingAu.id, changedAu.id, newAu.id].sort());
+    // …and the lists the model is asked to fold in are still just the delta.
+    expect(call.newItems.map((i: { id: string }) => i.id)).toEqual([newAu.id]);
+    expect(call.changedItems.map((i: { id: string }) => i.id)).toEqual([changedAu.id]);
+  });
+
   it("includes an evidence-delta (changed) atomic update in the merge call without re-linking it", async () => {
     const [t] = await db.insert(tenants).values({ name: TENANT }).returning();
     const [r] = await db

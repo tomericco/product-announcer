@@ -108,6 +108,21 @@ export async function catchUpRelease(contentPieceId: string, deps: CatchUpDeps =
   const { brandProfile, personas, allExamples } = await loadPromptContext(release.tenantId);
   const newItems = delta.newAtomicUpdates.map(toPromptItem);
   const changedItems = delta.changedAtomicUpdates.map(toPromptItem);
+
+  // The template's variables are computed over the FINISHED release, not over
+  // the delta: a `{count}` in a body section would otherwise read "2 updates"
+  // for a nine-update piece. `startOverRelease` gets this for free (it links
+  // first, then reads the piece's full set); here the link happens in the
+  // closing transaction, after the model call, so the not-yet-linked
+  // membership delta has to be unioned in by hand. Deduped by id because a
+  // `changedAtomicUpdates` row is already linked and so already in `linked`.
+  const linked = await defaultDb
+    .select()
+    .from(atomicUpdates)
+    .where(eq(atomicUpdates.contentPieceId, release.id));
+  const byId = new Map(linked.map((row) => [row.id, toPromptItem(row)]));
+  for (const item of newItems) byId.set(item.id, item);
+  const releaseItems = [...byId.values()];
   const examples = selectExamples(allExamples, {
     industry: brandProfile.industry,
     personaKeys: systemPersonaKeys(brandProfile.userPersonas),
@@ -119,6 +134,7 @@ export async function catchUpRelease(contentPieceId: string, deps: CatchUpDeps =
     currentBody: release.body,
     newItems,
     changedItems,
+    releaseItems,
     brandProfile,
     personas,
     examples,

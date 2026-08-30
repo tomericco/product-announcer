@@ -107,7 +107,15 @@ async function loadShippedWorkAtomicUpdates(
     .from(briefSignals)
     .innerJoin(signals, eq(briefSignals.signalId, signals.id))
     .innerJoin(atomicUpdates, eq(signals.atomicUpdateId, atomicUpdates.id))
-    .leftJoin(changeEvents, eq(changeEvents.atomicUpdateId, atomicUpdates.id))
+    // Tenant-scoped on its own account, not just via the atomic update.
+    // `changeEvents.atomicUpdateId` is a plain FK exactly like
+    // `signals.atomicUpdateId` above, so a bad or migrated row could point
+    // across the boundary and drag another tenant's date into this one's
+    // {month}/{year}. Same standard, same guard.
+    .leftJoin(
+      changeEvents,
+      and(eq(changeEvents.atomicUpdateId, atomicUpdates.id), eq(changeEvents.tenantId, tenantId))
+    )
     .where(
       and(
         eq(briefSignals.briefId, briefId),
@@ -273,9 +281,11 @@ export function findNamedCompanies(text: string, names: string[]): string[] {
  *   blog_post / social_post, any evidence              -> generic brief draft
  *
  * The release branch is the old `/api/atomic-updates/draft` pipeline —
- * category-biased examples, `generateReleaseDraft`, `reviewAndReconcile`,
- * `validateDraftLinks` — reached from here rather than from a parallel route,
- * because atomic updates are signals, including for drafting.
+ * `generateReleaseDraft` against the tenant's product update template,
+ * `reviewAndReconcile`, `validateDraftLinks` — reached from here rather than
+ * from a parallel route, because atomic updates are signals, including for
+ * drafting. (It carried category-biased few-shot examples until the template
+ * replaced them as the structural exemplar.)
  *
  * `generationStep` is cleared on EVERY exit. There are eight:
  *   1. piece not found              — no row exists to carry a step
