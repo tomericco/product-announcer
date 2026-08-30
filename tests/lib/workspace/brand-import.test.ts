@@ -3,12 +3,18 @@ import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
 import { tenants, companyProfiles } from "../../../src/db/schema";
 import { importBrandStyleForTenant } from "../../../src/lib/workspace/brand-import";
+import { getOrCreateCompanyProfile } from "../../../src/lib/workspace/company-profile";
+import { seedTenant, dropTenant } from "../../helpers/fixtures";
 
 const NAME = "Brand Import Test Tenant";
+const TEMPLATE_TENANT_NAME = "Brand Import Template Tenant";
+const KEEP_TEMPLATE_TENANT_NAME = "Brand Import Keep Template Tenant";
 
 describe("importBrandStyleForTenant", () => {
   afterEach(async () => {
     await db.delete(tenants).where(eq(tenants.name, NAME));
+    await dropTenant(TEMPLATE_TENANT_NAME);
+    await dropTenant(KEEP_TEMPLATE_TENANT_NAME);
   });
 
   it("scrapes, analyzes, and writes the derived brand profile + url", async () => {
@@ -26,6 +32,7 @@ describe("importBrandStyleForTenant", () => {
         guidelines: "## Voice and tone\n\nFriendly and plain.\n\n## Don't\n\n- No hype.",
         industry: "SaaS",
       }),
+      deriveTemplate: async () => null,
     });
 
     expect(result.ok).toBe(true);
@@ -51,6 +58,7 @@ describe("importBrandStyleForTenant", () => {
         truncated: false,
       }),
       analyze: async () => ({ guidelines: null, industry: "SaaS" }),
+      deriveTemplate: async () => null,
     });
 
     expect(result.ok).toBe(true);
@@ -71,6 +79,7 @@ describe("importBrandStyleForTenant", () => {
         truncated: false,
       }),
       analyze: async () => ({ guidelines: null, industry: null }),
+      deriveTemplate: async () => null,
     });
 
     expect(result).toEqual({ ok: false, reason: "analysis-empty" });
@@ -90,6 +99,7 @@ describe("importBrandStyleForTenant", () => {
         truncated: false,
       }),
       analyze: async () => ({ guidelines: "   ", industry: "" }),
+      deriveTemplate: async () => null,
     });
 
     expect(result).toEqual({ ok: false, reason: "analysis-empty" });
@@ -109,5 +119,35 @@ describe("importBrandStyleForTenant", () => {
     const [profile] = await db.select().from(companyProfiles).where(eq(companyProfiles.tenantId, tenant.id));
     // no profile written (getOrCreate not invoked on the error path)
     expect(profile).toBeUndefined();
+  });
+
+  it("writes the derived template", async () => {
+    const tenant = await seedTenant(TEMPLATE_TENANT_NAME);
+    await importBrandStyleForTenant(tenant.id, "https://acme.com/changelog", {
+      scrape: async () => ({ text: "page", html: "", finalUrl: "u", contentType: "text/html", truncated: false }),
+      analyze: async () => ({ guidelines: "Be brief.", industry: "SaaS" }),
+      deriveTemplate: async () => "# What's new\n\n## Highlights\n",
+    });
+
+    const [profile] = await db.select().from(companyProfiles).where(eq(companyProfiles.tenantId, tenant.id));
+    expect(profile.productUpdateTemplate).toBe("# What's new\n\n## Highlights\n");
+  });
+
+  it("a null derivation never clears an existing template", async () => {
+    const tenant = await seedTenant(KEEP_TEMPLATE_TENANT_NAME);
+    const profile = await getOrCreateCompanyProfile(tenant.id);
+    await db
+      .update(companyProfiles)
+      .set({ productUpdateTemplate: "# Hand written\n" })
+      .where(eq(companyProfiles.id, profile.id));
+
+    await importBrandStyleForTenant(tenant.id, "https://acme.com/changelog", {
+      scrape: async () => ({ text: "page", html: "", finalUrl: "u", contentType: "text/html", truncated: false }),
+      analyze: async () => ({ guidelines: "Be brief.", industry: "SaaS" }),
+      deriveTemplate: async () => null,
+    });
+
+    const [after] = await db.select().from(companyProfiles).where(eq(companyProfiles.id, profile.id));
+    expect(after.productUpdateTemplate).toBe("# Hand written\n");
   });
 });

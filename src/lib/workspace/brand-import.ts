@@ -4,10 +4,12 @@ import { companyProfiles } from "@/db/schema";
 import { getOrCreateCompanyProfile } from "@/lib/workspace/company-profile";
 import { fetchPageText, type PageResult } from "@/lib/workspace/fetch-page";
 import { analyzeBrandStyle, type DerivedBrandProfile } from "@/lib/workspace/analyze-brand-style";
+import { deriveUpdateTemplate } from "@/lib/workspace/derive-update-template";
 
 export type ImportBrandStyleDeps = {
   scrape?: (url: string) => Promise<PageResult>;
   analyze?: (text: string, tenantId: string) => Promise<DerivedBrandProfile>;
+  deriveTemplate?: (text: string, tenantId: string) => Promise<string | null>;
   database?: typeof defaultDb;
 };
 
@@ -23,12 +25,14 @@ export async function importBrandStyleForTenant(
 ): Promise<{ ok: boolean; reason?: string }> {
   const scrape = deps.scrape ?? fetchPageText;
   const analyze = deps.analyze ?? analyzeBrandStyle;
+  const deriveTemplate = deps.deriveTemplate ?? deriveUpdateTemplate;
   const database = deps.database ?? defaultDb;
 
   const scraped = await scrape(url);
   if ("error" in scraped) return { ok: false, reason: scraped.error };
 
   const derived = await analyze(scraped.text, tenantId);
+  const productUpdateTemplate = await deriveTemplate(scraped.text, tenantId);
   // Normalize blank-string derivations to null here, at the one place both
   // downstream problems originate: the empty-derivation guard below only
   // checked `=== null` (so a blank string slipped past it and got persisted),
@@ -51,6 +55,7 @@ export async function importBrandStyleForTenant(
       // the analysis actually produced.
       ...(guidelines !== null && { guidelines }),
       ...(industry !== null && { industry }),
+      ...(productUpdateTemplate !== null && { productUpdateTemplate }),
       updatesPageUrl: url,
       updatedAt: new Date(),
     })
