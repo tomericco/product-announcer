@@ -834,10 +834,19 @@ export type ParsedTemplate = {
  */
 export function parseTemplate(template: string): ParsedTemplate {
   const trimmed = template.trim();
-  const match = /^#\s+(.+?)\s*(?:\n([\s\S]*))?$/.exec(trimmed);
-  if (!match) return { titlePattern: null, bodySkeleton: trimmed };
-  return { titlePattern: match[1], bodySkeleton: (match[2] ?? "").trim() };
+  const newline = trimmed.indexOf("\n");
+  const firstLine = newline === -1 ? trimmed : trimmed.slice(0, newline);
+  const h1 = /^#\s+(.+)$/.exec(firstLine);
+  if (!h1) return { titlePattern: null, bodySkeleton: trimmed };
+  const rest = newline === -1 ? "" : trimmed.slice(newline + 1);
+  return { titlePattern: h1[1].trim(), bodySkeleton: rest.trim() };
 }
+
+Line-based rather than one regex over the whole document, deliberately: a
+single-regex version whose tail was `\s*(?:\n([\s\S]*))?$` let the greedy
+`\s*` swallow the blank line after the H1, leaving the body empty. Splitting on
+the first newline and testing only that line makes "leading H1 or nothing"
+literal, which is exactly the rule.
 
 export type TemplateFacts = {
   items: { category: string | null; size: string | null }[];
@@ -1115,6 +1124,15 @@ function bySignificance(a: AtomicUpdateForPrompt, b: AtomicUpdateForPrompt): num
 
 The prompt is then the instruction, the fenced `<template>` block carrying `bodySkeleton`, and the changes via `serializeAtomicUpdates(sorted)`. Keep the existing `evidence` `<sources>` block unchanged.
 
+**Put the substitution behind a named export, not inline.** Task 7 needs the same substituted string for the reviewer, and substituting twice with independently-derived facts is how the composer and the reviewer end up disagreeing about what `{count}` was. Export from `compose-prompt.ts`:
+
+```ts
+/** The template as the model will see it: variables replaced from these items. */
+export function fillTemplate(template: string, items: AtomicUpdateForPrompt[]): string;
+```
+
+`composeReleasePrompt` calls it, and Task 7's caller calls it on the same sorted item list.
+
 `composeMergePrompt` gains the same parameter and, when non-null, appends one sentence to its system prompt: the template is the structure the current body already follows, and folded-in material goes into its existing sections. Its "preserve existing wording" stance is unchanged.
 
 - [ ] **Step 5: Stop passing examples on this path**
@@ -1164,7 +1182,7 @@ git commit -m "feat: compose product updates against the company template"
 
 **The reviewer receives the SUBSTITUTED template and no change list.** Both are deliberate. Raw would make it flag every draft for omitting `{count}` literals; the change list would let it raise "the headline doesn't mention the MCP server", which is an editorial call the composer already made and not the reviewer's business.
 
-`draft.ts` already substituted the template in Task 6. Pass the **substituted** string, not `brandProfile.productUpdateTemplate` — extract that into a small helper both tasks call rather than substituting twice with different facts.
+Pass the **substituted** string, not `brandProfile.productUpdateTemplate`. Task 6 exported `fillTemplate(template, items)` for exactly this — call it on the same sorted item list the composer used, so the composer and the reviewer can never disagree about what `{count}` was.
 
 - [ ] **Step 1: Write the failing test**
 
