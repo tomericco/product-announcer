@@ -337,4 +337,32 @@ describe("titlesMatch", () => {
   it("does not merge a one-token title into a longer title that contains it", () => {
     expect(titlesMatch("Search", "Faster search")).toBe(false);
   });
+
+  // Regression: the MIN_TITLE_TOKENS guard used to run BEFORE the exact-match
+  // check, so it rejected two identical one-word titles before the equality
+  // check ever ran — a two-word resolver batch that correctly gave two events
+  // the same one-word title ("Autosave", "Webhooks", "SSO", "Undo") would then
+  // create two atomic updates for one change. Equal token sets must be checked
+  // first, regardless of size.
+  it("merges identical one-token titles", () => {
+    expect(titlesMatch("Autosave", "Autosave")).toBe(true);
+    expect(titlesMatch("Autosave", "  AUTOSAVE ")).toBe(true);
+  });
+
+  it("still merges identical multi-token titles", () => {
+    expect(titlesMatch("Shared dashboards", "Shared dashboards")).toBe(true);
+  });
+
+  // Two different emoji-only titles both normalize to an empty token set —
+  // merging them just because neither has any text would be an accidental
+  // merge, so this predicate falls back to exact string equality instead of
+  // treating "both empty" as a match.
+  it("does not merge two different emoji-only titles", () => {
+    expect(titlesMatch("🎉", "🚀")).toBe(false);
+  });
+
+  it("merges two identical emoji-only titles", () => {
+    expect(titlesMatch("🎉", "🎉")).toBe(true);
+    expect(titlesMatch(" 🎉 ", "🎉")).toBe(true);
+  });
 });

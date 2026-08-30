@@ -425,7 +425,10 @@ describe("composeReleasePrompt with a template", () => {
   });
 
   it("substitutes variables before the model sees them", () => {
-    const { prompt } = composeReleasePrompt({ ...base, template: "# {count} updates in {month}\n" });
+    const { prompt } = composeReleasePrompt({
+      ...base,
+      template: "# {count} updates in {month}\n\n## Highlights\n",
+    });
     expect(prompt).toContain("1 updates in August");
     expect(prompt).not.toContain("{count}");
     expect(prompt).not.toContain("{month}");
@@ -438,7 +441,7 @@ describe("composeReleasePrompt with a template", () => {
   });
 
   it("tells the model the numbers are authoritative", () => {
-    const { prompt } = composeReleasePrompt({ ...base, template: "# {count} updates\n" });
+    const { prompt } = composeReleasePrompt({ ...base, template: "# {count} updates\n\n## Highlights\n" });
     expect(prompt.toLowerCase()).toContain("authoritative");
   });
 
@@ -451,8 +454,18 @@ describe("composeReleasePrompt with a template", () => {
   it("dates the period from the work's evidence, not the composition date", () => {
     // {month}/{year} describe the period the work landed in. A changelog
     // written in September about August work says August.
-    const { prompt } = composeReleasePrompt({ ...base, template: "# {month} {year}\n" });
+    const { prompt } = composeReleasePrompt({ ...base, template: "# {month} {year}\n\n## Highlights\n" });
     expect(prompt).toContain("August 2026");
+  });
+
+  // An H1-only template leaves `bodySkeleton` empty after `parseTemplate`
+  // strips the title line, which would otherwise hand the model
+  // `<template>\n\n</template>` alongside "add no section the template does
+  // not have" — a contradiction. Falls back to the untemplated path instead.
+  it("falls back to the untemplated prompt when the template is only a title", () => {
+    const { prompt } = composeReleasePrompt({ ...base, template: "# {count} updates in {month}\n" });
+    expect(prompt).not.toContain("<template>");
+    expect(prompt).toContain("Here are the changes to summarize into one product update.");
   });
 });
 

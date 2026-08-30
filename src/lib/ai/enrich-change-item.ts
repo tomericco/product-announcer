@@ -38,7 +38,8 @@ const ENRICHMENT_SYSTEM = [
   "Refactors, tests, chores, CI, and internal-only changes are NOT user-facing.",
   "If user-facing: write impactSummary as one plain sentence describing the end-user benefit,",
   `and pick suggestedCategory: ${CATEGORY_RUBRIC};`,
-  "pick this only when the change is fundamentally an announcement, not a code capability.",
+  "an availability/'now in X' heads-up (e.g. \"now available in the EU\") is the clearest case of an announcement.",
+  "Pick 'announcement' only when the change is fundamentally an announcement, not a code capability.",
   "If not user-facing: set impactSummary and suggestedCategory to null.",
   "Always set confidence between 0 and 1.",
 ].join(" ");

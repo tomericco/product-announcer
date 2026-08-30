@@ -1,12 +1,11 @@
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
-import { atomicUpdates, contentPieces, systemPersonas, systemContentExamples } from "@/db/schema";
+import { atomicUpdates, contentPieces, systemPersonas } from "@/db/schema";
 import type { AtomicUpdateForPrompt } from "@/lib/ai/compose-prompt";
 import { generateReleaseDraft, mergeReleaseDraft } from "@/lib/ai/generation";
 import { validateDraftLinks } from "@/lib/ai/validate-links";
 import { getOrCreateCompanyProfile } from "@/lib/workspace/company-profile";
-import { resolvePersonaRefs, systemPersonaKeys } from "@/lib/workspace/personas";
-import { selectExamples } from "@/lib/ai/select-examples";
+import { resolvePersonaRefs } from "@/lib/workspace/personas";
 import { computeReleaseDelta } from "./release-deltas";
 
 type Database = typeof defaultDb;
@@ -50,8 +49,7 @@ async function loadPromptContext(tenantId: string) {
   const brandProfile = await getOrCreateCompanyProfile(tenantId, defaultDb);
   const catalog = await defaultDb.select().from(systemPersonas);
   const personas = resolvePersonaRefs(brandProfile.userPersonas, catalog);
-  const allExamples = await defaultDb.select().from(systemContentExamples);
-  return { brandProfile, personas, allExamples };
+  return { brandProfile, personas };
 }
 
 /**
@@ -105,7 +103,7 @@ export async function catchUpRelease(contentPieceId: string, deps: CatchUpDeps =
   const delta = await computeReleaseDelta(contentPieceId);
   if (delta.count === 0) return null;
 
-  const { brandProfile, personas, allExamples } = await loadPromptContext(release.tenantId);
+  const { brandProfile, personas } = await loadPromptContext(release.tenantId);
   const newItems = delta.newAtomicUpdates.map(toPromptItem);
   const changedItems = delta.changedAtomicUpdates.map(toPromptItem);
 
@@ -119,17 +117,15 @@ export async function catchUpRelease(contentPieceId: string, deps: CatchUpDeps =
   const linked = await defaultDb
     .select()
     .from(atomicUpdates)
-    .where(eq(atomicUpdates.contentPieceId, release.id));
+    .where(and(eq(atomicUpdates.contentPieceId, release.id), eq(atomicUpdates.tenantId, release.tenantId)));
   const byId = new Map(linked.map((row) => [row.id, toPromptItem(row)]));
   for (const item of newItems) byId.set(item.id, item);
   const releaseItems = [...byId.values()];
-  const examples = selectExamples(allExamples, {
-    industry: brandProfile.industry,
-    personaKeys: systemPersonaKeys(brandProfile.userPersonas),
-    contentType: "product_update",
-    categories: [],
-  });
 
+  // No examples: `composeMergePrompt` passes `[]` to `buildSystemPrompt`
+  // regardless of what it's given, so selecting any here would be discarded
+  // work. (`prepareGenerationContext`'s examples are unrelated and still live
+  // — those feed blog/social, not this path.)
   const draft = await mergeDraft({
     currentBody: release.body,
     newItems,
@@ -137,7 +133,7 @@ export async function catchUpRelease(contentPieceId: string, deps: CatchUpDeps =
     releaseItems,
     brandProfile,
     personas,
-    examples,
+    examples: [],
     template: brandProfile.productUpdateTemplate,
   });
 
@@ -189,7 +185,7 @@ export async function startOverRelease(contentPieceId: string, deps: StartOverDe
   const delta = await computeReleaseDelta(contentPieceId);
   if (delta.count === 0) return null;
 
-  const { brandProfile, personas, allExamples } = await loadPromptContext(release.tenantId);
+  const { brandProfile, personas } = await loadPromptContext(release.tenantId);
   const newIds = delta.newAtomicUpdates.map((a) => a.id);
 
   const fullItems = await defaultDb.transaction(async (tx) => {
@@ -198,16 +194,14 @@ export async function startOverRelease(contentPieceId: string, deps: StartOverDe
     return rows.map(toPromptItem);
   });
 
-  const examples = selectExamples(allExamples, {
-    industry: brandProfile.industry,
-    personaKeys: systemPersonaKeys(brandProfile.userPersonas),
-    contentType: "product_update",
-    categories: [],
-  });
-
+  // No examples: `composeReleasePrompt` passes `[]` to `buildSystemPrompt`
+  // regardless of what it's given, so selecting any here would be discarded
+  // work. (`prepareGenerationContext`'s examples are unrelated and still live
+  // — those feed blog/social, not this path.)
+  //
   // Positional, so the empty `evidence` slot is explicit: a catch-up has no
   // brief evidence to carry, and the template is the sixth argument.
-  const draft = await generateDraft(fullItems, brandProfile, personas, examples, [], brandProfile.productUpdateTemplate);
+  const draft = await generateDraft(fullItems, brandProfile, personas, [], [], brandProfile.productUpdateTemplate);
 
   const { body: validatedBody } = await validateDraftLinks(draft.body);
 

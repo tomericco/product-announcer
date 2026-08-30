@@ -242,15 +242,24 @@ export function composeReleasePrompt(args: {
 
   const system = buildSystemPrompt(args.brandProfile, args.personas, [], "product_update");
 
-  if (!args.template) {
-    return {
-      system,
-      prompt: `Here are the changes to summarize into one product update. Format the body as Markdown (short paragraphs, and bullet lists where helpful). ${SIZE_GUIDANCE}\n\n${serializeAtomicUpdates(args.items)}${context}`,
-    };
-  }
+  const untemplated = {
+    system,
+    prompt: `Here are the changes to summarize into one product update. Format the body as Markdown (short paragraphs, and bullet lists where helpful). ${SIZE_GUIDANCE}\n\n${serializeAtomicUpdates(args.items)}${context}`,
+  };
+
+  if (!args.template) return untemplated;
 
   const sorted = [...args.items].sort(bySignificance);
   const { titlePattern, bodySkeleton } = parseTemplate(fillTemplate(args.template, sorted));
+
+  // An H1-only template (or one that's otherwise blank once the title line is
+  // stripped) leaves nothing for "reproduce the template's structure exactly"
+  // to act on — the model would be handed `<template>\n\n</template>` right
+  // alongside the instruction to add no section the template doesn't have,
+  // which is a contradiction, not a constraint. Fall back to the untemplated
+  // path instead. Reachable by hand-editing a template down to a bare heading
+  // on /company.
+  if (!bodySkeleton) return untemplated;
 
   const instruction = [
     "Write one product update following the template below.",

@@ -134,17 +134,47 @@ function titleTokens(title: string): Set<string> {
  * token, provided the smaller set has at least MIN_TITLE_TOKENS tokens. A
  * 2-token pair and a 9-token pair are held to exactly the same standard. The
  * minimum-size guard exists so a single-token title isn't merged into any
- * longer title that contains it as a subset.
+ * longer title that contains it as a subset — but an EXACT token-set match is
+ * checked first, before that guard runs, because the guard's job is only to
+ * stop a short title being subsumed by a longer one that contains it, never
+ * to reject two titles that are already the same. Without checking equality
+ * first, two identical one-token titles ("Autosave" vs "Autosave") would hit
+ * the guard and be reported as not matching, which is the regression this
+ * ordering fixes: the exact-string comparison this predicate replaced always
+ * merged those.
+ *
+ * A title that normalizes to zero tokens (e.g. emoji-only, or punctuation-only)
+ * is handled before either of the above: token-set comparison has no signal
+ * when there are no tokens, so this falls back to literal equality of the
+ * trimmed, lower-cased source strings — the same thing the exact-match code
+ * this predicate replaced did for every title. Chosen deliberately over
+ * treating "both empty" as a match: two DIFFERENT emoji-only titles both
+ * normalize to the same empty set, and merging them just because neither has
+ * any text is exactly the kind of accidental merge this predicate exists to
+ * avoid.
  */
 export function titlesMatch(a: string, b: string): boolean {
   const left = titleTokens(a);
   const right = titleTokens(b);
+
+  if (left.size === 0 && right.size === 0) {
+    return a.trim().toLowerCase() === b.trim().toLowerCase();
+  }
+
+  if (setsEqual(left, right)) return true;
+
   if (Math.min(left.size, right.size) < MIN_TITLE_TOKENS) return false;
 
   let shared = 0;
   for (const token of left) if (right.has(token)) shared += 1;
   const symmetricDifference = left.size + right.size - 2 * shared;
   return symmetricDifference <= MAX_TITLE_TOKEN_DIFFERENCE;
+}
+
+function setsEqual(a: Set<string>, b: Set<string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const token of a) if (!b.has(token)) return false;
+  return true;
 }
 
 /**
