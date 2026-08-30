@@ -17,6 +17,7 @@ import type {
   BriefEvidenceForPrompt,
 } from "@/lib/ai/compose-prompt";
 import { generateBriefDraft, generateReleaseDraft } from "@/lib/ai/generation";
+import { fillTemplate } from "@/lib/ai/compose-prompt";
 import { briefBody } from "@/lib/briefs/body";
 import { prepareGenerationContext } from "@/lib/ai/generation-context";
 import { reviewAndReconcile, type ReviewOutcome } from "@/lib/ai/review-draft";
@@ -52,7 +53,8 @@ export type ReleaseDraftGenerator = (
 /** `reviewAndReconcile`'s shape, as a seam. */
 export type DraftReviewer = (
   draft: { title: string; body: string },
-  brandProfile: BrandProfileRow
+  brandProfile: BrandProfileRow,
+  template: string | null
 ) => Promise<ReviewOutcome>;
 
 /** `illustratePiece`'s shape, as a seam. */
@@ -507,8 +509,15 @@ export async function generateDraftForPiece(
         // `reviewAndReconcile`'s optional onProgress is deliberately not
         // passed: it emits only `detail` events, and detail text is not
         // persisted (there is no reader for it once the streamed dialog goes).
+        //
+        // The reviewer gets the SUBSTITUTED template, not the raw column —
+        // otherwise it would flag every draft for omitting literal `{count}`
+        // placeholders. `fillTemplate` is called on the same `releaseItems`
+        // the composer passed to `generateRelease` above, so the two can
+        // never disagree about what a variable like `{count}` resolved to.
         await setStep(database, contentPieceId, "reviewing");
-        reviewOutcome = await review(draft, brandProfile);
+        const substitutedTemplate = template ? fillTemplate(template, releaseItems) : null;
+        reviewOutcome = await review(draft, brandProfile, substitutedTemplate);
 
         // Validate links on the FINAL body — after review, which may itself
         // rewrite links — so no unresolvable URL is persisted.

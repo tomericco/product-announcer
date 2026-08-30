@@ -88,7 +88,7 @@ export async function runExtractForRelease(
   emit({ type: "step", key: "generating", status: "done" });
 
   emit({ type: "step", key: "reviewing", status: "start" });
-  const outcome = await review(generated, brandProfile, emit);
+  const outcome = await review(generated, brandProfile, null, emit);
   emit({ type: "step", key: "reviewing", status: "done" });
 
   // Validate links on the FINAL body — after review, which may itself rewrite

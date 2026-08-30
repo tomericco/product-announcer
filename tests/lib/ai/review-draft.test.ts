@@ -15,21 +15,21 @@ const revision = (title: string, body: string) => ok({ title, body });
 
 describe("buildReviewPrompt", () => {
   it("includes the guidelines document, delimited, and the draft", () => {
-    const prompt = buildReviewPrompt(draft, brand as never);
+    const prompt = buildReviewPrompt(draft, brand as never, null);
     expect(prompt).toContain("<brand-guidelines>\nTone: calm. Do: be factual. Avoid: hype.\n</brand-guidelines>");
     expect(prompt).toContain("Big news!!!");
     expect(prompt).toContain("Buy now.");
   });
 
   it("falls back to a stated absence when no guidelines are configured", () => {
-    const prompt = buildReviewPrompt(draft, { guidelines: null, industry: null, userPersonas: [] } as never);
+    const prompt = buildReviewPrompt(draft, { guidelines: null, industry: null, userPersonas: [] } as never, null);
     expect(prompt).toContain("No specific brand requirements are configured.");
   });
 });
 
 describe("buildRevisionPrompt", () => {
   it("includes the brand rules delimited, the draft, and the specific issues to fix", () => {
-    const prompt = buildRevisionPrompt(draft, ["too hypey", "no exclamation marks"], brand as never);
+    const prompt = buildRevisionPrompt(draft, ["too hypey", "no exclamation marks"], brand as never, null);
     expect(prompt).toContain("<brand-guidelines>\nTone: calm. Do: be factual. Avoid: hype.\n</brand-guidelines>");
     expect(prompt).toContain("Big news!!!");
     expect(prompt).toContain("- too hypey");
@@ -47,7 +47,7 @@ describe("reviewAndReconcile", () => {
 
   it("returns passed on a compliant first review, without revising", async () => {
     vi.mocked(generateObject).mockResolvedValue(critique(true));
-    const out = await reviewAndReconcile(draft, brand as never);
+    const out = await reviewAndReconcile(draft, brand as never, null);
     expect(out).toEqual({ finalDraft: draft, status: "passed", issues: [] });
     expect(generateObject).toHaveBeenCalledTimes(1);
   });
@@ -57,7 +57,7 @@ describe("reviewAndReconcile", () => {
       .mockResolvedValueOnce(critique(false, ["too hypey"]))    // review 1
       .mockResolvedValueOnce(revision("News", "We shipped X.")) // revise 1
       .mockResolvedValueOnce(critique(true));                   // review 2
-    const out = await reviewAndReconcile(draft, brand as never);
+    const out = await reviewAndReconcile(draft, brand as never, null);
     expect(out.status).toBe("passed");
     expect(out.finalDraft).toEqual({ title: "News", body: "We shipped X." });
     expect(out.issues).toEqual([]);
@@ -71,7 +71,7 @@ describe("reviewAndReconcile", () => {
       .mockResolvedValueOnce(critique(false, ["still hype"]))  // review 2
       .mockResolvedValueOnce(revision("R2", "b2"))             // revise 2
       .mockResolvedValueOnce(critique(true));                  // review 3
-    const out = await reviewAndReconcile(draft, brand as never);
+    const out = await reviewAndReconcile(draft, brand as never, null);
     expect(out.status).toBe("passed");
     expect(out.finalDraft).toEqual({ title: "R2", body: "b2" });
     expect(generateObject).toHaveBeenCalledTimes(5);
@@ -84,7 +84,7 @@ describe("reviewAndReconcile", () => {
       .mockResolvedValueOnce(critique(false, ["still"]))  // review 2
       .mockResolvedValueOnce(revision("R2", "b2"))        // revise 2
       .mockResolvedValueOnce(critique(false, ["nope"]));  // review 3
-    const out = await reviewAndReconcile(draft, brand as never);
+    const out = await reviewAndReconcile(draft, brand as never, null);
     expect(out.status).toBe("failed");
     expect(out.issues).toEqual(["nope"]);
     expect(out.finalDraft).toEqual({ title: "R2", body: "b2" });
@@ -94,7 +94,7 @@ describe("reviewAndReconcile", () => {
   it("treats REVIEW_MAX_ROUNDS=0 as a pure gate: fails a non-compliant draft without revising", async () => {
     process.env.REVIEW_MAX_ROUNDS = "0";
     vi.mocked(generateObject).mockResolvedValue(critique(false, ["bad"]));
-    const out = await reviewAndReconcile(draft, brand as never);
+    const out = await reviewAndReconcile(draft, brand as never, null);
     expect(out).toEqual({ finalDraft: draft, status: "failed", issues: ["bad"] });
     expect(generateObject).toHaveBeenCalledTimes(1);
   });
@@ -105,7 +105,7 @@ describe("reviewAndReconcile", () => {
       .mockResolvedValueOnce(critique(false, ["hype"]))   // review 1
       .mockResolvedValueOnce(revision("R1", "b1"))        // revise 1
       .mockResolvedValueOnce(critique(false, ["still"])); // review 2
-    const out = await reviewAndReconcile(draft, brand as never);
+    const out = await reviewAndReconcile(draft, brand as never, null);
     expect(out.status).toBe("failed");
     expect(out.finalDraft).toEqual({ title: "R1", body: "b1" });
     expect(generateObject).toHaveBeenCalledTimes(3);
@@ -113,7 +113,7 @@ describe("reviewAndReconcile", () => {
 
   it("retries a failing review once, then holds the draft as 'error'", async () => {
     vi.mocked(generateObject).mockRejectedValue(new Error("review down"));
-    const out = await reviewAndReconcile(draft, brand as never);
+    const out = await reviewAndReconcile(draft, brand as never, null);
     expect(out).toEqual({ finalDraft: draft, status: "error", issues: [] });
     expect(generateObject).toHaveBeenCalledTimes(2);
   });
@@ -123,7 +123,7 @@ describe("reviewAndReconcile", () => {
       .mockResolvedValueOnce(critique(false, ["hype"]))  // review 1
       .mockRejectedValueOnce(new Error("revise down"))   // revise attempt 1
       .mockRejectedValueOnce(new Error("revise down"));  // revise retry
-    const out = await reviewAndReconcile(draft, brand as never);
+    const out = await reviewAndReconcile(draft, brand as never, null);
     expect(out.status).toBe("error");
     expect(out.finalDraft).toEqual(draft);
     expect(generateObject).toHaveBeenCalledTimes(3);
@@ -137,5 +137,42 @@ describe("REVISION_SYSTEM", () => {
 
   it("carries the no-invented-links rule", () => {
     expect(REVISION_SYSTEM).toContain(NO_INVENTED_LINKS_RULE);
+  });
+});
+
+describe("buildReviewPrompt with a template", () => {
+  it("includes the template", () => {
+    const prompt = buildReviewPrompt(draft, brand as never, "## Highlights\n\n## Fixes\n");
+    expect(prompt).toContain("## Highlights");
+    expect(prompt).toContain("## Fixes");
+  });
+
+  it("asks whether the draft follows the template", () => {
+    expect(buildReviewPrompt(draft, brand as never, "## Highlights\n").toLowerCase()).toContain("template");
+  });
+
+  it("omits the template block entirely when none is configured", () => {
+    expect(buildReviewPrompt(draft, brand as never, null)).not.toContain("<template>");
+  });
+});
+
+describe("reviewAndReconcile with a template", () => {
+  it("passes the template to both the review and the revision", async () => {
+    const seen: (string | null)[] = [];
+    vi.mocked(generateObject)
+      .mockImplementationOnce(async (args) => {
+        seen.push((args as { prompt: string }).prompt);
+        return { object: { compliant: false, issues: ["Missing the Fixes section"] }, usage: {} } as never;
+      })
+      .mockImplementationOnce(async (args) => {
+        seen.push((args as { prompt: string }).prompt);
+        return { object: { title: "t", body: "b" }, usage: {} } as never;
+      })
+      .mockImplementationOnce(async () => ({ object: { compliant: true, issues: [] }, usage: {} } as never));
+
+    const outcome = await reviewAndReconcile(draft, brand as never, "## Fixes\n");
+    expect(outcome.status).toBe("passed");
+    expect(seen[0]).toContain("## Fixes");
+    expect(seen[1]).toContain("## Fixes");
   });
 });
