@@ -190,7 +190,10 @@ export async function startOverRelease(contentPieceId: string, deps: StartOverDe
 
   const fullItems = await defaultDb.transaction(async (tx) => {
     await linkNewAtomicUpdates(tx, release, newIds);
-    const rows = await tx.select().from(atomicUpdates).where(eq(atomicUpdates.contentPieceId, release.id));
+    const rows = await tx
+      .select()
+      .from(atomicUpdates)
+      .where(and(eq(atomicUpdates.contentPieceId, release.id), eq(atomicUpdates.tenantId, release.tenantId)));
     return rows.map(toPromptItem);
   });
 

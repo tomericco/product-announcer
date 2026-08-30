@@ -424,6 +424,37 @@ describe("startOverRelease", () => {
     expect(newAfter.contentPieceId).toBe(r.id);
   });
 
+  it("excludes another tenant's atomic update from the from-scratch regeneration even if it points at this release", async () => {
+    // Same shape as the equivalent `catchUpRelease` regression:
+    // `atomicUpdates.contentPieceId` is a plain FK with no tenant-consistency
+    // constraint, so a bad or migrated row can point at this release while
+    // belonging to another tenant. `fullItems` (fed to `generateDraft` for the
+    // from-scratch regeneration) must be scoped on tenantId as well as
+    // contentPieceId, or a foreign row's title/summary leaks into this
+    // tenant's regenerated release.
+    const [t] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const [other] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const [r] = await db
+      .insert(contentPieces)
+      .values({ tenantId: t.id, title: "R", body: "Old body", composedAt: T })
+      .returning();
+    const [newAu] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: t.id, title: "New thing", summary: "A new thing shipped.", createdAt: AFTER })
+      .returning();
+    // Simulates the bad/migrated row: another tenant's atomic update whose
+    // contentPieceId already points at this release.
+    await db
+      .insert(atomicUpdates)
+      .values({ tenantId: other.id, contentPieceId: r.id, title: "Foreign linked", summary: "S", createdAt: T });
+
+    const generateDraft = vi.fn().mockResolvedValue({ title: "ignored", body: "From scratch body" });
+    await startOverRelease(r.id, { generateDraft });
+
+    const items = generateDraft.mock.calls[0][0] as { id: string }[];
+    expect(items.map((i) => i.id)).toEqual([newAu.id]);
+  });
+
   it("never links another tenant's atomic update", async () => {
     const [t] = await db.insert(tenants).values({ name: TENANT }).returning();
     const [other] = await db.insert(tenants).values({ name: TENANT }).returning();

@@ -308,6 +308,17 @@ export function composeMergePrompt(args: {
 }): { system: string; prompt: string } {
   const base = buildSystemPrompt(args.brandProfile, args.personas, [], "product_update");
 
+  // Parsed once, and gated on below instead of `args.template` directly: an
+  // H1-only (or otherwise blank-after-title) template leaves `bodySkeleton`
+  // empty, and fencing an empty `<template></template>` while telling the
+  // model to fold material into "its existing sections rather than adding
+  // sections of your own" is a contradiction, not a constraint — the same
+  // failure `composeReleasePrompt` was fixed to fall back from. There is no
+  // title pattern to fall back to here the way `composeReleasePrompt` has
+  // one (the title is preserved on this path), so an empty skeleton simply
+  // means "act as if there is no template."
+  const bodySkeleton = args.template ? parseTemplate(fillTemplate(args.template, args.releaseItems)).bodySkeleton : "";
+
   // The template is framed as the shape the body ALREADY has, not as a target
   // to restructure toward — this call's whole stance is "revise, don't
   // rewrite", and handing the model a skeleton without that framing invites it
@@ -318,8 +329,8 @@ export function composeMergePrompt(args: {
   // the same one `composeReleasePrompt` uses, and for the same reason — the
   // substitution already happened in code, so a model recomputing a number is
   // a model introducing an error.
-  const templateNote = args.template
-    ? `\n\nThe current body follows the company's product update template, reproduced below. Fold the new material into its existing sections rather than adding sections of your own; do not restructure text that already fits. Any number already present in the template is authoritative: never recompute it, and never adjust it to match your own prose.\n<template>\n${parseTemplate(fillTemplate(args.template, args.releaseItems)).bodySkeleton}\n</template>`
+  const templateNote = bodySkeleton
+    ? `\n\nThe current body follows the company's product update template, reproduced below. Fold the new material into its existing sections rather than adding sections of your own; do not restructure text that already fits. Any number already present in the template is authoritative: never recompute it, and never adjust it to match your own prose.\n<template>\n${bodySkeleton}\n</template>`
     : "";
 
   const system = `${base}\n\nYou are revising an existing draft release note to fold in new material — you are not writing a fresh one. Preserve the current body's existing wording and structure wherever it still applies; integrate the new and changed items by editing and extending that text rather than rewriting it from scratch.${templateNote}`;
@@ -337,8 +348,10 @@ export function composeMergePrompt(args: {
   // `SIZE_GUIDANCE` prescribes its own structure ("gather S updates into a
   // single bulleted list"), which directly contradicts a skeleton's literal
   // sections. `composeReleasePrompt` omits it when a template is present for
-  // exactly this reason; the two paths must not disagree.
-  const sizeGuidance = args.template ? "" : ` ${SIZE_GUIDANCE}`;
+  // exactly this reason; the two paths must not disagree. Gated on
+  // `bodySkeleton` rather than `args.template` for the same reason `templateNote`
+  // is: an empty skeleton means this behaves as the untemplated path.
+  const sizeGuidance = bodySkeleton ? "" : ` ${SIZE_GUIDANCE}`;
   const prompt = `Update the product release note below to incorporate the new material, preserving as much of the existing wording and structure as still applies. Format the body as Markdown (short paragraphs, and bullet lists where helpful).${sizeGuidance}\n\n${sections.join("\n\n")}`;
 
   return { system, prompt };

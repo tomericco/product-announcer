@@ -564,6 +564,27 @@ describe("composeMergePrompt with a template", () => {
     });
     expect(prompt).not.toContain("<template>");
   });
+
+  // An H1-only template leaves `bodySkeleton` empty after `parseTemplate`
+  // strips the title line — same edge case as `composeReleasePrompt`. Falls
+  // back to the untemplated path (no `<template>` fence, `SIZE_GUIDANCE`
+  // restored) rather than fencing an empty block against "fold the new
+  // material into its existing sections rather than adding sections of your
+  // own", which would be a contradiction with nothing to fold into.
+  it("falls back to the untemplated prompt when the template is only a title", () => {
+    const { prompt } = composeMergePrompt({
+      currentBody: "body",
+      newItems: [TEMPLATE_ITEM],
+      changedItems: [],
+      releaseItems: [TEMPLATE_ITEM],
+      brandProfile: PROFILE,
+      personas: [],
+      examples: [],
+      template: "# {count} updates in {month}\n",
+    });
+    expect(prompt).not.toContain("<template>");
+    expect(prompt).toContain("gather them into a single bulleted list");
+  });
 });
 
 describe("composeReleasePrompt without a template", () => {
