@@ -449,10 +449,23 @@ intended exact match, not open-ended clustering — which is what makes widening
 safe.
 
 Replace with a pure, testable predicate: normalize (lowercase, strip
-non-alphanumerics, collapse whitespace), then merge when the token sets have
-Jaccard similarity ≥ 0.8. Merging two genuinely different updates is worse than
-splitting them, so the threshold is deliberately strict, it applies **only**
-within one batch's `create` actions, and it never touches `assign`.
+non-alphanumerics, collapse whitespace), then merge when the two token sets
+differ by **at most one token** and the smaller set holds **at least two**.
+Merging two genuinely different updates is worse than splitting them, so the
+rule is deliberately strict, it applies **only** within one batch's `create`
+actions, and it never touches `assign`.
+
+**This was Jaccard ≥ 0.8 when the spec was written, and that was wrong.**
+Implementation measured the band across title lengths for a one-word
+difference: 0.67 at 2v3 tokens, 0.75 at 3v4, 0.80 at 4v5, 0.89 at 8v9. But
+`TITLE_SUMMARY_STYLE` instructs the model to write titles as "a short noun
+phrase" — 2 to 3 tokens — which is precisely where the band never fires, so the
+predicate would have been close to inert on real data while growing more
+permissive as titles lengthened. A bounded symmetric difference is
+length-independent, states the intent ("one stray word") directly, and still
+refuses a singular/plural substitution, whose symmetric difference is 2. The
+`>= 2` guard stops a one-token title being subsumed by any longer title that
+contains it ("Search" vs "Faster search").
 
 ### 4c. Bound the candidate set
 
@@ -512,8 +525,9 @@ null-template path too.
 
 ## Open question
 
-`MAX_OPEN_CANDIDATES = 100` and the Jaccard threshold of 0.8 are first guesses.
-Both are cheap to change and both are pure functions, but nothing in the codebase
+`MAX_OPEN_CANDIDATES = 100`, `MAX_TITLE_TOKEN_DIFFERENCE = 1` and
+`MIN_TITLE_TOKENS = 2` are first guesses. All are cheap to change and all are
+pure functions, but nothing in the codebase
 measures whether they are right — there is no eval set for this pipeline, so
 tuning them will be by inspection of real output.
 
