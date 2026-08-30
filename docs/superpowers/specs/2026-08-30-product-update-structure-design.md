@@ -1,7 +1,7 @@
 # Product Update Structure — Design
 
 **Date:** 2026-08-30
-**Status:** approved, not implemented
+**Status:** implemented
 **Spec:** an addendum to the atomic-updates architecture (2026-07-21) and unified
 drafting (2026-08-12). It changes how a product update is *shaped*, not how its
 material is acquired.
