@@ -2,10 +2,13 @@ import { describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
 import { tenants, repos, changeEvents, atomicUpdates, contentPieces } from "../../../src/db/schema";
+import { seedTenant, dropTenant } from "../../helpers/fixtures";
 import {
   applyResolution,
   loadOpenAtomicUpdates,
   withTenantLock,
+  titlesMatch,
+  MAX_OPEN_CANDIDATES,
 } from "../../../src/lib/change-events/apply-resolution";
 
 const TENANT = "Apply Resolution Test Tenant";
@@ -43,6 +46,8 @@ async function insertEvent(tenantId: string, repoId: string, sha: string) {
 describe("apply-resolution", () => {
   afterEach(async () => {
     await db.delete(tenants).where(eq(tenants.name, TENANT));
+    await dropTenant("Candidate Cap Tenant");
+    await dropTenant("Candidate Exemption Tenant");
   });
 
   it("creates an atomic update and attaches the event", async () => {
@@ -225,6 +230,40 @@ describe("apply-resolution", () => {
     expect(open.map((a) => a.title)).toContain("In a draft");
   });
 
+  it("caps the candidate set at MAX_OPEN_CANDIDATES", async () => {
+    const tenant = await seedTenant("Candidate Cap Tenant");
+    for (let i = 0; i < MAX_OPEN_CANDIDATES + 5; i++) {
+      await db.insert(atomicUpdates).values({ tenantId: tenant.id, title: `AU ${i}`, summary: "s" });
+    }
+    const open = await loadOpenAtomicUpdates(db, tenant.id);
+    expect(open.length).toBe(MAX_OPEN_CANDIDATES);
+  });
+
+  it("includes a draft-linked update even when the cap would exclude it", async () => {
+    const tenant = await seedTenant("Candidate Exemption Tenant");
+    const [piece] = await db
+      .insert(contentPieces)
+      .values({ tenantId: tenant.id, title: "Draft", body: "b", status: "draft" })
+      .returning();
+    // Oldest by updatedAt, so recency ordering alone would drop it.
+    const [linked] = await db
+      .insert(atomicUpdates)
+      .values({
+        tenantId: tenant.id,
+        title: "Linked to a draft",
+        summary: "s",
+        contentPieceId: piece.id,
+        updatedAt: new Date("2020-01-01T00:00:00Z"),
+      })
+      .returning();
+    for (let i = 0; i < MAX_OPEN_CANDIDATES + 5; i++) {
+      await db.insert(atomicUpdates).values({ tenantId: tenant.id, title: `AU ${i}`, summary: "s" });
+    }
+
+    const open = await loadOpenAtomicUpdates(db, tenant.id);
+    expect(open.map((a) => a.id)).toContain(linked.id);
+  });
+
   it("serializes concurrent lock holders for the same tenant", async () => {
     const { tenant } = await seed();
     const order: string[] = [];
@@ -243,5 +282,33 @@ describe("apply-resolution", () => {
 
     // Whoever went first must have finished before the other started.
     expect(order[1]).toBe(order[0].replace("start", "end"));
+  });
+});
+
+describe("titlesMatch", () => {
+  it("matches identical titles", () => {
+    expect(titlesMatch("Shared dashboards", "Shared dashboards")).toBe(true);
+  });
+
+  it("matches across case, punctuation and spacing", () => {
+    expect(titlesMatch("Shared Dashboards!", "  shared   dashboards ")).toBe(true);
+  });
+
+  // "dashboards" and "dashboard" are different tokens, so token-set Jaccard
+  // scores 1/3 and does not merge. That is the honest outcome of the chosen
+  // algorithm, not a bug: merging two genuinely different atomic updates is a
+  // worse failure than leaving two near-duplicates unmerged, so the threshold
+  // is not tuned to catch this case.
+  it("does not merge a singular/plural near-miss — different tokens score 1/3", () => {
+    expect(titlesMatch("Shared dashboards", "Shared dashboard")).toBe(false);
+  });
+
+  it("matches a title differing only by a stray extra word", () => {
+    expect(titlesMatch("New shared dashboards for teams", "Shared dashboards for teams")).toBe(true);
+  });
+
+  it("does NOT match two genuinely different changes", () => {
+    expect(titlesMatch("Shared dashboards", "CSV export")).toBe(false);
+    expect(titlesMatch("Faster search", "Faster export")).toBe(false);
   });
 });

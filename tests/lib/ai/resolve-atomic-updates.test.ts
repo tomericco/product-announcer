@@ -9,11 +9,19 @@ import {
   buildResolverPrompt,
   resolveAtomicUpdates,
   RESOLVER_BATCH_SIZE,
+  RESOLVER_CONTEXT_CHARS,
   RESOLVER_SYSTEM,
 } from "../../../src/lib/ai/resolve-atomic-updates";
 
 const EVENTS = [
-  { id: "e1", type: "commit" as const, title: "add csv export", summary: "Adds CSV export.", repoName: "acme/api" },
+  {
+    id: "e1",
+    type: "commit" as const,
+    title: "add csv export",
+    summary: "Adds CSV export.",
+    repoName: "acme/api",
+    description: null,
+  },
 ];
 const OPEN = [{ id: "a1", title: "CSV export", summary: "Export reports as CSV." }];
 
@@ -28,6 +36,32 @@ describe("buildResolverPrompt", () => {
 
   it("states explicitly when there are no open atomic updates", () => {
     expect(buildResolverPrompt(EVENTS, [])).toContain("(none)");
+  });
+
+  it("includes the PR description in the prompt, truncated", () => {
+    const prompt = buildResolverPrompt(
+      [
+        {
+          id: "e1",
+          type: "pull_request",
+          title: "Add dashboards",
+          summary: null,
+          repoName: "acme/app",
+          description: "x".repeat(RESOLVER_CONTEXT_CHARS + 50),
+        },
+      ],
+      []
+    );
+    expect(prompt).toContain("x".repeat(RESOLVER_CONTEXT_CHARS));
+    expect(prompt).not.toContain("x".repeat(RESOLVER_CONTEXT_CHARS + 1));
+  });
+
+  it("omits the description block when there is none", () => {
+    const prompt = buildResolverPrompt(
+      [{ id: "e1", type: "commit", title: "Fix", summary: null, repoName: null, description: null }],
+      []
+    );
+    expect(prompt).not.toContain("description:");
   });
 });
 

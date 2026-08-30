@@ -1,4 +1,4 @@
-import { and, eq, exists, isNull, ne, sql } from "drizzle-orm";
+import { and, desc, eq, exists, isNotNull, isNull, ne, sql } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
 import { atomicUpdates, changeEvents } from "@/db/schema";
 import type { OpenAtomicUpdate, ResolutionAction } from "@/lib/ai/resolve-atomic-updates";
@@ -23,6 +23,19 @@ export async function withTenantLock<T>(
 }
 
 /**
+ * Cap on the resolver's candidate set. Unbounded, the prompt grows with the
+ * backlog and assign precision drops.
+ *
+ * A candidate excluded by the cap means a late commit creates a duplicate
+ * instead of assigning — which is why the ordering is recency and why every
+ * atomic update already linked to a content piece is included regardless. Those
+ * are the in-flight-draft rows this query's missing `contentPieceId` filter
+ * exists to serve; dropping one reintroduces exactly the duplicate that filter's
+ * absence was written to prevent.
+ */
+export const MAX_OPEN_CANDIDATES = 100;
+
+/**
  * The resolver's candidate set: atomic updates not yet shipped. An atomic update
  * sitting in an unpublished draft release is still open — nothing has been
  * communicated to users yet, so new evidence still belongs to it.
@@ -37,16 +50,75 @@ export async function withTenantLock<T>(
  * ships) instead of spinning up a duplicate atomic update. Do NOT add a
  * contentPieceId filter here to "match" the others — that would break re-resolution
  * against open drafts.
+ *
+ * Bounded by MAX_OPEN_CANDIDATES via two queries unioned in code rather than one
+ * windowed query: every open row already linked to a content piece (no cap —
+ * see MAX_OPEN_CANDIDATES), plus the most recently updated open rows up to the
+ * cap. De-duplicated by id. This runs once per chunk, so two round trips is a
+ * fine price for the clarity.
  */
 export async function loadOpenAtomicUpdates(
   database: Database | Tx,
   tenantId: string
 ): Promise<OpenAtomicUpdate[]> {
-  const rows = await database
-    .select({ id: atomicUpdates.id, title: atomicUpdates.title, summary: atomicUpdates.summary })
+  const columns = { id: atomicUpdates.id, title: atomicUpdates.title, summary: atomicUpdates.summary };
+
+  const draftLinked = await database
+    .select(columns)
     .from(atomicUpdates)
-    .where(and(eq(atomicUpdates.tenantId, tenantId), eq(atomicUpdates.status, "open")));
-  return rows;
+    .where(
+      and(
+        eq(atomicUpdates.tenantId, tenantId),
+        eq(atomicUpdates.status, "open"),
+        isNotNull(atomicUpdates.contentPieceId)
+      )
+    );
+
+  const mostRecent = await database
+    .select(columns)
+    .from(atomicUpdates)
+    .where(and(eq(atomicUpdates.tenantId, tenantId), eq(atomicUpdates.status, "open")))
+    .orderBy(desc(atomicUpdates.updatedAt))
+    .limit(MAX_OPEN_CANDIDATES);
+
+  const byId = new Map<string, OpenAtomicUpdate>();
+  for (const row of draftLinked) byId.set(row.id, row);
+  for (const row of mostRecent) byId.set(row.id, row);
+  return [...byId.values()];
+}
+
+/** Merge threshold for two same-batch `create` titles. */
+const TITLE_SIMILARITY_THRESHOLD = 0.8;
+
+function titleTokens(title: string): Set<string> {
+  return new Set(
+    title
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean)
+  );
+}
+
+/**
+ * Whether two `create` actions in the SAME batch describe one change.
+ *
+ * `RESOLVER_SYSTEM` explicitly instructs the model to give co-describing events
+ * the SAME title, so this is a tolerance band on an intended exact match, not
+ * open-ended clustering — which is what makes widening the old exact-string
+ * comparison safe. Merging two genuinely different updates is worse than
+ * splitting one, so the threshold is deliberately strict, it applies only
+ * within one batch's creates, and it never touches `assign`.
+ */
+export function titlesMatch(a: string, b: string): boolean {
+  const left = titleTokens(a);
+  const right = titleTokens(b);
+  if (left.size === 0 || right.size === 0) return false;
+  let shared = 0;
+  for (const token of left) if (right.has(token)) shared += 1;
+  const union = left.size + right.size - shared;
+  return shared / union >= TITLE_SIMILARITY_THRESHOLD;
 }
 
 /**
@@ -66,19 +138,21 @@ export async function applyResolutionInTx(
   if (actions.length === 0) return;
 
   // Two events describing the same new change both arrive as `create` actions
-  // with an identical title. Creating a row per action would split one change
-  // across two atomic updates, so the first create wins and the rest reuse it.
-  const createdByTitle = new Map<string, string>();
+  // with a near-identical title (RESOLVER_SYSTEM asks the model for an exact
+  // match, titlesMatch adds a tolerance band on top). Creating a row per action
+  // would split one change across two atomic updates, so the first create wins
+  // and the rest reuse it — scanned with titlesMatch rather than an exact-key
+  // map, so a stray extra word no longer defeats the merge.
+  const createdTitles: { title: string; id: string }[] = [];
 
   for (const action of actions) {
     let atomicUpdateId: string;
 
     if (action.action === "create") {
-      const key = action.title.trim().toLowerCase();
-      const existing = createdByTitle.get(key);
+      const existing = createdTitles.find((c) => titlesMatch(c.title, action.title));
 
       if (existing) {
-        atomicUpdateId = existing;
+        atomicUpdateId = existing.id;
       } else {
         const [created] = await tx
           .insert(atomicUpdates)
@@ -91,7 +165,7 @@ export async function applyResolutionInTx(
           })
           .returning({ id: atomicUpdates.id });
         atomicUpdateId = created.id;
-        createdByTitle.set(key, atomicUpdateId);
+        createdTitles.push({ title: action.title, id: atomicUpdateId });
       }
     } else {
       atomicUpdateId = action.atomicUpdateId;

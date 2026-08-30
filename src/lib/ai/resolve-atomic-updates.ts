@@ -6,12 +6,23 @@ import { CATEGORY_RUBRIC, SIZE_RUBRIC, TITLE_SUMMARY_STYLE } from "./prompt-rule
 
 export const RESOLVER_BATCH_SIZE = 25;
 
+/**
+ * Chars of a PR/task description carried per event. At RESOLVER_BATCH_SIZE (25)
+ * that is ~12.5k characters of added context, comfortably inside budget.
+ *
+ * Deliberately NOT the diff. Grouping needs to know what a change was FOR, which
+ * the description carries; the diff is a more technical signal than this
+ * decision needs and was rejected explicitly — see the spec's Non-goals.
+ */
+export const RESOLVER_CONTEXT_CHARS = 500;
+
 export type ResolverEvent = {
   id: string;
   type: "commit" | "pull_request" | "task";
   title: string;
   summary: string | null;
   repoName: string | null;
+  description: string | null;
 };
 
 export type OpenAtomicUpdate = { id: string; title: string; summary: string };
@@ -66,7 +77,10 @@ export function buildResolverPrompt(events: ResolverEvent[], open: OpenAtomicUpd
     .map((e) => {
       const where = e.repoName ? ` in ${e.repoName}` : "";
       const summary = e.summary ? `\n  summary: ${e.summary}` : "";
-      return `- id: ${e.id}\n  type: ${e.type}${where ? `\n  repo:${where}` : ""}\n  title: ${e.title}${summary}`;
+      const description = e.description
+        ? `\n  description: ${e.description.slice(0, RESOLVER_CONTEXT_CHARS)}`
+        : "";
+      return `- id: ${e.id}\n  type: ${e.type}${where ? `\n  repo:${where}` : ""}\n  title: ${e.title}${summary}${description}`;
     })
     .join("\n");
 
