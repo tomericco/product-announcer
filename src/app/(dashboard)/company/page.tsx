@@ -277,15 +277,16 @@ export default async function CompanyPage({
             colors are saved here.
           </CardDescription>
         </CardHeader>
-        <CardContent>
-          {/* Keyed on the server value for the same reason as GuidelinesEditor
-              above: the editor seeds its state once from `initial`. */}
-          <VisualIdentityEditor
-            key={JSON.stringify(brandProfile.visualIdentity)}
-            initial={brandProfile.visualIdentity}
-            defaultWebsiteUrl={brandProfile.websiteUrl ?? ""}
-          />
-        </CardContent>
+        {/* Renders its own CardContent AND the generate band as a CardFooter —
+            the band writes into the editor's form state, so both must come from
+            the one component. Keyed on the server value for the same reason as
+            GuidelinesEditor above: the editor seeds its state once from
+            `initial`. */}
+        <VisualIdentityEditor
+          key={JSON.stringify(brandProfile.visualIdentity)}
+          initial={brandProfile.visualIdentity}
+          defaultWebsiteUrl={brandProfile.websiteUrl ?? ""}
+        />
       </Card>
 
       {/* Absorbed from the retired /change-events and /atomic-updates pages
