@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { fetchPageText, htmlToText, cleanMarkdown, extractSameOriginLinks, MAX_TEXT_CHARS } from "../../../src/lib/workspace/fetch-page";
+import { fetchPageText, htmlToText, cleanMarkdown, IMAGE_MARKER, VIDEO_MARKER, extractSameOriginLinks, MAX_TEXT_CHARS } from "../../../src/lib/workspace/fetch-page";
 
 function htmlResponse(body: string, headers: Record<string, string> = {}) {
   return new Response(body, { status: 200, headers: { "content-type": "text/html", ...headers } });
@@ -39,11 +39,22 @@ describe("htmlToText — block structure", () => {
     expect(text).not.toContain("## Improvement");
   });
 
-  it("keeps link text but drops link targets and images", () => {
-    // A URL is noise to every consumer of this text, and images were 13% of the
-    // output on a real changelog page.
+  it("keeps link text but drops link targets", () => {
     expect(htmlToText("<p>see <a href='https://x.com/a?b=1'>the docs</a></p>")).toBe("see the docs");
-    expect(htmlToText("<p>a</p><img src='https://x/y.png' alt='shot'>")).toBe("a");
+  });
+
+  it("marks media rather than deleting it", () => {
+    // Deleting images meant a page could show a screenshot under every feature
+    // and an embedded walkthrough in every release, and a template derived from
+    // it would say nothing about either. The URL is still dropped — it is the
+    // placement that is structure, not the asset.
+    expect(htmlToText("<h2>New</h2><img src='https://x/y.png' alt='shot'><p>a</p>")).toBe(
+      `## New\n\n${IMAGE_MARKER}\n\na`
+    );
+    expect(htmlToText("<h2>New</h2><iframe src='https://loom.com/x'></iframe><p>a</p>")).toBe(
+      `## New\n\n${VIDEO_MARKER}\n\na`
+    );
+    expect(htmlToText("<p>a</p><video src='x.mp4'></video>")).toBe(`a\n\n${VIDEO_MARKER}`);
   });
 
   it("still collapses runs of inline whitespace within a block", () => {
@@ -71,8 +82,10 @@ describe("cleanMarkdown", () => {
     expect(cleanMarkdown("---\n\n# Title")).toBe("---\n\n# Title");
   });
 
-  it("drops images and link targets, as the html path does", () => {
-    expect(cleanMarkdown("![Logo](https://x/a.svg)\n\nsee [docs](https://x/d)")).toBe("see docs");
+  it("marks images and drops link targets, as the html path does", () => {
+    expect(cleanMarkdown("![Logo](https://x/a.svg)\n\nsee [docs](https://x/d)")).toBe(
+      `${IMAGE_MARKER}\n\nsee docs`
+    );
   });
 
   it("normalises non-breaking spaces", () => {

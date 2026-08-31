@@ -17,8 +17,16 @@ const MAX_CONCURRENT_CHECKS = 6;
 
 /**
  * The marker left in place of a link that couldn't be verified (see
- * `validateDraftLinks`). Publishing guards on it via `hasLinkPlaceholder` so a
- * draft with an unresolved link never ships — an editor fills it in first.
+ * `validateDraftLinks`). `collectLinkProblems` reports one via
+ * `hasLinkPlaceholder`, which the publish dialog surfaces to the editor as
+ * "Unfilled link".
+ *
+ * It SURFACES; it does not block. This comment used to say publishing "guards
+ * on it so a draft with an unresolved link never ships", which overstated what
+ * the code does — nothing refuses a publish over a placeholder, and an editor
+ * who dismisses the dialog ships the literal token. Left as-is deliberately:
+ * media markers added alongside this ([image], [video]) are the same shape and
+ * are also surfaced rather than enforced.
  */
 export const LINK_PLACEHOLDER = "[add link]";
 

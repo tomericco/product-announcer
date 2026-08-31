@@ -147,11 +147,33 @@ async function readBodyCapped(res: Response, maxBytes: number): Promise<string> 
  * once, and floods the inbox. The version lets that consumer notice the format
  * moved and re-baseline instead.
  */
-export const EXTRACTOR_VERSION = 2;
+export const EXTRACTOR_VERSION = 3;
 
 // Elements that never carry page content. Removed outright rather than
 // converted, so their text does not survive as stray lines.
-const DROPPED_ELEMENTS = ["script", "style", "noscript", "iframe", "svg", "form", "template"];
+//
+// `iframe` is NOT here. An embedded player or walkthrough is a real part of how
+// some companies write an update, and dropping it silently made that invisible
+// to anything reading the page — see MEDIA_MARKERS.
+const DROPPED_ELEMENTS = ["script", "style", "noscript", "svg", "form", "template"];
+
+/**
+ * What an image or embed becomes in extracted text.
+ *
+ * Not the original markup: a URL is noise, and on a real changelog images were
+ * 13% of the output. But not nothing either, which is what they used to become.
+ * Deleting them meant the page could show a screenshot after every intro and a
+ * walkthrough video in every release, and a template derived from it would say
+ * nothing about either — the one part of an update the model can see is missing
+ * is the part it was never shown.
+ *
+ * A marker is the middle: two tokens of signal, no URL. They deliberately use
+ * the `[add link]` shape, because they mean the same thing downstream — a slot
+ * only a person can fill. Nothing in the pipeline can render a screenshot of a
+ * customer's own product.
+ */
+export const IMAGE_MARKER = "[image]";
+export const VIDEO_MARKER = "[video]";
 
 const turndown = new TurndownService({
   headingStyle: "atx",
@@ -159,6 +181,17 @@ const turndown = new TurndownService({
   codeBlockStyle: "fenced",
 });
 turndown.remove(DROPPED_ELEMENTS as TurndownService.Filter);
+
+// Embeds first: an <iframe> carries no text, so without a rule turndown emits
+// nothing for it and the embed vanishes as surely as if it were removed.
+turndown.addRule("embed", {
+  filter: ["iframe", "video", "embed", "object", "audio"],
+  replacement: () => `\n\n${VIDEO_MARKER}\n\n`,
+});
+turndown.addRule("media", {
+  filter: "img",
+  replacement: () => IMAGE_MARKER,
+});
 
 /**
  * HTML to Markdown.
@@ -222,7 +255,14 @@ export function cleanMarkdown(markdown: string): string {
     // string comparisons and, worse, changes a block's hash depending on how
     // the page happened to encode a space.
     .replace(/\u00a0/g, " ")
-    .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
+    // Zero-width joiners/spaces. Webflow and similar builders emit them as
+    // spacer content, and they survive extraction as lines that look blank but
+    // are not — so they reach a prompt as structure and come back out in a
+    // template as mystery blank-ish rows.
+    .replace(/[\u200b-\u200d\ufeff]/g, "")
+    // Markdown served directly still arrives with real image syntax; the HTML
+    // path has already been through the rule above.
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, IMAGE_MARKER)
     .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
     .replace(/[ \t]+$/gm, "")
     .replace(/\n{3,}/g, "\n\n")

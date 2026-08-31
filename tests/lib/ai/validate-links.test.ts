@@ -208,3 +208,13 @@ describe("validateDraftLinks", () => {
     expect(check).not.toHaveBeenCalled();
   });
 });
+
+describe("media markers are not link problems", () => {
+  it("ignores [image] and [video]", () => {
+    // They are the same shape as [add link] on purpose, but they are surfaced
+    // nowhere and block nothing: nothing in the pipeline can render a
+    // screenshot of a customer's product, so an unfilled one is a normal state
+    // of a draft, not a defect in it.
+    expect(hasLinkPlaceholder("A shot: [image] and a demo: [video]")).toBe(false);
+  });
+});
