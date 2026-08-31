@@ -2,6 +2,7 @@ import { generateObject } from "ai";
 import { z } from "zod";
 import { resolveModel, modelId } from "./model";
 import { recordLlmUsage } from "./llm-usage";
+import { CATEGORY_RUBRIC } from "./prompt-rules";
 
 export type EnrichmentResult = {
   userFacing: boolean;
@@ -36,10 +37,9 @@ const ENRICHMENT_SYSTEM = [
   "Decide whether the change is user-facing (affects what an end user sees, can do, or experiences).",
   "Refactors, tests, chores, CI, and internal-only changes are NOT user-facing.",
   "If user-facing: write impactSummary as one plain sentence describing the end-user benefit,",
-  "and pick suggestedCategory: 'new' (a new capability), 'improvement' (better existing behavior),",
-  "'fix' (a bug fix), or 'announcement' (a user-facing notice rather than a feature/fix — a deprecation,",
-  "a sunset/removal, a pricing/policy change, or an availability/'now in X' heads-up; pick this only when the",
-  "change is fundamentally an announcement, not a code capability).",
+  `and pick suggestedCategory: ${CATEGORY_RUBRIC};`,
+  "an availability/'now in X' heads-up (e.g. \"now available in the EU\") is the clearest case of an announcement.",
+  "Pick 'announcement' only when the change is fundamentally an announcement, not a code capability.",
   "If not user-facing: set impactSummary and suggestedCategory to null.",
   "Always set confidence between 0 and 1.",
 ].join(" ");

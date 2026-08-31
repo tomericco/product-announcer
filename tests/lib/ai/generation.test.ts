@@ -14,8 +14,8 @@ describe("generateReleaseDraft", () => {
     } as never);
 
     const items = [
-      { id: "a1", title: "CSV export", summary: "Export reports as CSV.", category: "new" as const, size: "m" as const },
-      { id: "a2", title: "Faster search", summary: "Search returns in under a second.", category: "improvement" as const, size: "m" as const },
+      { id: "a1", title: "CSV export", summary: "Export reports as CSV.", category: "new" as const, size: "m" as const, sizeEditedAt: null, latestEvidenceAt: null },
+      { id: "a2", title: "Faster search", summary: "Search returns in under a second.", category: "improvement" as const, size: "m" as const, sizeEditedAt: null, latestEvidenceAt: null },
     ];
 
     const brandProfile = {
@@ -38,6 +38,35 @@ describe("generateReleaseDraft", () => {
     expect(callArgs.system).toContain("engineering managers: track shipped work");
     expect(callArgs.prompt).toContain("CSV export");
     expect(callArgs.prompt).toContain("Export reports as CSV.");
+    // No template argument: the pre-template prompt, unchanged.
+    expect(callArgs.prompt).not.toContain("<template>");
+  });
+
+  it("threads the template through to the prompt, with its variables already substituted", async () => {
+    vi.mocked(generateObject).mockResolvedValue({
+      object: { title: "August", body: "Body." },
+    } as never);
+
+    const items = [
+      {
+        id: "a1",
+        title: "CSV export",
+        summary: "Export reports as CSV.",
+        category: "new" as const,
+        size: "m" as const,
+        sizeEditedAt: null,
+        latestEvidenceAt: new Date("2026-08-20T00:00:00Z"),
+      },
+    ];
+    const brandProfile = { tenantId: "tenant_1", guidelines: null, industry: null, userPersonas: [] } as never;
+
+    await generateReleaseDraft(items, brandProfile, [], [], [], "# {count} updates in {month}\n\n## Highlights\n");
+
+    const callArgs = vi.mocked(generateObject).mock.calls.at(-1)![0];
+    expect(callArgs.prompt).toContain("<template>");
+    expect(callArgs.prompt).toContain("## Highlights");
+    expect(callArgs.prompt).toContain("1 updates in August");
+    expect(callArgs.prompt).not.toContain("{count}");
   });
 });
 

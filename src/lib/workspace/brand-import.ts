@@ -15,6 +15,17 @@ export type ImportBrandStyleDeps = {
  * Scrapes the tenant's updates page, derives their brand style, and OVERWRITES
  * the brand profile with it (safe at onboarding, where the profile is fresh).
  * On a scrape error, writes nothing and returns the reason.
+ *
+ * Derives VOICE ONLY — guidelines and industry. The product update template is
+ * derived by `importProductUpdateTemplateForTenant` (`./template-import`),
+ * which scrapes the same page independently.
+ *
+ * The two were one call until 2026-08-31. Splitting them is what lets a person
+ * re-run either analysis without disturbing the other, which matters because
+ * the template derivation is the less reliable of the two: iterating on it used
+ * to mean overwriting hand-tuned guidelines every attempt. They also fail
+ * independently now — a page that yields good guidelines and no usable
+ * structure no longer reports as a failed import.
  */
 export async function importBrandStyleForTenant(
   tenantId: string,

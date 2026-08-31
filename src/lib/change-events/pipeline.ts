@@ -46,6 +46,8 @@ export async function resolvePendingEvents(
       commitMessage: changeEvents.commitMessage,
       taskTitle: changeEvents.taskTitle,
       impactSummary: changeEvents.impactSummary,
+      prDescription: changeEvents.prDescription,
+      taskDescription: changeEvents.taskDescription,
       repoName: repos.githubRepoFullName,
     })
     .from(changeEvents)
@@ -66,6 +68,7 @@ export async function resolvePendingEvents(
     title: r.prTitle ?? r.commitMessage ?? r.taskTitle ?? "",
     summary: r.impactSummary,
     repoName: r.repoName,
+    description: r.prDescription ?? r.taskDescription ?? null,
   }));
 
   const touched = new Set<string>();

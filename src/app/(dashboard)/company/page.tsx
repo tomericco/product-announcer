@@ -6,8 +6,10 @@ import { listCompetitors } from "@/lib/workspace/competitors";
 import { listCompetitorSources, getNewsSource } from "@/lib/signals/sources";
 import { getAiVisibilitySettings, getAiVisibilitySource } from "@/lib/ai-visibility/settings";
 import { listPrompts } from "@/lib/ai-visibility/prompts";
-import { saveGuidelines } from "./actions";
-import { BrandStyleImport } from "./brand-style-import";
+import { saveGuidelines, saveProductUpdateTemplate } from "./actions";
+import { GenerationLockProvider } from "./generation-lock";
+import { SaveButton } from "./save-button";
+import { UpdatesPageImport } from "./updates-page-import";
 import { CompanyContextForm } from "./company-context-form";
 import { CompetitorsEditor } from "./competitors-editor";
 import { IndustrySelect } from "./industry-select";
@@ -15,11 +17,11 @@ import { NewsToggle } from "./news-toggle";
 import { AiVisibilityCard } from "./ai-visibility-card";
 import { PersonasEditor } from "./personas-editor";
 import { GuidelinesEditor } from "./guidelines-editor";
+import { ProductUpdateTemplateEditor } from "./product-update-template-editor";
 import { VisualIdentityEditor } from "./visual-identity-editor";
 import { ChangeEventsSection } from "./change-events-section";
 import { AtomicUpdatesSection } from "./atomic-updates-section";
 import { ToastForm } from "../settings/toast-form";
-import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
 /**
@@ -184,7 +186,7 @@ export default async function CompanyPage({
           <CardDescription>Grounds updates in the language of your market — selects the writing exemplars generation draws on.</CardDescription>
         </CardHeader>
         <CardContent>
-          {/* Keyed on the server value. A successful import (BrandStyleImport,
+          {/* Keyed on the server value. A successful import (UpdatesPageImport,
               below) overwrites `industry` server-side and calls router.refresh(),
               which re-renders this page with the new brandProfile. IndustrySelect
               owns its selection as internal state, so without a key React would
@@ -205,15 +207,6 @@ export default async function CompanyPage({
         </CardContent>
       </Card>
 
-      <Card id="derive-from-updates">
-        <CardHeader>
-          <CardTitle>Derive from your updates page</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <BrandStyleImport defaultUrl={brandProfile.updatesPageUrl ?? ""} />
-        </CardContent>
-      </Card>
-
       <Card id="guidelines">
         <CardHeader>
           <CardTitle>Guidelines</CardTitle>
@@ -221,6 +214,7 @@ export default async function CompanyPage({
             Voice, structure, and the words you do and don&apos;t use. Written as Markdown.
           </CardDescription>
         </CardHeader>
+        <GenerationLockProvider>
         <CardContent>
           <ToastForm action={saveGuidelines} successMessage="Brand guidelines saved" className="space-y-4">
             {/* Keyed on the server value for the same reason as IndustrySelect above:
@@ -235,11 +229,44 @@ export default async function CompanyPage({
                 replaced Settings card used (`key={brandProfile.tone ?? ""}` etc). */}
             <GuidelinesEditor key={brandProfile.guidelines ?? ""} defaultValue={brandProfile.guidelines} />
 
-            <Button type="submit" variant="outline">
-              Save
-            </Button>
+            <SaveButton />
           </ToastForm>
         </CardContent>
+
+        <UpdatesPageImport kind="guidelines" defaultUrl={brandProfile.updatesPageUrl ?? ""} />
+        </GenerationLockProvider>
+      </Card>
+
+      <Card id="product-update-template">
+        <CardHeader>
+          <CardTitle>Product update template</CardTitle>
+          <CardDescription>
+            The shape your product updates take — headings, section order, sign-off. Written as Markdown.
+          </CardDescription>
+        </CardHeader>
+        <GenerationLockProvider>
+        <CardContent>
+          <ToastForm
+            action={saveProductUpdateTemplate}
+            successMessage="Product update template saved"
+            className="space-y-4"
+          >
+            {/* Keyed on the server value for the same reason as GuidelinesEditor
+                above: a brand re-import overwrites this column and refreshes the
+                page, but the editor seeds its own useState once and never looks
+                at `defaultValue` again -- without a key here it would keep
+                showing pre-import text, and the next Save would write that
+                stale text back over the freshly-derived template. */}
+            <ProductUpdateTemplateEditor
+              key={brandProfile.productUpdateTemplate ?? ""}
+              defaultValue={brandProfile.productUpdateTemplate}
+            />
+            <SaveButton />
+          </ToastForm>
+        </CardContent>
+
+        <UpdatesPageImport kind="template" defaultUrl={brandProfile.updatesPageUrl ?? ""} />
+        </GenerationLockProvider>
       </Card>
 
       <Card id="visual-identity">
@@ -250,15 +277,16 @@ export default async function CompanyPage({
             colors are saved here.
           </CardDescription>
         </CardHeader>
-        <CardContent>
-          {/* Keyed on the server value for the same reason as GuidelinesEditor
-              above: the editor seeds its state once from `initial`. */}
-          <VisualIdentityEditor
-            key={JSON.stringify(brandProfile.visualIdentity)}
-            initial={brandProfile.visualIdentity}
-            defaultWebsiteUrl={brandProfile.websiteUrl ?? ""}
-          />
-        </CardContent>
+        {/* Renders its own CardContent AND the generate band as a CardFooter —
+            the band writes into the editor's form state, so both must come from
+            the one component. Keyed on the server value for the same reason as
+            GuidelinesEditor above: the editor seeds its state once from
+            `initial`. */}
+        <VisualIdentityEditor
+          key={JSON.stringify(brandProfile.visualIdentity)}
+          initial={brandProfile.visualIdentity}
+          defaultWebsiteUrl={brandProfile.websiteUrl ?? ""}
+        />
       </Card>
 
       {/* Absorbed from the retired /change-events and /atomic-updates pages

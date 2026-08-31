@@ -1,3 +1,5 @@
+import TurndownService from "turndown";
+
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 
@@ -134,57 +136,162 @@ async function readBodyCapped(res: Response, maxBytes: number): Promise<string> 
   return new TextDecoder().decode(combined);
 }
 
+/**
+ * The extractor version, stamped into anything that persists a fingerprint of
+ * extracted text. Bump it whenever a change here would alter the output for an
+ * unchanged page.
+ *
+ * `competitor-agent` is why this exists. It stores hashes of text blocks and
+ * treats any hash it has not seen as a new change worth a signal — so a silent
+ * change to this function makes every block of every watched page look new at
+ * once, and floods the inbox. The version lets that consumer notice the format
+ * moved and re-baseline instead.
+ */
+export const EXTRACTOR_VERSION = 4;
+
+// Elements that never carry page content. Removed outright rather than
+// converted, so their text does not survive as stray lines.
+//
+// `iframe` is NOT here. An embedded player or walkthrough is a real part of how
+// some companies write an update, and dropping it silently made that invisible
+// to anything reading the page — see MEDIA_MARKERS.
+const DROPPED_ELEMENTS = [
+  "script",
+  "style",
+  "noscript",
+  "svg",
+  "form",
+  "template",
+  // Site chrome. These are semantic landmarks, so removing them is a structural
+  // rule and not a class-name guess — turndown's `remove` runs against the
+  // parsed DOM, which is what makes it reliable.
+  //
+  // Worth the entry: on a real changelog the whole product menu, resources list
+  // and footer arrived ahead of the first update, and on a page long enough to
+  // truncate that chrome is spent from the same character budget as the
+  // content. A page that does not use landmarks is unaffected, which is why
+  // this is additive rather than a switch to main-only extraction.
+  "nav",
+  "header",
+  "footer",
+  "aside",
+];
+
+/**
+ * What an image or embed becomes in extracted text.
+ *
+ * Not the original markup: a URL is noise, and on a real changelog images were
+ * 13% of the output. But not nothing either, which is what they used to become.
+ * Deleting them meant the page could show a screenshot after every intro and a
+ * walkthrough video in every release, and a template derived from it would say
+ * nothing about either — the one part of an update the model can see is missing
+ * is the part it was never shown.
+ *
+ * A marker is the middle: one token of signal, no URL. It deliberately uses the
+ * `[add link]` shape, because it means the same thing downstream — a slot only a
+ * person can fill. Nothing in the pipeline can render a screenshot or a
+ * walkthrough of a customer's own product.
+ */
+export const MEDIA_MARKER = "[media]";
+
+const turndown = new TurndownService({
+  headingStyle: "atx",
+  bulletListMarker: "-",
+  codeBlockStyle: "fenced",
+});
+turndown.remove(DROPPED_ELEMENTS as TurndownService.Filter);
+
+// Embeds first: an <iframe> carries no text, so without a rule turndown emits
+// nothing for it and the embed vanishes as surely as if it were removed.
+// One marker for both, because the distinction does not survive into anything
+// useful: a company that leads with a demo clip one week and a screenshot the
+// next is doing the same thing structurally, and a template that insisted on
+// which would be wrong half the time.
+turndown.addRule("embed", {
+  filter: ["iframe", "video", "embed", "object", "audio"],
+  replacement: () => `\n\n${MEDIA_MARKER}\n\n`,
+});
+turndown.addRule("media", {
+  filter: "img",
+  replacement: () => MEDIA_MARKER,
+});
+
+/**
+ * HTML to Markdown.
+ *
+ * This used to be a regex tag-stripper, and what it threw away was heading
+ * LEVEL: `</h2>` became a newline, so `<h2>Fixes</h2>` and a styled
+ * `<div class="badge">Improvement</div>` both arrived as bare lines,
+ * indistinguishable to anything reading the result. Every consumer that wanted
+ * to know what was a section and what was a label had to guess, and the
+ * template derivation guessed wrong — describing a CMS category chip as though
+ * it were part of the update.
+ *
+ * Markdown keeps that distinction at no cost: measured on a real 20-entry
+ * changelog, the output is the same size as the old plain text (25.3k vs 25.4k
+ * chars) and carries 20 heading markers where the old one carried none.
+ *
+ * Images and link targets are dropped — the URL of a link is noise to every
+ * consumer here, and images were 13% of the output. Link TEXT is kept, since
+ * that is content.
+ *
+ * `extractBlocks` in `@/lib/signals/agent-page` was already markdown-aware
+ * (it splits on `/^#{1,6}\s/`), because it also reads `.md` and `llms.txt`
+ * pages. This makes the HTML path behave like the one it already supported
+ * rather than being a second, structureless shape.
+ */
 export function htmlToText(html: string): string {
-  // Collapse all source whitespace (including real newlines) to single spaces
-  // *before* block boundaries are turned into structural newlines below, so a
-  // literal line break inside a single block (e.g. a <p> wrapped mid-tag in
-  // the source) isn't mistaken for a paragraph break.
-  const withoutScripts = html
-    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
-    .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, " ")
-    .replace(/\s+/g, " ");
-
-  // Only these closing tags (and <br>) become line breaks -- they are the
-  // block-level boundaries later per-item extraction splits on. Everything
-  // else (inline tags, opening tags) still strips to a plain space.
-  const withBlockBreaks = withoutScripts
-    .replace(/<\/(p|div|li|h[1-6]|tr)>/gi, "\n")
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&amp;/gi, "&")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
-    .replace(/&#39;|&apos;/gi, "'")
-    .replace(/&quot;/gi, '"');
-
-  // Collapse inline whitespace within each line, trim each line, and squeeze
-  // runs of blank lines (including leading/trailing) down to none.
-  const lines: string[] = [];
-  let prevBlank = true;
-  for (const raw of withBlockBreaks.split("\n")) {
-    const line = raw.replace(/[ \t]+/g, " ").trim();
-    if (line === "") {
-      if (!prevBlank) lines.push("");
-      prevBlank = true;
-    } else {
-      lines.push(line);
-      prevBlank = false;
-    }
+  let markdown: string;
+  try {
+    markdown = turndown.turndown(html);
+  } catch {
+    // Turndown parses; a pathological document can throw. Returning empty is
+    // right — every caller already treats empty extraction as a failed read,
+    // and the alternative is propagating a parse error out of a network fetch.
+    return "";
   }
-  while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
 
-  return lines.join("\n");
+  return cleanMarkdown(markdown);
 }
 
 /**
- * Fetches a public page and returns its readable text alongside the raw HTML
- * (so callers can discover links without a second request). SSRF-guarded:
- * http(s) only, every hop's host must resolve entirely to public IPs, redirects
- * are followed manually and re-validated. Bounded by timeout, size, and content
- * type; returns `insufficient-content` for JS-only shells with little text.
+ * The normalisation every extracted page gets, whether we converted it from
+ * HTML or the server handed us markdown directly.
+ *
+ * Both paths are real: this fetcher sends `accept: text/markdown, text/plain,
+ * text/html`, and a growing number of sites content-negotiate an agent-facing
+ * markdown version. That response used to bypass every cleanup below simply
+ * because it never went through the HTML converter — so an agent-facing page
+ * arrived carrying YAML frontmatter, image markup and link URLs that the same
+ * page in HTML would have had stripped. Same input, same output, regardless of
+ * which representation the server chose.
  */
+export function cleanMarkdown(markdown: string): string {
+  return markdown
+    // Leading YAML frontmatter is metadata, not content — title/description/og
+    // tags that say nothing about the page's structure. Anchored to the very
+    // start and requiring a `key:` line so a document opening with a `---`
+    // horizontal rule is left alone.
+    .replace(/^---\r?\n(?:[^\n]*:[^\n]*\r?\n|[^\n]*\r?\n)*?---\r?\n/, "")
+    // Turndown decodes &nbsp; to a real U+00A0, and markdown served directly
+    // can carry them too. Left alone it is an invisible difference that breaks
+    // string comparisons and, worse, changes a block's hash depending on how
+    // the page happened to encode a space.
+    .replace(/\u00a0/g, " ")
+    // Zero-width joiners/spaces. Webflow and similar builders emit them as
+    // spacer content, and they survive extraction as lines that look blank but
+    // are not — so they reach a prompt as structure and come back out in a
+    // template as mystery blank-ish rows.
+    .replace(/[\u200b-\u200d\ufeff]/g, "")
+    // Markdown served directly still arrives with real image syntax; the HTML
+    // path has already been through the rule above.
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, MEDIA_MARKER)
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/[ \t]+$/gm, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 export async function fetchPageText(
   url: string,
   deps: { fetchImpl?: typeof fetch; resolveHost?: ResolveHost } = {}
@@ -262,7 +369,8 @@ export async function fetchPageText(
         // body is already text, and running htmlToText over it would destroy
         // exactly the line structure the block splitter needs.
         const isHtml = contentType.includes("text/html");
-        const extracted = isHtml ? htmlToText(scanned) : scanned;
+        // Both branches land in the same normalisation — see `cleanMarkdown`.
+        const extracted = isHtml ? htmlToText(scanned) : cleanMarkdown(scanned);
         // Capture truncation before slicing -- see the `truncated` field's
         // doc comment on PageResult for why this can't be reconstructed from
         // the sliced text's length afterward.

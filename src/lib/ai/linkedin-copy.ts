@@ -3,6 +3,7 @@ import { z } from "zod";
 import { resolveModel, modelId } from "./model";
 import { recordLlmUsage } from "./llm-usage";
 import { LINKEDIN_MAX_CHARS } from "@/lib/publishing/linkedin-constants";
+import { GROUNDING_RULE } from "./prompt-rules";
 
 // Re-exported so existing server-side callers of this module can keep
 // importing the cap alongside `generateLinkedinCopy`. The client-safe
@@ -23,7 +24,7 @@ export function buildLinkedinCopyPrompt(args: {
   const parts = [
     "You write LinkedIn posts for a company page announcing product releases.",
     "Write in the company's voice: a strong first-line hook, then a concise, skimmable summary of what shipped and why it matters to customers.",
-    "Ground every statement strictly in the release notes provided. Only describe what those notes state; never invent or embellish features, capabilities, benefits, metrics, numbers, dates, names, or quotes. If a detail isn't in the release notes, leave it out rather than guessing.",
+    GROUNDING_RULE,
     "Plain text only — NO markdown syntax (no #, *, _, backticks, or link markup). Line breaks are fine.",
     `Keep the whole post at or under ${LINKEDIN_MAX_CHARS} characters. Do NOT include a URL — a link is appended automatically.`,
     // Many-updates rule: don't dump a long list; lead with the highlights and

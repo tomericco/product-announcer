@@ -5,7 +5,11 @@ import type { UpdateDraft } from "./generation";
 import { resolveModel, modelId } from "./model";
 import { recordLlmUsage } from "./llm-usage";
 import type { OnDraftProgress } from "@/lib/drafting/draft-progress";
-import { truncateGuidelines } from "./compose-prompt";
+import {
+  fenceGuidelines,
+  GROUNDING_RULE,
+  NO_INVENTED_LINKS_RULE,
+} from "./prompt-rules";
 
 type BrandProfileRow = typeof companyProfiles.$inferSelect;
 
@@ -50,44 +54,63 @@ async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
 const REVIEW_SYSTEM = [
   "You are a brand-compliance reviewer for product update announcements.",
   "Check the draft against the brand requirements.",
+  "If a template is given, also check whether the draft FOLLOWS it, and name every gap you find specifically",
+  "enough for an editor to act on. The template is the shape the company's updates take; the draft should",
+  "match its sections, their order, its headings and any sign-off.",
+  "Judge only the shape. Which change the draft leads with, and how much space each gets, are editorial",
+  "decisions already made — do not second-guess them, and do not ask for content the template cannot tell you",
+  "is missing.",
   "If it fully complies, set compliant true and issues [].",
   "If it violates any requirement, set compliant false and list the specific issues to fix.",
   "Do not rewrite the draft — only critique it.",
 ].join(" ");
 
-const REVISION_SYSTEM = [
+export const REVISION_SYSTEM = [
   "You are a product-update editor.",
   "Rewrite the draft to fix the listed brand-compliance issues while keeping the same facts.",
+  GROUNDING_RULE,
+  NO_INVENTED_LINKS_RULE,
   "Return only the revised title and body.",
 ].join(" ");
 
-// Wrapped in the same <brand-guidelines> delimiters buildSystemPrompt uses,
-// for the same reason: the document is the team's prose, not instructions to
-// the model, and it may itself contain a line like "Draft to review:" that
-// would otherwise be misread as part of this prompt's own structure.
+// The framing stays here; only the fence is shared. A tenant with no
+// guidelines still needs this fallback sentence, which prompt-rules has no
+// business knowing about.
 function brandRubric(brandProfile: BrandProfileRow): string {
-  const guidelines = truncateGuidelines(brandProfile.guidelines);
-  return guidelines
-    ? `<brand-guidelines>\n${guidelines}\n</brand-guidelines>`
-    : "No specific brand requirements are configured.";
+  return fenceGuidelines(brandProfile.guidelines) ?? "No specific brand requirements are configured.";
 }
 
-export function buildReviewPrompt(draft: UpdateDraft, brandProfile: BrandProfileRow): string {
-  return `Brand requirements:\n${brandRubric(brandProfile)}\n\nDraft to review:\nTitle: ${draft.title}\nBody:\n${draft.body}`;
+// Appended verbatim when a template is configured; omitted entirely when it
+// isn't, so a tenant with no template sees no template block at all.
+function templateBlock(template: string | null): string {
+  return template ? `\n\nTemplate the update should follow:\n<template>\n${template}\n</template>` : "";
 }
 
-export function buildRevisionPrompt(draft: UpdateDraft, issues: string[], brandProfile: BrandProfileRow): string {
+export function buildReviewPrompt(draft: UpdateDraft, brandProfile: BrandProfileRow, template: string | null): string {
+  return `Brand requirements:\n${brandRubric(brandProfile)}\n\nDraft to review:\nTitle: ${draft.title}\nBody:\n${draft.body}${templateBlock(template)}`;
+}
+
+export function buildRevisionPrompt(
+  draft: UpdateDraft,
+  issues: string[],
+  brandProfile: BrandProfileRow,
+  template: string | null
+): string {
   const list = issues.map((issue) => `- ${issue}`).join("\n");
-  return `Brand requirements:\n${brandRubric(brandProfile)}\n\nDraft to revise:\nTitle: ${draft.title}\nBody:\n${draft.body}\n\nFix these issues:\n${list}`;
+  return `Brand requirements:\n${brandRubric(brandProfile)}\n\nDraft to revise:\nTitle: ${draft.title}\nBody:\n${draft.body}\n\nFix these issues:\n${list}${templateBlock(template)}`;
 }
 
-export async function reviewDraft(draft: UpdateDraft, brandProfile: BrandProfileRow): Promise<ReviewCritique> {
+export async function reviewDraft(
+  draft: UpdateDraft,
+  brandProfile: BrandProfileRow,
+  template: string | null
+): Promise<ReviewCritique> {
   const spec = reviewModelSpec();
   const result = await generateObject({
     model: resolveModel(spec),
     schema: ReviewCritiqueSchema,
     system: REVIEW_SYSTEM,
-    prompt: buildReviewPrompt(draft, brandProfile),
+    prompt: buildReviewPrompt(draft, brandProfile, template),
   });
   await recordLlmUsage({
     tenantId: brandProfile.tenantId,
@@ -101,14 +124,15 @@ export async function reviewDraft(draft: UpdateDraft, brandProfile: BrandProfile
 export async function reviseDraft(
   draft: UpdateDraft,
   issues: string[],
-  brandProfile: BrandProfileRow
+  brandProfile: BrandProfileRow,
+  template: string | null
 ): Promise<UpdateDraft> {
   const spec = reviewModelSpec();
   const result = await generateObject({
     model: resolveModel(spec),
     schema: RevisionSchema,
     system: REVISION_SYSTEM,
-    prompt: buildRevisionPrompt(draft, issues, brandProfile),
+    prompt: buildRevisionPrompt(draft, issues, brandProfile, template),
   });
   await recordLlmUsage({
     tenantId: brandProfile.tenantId,
@@ -130,6 +154,7 @@ export async function reviseDraft(
 export async function reviewAndReconcile(
   draft: UpdateDraft,
   brandProfile: BrandProfileRow,
+  template: string | null,
   onProgress?: OnDraftProgress
 ): Promise<ReviewOutcome> {
   const rounds = reviewMaxRounds();
@@ -137,14 +162,14 @@ export async function reviewAndReconcile(
 
   try {
     onProgress?.({ type: "detail", text: "Reviewing (round 1)" });
-    let critique = await withRetry(() => reviewDraft(current, brandProfile));
+    let critique = await withRetry(() => reviewDraft(current, brandProfile, template));
     if (critique.compliant) return { finalDraft: current, status: "passed", issues: [] };
 
     for (let round = 0; round < rounds; round++) {
       onProgress?.({ type: "detail", text: "Revising" });
-      current = await withRetry(() => reviseDraft(current, critique.issues, brandProfile));
+      current = await withRetry(() => reviseDraft(current, critique.issues, brandProfile, template));
       onProgress?.({ type: "detail", text: `Reviewing (round ${round + 2})` });
-      critique = await withRetry(() => reviewDraft(current, brandProfile));
+      critique = await withRetry(() => reviewDraft(current, brandProfile, template));
       // A draft that needed a revision is reported the same as one that was
       // clean first time: both are compliant and ready to read. The distinction
       // wasn't actionable (the issues that triggered the rewrite aren't kept),

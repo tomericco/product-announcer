@@ -20,6 +20,7 @@ import {
   TEXTURES,
 } from "@/lib/images/visual-identity";
 import { Button } from "@/components/ui/button";
+import { CardContent, CardFooter } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -187,21 +188,8 @@ export function VisualIdentityEditor({
   const ready = identity.palette.length >= MIN_READY_PALETTE;
 
   return (
-    <div className="space-y-5">
-      <div className="space-y-2">
-        <Label>Derive from your website</Label>
-        <div className="flex gap-2">
-          <Input type="url" placeholder="https://yourcompany.com" value={url} onChange={(e) => setUrl(e.target.value)} className="flex-1" />
-          <Button type="button" variant="outline" onClick={derive} disabled={deriving || !url.trim()}>
-            {deriving ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
-            {deriving ? "Analyzing…" : "Derive"}
-          </Button>
-        </div>
-        {derivedNote && (
-          <p className={derivedNote.ok ? "text-xs text-emerald-600" : "text-xs text-muted-foreground"}>{derivedNote.text}</p>
-        )}
-      </div>
-
+    <>
+      <CardContent className="space-y-5">
       <div className="space-y-2">
         <div className="flex items-center justify-between">
           <Label>Palette</Label>
@@ -444,6 +432,46 @@ export function VisualIdentityEditor({
           {saving ? "Saving…" : "Save"}
         </Button>
       </div>
-    </div>
+      </CardContent>
+
+      {/* The tinted band the Guidelines and Product update template cards end
+          in, for the same reason: deriving is the secondary, occasional action
+          against a form people came to read and hand-edit, and it should read
+          as attached-but-separate rather than as one more control in the form.
+
+          Rendered here rather than by the page because this control is not
+          self-contained the way `UpdatesPageImport` is — it writes into this
+          component's own form state. Returning CardContent and CardFooter as
+          siblings from one component keeps that state in one place while still
+          putting the band where `Card` expects it: a direct child, so it is
+          full-bleed and rounds off the card's bottom corners. */}
+      <CardFooter className="flex-col items-stretch gap-2">
+        <div>
+          <p className="text-sm font-medium">Generate from your website</p>
+          <p className="text-xs text-muted-foreground">
+            We&apos;ll read your site and fill in the palette and style below. Nothing is saved until you press Save,
+            so you can adjust anything first.
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <Input
+            type="url"
+            placeholder="https://yourcompany.com"
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            className="flex-1 bg-background"
+          />
+          <Button type="button" variant="outline" onClick={derive} disabled={deriving || !url.trim()}>
+            {deriving ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
+            {deriving ? "Analyzing…" : "Generate"}
+          </Button>
+        </div>
+        {derivedNote && (
+          <p className={derivedNote.ok ? "text-xs text-emerald-600" : "text-xs text-muted-foreground"}>
+            {derivedNote.text}
+          </p>
+        )}
+      </CardFooter>
+    </>
   );
 }

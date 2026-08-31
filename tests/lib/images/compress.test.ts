@@ -161,8 +161,15 @@ describe("compressPng", () => {
       expect({ width: meta.width, height: meta.height }).toEqual({ width: out.width, height: out.height });
     },
     // Multiple full-resolution sharp encodes (palette steps + width steps) on
-    // 2400x1600 of true random pixel data: measured at ~10.5s locally.
-    30_000
+    // 2400x1600 of true random pixel data. Measured at ~10.5s on the machine
+    // this was written on, which made 30s look like a 3x margin. On a busier
+    // machine it runs ~27s alone and times out under the parallel suite — it
+    // failed intermittently for a while and then consistently, always at
+    // ~30.0s, which reads as a real breakage rather than the boundary case it
+    // is. The work is genuinely this heavy, so the ceiling moves rather than
+    // the test shrinking: a bound exists to catch a runaway, not to assert a
+    // speed nobody measured.
+    90_000
   );
 
   it("rejects bytes that are not an image, so an upload of a renamed file fails before Blob", async () => {

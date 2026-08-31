@@ -3,6 +3,8 @@ import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
 import { tenants, companyProfiles } from "../../../src/db/schema";
 import { importBrandStyleForTenant } from "../../../src/lib/workspace/brand-import";
+import { getOrCreateCompanyProfile } from "../../../src/lib/workspace/company-profile";
+import { seedTenant } from "../../helpers/fixtures";
 
 const NAME = "Brand Import Test Tenant";
 
@@ -97,6 +99,27 @@ describe("importBrandStyleForTenant", () => {
     expect(profile).toBeUndefined();
   });
 
+  it("never writes the product update template — that is template-import's column", async () => {
+    const tenant = await seedTenant(NAME);
+    const profile = await getOrCreateCompanyProfile(tenant.id);
+    await db
+      .update(companyProfiles)
+      .set({ productUpdateTemplate: "# Hand written\n" })
+      .where(eq(companyProfiles.id, profile.id));
+
+    await importBrandStyleForTenant(tenant.id, "https://acme.com/changelog", {
+      scrape: async () => ({ text: "page", html: "", finalUrl: "u", contentType: "text/html", truncated: false }),
+      analyze: async () => ({ guidelines: "Be brief.", industry: "SaaS" }),
+    });
+
+    // The two analyses were one call until 2026-08-31. This pins the split:
+    // re-deriving voice must leave the structure alone, or iterating on one
+    // silently costs you the other.
+    const [after] = await db.select().from(companyProfiles).where(eq(companyProfiles.id, profile.id));
+    expect(after.productUpdateTemplate).toBe("# Hand written\n");
+    expect(after.guidelines).toBe("Be brief.");
+  });
+
   it("writes nothing and reports the reason on a scrape error", async () => {
     const [tenant] = await db.insert(tenants).values({ name: NAME }).returning();
 
@@ -110,4 +133,5 @@ describe("importBrandStyleForTenant", () => {
     // no profile written (getOrCreate not invoked on the error path)
     expect(profile).toBeUndefined();
   });
+
 });

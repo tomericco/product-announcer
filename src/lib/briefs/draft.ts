@@ -1,7 +1,8 @@
-import { and, asc, eq, isNull } from "drizzle-orm";
+import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
 import {
   atomicUpdates,
+  changeEvents,
   contentPieces,
   briefs,
   briefSignals,
@@ -16,6 +17,7 @@ import type {
   BriefEvidenceForPrompt,
 } from "@/lib/ai/compose-prompt";
 import { generateBriefDraft, generateReleaseDraft } from "@/lib/ai/generation";
+import { fillTemplate } from "@/lib/ai/compose-prompt";
 import { briefBody } from "@/lib/briefs/body";
 import { prepareGenerationContext } from "@/lib/ai/generation-context";
 import { reviewAndReconcile, type ReviewOutcome } from "@/lib/ai/review-draft";
@@ -44,13 +46,15 @@ export type ReleaseDraftGenerator = (
   brandProfile: BrandProfileRow,
   personas: ResolvedPersona[],
   examples: ExampleRow[],
-  evidence: BriefEvidenceForPrompt[]
+  evidence: BriefEvidenceForPrompt[],
+  template: string | null
 ) => Promise<{ title: string; body: string }>;
 
 /** `reviewAndReconcile`'s shape, as a seam. */
 export type DraftReviewer = (
   draft: { title: string; body: string },
-  brandProfile: BrandProfileRow
+  brandProfile: BrandProfileRow,
+  template: string | null
 ) => Promise<ReviewOutcome>;
 
 /** `illustratePiece`'s shape, as a seam. */
@@ -62,19 +66,6 @@ export type Illustrator = (args: {
   contentType: ContentType;
   database?: Database;
 }) => Promise<IllustrateResult>;
-
-/**
- * Distinct non-null categories among the atomic updates being composed, used to
- * bias example selection toward examples about the same kinds of changes.
- * (Was `compose-draft.ts`'s, which retires with the atomic-updates tab.)
- */
-function atomicUpdateCategories(items: { category: string | null }[]): string[] {
-  const seen = new Set<string>();
-  for (const item of items) {
-    if (item.category !== null) seen.add(item.category);
-  }
-  return [...seen];
-}
 
 /**
  * The atomic updates a brief's `shipped_work` signals stand for, re-derived
@@ -99,17 +90,34 @@ async function loadShippedWorkAtomicUpdates(
   tenantId: string,
   briefId: string
 ): Promise<AtomicUpdateForPrompt[]> {
-  return database
+  const rows = await database
     .select({
       id: atomicUpdates.id,
       title: atomicUpdates.title,
       summary: atomicUpdates.summary,
       category: atomicUpdates.category,
       size: atomicUpdates.size,
+      sizeEditedAt: atomicUpdates.sizeEditedAt,
+      // MAX(COALESCE(...)) across every change event linked to this atomic
+      // update — the most recent real-world date among its evidence, which is
+      // what dates the template's {month}/{year}. The same aggregate
+      // `syncShippedWorkSignals` uses; see its comment for why the type is
+      // loose: a raw `sql<>` aggregate is NOT decoded through drizzle's column
+      // mapper, so the driver can hand back a string rather than a `Date`.
+      latestEvidenceAt: sql<Date | string | null>`max(coalesce(${changeEvents.mergedAt}, ${changeEvents.committedAt}, ${changeEvents.completedAt}, ${changeEvents.releasedAt}))`,
     })
     .from(briefSignals)
     .innerJoin(signals, eq(briefSignals.signalId, signals.id))
     .innerJoin(atomicUpdates, eq(signals.atomicUpdateId, atomicUpdates.id))
+    // Tenant-scoped on its own account, not just via the atomic update.
+    // `changeEvents.atomicUpdateId` is a plain FK exactly like
+    // `signals.atomicUpdateId` above, so a bad or migrated row could point
+    // across the boundary and drag another tenant's date into this one's
+    // {month}/{year}. Same standard, same guard.
+    .leftJoin(
+      changeEvents,
+      and(eq(changeEvents.atomicUpdateId, atomicUpdates.id), eq(changeEvents.tenantId, tenantId))
+    )
     .where(
       and(
         eq(briefSignals.briefId, briefId),
@@ -120,9 +128,29 @@ async function loadShippedWorkAtomicUpdates(
         isNull(atomicUpdates.contentPieceId)
       )
     )
+    // Forced by the aggregate above: every non-aggregated selected column has
+    // to be grouped. The join also multiplies rows per change event, so without
+    // this an atomic update with three change events would reach the prompt
+    // three times.
+    .groupBy(
+      atomicUpdates.id,
+      atomicUpdates.title,
+      atomicUpdates.summary,
+      atomicUpdates.category,
+      atomicUpdates.size,
+      atomicUpdates.sizeEditedAt,
+      atomicUpdates.createdAt
+    )
     // Same-batch atomic updates share createdAt; tie-break on id so the
     // prompt's item order is deterministic (as `getOpenAtomicUpdates` does).
     .orderBy(asc(atomicUpdates.createdAt), asc(atomicUpdates.id));
+
+  return rows.map((row) => ({
+    ...row,
+    // Normalized here, once, so nothing downstream has to know the aggregate
+    // lies about its type.
+    latestEvidenceAt: row.latestEvidenceAt ? new Date(row.latestEvidenceAt) : null,
+  }));
 }
 
 // Names shorter than this match almost anything ("Ax", "Go") and would flag
@@ -255,9 +283,11 @@ export function findNamedCompanies(text: string, names: string[]): string[] {
  *   blog_post / social_post, any evidence              -> generic brief draft
  *
  * The release branch is the old `/api/atomic-updates/draft` pipeline —
- * category-biased examples, `generateReleaseDraft`, `reviewAndReconcile`,
- * `validateDraftLinks` — reached from here rather than from a parallel route,
- * because atomic updates are signals, including for drafting.
+ * `generateReleaseDraft` against the tenant's product update template,
+ * `reviewAndReconcile`, `validateDraftLinks` — reached from here rather than
+ * from a parallel route, because atomic updates are signals, including for
+ * drafting. (It carried category-biased few-shot examples until the template
+ * replaced them as the structural exemplar.)
  *
  * `generationStep` is cleared on EVERY exit. There are eight:
  *   1. piece not found              — no row exists to carry a step
@@ -423,16 +453,15 @@ export async function generateDraftForPiece(
     // `brief.contentType` inside `composeBriefPrompt`, not from this value.
     //
     // Release path: pinned to "product_update" (which is what the fork above
-    // already established the BRIEF asks for) and biased by the categories of
-    // the atomic updates being composed, exactly as the retiring compose run
-    // did. Pinning rather than reusing `piece.type` means a piece whose type
-    // has drifted from its brief's still can't pull blog exemplars into a
-    // changelog composition.
+    // already established the BRIEF asks for). Pinning rather than reusing
+    // `piece.type` means a piece whose type has drifted from its brief's still
+    // can't pull blog exemplars into a changelog composition. The categories
+    // bias that used to sit here went with the release path's few-shot
+    // examples — the tenant's own template is the structural exemplar now.
     await setStep(database, contentPieceId, "preparing");
     const { brandProfile, personas, examples } = await prepareGenerationContext(
       tenantId,
       database,
-      isRelease ? atomicUpdateCategories(releaseItems) : [],
       isRelease ? "product_update" : piece.type
     );
 
@@ -461,11 +490,15 @@ export async function generateDraftForPiece(
         // attempts failing lands in the same catch below as any other
         // generation failure: the piece stays at "brief" with its scaffold, and
         // the atomic updates stay open for the next attempt.
+        //  The tenant's product update template, or null when they have none
+        //  (every tenant that has not re-imported). Read from the profile the
+        //  context prep already loaded rather than re-queried.
+        const template = brandProfile.productUpdateTemplate;
         let draft: { title: string; body: string };
         try {
-          draft = await generateRelease(releaseItems, brandProfile, personas, examples, releaseContext);
+          draft = await generateRelease(releaseItems, brandProfile, personas, examples, releaseContext, template);
         } catch {
-          draft = await generateRelease(releaseItems, brandProfile, personas, examples, releaseContext);
+          draft = await generateRelease(releaseItems, brandProfile, personas, examples, releaseContext, template);
         }
 
         // The one step key the generic path never writes, because it has no
@@ -476,8 +509,15 @@ export async function generateDraftForPiece(
         // `reviewAndReconcile`'s optional onProgress is deliberately not
         // passed: it emits only `detail` events, and detail text is not
         // persisted (there is no reader for it once the streamed dialog goes).
+        //
+        // The reviewer gets the SUBSTITUTED template, not the raw column —
+        // otherwise it would flag every draft for omitting literal `{count}`
+        // placeholders. `fillTemplate` is called on the same `releaseItems`
+        // the composer passed to `generateRelease` above, so the two can
+        // never disagree about what a variable like `{count}` resolved to.
         await setStep(database, contentPieceId, "reviewing");
-        reviewOutcome = await review(draft, brandProfile);
+        const substitutedTemplate = template ? fillTemplate(template, releaseItems) : null;
+        reviewOutcome = await review(draft, brandProfile, substitutedTemplate);
 
         // Validate links on the FINAL body — after review, which may itself
         // rewrite links — so no unresolvable URL is persisted.

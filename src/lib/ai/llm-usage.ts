@@ -8,6 +8,7 @@ export type LlmOperation =
   | "review"
   | "revision"
   | "brand_analysis"
+  | "template_derivation"
   | "resolution"
   | "atomic_summary"
   | "linkedin_copy"

@@ -2,10 +2,13 @@ import { describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../../../src/db";
 import { tenants, repos, changeEvents, atomicUpdates, contentPieces } from "../../../src/db/schema";
+import { seedTenant, dropTenant } from "../../helpers/fixtures";
 import {
   applyResolution,
   loadOpenAtomicUpdates,
   withTenantLock,
+  titlesMatch,
+  MAX_OPEN_CANDIDATES,
 } from "../../../src/lib/change-events/apply-resolution";
 
 const TENANT = "Apply Resolution Test Tenant";
@@ -43,6 +46,8 @@ async function insertEvent(tenantId: string, repoId: string, sha: string) {
 describe("apply-resolution", () => {
   afterEach(async () => {
     await db.delete(tenants).where(eq(tenants.name, TENANT));
+    await dropTenant("Candidate Cap Tenant");
+    await dropTenant("Candidate Exemption Tenant");
   });
 
   it("creates an atomic update and attaches the event", async () => {
@@ -225,6 +230,40 @@ describe("apply-resolution", () => {
     expect(open.map((a) => a.title)).toContain("In a draft");
   });
 
+  it("caps the candidate set at MAX_OPEN_CANDIDATES", async () => {
+    const tenant = await seedTenant("Candidate Cap Tenant");
+    for (let i = 0; i < MAX_OPEN_CANDIDATES + 5; i++) {
+      await db.insert(atomicUpdates).values({ tenantId: tenant.id, title: `AU ${i}`, summary: "s" });
+    }
+    const open = await loadOpenAtomicUpdates(db, tenant.id);
+    expect(open.length).toBe(MAX_OPEN_CANDIDATES);
+  });
+
+  it("includes a draft-linked update even when the cap would exclude it", async () => {
+    const tenant = await seedTenant("Candidate Exemption Tenant");
+    const [piece] = await db
+      .insert(contentPieces)
+      .values({ tenantId: tenant.id, title: "Draft", body: "b", status: "draft" })
+      .returning();
+    // Oldest by updatedAt, so recency ordering alone would drop it.
+    const [linked] = await db
+      .insert(atomicUpdates)
+      .values({
+        tenantId: tenant.id,
+        title: "Linked to a draft",
+        summary: "s",
+        contentPieceId: piece.id,
+        updatedAt: new Date("2020-01-01T00:00:00Z"),
+      })
+      .returning();
+    for (let i = 0; i < MAX_OPEN_CANDIDATES + 5; i++) {
+      await db.insert(atomicUpdates).values({ tenantId: tenant.id, title: `AU ${i}`, summary: "s" });
+    }
+
+    const open = await loadOpenAtomicUpdates(db, tenant.id);
+    expect(open.map((a) => a.id)).toContain(linked.id);
+  });
+
   it("serializes concurrent lock holders for the same tenant", async () => {
     const { tenant } = await seed();
     const order: string[] = [];
@@ -243,5 +282,87 @@ describe("apply-resolution", () => {
 
     // Whoever went first must have finished before the other started.
     expect(order[1]).toBe(order[0].replace("start", "end"));
+  });
+});
+
+describe("titlesMatch", () => {
+  it("matches identical titles", () => {
+    expect(titlesMatch("Shared dashboards", "Shared dashboards")).toBe(true);
+  });
+
+  it("matches across case, punctuation and spacing", () => {
+    expect(titlesMatch("Shared Dashboards!", "  shared   dashboards ")).toBe(true);
+  });
+
+  // "dashboards" and "dashboard" are different tokens: "shared" is the only
+  // token in common, so the symmetric difference is 2 (drops "dashboards",
+  // adds "dashboard") — over the MAX_TITLE_TOKEN_DIFFERENCE of 1, so this does
+  // not merge. That is the honest outcome of the chosen algorithm, not a bug:
+  // merging two genuinely different atomic updates is a worse failure than
+  // leaving two near-duplicates unmerged, so the bound is not tuned to catch
+  // this case.
+  it("does not merge a singular/plural near-miss — symmetric difference is 2", () => {
+    expect(titlesMatch("Shared dashboards", "Shared dashboard")).toBe(false);
+  });
+
+  it("matches a title differing only by a stray extra word", () => {
+    expect(titlesMatch("New shared dashboards for teams", "Shared dashboards for teams")).toBe(true);
+  });
+
+  it("does NOT match two genuinely different changes", () => {
+    expect(titlesMatch("Shared dashboards", "CSV export")).toBe(false);
+    expect(titlesMatch("Faster search", "Faster export")).toBe(false);
+  });
+
+  // The whole point of the symmetric-difference rewrite: a one-word
+  // difference merges the same way regardless of title length, unlike the
+  // old Jaccard threshold which only fired on longer titles.
+  it("merges a one-word difference on a short title (2 vs 3 tokens)", () => {
+    expect(titlesMatch("Faster search", "Much faster search")).toBe(true);
+  });
+
+  it("merges a one-word difference on a long title (8 vs 9 tokens)", () => {
+    expect(
+      titlesMatch(
+        "One two three four five six seven eight",
+        "One two three four five six seven eight nine"
+      )
+    ).toBe(true);
+  });
+
+  // Without the MIN_TITLE_TOKENS guard, a single-token title would be
+  // subsumed by any longer title that contains it as a substring of tokens —
+  // symmetric difference here is 1, but "Search" is not the same change as
+  // "Faster search".
+  it("does not merge a one-token title into a longer title that contains it", () => {
+    expect(titlesMatch("Search", "Faster search")).toBe(false);
+  });
+
+  // Regression: the MIN_TITLE_TOKENS guard used to run BEFORE the exact-match
+  // check, so it rejected two identical one-word titles before the equality
+  // check ever ran — a two-word resolver batch that correctly gave two events
+  // the same one-word title ("Autosave", "Webhooks", "SSO", "Undo") would then
+  // create two atomic updates for one change. Equal token sets must be checked
+  // first, regardless of size.
+  it("merges identical one-token titles", () => {
+    expect(titlesMatch("Autosave", "Autosave")).toBe(true);
+    expect(titlesMatch("Autosave", "  AUTOSAVE ")).toBe(true);
+  });
+
+  it("still merges identical multi-token titles", () => {
+    expect(titlesMatch("Shared dashboards", "Shared dashboards")).toBe(true);
+  });
+
+  // Two different emoji-only titles both normalize to an empty token set —
+  // merging them just because neither has any text would be an accidental
+  // merge, so this predicate falls back to exact string equality instead of
+  // treating "both empty" as a match.
+  it("does not merge two different emoji-only titles", () => {
+    expect(titlesMatch("🎉", "🚀")).toBe(false);
+  });
+
+  it("merges two identical emoji-only titles", () => {
+    expect(titlesMatch("🎉", "🎉")).toBe(true);
+    expect(titlesMatch(" 🎉 ", "🎉")).toBe(true);
   });
 });

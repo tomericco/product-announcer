@@ -19,7 +19,7 @@ describe("DEFAULT_IMAGE_POLICY", () => {
   it("matches the spec table", () => {
     expect(DEFAULT_IMAGE_POLICY).toEqual({
       blog_post: { cover: true, body: "auto" },
-      product_update: { cover: true, body: "off" },
+      product_update: { cover: true, body: "auto" },
       social_post: { cover: false, body: "off" },
     });
   });
@@ -28,7 +28,7 @@ describe("DEFAULT_IMAGE_POLICY", () => {
 describe("resolveImagePolicy", () => {
   it("falls back to defaults when the column is null or the type is missing", () => {
     expect(resolveImagePolicy(null, "blog_post")).toEqual({ cover: true, bodyCap: 3 });
-    expect(resolveImagePolicy({}, "product_update")).toEqual({ cover: true, bodyCap: 0 });
+    expect(resolveImagePolicy({}, "product_update")).toEqual({ cover: true, bodyCap: 3 });
     expect(resolveImagePolicy({ blog_post: { cover: false, body: 1 } }, "social_post")).toEqual({ cover: false, bodyCap: 0 });
   });
 

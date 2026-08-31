@@ -299,6 +299,14 @@ export const companyProfiles = pgTable("company_profiles", {
   // save for the first time — the editor shows a starter template instead, and
   // the prompt builders omit the guidelines block entirely while it is null.
   guidelines: text("guidelines"),
+  // A literal markdown skeleton of this company's own changelog: headings,
+  // section order, sign-off, and {variable} placeholders. Derived from their
+  // updates page at brand-import time and hand-editable in Company settings.
+  // Null until derived or saved, and null is meaningful — the composer falls
+  // back to SIZE_GUIDANCE-only prompting, which is today's behaviour and the
+  // live path for every existing tenant. Same "never configured" semantics as
+  // `guidelines` above.
+  productUpdateTemplate: text("product_update_template"),
   // Live and load-bearing, unlike `category` above: `selectExamples` matches
   // few-shot exemplars on this, and `brand-import.ts` writes it from the
   // scraped page.

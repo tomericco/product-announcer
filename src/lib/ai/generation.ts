@@ -27,15 +27,20 @@ export type UpdateDraft = z.infer<typeof UpdateDraftSchema>;
  * `evidence` is the non-shipped-work material a product-update brief cited,
  * passed only by the unified drafting path (`generateDraftForPiece`). Optional
  * and empty by default so the claim-based compose path is unchanged.
+ *
+ * `template` is the tenant's product update template. Defaults to null, which
+ * is the pre-template prompt — a caller that forgets it degrades to today's
+ * behaviour rather than to a broken one.
  */
 export async function generateReleaseDraft(
   items: AtomicUpdateForPrompt[],
   brandProfile: BrandProfileRow,
   personas: ResolvedPersona[] = [],
   examples: ExampleRow[] = [],
-  evidence: BriefEvidenceForPrompt[] = []
+  evidence: BriefEvidenceForPrompt[] = [],
+  template: string | null = null
 ): Promise<UpdateDraft> {
-  const { system, prompt } = composeReleasePrompt({ items, brandProfile, personas, examples, evidence });
+  const { system, prompt } = composeReleasePrompt({ items, brandProfile, personas, examples, evidence, template });
 
   const spec = process.env.GENERATION_MODEL ?? "anthropic/claude-sonnet-4-5";
   const result = await generateObject({
@@ -65,17 +70,22 @@ export async function mergeReleaseDraft(args: {
   currentBody: string;
   newItems: AtomicUpdateForPrompt[];
   changedItems: AtomicUpdateForPrompt[];
+  /** Every atomic update the finished release carries; see `composeMergePrompt`. */
+  releaseItems: AtomicUpdateForPrompt[];
   brandProfile: BrandProfileRow;
   personas?: ResolvedPersona[];
   examples?: ExampleRow[];
+  template?: string | null;
 }): Promise<UpdateDraft> {
   const { system, prompt } = composeMergePrompt({
     currentBody: args.currentBody,
     newItems: args.newItems,
     changedItems: args.changedItems,
+    releaseItems: args.releaseItems,
     brandProfile: args.brandProfile,
     personas: args.personas ?? [],
     examples: args.examples ?? [],
+    template: args.template ?? null,
   });
 
   const spec = process.env.GENERATION_MODEL ?? "anthropic/claude-sonnet-4-5";

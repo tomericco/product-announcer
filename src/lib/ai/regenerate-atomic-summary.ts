@@ -5,6 +5,7 @@ import { db as defaultDb } from "@/db";
 import { atomicUpdates, changeEvents } from "@/db/schema";
 import { resolveModel, modelId } from "./model";
 import { recordLlmUsage } from "./llm-usage";
+import { SIZE_RUBRIC, TITLE_SUMMARY_STYLE } from "./prompt-rules";
 
 type Database = typeof defaultDb;
 
@@ -24,12 +25,9 @@ const SUMMARY_SYSTEM = [
   "You maintain the one-line description of an atomic update in a product changelog.",
   "You are given the current title and summary plus every change event that now backs it.",
   "Rewrite them so they describe the whole set accurately.",
-  "Keep the title a short noun phrase and the summary a single plain sentence about the user-visible benefit.",
+  TITLE_SUMMARY_STYLE,
   "Stay close to the current wording when it is still accurate — this is an update, not a rewrite.",
-  "Also pick a size by USER-FACING SIGNIFICANCE (not amount of code): 's' (a minor fix, tweak, or polish —",
-  "small individual user impact), 'm' (a standard improvement or small feature noticeable to users of that",
-  "area), 'l' (a significant feature or major improvement worth calling out to many users), 'xl' (a flagship",
-  "or headline change — a major new capability or overhaul you would lead an announcement with).",
+  SIZE_RUBRIC,
 ].join(" ");
 
 export async function regenerateAtomicSummary(input: {

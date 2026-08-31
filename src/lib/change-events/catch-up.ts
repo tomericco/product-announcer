@@ -1,12 +1,11 @@
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
-import { atomicUpdates, contentPieces, systemPersonas, systemContentExamples } from "@/db/schema";
+import { atomicUpdates, contentPieces, systemPersonas } from "@/db/schema";
 import type { AtomicUpdateForPrompt } from "@/lib/ai/compose-prompt";
 import { generateReleaseDraft, mergeReleaseDraft } from "@/lib/ai/generation";
 import { validateDraftLinks } from "@/lib/ai/validate-links";
 import { getOrCreateCompanyProfile } from "@/lib/workspace/company-profile";
-import { resolvePersonaRefs, systemPersonaKeys } from "@/lib/workspace/personas";
-import { selectExamples } from "@/lib/ai/select-examples";
+import { resolvePersonaRefs } from "@/lib/workspace/personas";
 import { computeReleaseDelta } from "./release-deltas";
 
 type Database = typeof defaultDb;
@@ -22,29 +21,35 @@ export type StartOverDeps = {
   generateDraft?: typeof generateReleaseDraft;
 };
 
+/**
+ * `latestEvidenceAt` is deliberately null here. It is a MAX() over the atomic
+ * update's linked change events, and both of this module's queries read plain
+ * `atomicUpdates` rows — `computeReleaseDelta`'s two concurrent sub-queries and
+ * `startOverRelease`'s in-transaction read-back — neither of which can carry
+ * the join without being restructured around it. Null is a real degradation
+ * path, not a stub: the template's {month}/{year} then describe the
+ * composition date instead of the work's period, which for a catch-up (run
+ * days after the original composition, on work that just landed) is off by at
+ * most a month boundary. `src/lib/briefs/draft.ts` — the path that composes
+ * from scratch, where the period actually matters — does carry the aggregate.
+ */
 function toPromptItem(row: AtomicUpdateRow): AtomicUpdateForPrompt {
-  return { id: row.id, title: row.title, summary: row.summary, category: row.category, size: row.size };
-}
-
-/** Distinct non-null categories among a set of atomic updates, used to bias
- * example selection toward examples about the same kinds of changes — mirrors
- * `atomicUpdateCategories` in `src/lib/briefs/draft.ts` (which is where it moved
- * when `src/lib/drafting/compose-draft.ts` retired with the atomic-updates
- * drafting path). */
-function distinctCategories(items: { category: string | null }[]): string[] {
-  const seen = new Set<string>();
-  for (const item of items) {
-    if (item.category !== null) seen.add(item.category);
-  }
-  return [...seen];
+  return {
+    id: row.id,
+    title: row.title,
+    summary: row.summary,
+    category: row.category,
+    size: row.size,
+    sizeEditedAt: row.sizeEditedAt,
+    latestEvidenceAt: null,
+  };
 }
 
 async function loadPromptContext(tenantId: string) {
   const brandProfile = await getOrCreateCompanyProfile(tenantId, defaultDb);
   const catalog = await defaultDb.select().from(systemPersonas);
   const personas = resolvePersonaRefs(brandProfile.userPersonas, catalog);
-  const allExamples = await defaultDb.select().from(systemContentExamples);
-  return { brandProfile, personas, allExamples };
+  return { brandProfile, personas };
 }
 
 /**
@@ -98,23 +103,38 @@ export async function catchUpRelease(contentPieceId: string, deps: CatchUpDeps =
   const delta = await computeReleaseDelta(contentPieceId);
   if (delta.count === 0) return null;
 
-  const { brandProfile, personas, allExamples } = await loadPromptContext(release.tenantId);
+  const { brandProfile, personas } = await loadPromptContext(release.tenantId);
   const newItems = delta.newAtomicUpdates.map(toPromptItem);
   const changedItems = delta.changedAtomicUpdates.map(toPromptItem);
-  const examples = selectExamples(allExamples, {
-    industry: brandProfile.industry,
-    personaKeys: systemPersonaKeys(brandProfile.userPersonas),
-    contentType: "product_update",
-    categories: distinctCategories([...newItems, ...changedItems]),
-  });
 
+  // The template's variables are computed over the FINISHED release, not over
+  // the delta: a `{count}` in a body section would otherwise read "2 updates"
+  // for a nine-update piece. `startOverRelease` gets this for free (it links
+  // first, then reads the piece's full set); here the link happens in the
+  // closing transaction, after the model call, so the not-yet-linked
+  // membership delta has to be unioned in by hand. Deduped by id because a
+  // `changedAtomicUpdates` row is already linked and so already in `linked`.
+  const linked = await defaultDb
+    .select()
+    .from(atomicUpdates)
+    .where(and(eq(atomicUpdates.contentPieceId, release.id), eq(atomicUpdates.tenantId, release.tenantId)));
+  const byId = new Map(linked.map((row) => [row.id, toPromptItem(row)]));
+  for (const item of newItems) byId.set(item.id, item);
+  const releaseItems = [...byId.values()];
+
+  // No examples: `composeMergePrompt` passes `[]` to `buildSystemPrompt`
+  // regardless of what it's given, so selecting any here would be discarded
+  // work. (`prepareGenerationContext`'s examples are unrelated and still live
+  // — those feed blog/social, not this path.)
   const draft = await mergeDraft({
     currentBody: release.body,
     newItems,
     changedItems,
+    releaseItems,
     brandProfile,
     personas,
-    examples,
+    examples: [],
+    template: brandProfile.productUpdateTemplate,
   });
 
   // Replace any unresolvable link with an [add link] placeholder before the
@@ -165,23 +185,26 @@ export async function startOverRelease(contentPieceId: string, deps: StartOverDe
   const delta = await computeReleaseDelta(contentPieceId);
   if (delta.count === 0) return null;
 
-  const { brandProfile, personas, allExamples } = await loadPromptContext(release.tenantId);
+  const { brandProfile, personas } = await loadPromptContext(release.tenantId);
   const newIds = delta.newAtomicUpdates.map((a) => a.id);
 
   const fullItems = await defaultDb.transaction(async (tx) => {
     await linkNewAtomicUpdates(tx, release, newIds);
-    const rows = await tx.select().from(atomicUpdates).where(eq(atomicUpdates.contentPieceId, release.id));
+    const rows = await tx
+      .select()
+      .from(atomicUpdates)
+      .where(and(eq(atomicUpdates.contentPieceId, release.id), eq(atomicUpdates.tenantId, release.tenantId)));
     return rows.map(toPromptItem);
   });
 
-  const examples = selectExamples(allExamples, {
-    industry: brandProfile.industry,
-    personaKeys: systemPersonaKeys(brandProfile.userPersonas),
-    contentType: "product_update",
-    categories: distinctCategories(fullItems),
-  });
-
-  const draft = await generateDraft(fullItems, brandProfile, personas, examples);
+  // No examples: `composeReleasePrompt` passes `[]` to `buildSystemPrompt`
+  // regardless of what it's given, so selecting any here would be discarded
+  // work. (`prepareGenerationContext`'s examples are unrelated and still live
+  // — those feed blog/social, not this path.)
+  //
+  // Positional, so the empty `evidence` slot is explicit: a catch-up has no
+  // brief evidence to carry, and the template is the sixth argument.
+  const draft = await generateDraft(fullItems, brandProfile, personas, [], [], brandProfile.productUpdateTemplate);
 
   const { body: validatedBody } = await validateDraftLinks(draft.body);
 

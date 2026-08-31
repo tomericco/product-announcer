@@ -2,8 +2,19 @@ import { generateObject } from "ai";
 import { z } from "zod";
 import { resolveModel, modelId } from "./model";
 import { recordLlmUsage } from "./llm-usage";
+import { CATEGORY_RUBRIC, SIZE_RUBRIC, TITLE_SUMMARY_STYLE } from "./prompt-rules";
 
 export const RESOLVER_BATCH_SIZE = 25;
+
+/**
+ * Chars of a PR/task description carried per event. At RESOLVER_BATCH_SIZE (25)
+ * that is ~12.5k characters of added context, comfortably inside budget.
+ *
+ * Deliberately NOT the diff. Grouping needs to know what a change was FOR, which
+ * the description carries; the diff is a more technical signal than this
+ * decision needs and was rejected explicitly — see the spec's Non-goals.
+ */
+export const RESOLVER_CONTEXT_CHARS = 500;
 
 export type ResolverEvent = {
   id: string;
@@ -11,6 +22,7 @@ export type ResolverEvent = {
   title: string;
   summary: string | null;
   repoName: string | null;
+  description: string | null;
 };
 
 export type OpenAtomicUpdate = { id: string; title: string; summary: string };
@@ -49,15 +61,10 @@ export const RESOLVER_SYSTEM = [
   "Prefer assigning over creating: a follow-up fix to work already in progress belongs to that atomic update.",
   "Several events in this batch may describe the same new change. In that case give every one of them",
   "a create action carrying the SAME title and summary — they will be merged into a single atomic update.",
-  "When you create a new atomic update, also pick category: 'new' (a new capability), 'improvement' (better",
-  "existing behavior), 'fix' (a bug fix), or 'announcement' (a user-facing notice rather than a feature/fix:",
-  "a deprecation, a sunset/removal, a pricing/policy change, or an availability heads-up).",
+  `When you create a new atomic update, also pick category: ${CATEGORY_RUBRIC}.`,
   "Return exactly one action per event. Use only atomicUpdateId values from the provided list.",
-  "Write title as a short noun phrase and summary as one plain sentence describing the user-visible benefit.",
-  "Also pick a size by USER-FACING SIGNIFICANCE (not amount of code): 's' (a minor fix, tweak, or polish —",
-  "small individual user impact), 'm' (a standard improvement or small feature noticeable to users of that",
-  "area), 'l' (a significant feature or major improvement worth calling out to many users), 'xl' (a flagship",
-  "or headline change — a major new capability or overhaul you would lead an announcement with).",
+  TITLE_SUMMARY_STYLE,
+  SIZE_RUBRIC,
 ].join(" ");
 
 export function buildResolverPrompt(events: ResolverEvent[], open: OpenAtomicUpdate[]): string {
@@ -70,7 +77,10 @@ export function buildResolverPrompt(events: ResolverEvent[], open: OpenAtomicUpd
     .map((e) => {
       const where = e.repoName ? ` in ${e.repoName}` : "";
       const summary = e.summary ? `\n  summary: ${e.summary}` : "";
-      return `- id: ${e.id}\n  type: ${e.type}${where ? `\n  repo:${where}` : ""}\n  title: ${e.title}${summary}`;
+      const description = e.description
+        ? `\n  description: ${e.description.slice(0, RESOLVER_CONTEXT_CHARS)}`
+        : "";
+      return `- id: ${e.id}\n  type: ${e.type}${where ? `\n  repo:${where}` : ""}\n  title: ${e.title}${summary}${description}`;
     })
     .join("\n");
 

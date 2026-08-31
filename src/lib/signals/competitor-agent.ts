@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
 import { signals, sources, companyProfiles, tenants, type Source } from "@/db/schema";
-import { fetchPageText, type PageResult } from "@/lib/workspace/fetch-page";
+import { fetchPageText, EXTRACTOR_VERSION, type PageResult } from "@/lib/workspace/fetch-page";
 import { extractBlocks } from "@/lib/signals/agent-page";
 import { scoreRelevance, type RelevanceProfile, type ScorableItem, type ScoredItem, type RelevanceDeps } from "@/lib/signals/relevance";
 
@@ -41,10 +41,29 @@ const RELEVANCE_FLOOR = 0.3;
 // get trimmed first once the cap is hit.
 const MAX_WATERMARK_HASHES = 1000;
 
-type Watermark = { seenHashes?: unknown };
+type Watermark = { seenHashes?: unknown; extractorVersion?: unknown };
 
+/**
+ * The stored hashes, but ONLY if they were produced by the extractor we are
+ * running now.
+ *
+ * A hash is a fingerprint of extracted text, so any change to
+ * `htmlToText` changes every hash for an unchanged page — and this agent treats
+ * an unrecognised hash as a change worth a signal. Without this check, the
+ * deploy that changed the extractor would report every block of every watched
+ * page as new at once and bury the inbox.
+ *
+ * Returning `[]` on a version mismatch routes the run into the baseline branch
+ * below: the new hashes are recorded, no signals are written, and the next run
+ * compares like with like. One quiet run per source is the whole cost.
+ *
+ * A watermark written before versioning existed has no `extractorVersion` and
+ * so is correctly treated as stale.
+ */
 function readSeenHashes(watermark: unknown): string[] {
-  const seen = (watermark as Watermark | null | undefined)?.seenHashes;
+  const stored = watermark as Watermark | null | undefined;
+  if (stored?.extractorVersion !== EXTRACTOR_VERSION) return [];
+  const seen = stored?.seenHashes;
   return Array.isArray(seen) ? seen.filter((h): h is string => typeof h === "string") : [];
 }
 
@@ -65,7 +84,7 @@ type SourceRunUpdate = {
   lastSuccessAt?: Date;
   status: "active" | "failing";
   lastError: string | null;
-  watermark?: { seenHashes: string[] };
+  watermark?: { seenHashes: string[]; extractorVersion: number };
 };
 
 async function updateSourceRun(database: typeof defaultDb, sourceId: string, update: SourceRunUpdate): Promise<void> {
@@ -134,7 +153,7 @@ export async function runCompetitorSource(source: Source, deps: CompetitorAgentD
       lastSuccessAt: now,
       status: "active",
       lastError: null,
-      watermark: { seenHashes: cappedHashes },
+      watermark: { seenHashes: cappedHashes, extractorVersion: EXTRACTOR_VERSION },
     });
     return { written: 0, dropped: 0, baseline: true };
   }
@@ -257,7 +276,7 @@ export async function runCompetitorSource(source: Source, deps: CompetitorAgentD
     lastSuccessAt: now,
     status: "active",
     lastError,
-    watermark: { seenHashes: mergedHashes },
+    watermark: { seenHashes: mergedHashes, extractorVersion: EXTRACTOR_VERSION },
   });
 
   return { written, dropped, baseline: false };

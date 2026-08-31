@@ -30,8 +30,8 @@ const COMPANY_SECTIONS = [
   { href: "/company#ai-visibility", label: "AI visibility" },
   { href: "/company#industry", label: "Industry" },
   { href: "/company#user-personas", label: "User personas" },
-  { href: "/company#derive-from-updates", label: "Derive from your updates page" },
   { href: "/company#guidelines", label: "Guidelines" },
+  { href: "/company#product-update-template", label: "Product update template" },
   { href: "/company#visual-identity", label: "Visual identity" },
   { href: "/company#change-events", label: "Change events" },
   { href: "/company#atomic-updates", label: "Atomic updates" },
@@ -163,8 +163,8 @@ export function NavLinks({ boardCount }: { boardCount: number }) {
                 {/* All hashes share one route, so there's no per-section active
                     state to track — only the parent tints when the pathname is
                     /company. Labels truncate: the indented column is narrower
-                    than the sidebar, and a couple of section names ("Derive from
-                    your updates page") don't fit — `title` carries the full text.
+                    than the sidebar, and a longer section name ("Product update
+                    template") doesn't fit — `title` carries the full text.
                     The grid-rows 0fr/1fr trick animates height smoothly without
                     measuring the content in JS (no Collapsible primitive exists
                     in this codebase); the inner `overflow-hidden` clips it as

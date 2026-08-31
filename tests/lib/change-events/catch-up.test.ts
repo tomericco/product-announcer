@@ -51,6 +51,57 @@ describe("catchUpRelease", () => {
     expect(call.changedItems).toEqual([]);
   });
 
+  it("sends the FULL release as releaseItems while the model still only sees the delta", async () => {
+    // The template's {count} is computed over `releaseItems`, so it has to be
+    // the finished piece, not the fold-in: substituting over the delta put
+    // "1 updates" into the skeleton of a three-update release. The link
+    // happens in the closing transaction, AFTER the model call, so the
+    // not-yet-linked membership delta has to be unioned in by hand here.
+    const [t] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const [r] = await db
+      .insert(contentPieces)
+      .values({ tenantId: t.id, title: "R", body: "Old body", composedAt: T })
+      .returning();
+    // Already written up, and not part of any delta.
+    const [existingAu] = await db
+      .insert(atomicUpdates)
+      .values({
+        tenantId: t.id,
+        contentPieceId: r.id,
+        title: "Already written up",
+        summary: "Shipped earlier.",
+        createdAt: new Date(T.getTime() - 2000),
+        updatedAt: new Date(T.getTime() - 2000),
+      })
+      .returning();
+    // Linked, and ALSO an evidence-delta row — must appear exactly once.
+    const [changedAu] = await db
+      .insert(atomicUpdates)
+      .values({
+        tenantId: t.id,
+        contentPieceId: r.id,
+        title: "Changed thing",
+        summary: "Updated summary.",
+        createdAt: new Date(T.getTime() - 1000),
+        updatedAt: AFTER,
+      })
+      .returning();
+    const [newAu] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: t.id, title: "New thing", summary: "A new thing shipped.", createdAt: AFTER })
+      .returning();
+
+    const mergeDraft = vi.fn().mockResolvedValue({ title: "ignored", body: "Merged body" });
+    await catchUpRelease(r.id, { mergeDraft });
+
+    const call = mergeDraft.mock.calls[0][0];
+    const releaseIds = (call.releaseItems as { id: string }[]).map((i) => i.id).sort();
+    expect(releaseIds).toEqual([existingAu.id, changedAu.id, newAu.id].sort());
+    // …and the lists the model is asked to fold in are still just the delta.
+    expect(call.newItems.map((i: { id: string }) => i.id)).toEqual([newAu.id]);
+    expect(call.changedItems.map((i: { id: string }) => i.id)).toEqual([changedAu.id]);
+  });
+
   it("includes an evidence-delta (changed) atomic update in the merge call without re-linking it", async () => {
     const [t] = await db.insert(tenants).values({ name: TENANT }).returning();
     const [r] = await db
@@ -80,6 +131,37 @@ describe("catchUpRelease", () => {
     const [after] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, changedAu.id));
     expect(after.contentPieceId).toBe(r.id);
     expect(after.status).toBe("open");
+  });
+
+  it("excludes another tenant's atomic update from releaseItems even if it points at this release", async () => {
+    // `atomicUpdates.contentPieceId` is a plain FK with no tenant-consistency
+    // constraint, exactly like `changeEvents.atomicUpdateId` (see 4a4129b) — a
+    // bad or migrated row can point at this release while belonging to
+    // another tenant. The `linked` read that builds `releaseItems` must scope
+    // on tenantId as well as contentPieceId, or a foreign row shifts the
+    // template's {count}/{count_*}/{month} for this tenant's release.
+    const [t] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const [other] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const [r] = await db
+      .insert(contentPieces)
+      .values({ tenantId: t.id, title: "R", body: "Old body", composedAt: T })
+      .returning();
+    const [newAu] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: t.id, title: "New thing", summary: "A new thing shipped.", createdAt: AFTER })
+      .returning();
+    // Simulates the bad/migrated row: another tenant's atomic update whose
+    // contentPieceId already points at this release.
+    await db
+      .insert(atomicUpdates)
+      .values({ tenantId: other.id, contentPieceId: r.id, title: "Foreign linked", summary: "S", createdAt: T });
+
+    const mergeDraft = vi.fn().mockResolvedValue({ title: "ignored", body: "Merged body" });
+    await catchUpRelease(r.id, { mergeDraft });
+
+    const call = mergeDraft.mock.calls[0][0];
+    const releaseIds = (call.releaseItems as { id: string }[]).map((i) => i.id);
+    expect(releaseIds).toEqual([newAu.id]);
   });
 
   it("never links another tenant's atomic update", async () => {
@@ -340,6 +422,37 @@ describe("startOverRelease", () => {
 
     const [newAfter] = await db.select().from(atomicUpdates).where(eq(atomicUpdates.id, newAu.id));
     expect(newAfter.contentPieceId).toBe(r.id);
+  });
+
+  it("excludes another tenant's atomic update from the from-scratch regeneration even if it points at this release", async () => {
+    // Same shape as the equivalent `catchUpRelease` regression:
+    // `atomicUpdates.contentPieceId` is a plain FK with no tenant-consistency
+    // constraint, so a bad or migrated row can point at this release while
+    // belonging to another tenant. `fullItems` (fed to `generateDraft` for the
+    // from-scratch regeneration) must be scoped on tenantId as well as
+    // contentPieceId, or a foreign row's title/summary leaks into this
+    // tenant's regenerated release.
+    const [t] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const [other] = await db.insert(tenants).values({ name: TENANT }).returning();
+    const [r] = await db
+      .insert(contentPieces)
+      .values({ tenantId: t.id, title: "R", body: "Old body", composedAt: T })
+      .returning();
+    const [newAu] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: t.id, title: "New thing", summary: "A new thing shipped.", createdAt: AFTER })
+      .returning();
+    // Simulates the bad/migrated row: another tenant's atomic update whose
+    // contentPieceId already points at this release.
+    await db
+      .insert(atomicUpdates)
+      .values({ tenantId: other.id, contentPieceId: r.id, title: "Foreign linked", summary: "S", createdAt: T });
+
+    const generateDraft = vi.fn().mockResolvedValue({ title: "ignored", body: "From scratch body" });
+    await startOverRelease(r.id, { generateDraft });
+
+    const items = generateDraft.mock.calls[0][0] as { id: string }[];
+    expect(items.map((i) => i.id)).toEqual([newAu.id]);
   });
 
   it("never links another tenant's atomic update", async () => {

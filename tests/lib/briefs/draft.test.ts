@@ -31,6 +31,7 @@ import {
   briefSignals,
   signals,
   atomicUpdates,
+  changeEvents,
   contentImages,
 } from "../../../src/db/schema";
 import {
@@ -801,6 +802,129 @@ describe("generateDraftForPiece — release fork", () => {
     // already in `items`.
     expect(evidence.map((e) => e.title)).toEqual([signal.title]);
     expect(evidence.every((e) => e.kind !== "shipped_work")).toBe(true);
+  });
+
+  it("dates each item from its evidence, as a Date, without duplicating it", async () => {
+    // The `max(coalesce(...))` aggregate in `loadShippedWorkAtomicUpdates` has
+    // two traps this pins. (1) A raw `sql<>` aggregate is NOT decoded through
+    // drizzle's column mapper, so the driver can hand back a STRING — the
+    // template's {month}/{year} would then be computed off a string that has
+    // no getUTCFullYear. (2) The leftJoin multiplies rows per change event, so
+    // without the groupBy an update with two events reaches the prompt twice.
+    const tenant = await seedTenant();
+    const { piece, brief } = await seedProductUpdate(tenant.id);
+    const { atomicUpdate } = await seedShippedWork({ tenantId: tenant.id, briefId: brief.id });
+
+    const older = new Date("2026-07-01T00:00:00Z");
+    const newest = new Date("2026-08-20T00:00:00Z");
+    await db.insert(changeEvents).values([
+      {
+        tenantId: tenant.id,
+        type: "pull_request" as const,
+        provider: "github" as const,
+        externalId: `pr-older-${atomicUpdate.id}`,
+        atomicUpdateId: atomicUpdate.id,
+        mergedAt: older,
+      },
+      {
+        tenantId: tenant.id,
+        type: "pull_request" as const,
+        provider: "github" as const,
+        externalId: `pr-newest-${atomicUpdate.id}`,
+        atomicUpdateId: atomicUpdate.id,
+        mergedAt: newest,
+      },
+    ]);
+
+    const generateRelease = vi.fn(async () => ({ title: "Release title", body: "Release body." }));
+    const result = await generateDraftForPiece(piece.id, tenant.id, {
+      database: db,
+      generate: vi.fn(async () => ({ title: "Brief title", body: "Brief body." })),
+      generateRelease,
+      review: passingReview,
+    });
+    expect(result.ok).toBe(true);
+
+    const [items] = generateRelease.mock.calls[0] as unknown as [
+      { id: string; sizeEditedAt: Date | null; latestEvidenceAt: Date | null }[],
+    ];
+    expect(items.map((i) => i.id)).toEqual([atomicUpdate.id]);
+    expect(items[0].latestEvidenceAt).toBeInstanceOf(Date);
+    expect(items[0].latestEvidenceAt?.toISOString()).toBe(newest.toISOString());
+  });
+
+  it("ignores a change event belonging to another tenant", async () => {
+    // `changeEvents.atomicUpdateId` is a plain FK, exactly like
+    // `signals.atomicUpdateId` — a bad or migrated row can point across the
+    // tenant boundary. Without the tenant predicate on the join, another
+    // tenant's date decides this tenant's {month}/{year}.
+    const tenant = await seedTenant();
+    // Same fixture name, so the afterEach's delete-by-name cleans both.
+    const other = await seedTenant();
+    const { piece, brief } = await seedProductUpdate(tenant.id);
+    const { atomicUpdate } = await seedShippedWork({ tenantId: tenant.id, briefId: brief.id });
+
+    await db.insert(changeEvents).values({
+      tenantId: other.id,
+      type: "pull_request" as const,
+      provider: "github" as const,
+      externalId: `pr-foreign-${atomicUpdate.id}`,
+      atomicUpdateId: atomicUpdate.id,
+      mergedAt: new Date("2026-08-20T00:00:00Z"),
+    });
+
+    const generateRelease = vi.fn(async () => ({ title: "Release title", body: "Release body." }));
+    await generateDraftForPiece(piece.id, tenant.id, {
+      database: db,
+      generate: vi.fn(async () => ({ title: "Brief title", body: "Brief body." })),
+      generateRelease,
+      review: passingReview,
+    });
+
+    const [items] = generateRelease.mock.calls[0] as unknown as [{ latestEvidenceAt: Date | null }[]];
+    expect(items[0].latestEvidenceAt).toBeNull();
+  });
+
+  it("leaves the evidence date null when the atomic update has no dated change events", async () => {
+    const tenant = await seedTenant();
+    const { piece, brief } = await seedProductUpdate(tenant.id);
+    await seedShippedWork({ tenantId: tenant.id, briefId: brief.id });
+
+    const generateRelease = vi.fn(async () => ({ title: "Release title", body: "Release body." }));
+    await generateDraftForPiece(piece.id, tenant.id, {
+      database: db,
+      generate: vi.fn(async () => ({ title: "Brief title", body: "Brief body." })),
+      generateRelease,
+      review: passingReview,
+    });
+
+    const [items] = generateRelease.mock.calls[0] as unknown as [{ latestEvidenceAt: Date | null }[]];
+    expect(items[0].latestEvidenceAt).toBeNull();
+  });
+
+  it("passes the tenant's product update template to the release generator", async () => {
+    const tenant = await seedTenant();
+    const { piece, brief } = await seedProductUpdate(tenant.id);
+    await seedShippedWork({ tenantId: tenant.id, briefId: brief.id });
+
+    // seedTenant() already wrote the profile row.
+    await db
+      .update(companyProfiles)
+      .set({ productUpdateTemplate: "# {month} release\n\n## Highlights\n" })
+      .where(eq(companyProfiles.tenantId, tenant.id));
+
+    const generateRelease = vi.fn(async () => ({ title: "Release title", body: "Release body." }));
+    await generateDraftForPiece(piece.id, tenant.id, {
+      database: db,
+      generate: vi.fn(async () => ({ title: "Brief title", body: "Brief body." })),
+      generateRelease,
+      review: passingReview,
+    });
+
+    const call = generateRelease.mock.calls[0] as unknown as [
+      unknown, unknown, unknown, unknown, unknown, string | null,
+    ];
+    expect(call[5]).toBe("# {month} release\n\n## Highlights\n");
   });
 
   it("takes atomic updates only from shipped_work signals", async () => {

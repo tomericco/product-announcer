@@ -4,7 +4,7 @@ import { db } from "../../../src/db";
 import { tenants, competitors, sources, signals, companyProfiles } from "../../../src/db/schema";
 import { runCompetitorSource } from "../../../src/lib/signals/competitor-agent";
 import { extractBlocks } from "../../../src/lib/signals/agent-page";
-import { MAX_TEXT_CHARS, type PageResult } from "../../../src/lib/workspace/fetch-page";
+import { MAX_TEXT_CHARS, EXTRACTOR_VERSION, type PageResult } from "../../../src/lib/workspace/fetch-page";
 
 /**
  * A `db`-shaped object whose `insert` throws for the Nth call against
@@ -440,6 +440,32 @@ describe("runCompetitorSource", () => {
     });
   });
 
+  it("re-baselines instead of flooding when the extractor version moved", async () => {
+    const { source } = await seed();
+    // A watermark from before this extractor: real hashes, no version. Every
+    // one of them is a fingerprint of text the old extractor produced, so none
+    // can match what this run computes.
+    await db
+      .update(sources)
+      .set({ watermark: { seenHashes: ["old-format-hash-a", "old-format-hash-b"] } })
+      .where(eq(sources.id, source.id));
+
+    const result = await runCompetitorSource(await reload(source.id), {
+      fetchPage: async () => body(V1),
+      score: scoreAll(0.9),
+    });
+
+    // The whole point: no signals. Treating those unrecognised hashes as
+    // changes would report every block of every watched page as new on the
+    // deploy that changed the extractor.
+    expect(result).toMatchObject({ written: 0, baseline: true });
+    const after = await reload(source.id);
+    const watermark = after.watermark as { seenHashes: string[]; extractorVersion: number };
+    expect(watermark.extractorVersion).toBe(EXTRACTOR_VERSION);
+    expect(watermark.seenHashes).not.toContain("old-format-hash-a");
+    expect(watermark.seenHashes.length).toBeGreaterThan(0);
+  });
+
   it("keeps a block that appears on every run out of eviction, even though it was the oldest hash recorded (last-seen, not first-seen, ordering)", async () => {
     const { source } = await seed();
     const stickyBlockText = "## About\nWe ship changelog updates for this product regularly, every single week.";
@@ -452,7 +478,11 @@ describe("runCompetitorSource", () => {
     const fillerHashes = Array.from({ length: 999 }, (_, i) => `filler-hash-${i}`);
     await db
       .update(sources)
-      .set({ watermark: { seenHashes: [stickyHash, ...fillerHashes] } })
+      // Stamped with the current extractor version, or `readSeenHashes`
+      // discards it as stale and the run takes the baseline branch — which
+      // records this page's hashes wholesale and would make the assertion
+      // below pass without eviction ever running.
+      .set({ watermark: { seenHashes: [stickyHash, ...fillerHashes], extractorVersion: EXTRACTOR_VERSION } })
       .where(eq(sources.id, source.id));
 
     // This run's page repeats the sticky block (it's still on the page) plus

@@ -64,7 +64,7 @@ export async function runWholeEditForRelease(
   emit({ type: "step", key: "generating", status: "done" });
 
   emit({ type: "step", key: "reviewing", status: "start" });
-  const outcome = await review({ title: release.title, body: editedBody }, brandProfile, emit);
+  const outcome = await review({ title: release.title, body: editedBody }, brandProfile, null, emit);
   emit({ type: "step", key: "reviewing", status: "done" });
 
   // Validate links on the LLM's final body — after review, which may itself

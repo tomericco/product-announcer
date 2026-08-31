@@ -274,6 +274,7 @@ export default function MdxEditor({
   imageToolbar,
   contentEditableClassName = "min-h-[65vh]",
   placeholder = <span className="text-muted-foreground/40">Update body</span>,
+  readOnly,
   parseErrorHint = "Copy your text elsewhere before reloading the page, so a fix doesn't cost you the content.",
 }: {
   markdown: string;
@@ -306,6 +307,10 @@ export default function MdxEditor({
   // recover. Defaults to generic, honest advice; pass something more specific
   // when the page has a recovery control (e.g. drafts' Source toggle).
   parseErrorHint?: string;
+  // Freezes the content-editable. Used while a background job is about to
+  // replace this content wholesale — an edit typed during that window is lost
+  // when the new value arrives, so the honest thing is to refuse the edit.
+  readOnly?: boolean;
 }) {
   const [parseError, setParseError] = useState<string | null>(null);
   const internalRef = useRef<MDXEditorMethods>(null);
@@ -321,6 +326,7 @@ export default function MdxEditor({
       <MDXEditor
         ref={ref}
         markdown={markdown}
+        readOnly={readOnly}
         onChange={onChange}
         onError={({ error, source }) => {
           // Never fail silently: a parse error previously left the editor

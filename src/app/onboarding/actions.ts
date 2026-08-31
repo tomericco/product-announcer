@@ -10,6 +10,7 @@ import { parseRepoSelections } from "@/lib/workspace/repo-selection-form";
 import { advanceOnboardingStep, isOnboardingComplete, markOnboardingComplete } from "@/lib/workspace/onboarding";
 import { listRepoBranches } from "@/lib/integrations/github/github";
 import { importBrandStyleForTenant } from "@/lib/workspace/brand-import";
+import { importProductUpdateTemplateForTenant } from "@/lib/workspace/template-import";
 import { bootstrapCompanyContext } from "@/lib/workspace/company-bootstrap";
 import { getOrCreateCompanyProfile } from "@/lib/workspace/company-profile";
 import { parseTopics } from "@/lib/workspace/parse-topics";
@@ -94,7 +95,21 @@ export async function importBrandStyle(formData: FormData) {
   // treatment as an empty workspace name rather than a silent bounce.
   if (!url) return redirect("/onboarding/brand?error=empty");
 
+  // Two independent analyses of the same page: voice (guidelines + industry)
+  // and structure (the product update template). Sequential rather than
+  // concurrent so the second scrape hits the fetch cache rather than doubling
+  // the outbound request on a page we were just told to read.
   const result = await importBrandStyleForTenant(session.user.tenantId, url);
+
+  // The template is derived on a best-effort basis and its outcome is
+  // deliberately NOT part of the redirect decision. A page can describe a
+  // company's voice perfectly while showing no consistent update structure,
+  // and reporting that as a failed brand import would send the user back to
+  // hunt for a better URL that does not exist. A null template is a supported
+  // state — it selects the pre-template prompt — and Company settings has its
+  // own button for re-running just this analysis.
+  await importProductUpdateTemplateForTenant(session.user.tenantId, url);
+
   // A failed scrape keeps the user on step 2 so they can try another URL; only
   // a success returns there too, now with the imported style in place.
   if (!result.ok) return redirect("/onboarding/brand?brandImport=failed");

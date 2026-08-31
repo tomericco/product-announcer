@@ -11,7 +11,11 @@ export const AUTO_BODY_CAP = 3;
 /** Spec §6 table. The column stays null until a tenant changes something. */
 export const DEFAULT_IMAGE_POLICY: Record<ContentType, { cover: boolean; body: BodyIllustrationSetting }> = {
   blog_post: { cover: true, body: "auto" },
-  product_update: { cover: true, body: "off" },
+  // Body images on since 2026-08-31. They were off because a product update was
+  // a wall of text an illustration could only decorate; templates changed that
+  // — an update now follows the company's own section structure, which gives
+  // the illustration agent real H2 anchors to hang images on.
+  product_update: { cover: true, body: "auto" },
   social_post: { cover: false, body: "off" },
 };
 
