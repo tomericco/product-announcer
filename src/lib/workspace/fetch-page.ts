@@ -195,10 +195,32 @@ export function htmlToText(html: string): string {
     return "";
   }
 
+  return cleanMarkdown(markdown);
+}
+
+/**
+ * The normalisation every extracted page gets, whether we converted it from
+ * HTML or the server handed us markdown directly.
+ *
+ * Both paths are real: this fetcher sends `accept: text/markdown, text/plain,
+ * text/html`, and a growing number of sites content-negotiate an agent-facing
+ * markdown version. That response used to bypass every cleanup below simply
+ * because it never went through the HTML converter — so an agent-facing page
+ * arrived carrying YAML frontmatter, image markup and link URLs that the same
+ * page in HTML would have had stripped. Same input, same output, regardless of
+ * which representation the server chose.
+ */
+export function cleanMarkdown(markdown: string): string {
   return markdown
-    // Turndown decodes &nbsp; to a real U+00A0. Left alone it is an invisible
-    // difference that breaks string comparisons and, worse, changes a block's
-    // hash depending on how the page happened to encode a space.
+    // Leading YAML frontmatter is metadata, not content — title/description/og
+    // tags that say nothing about the page's structure. Anchored to the very
+    // start and requiring a `key:` line so a document opening with a `---`
+    // horizontal rule is left alone.
+    .replace(/^---\r?\n(?:[^\n]*:[^\n]*\r?\n|[^\n]*\r?\n)*?---\r?\n/, "")
+    // Turndown decodes &nbsp; to a real U+00A0, and markdown served directly
+    // can carry them too. Left alone it is an invisible difference that breaks
+    // string comparisons and, worse, changes a block's hash depending on how
+    // the page happened to encode a space.
     .replace(/\u00a0/g, " ")
     .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
     .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
@@ -284,7 +306,8 @@ export async function fetchPageText(
         // body is already text, and running htmlToText over it would destroy
         // exactly the line structure the block splitter needs.
         const isHtml = contentType.includes("text/html");
-        const extracted = isHtml ? htmlToText(scanned) : scanned;
+        // Both branches land in the same normalisation — see `cleanMarkdown`.
+        const extracted = isHtml ? htmlToText(scanned) : cleanMarkdown(scanned);
         // Capture truncation before slicing -- see the `truncated` field's
         // doc comment on PageResult for why this can't be reconstructed from
         // the sliced text's length afterward.

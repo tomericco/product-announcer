@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { fetchPageText, htmlToText, extractSameOriginLinks, MAX_TEXT_CHARS } from "../../../src/lib/workspace/fetch-page";
+import { fetchPageText, htmlToText, cleanMarkdown, extractSameOriginLinks, MAX_TEXT_CHARS } from "../../../src/lib/workspace/fetch-page";
 
 function htmlResponse(body: string, headers: Record<string, string> = {}) {
   return new Response(body, { status: 200, headers: { "content-type": "text/html", ...headers } });
@@ -53,6 +53,30 @@ describe("htmlToText — block structure", () => {
   it("does not emit blank-line runs for nested block tags", () => {
     const text = htmlToText("<div><div><p>only</p></div></div>");
     expect(text).toBe("only");
+  });
+});
+
+describe("cleanMarkdown", () => {
+  // A server that honours this fetcher's `accept: text/markdown` header hands
+  // back markdown directly, which used to bypass every normalisation the HTML
+  // path applied. Measured against a real site doing exactly that: its response
+  // arrived with YAML frontmatter and eight image tags intact.
+  it("strips leading YAML frontmatter", () => {
+    const md = '---\ntitle: "Home"\nsource: https://x.com/\n---\n# Real content\n\nBody.';
+    expect(cleanMarkdown(md)).toBe("# Real content\n\nBody.");
+  });
+
+  it("leaves a document opening with a horizontal rule alone", () => {
+    // `---` is also a valid <hr>. Only a frontmatter BLOCK goes.
+    expect(cleanMarkdown("---\n\n# Title")).toBe("---\n\n# Title");
+  });
+
+  it("drops images and link targets, as the html path does", () => {
+    expect(cleanMarkdown("![Logo](https://x/a.svg)\n\nsee [docs](https://x/d)")).toBe("see docs");
+  });
+
+  it("normalises non-breaking spaces", () => {
+    expect(cleanMarkdown("a\u00a0b")).toBe("a b");
   });
 });
 
