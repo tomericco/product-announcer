@@ -46,38 +46,36 @@ const TEMPLATE_SYSTEM = [
   "skeleton because some sections were uncertain is not.",
   "",
   "OUTPUT RULES.",
-  "1. Emit the skeleton itself, never a description of it. Reproduce their heading text, section order, and",
-  "   any sign-off verbatim.",
-  "   Every section name must be written as a markdown heading ('## Fixes'), even when the page shows it as",
-  "   bold, capitals, or plain text. You are reading extracted text with the original markup removed, so you",
-  "   cannot see how a section name was styled — a section name emitted as a bare line reads as content",
-  "   later, not as structure, which is the one thing this skeleton exists to carry.",
-  "2. Your ENTIRE output consists of only three kinds of line: heading lines, text the company repeats",
-  "   verbatim in every update (a sign-off like '— The Acme Team'), and blank lines. There are no body",
-  "   lines. A section is its heading and nothing else — the words under it are written later by someone",
-  "   holding the actual changes, who does not need your example of them.",
-  "   If you find yourself writing a line that describes what belongs somewhere — a noun phrase in braces,",
-  "   a parenthetical, a sample sentence — delete that line. It is not part of the skeleton.",
-  `3. The ONLY placeholders you may write are: ${ALLOWED_TOKENS}. Never invent another one.`,
-  "   Writing something like {Feature name} or {Main announcement paragraph} is the single worst thing you",
-  "   can do here: those survive into the finished update as literal text. If you want to indicate what goes",
-  "   in a section, do nothing — the empty section already says it.",
-  "4. Each placeholder means one specific thing and may be used for nothing else. The count placeholders are",
-  "   the NUMBER OF CHANGES in an update; {month} and {year} are the period it covers. Never reach for a",
-  "   placeholder because it is the closest available — writing {count} where a day of the month goes puts",
-  "   the number of changes into a date, and the result is a real update published with a wrong date on it.",
-  "   There is no day-of-month placeholder. If their titles carry a specific day, that part of the title has",
-  "   no reusable pattern: use {month} {year} alone, or omit the title line.",
-  "5. Use a placeholder only where the page shows that literal kind of value in that literal position. If",
-  "   their headings carry no counts or dates, use no placeholders at all.",
+  "1. STRUCTURE is copied verbatim; CONTENT is described, never copied.",
+  "   Structure is what is the same in every update: heading text, heading levels, section order, a sign-off.",
+  "   Copy those word for word — 'Fixes', \u2018What\u2019s new\u2019, \u2018\u2014 The Acme Team\u2019.",
+  "   Content is whatever a particular update happened to be about. Never carry a word of it across. If you",
+  "   are writing a phrase that describes something the company shipped, you are copying content.",
+  "2. Every section name must be a markdown heading (\u2018## Fixes\u2019), even where the page shows it as bold,",
+  "   capitals, or plain text. You are reading extracted text with the markup removed, so you cannot see how",
+  "   a name was styled — and a section name emitted as a bare line reads as content later, not as structure.",
+  "3. Where CONTENT goes, write a short description of what belongs there, in braces. It is a brief for",
+  "   whoever writes the next update, not an example from the last one. Keep it to a few words.",
+  "     Right:  {main feature, plus 1-2 smaller ones}   {one sentence on who this helps}   {the fixes, as bullets}",
+  "     Wrong:  {count} Improvements and fixes across the platform",
+  "   That wrong example is the failure to understand: \u2018Improvements and fixes across the platform\u2019 is one",
+  "   update\u2019s own words, and a template carrying it would stamp that same sentence onto every future update.",
+  "   A brace may hold a description OR a reserved name below — never a description wrapped around real copy.",
+  `4. These brace names are RESERVED and are filled in automatically: ${ALLOWED_TOKENS}.`,
+  "   Use one only where the page shows that literal kind of value in that position, and only for its own",
+  "   meaning. The count names are the NUMBER OF CHANGES in an update; {month} and {year} are the period it",
+  "   covers. Never reach for one because it is the closest available — writing {count} where a day of the",
+  "   month goes puts the number of changes into a date, and ships an update carrying a wrong one.",
+  "   There is no day-of-month name. If their titles carry a specific day, that part has no reusable shape:",
+  "   use {month} {year}, or leave it to a description.",
   "",
   "THE TITLE LINE.",
-  "The first line may be a heading giving the pattern their update TITLES follow — but only when their",
-  "titles genuinely share a shape, such as a month, a release number, or a fixed prefix. When you emit it,",
-  "it must be a single '#', whatever heading level the page itself uses for entry titles — this line is the",
-  "title of one update, not a section inside it.",
-  "If their titles are simply the names of what shipped, they have no pattern: omit the H1 entirely.",
-  "Never write an H1 that is a bare placeholder standing in for the whole title.",
+  "The first line may be a heading giving the shape their update TITLES take. Describe that shape — do not",
+  "reproduce any real title. When you emit it, it must be a single \u2018#\u2019, whatever level the page uses for",
+  "entry titles: this line is the title of one update, not a section inside it.",
+  "     Right:  \u2018# {main feature, plus 1-2 smaller ones} {month}\u2019   or   \u2018# {month} updates\u2019",
+  "     Wrong:  \u2018# Coding sessions: environments, browser use, and updated pricing\u2019 — that is one real title.",
+  "If their titles follow no shape at all, omit the line.",
   "",
   "WHEN TO RETURN NULL — two narrow cases, not a general escape hatch.",
   "First: the page does not show the BODY of any update. Some changelog pages are only an index — a list of",
@@ -90,53 +88,28 @@ const TEMPLATE_SYSTEM = [
 ].join("\n");
 
 /**
- * Deterministic backstop for the two rules the prompt can only ask for.
+ * The only deterministic guard left: a skeleton with nothing under its title is
+ * not a template.
  *
- * Asking a model not to invent placeholders reduced them but did not eliminate
- * them (a probe run produced `{title}`, which is not one of the nine), and an
- * unknown token is invisible downstream by design — `substituteVariables`
- * passes it through as author text. So unknown tokens are stripped here, where
- * the rule can actually be enforced. Stripping rather than rejecting is
- * deliberate: the token is noise inside an otherwise usable skeleton, and
- * removing it leaves exactly the empty section the prompt asked for.
+ * It USED to strip every brace that was not one of the nine reserved names,
+ * because the model kept inventing `{Feature name}`-style tokens and those
+ * reached the finished update as literal text. That stripping is gone, and
+ * deliberately: a described content slot is now the POINT of a template, not a
+ * defect in one. `{main feature, plus 1-2 smaller ones}` is what a template is
+ * supposed to say. What changed underneath it is the composer, which now reads
+ * an unreserved brace as a brief for what to write there rather than as text to
+ * reproduce — see `composeReleasePrompt`.
  *
- * Then the degenerate case: a skeleton with no body left is not a template.
- * Composition already falls back to the pre-template prompt when the body is
- * empty, so persisting one would only mean the settings UI claims a template
- * that does nothing. Null says the true thing.
+ * The degenerate check stays. Composition falls back to the pre-template prompt
+ * when the body is empty, so persisting a body-less skeleton would only make the
+ * settings UI claim a template that does nothing.
  */
 export function postProcessTemplate(raw: string): string | null {
-  const allowed = new Set<string>(TEMPLATE_VARIABLES);
-  // The trailing `[ \t]*,?` takes a separator that only existed to join this
-  // token to its neighbour. Without it, a model writing `{month} {day}, {year}`
-  // leaves `{month} , {year}` once `{day}` goes — punctuation the composer is
-  // then told to reproduce exactly.
-  const stripped = raw
-    .replace(/\{([^}\n]*)\}[ \t]*,?/g, (match, name: string) =>
-      allowed.has(name.trim()) ? match : ""
-    )
-    .replace(/[ \t]{2,}/g, " ");
-
-  // Stripping a token out of a line usually leaves debris behind — an empty
-  // heading (`## `), or separator punctuation that only made sense between the
-  // tokens it joined (`## {month} , {year}` once `{day}` goes). A line that
-  // carried a token and now carries no letters or digits is debris, so it goes
-  // entirely rather than surviving as noise the composer is told to reproduce.
-  const lines = stripped
-    .split("\n")
-    .map((line) => line.trimEnd())
-    .filter((line, index) => {
-      const before = raw.split("\n")[index] ?? "";
-      if (before === line) return true;
-      return /[a-z0-9]/i.test(line.replace(/^#+/, ""));
-    });
-  // Anything that is not the leading H1 and not blank: a heading, a sign-off,
-  // a bullet. One such line is enough to make the skeleton worth keeping.
+  const lines = raw.split("\n").map((line) => line.trimEnd());
   const firstMeaningful = lines.findIndex((line) => line.trim() !== "");
   const body = lines.slice(firstMeaningful + 1).filter((line) => line.trim() !== "");
   if (firstMeaningful === -1 || body.length === 0) return null;
 
-  // Collapse the runs of blank lines that stripping tends to leave behind.
   return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 

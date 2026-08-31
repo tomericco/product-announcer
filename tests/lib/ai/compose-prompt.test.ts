@@ -430,14 +430,29 @@ describe("composeReleasePrompt with a template", () => {
       template: "# {count} updates in {month}\n\n## Highlights\n",
     });
     expect(prompt).toContain("1 updates in August");
-    expect(prompt).not.toContain("{count}");
-    expect(prompt).not.toContain("{month}");
+    // Scoped to the fenced template, not the whole prompt: the instruction
+    // above it now explains braces using literal {month} / {main feature ...}
+    // examples, so a whole-prompt assertion would trip on the explanation
+    // rather than on an unsubstituted template.
+    const fenced = prompt.slice(prompt.indexOf("<template>"), prompt.indexOf("</template>"));
+    expect(fenced).not.toContain("{count}");
+    expect(fenced).not.toContain("{month}");
   });
 
   it("orders items most-significant-first", () => {
     const small = { ...TEMPLATE_ITEM, id: "a2", title: "Tiny fix", size: "s" as const };
     const { prompt } = composeReleasePrompt({ ...base, items: [small, TEMPLATE_ITEM], template: "## Highlights\n" });
     expect(prompt.indexOf("Shared dashboards")).toBeLessThan(prompt.indexOf("Tiny fix"));
+  });
+
+  it("tells the model that braces are instructions, not text to copy", () => {
+    // The derivation now emits described content slots — "{main feature, plus
+    // 1-2 smaller ones}". Without this instruction the composer reproduces them
+    // verbatim and the company publishes an update whose title is literally
+    // that phrase. This is the contract that makes such templates safe.
+    const { prompt } = composeReleasePrompt({ ...base, template: "# {main feature} {month}\n\n## Fixes" });
+    expect(prompt).toMatch(/instruction/i);
+    expect(prompt).toMatch(/never reproduce a brace/i);
   });
 
   it("tells the model the numbers are authoritative", () => {

@@ -266,6 +266,11 @@ export function composeReleasePrompt(args: {
     "Reproduce the template's structure exactly — its sections, their order, its headings and any sign-off —",
     "placing each change where it belongs. Omit a section you have nothing to put in rather than inventing filler,",
     "and add no section the template does not have.",
+    "Anything in {curly braces} is an INSTRUCTION describing what belongs in that position — write that, and",
+    "delete the braces. Never reproduce a brace, or the words inside it, in what you publish: a template",
+    "reading '{main feature, plus 1-2 smaller ones} {month}' asks for a title naming the biggest change and",
+    "one or two lesser ones, followed by the month. Everything OUTSIDE braces is the company's own wording",
+    "and is reproduced verbatim.",
     titlePattern
       ? `The title must follow this pattern: ${titlePattern}`
       : "Write a title in the company's usual style; the template does not prescribe one.",

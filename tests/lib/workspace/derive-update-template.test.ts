@@ -48,45 +48,34 @@ describe("postProcessTemplate", () => {
     expect(postProcessTemplate(clean)).toBe(clean);
   });
 
-  it("keeps every allowed variable", () => {
+  it("keeps described content slots — they are what a template is FOR", () => {
+    // This is the inversion of an earlier rule. These braces used to be
+    // stripped as invented junk; they are now the point. The composer reads an
+    // unreserved brace as a brief for what to write there.
+    const t = "# {main feature, plus 1-2 smaller ones} {month}\n\n## Fixes\n{the fixes, as bullets}";
+    expect(postProcessTemplate(t)).toBe(t);
+  });
+
+  it("keeps every reserved variable", () => {
     const t = "# {count_rounded}+ updates in {month} {year}\n\n## Also fixed";
-    expect(postProcessTemplate(t)).toContain("{count_rounded}");
-    expect(postProcessTemplate(t)).toContain("{month}");
-    expect(postProcessTemplate(t)).toContain("{year}");
-  });
-
-  it("strips a placeholder the model invented", () => {
-    // `substituteVariables` leaves an unrecognised token alone by design, so
-    // anything not stripped here reaches the finished update as literal text.
-    const out = postProcessTemplate("# Updates\n\n## What's new\n{Feature name}\n\n## Fixes");
-    expect(out).not.toContain("{Feature name}");
-    expect(out).toContain("## What's new");
-    expect(out).toContain("## Fixes");
-  });
-
-  it("removes the separator orphaned by a stripped placeholder", () => {
-    // `{month} {day}, {year}` must not become `{month} , {year}`.
-    expect(postProcessTemplate("# {month} {day}, {year}\n\n## Fixes")).toBe("# {month} {year}\n\n## Fixes");
-  });
-
-  it("drops a heading left empty by stripping", () => {
-    const out = postProcessTemplate("# Updates\n\n## {Section heading}\n\n## Fixes");
-    expect(out).not.toMatch(/##\s*$/m);
-    expect(out).toContain("## Fixes");
+    const out = postProcessTemplate(t)!;
+    expect(out).toContain("{count_rounded}");
+    expect(out).toContain("{month}");
+    expect(out).toContain("{year}");
   });
 
   it("returns null when only a title line survives", () => {
     // A body-less skeleton is worse than none: composition falls back to the
     // pre-template prompt anyway, while the UI reports a template configured.
-    expect(postProcessTemplate("# {title}")).toBeNull();
-    expect(postProcessTemplate("# Changelog\n\n{Everything else}")).toBeNull();
+    expect(postProcessTemplate("# {main feature} {month}")).toBeNull();
+    expect(postProcessTemplate("# Changelog")).toBeNull();
   });
 
   it("returns null for whitespace", () => {
     expect(postProcessTemplate("   \n\n  ")).toBeNull();
   });
 
-  it("collapses the blank-line runs stripping leaves behind", () => {
-    expect(postProcessTemplate("# Updates\n\n{a}\n\n{b}\n\n## Fixes")).toBe("# Updates\n\n## Fixes");
+  it("collapses runs of blank lines", () => {
+    expect(postProcessTemplate("# Updates\n\n\n\n## Fixes")).toBe("# Updates\n\n## Fixes");
   });
 });
