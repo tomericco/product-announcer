@@ -3,6 +3,7 @@
 import dynamic from "next/dynamic";
 import { useEffect, useRef, useState } from "react";
 import { useUnsavedChanges } from "../unsaved-changes";
+import { useGenerationLock } from "./generation-lock";
 import { GUIDELINES_TEMPLATE } from "@/lib/workspace/guidelines-template";
 
 const MdxEditor = dynamic(() => import("@/components/markdown/mdx-editor"), { ssr: false });
@@ -14,6 +15,10 @@ export function GuidelinesEditor({ defaultValue }: { defaultValue: string | null
   const initial = defaultValue ?? GUIDELINES_TEMPLATE;
   const [guidelines, setGuidelines] = useState(initial);
   const { setSectionDirty, cleanToken } = useUnsavedChanges();
+  // Frozen while the Generate band below is running: on success the page
+  // remounts this editor with the derived value, so an edit typed now would be
+  // silently discarded.
+  const { generating } = useGenerationLock();
   const baseline = useRef(initial);
   const latest = useRef(initial);
   // Sticky once true: distinguishes "the user actually edited this field" from
@@ -47,6 +52,7 @@ export function GuidelinesEditor({ defaultValue }: { defaultValue: string | null
     <div className="w-full">
       <input type="hidden" name="guidelines" value={submittedValue} />
       <MdxEditor
+        readOnly={generating}
         markdown={guidelines}
         contentEditableClassName="min-h-[50vh]"
         placeholder={<span className="text-muted-foreground/40">Brand guidelines</span>}

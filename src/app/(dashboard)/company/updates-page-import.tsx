@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2, Sparkles } from "lucide-react";
 import { importBrandStyleFromUrl, importProductUpdateTemplateFromUrl } from "./actions";
+import { useGenerationLock } from "./generation-lock";
 import { Button } from "@/components/ui/button";
 import { CardFooter } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -95,6 +96,8 @@ export function UpdatesPageImport({ kind, defaultUrl }: { kind: ImportKind; defa
   const [confirmOpen, setConfirmOpen] = useState(false);
   const router = useRouter();
   const copy = COPY[kind];
+  // Published so the editor above can freeze itself — see `generation-lock`.
+  const { setGenerating } = useGenerationLock();
 
   function requestRun() {
     if (!url.trim() || loading) return;
@@ -107,6 +110,7 @@ export function UpdatesPageImport({ kind, defaultUrl }: { kind: ImportKind; defa
     if (!trimmed || loading) return;
 
     setLoading(true);
+    setGenerating(true);
     setResult(null);
     try {
       const res =
@@ -121,8 +125,17 @@ export function UpdatesPageImport({ kind, defaultUrl }: { kind: ImportKind; defa
       } else {
         setResult({ ok: false, message: "We couldn’t read that page — check the URL and try again." });
       }
+    } catch {
+      // A server action can reject outright — a network drop, a deploy mid-call.
+      // Without this the promise rejects unhandled and the only feedback is the
+      // spinner stopping, which reads as "nothing happened" rather than "that
+      // failed, try again".
+      setResult({ ok: false, message: "That didn\u2019t go through — check your connection and try again." });
     } finally {
       setLoading(false);
+      // Cleared in `finally`, so a thrown action unlocks the editor rather than
+      // stranding it read-only until a reload.
+      setGenerating(false);
     }
   }
 

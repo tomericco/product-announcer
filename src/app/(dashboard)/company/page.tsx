@@ -7,6 +7,8 @@ import { listCompetitorSources, getNewsSource } from "@/lib/signals/sources";
 import { getAiVisibilitySettings, getAiVisibilitySource } from "@/lib/ai-visibility/settings";
 import { listPrompts } from "@/lib/ai-visibility/prompts";
 import { saveGuidelines, saveProductUpdateTemplate } from "./actions";
+import { GenerationLockProvider } from "./generation-lock";
+import { SaveButton } from "./save-button";
 import { UpdatesPageImport } from "./updates-page-import";
 import { CompanyContextForm } from "./company-context-form";
 import { CompetitorsEditor } from "./competitors-editor";
@@ -20,7 +22,6 @@ import { VisualIdentityEditor } from "./visual-identity-editor";
 import { ChangeEventsSection } from "./change-events-section";
 import { AtomicUpdatesSection } from "./atomic-updates-section";
 import { ToastForm } from "../settings/toast-form";
-import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
 /**
@@ -213,6 +214,7 @@ export default async function CompanyPage({
             Voice, structure, and the words you do and don&apos;t use. Written as Markdown.
           </CardDescription>
         </CardHeader>
+        <GenerationLockProvider>
         <CardContent>
           <ToastForm action={saveGuidelines} successMessage="Brand guidelines saved" className="space-y-4">
             {/* Keyed on the server value for the same reason as IndustrySelect above:
@@ -227,13 +229,12 @@ export default async function CompanyPage({
                 replaced Settings card used (`key={brandProfile.tone ?? ""}` etc). */}
             <GuidelinesEditor key={brandProfile.guidelines ?? ""} defaultValue={brandProfile.guidelines} />
 
-            <Button type="submit" variant="outline">
-              Save
-            </Button>
+            <SaveButton />
           </ToastForm>
         </CardContent>
 
         <UpdatesPageImport kind="guidelines" defaultUrl={brandProfile.updatesPageUrl ?? ""} />
+        </GenerationLockProvider>
       </Card>
 
       <Card id="product-update-template">
@@ -243,6 +244,7 @@ export default async function CompanyPage({
             The shape your product updates take — headings, section order, sign-off. Written as Markdown.
           </CardDescription>
         </CardHeader>
+        <GenerationLockProvider>
         <CardContent>
           <ToastForm
             action={saveProductUpdateTemplate}
@@ -259,13 +261,12 @@ export default async function CompanyPage({
               key={brandProfile.productUpdateTemplate ?? ""}
               defaultValue={brandProfile.productUpdateTemplate}
             />
-            <Button type="submit" variant="outline">
-              Save
-            </Button>
+            <SaveButton />
           </ToastForm>
         </CardContent>
 
         <UpdatesPageImport kind="template" defaultUrl={brandProfile.updatesPageUrl ?? ""} />
+        </GenerationLockProvider>
       </Card>
 
       <Card id="visual-identity">

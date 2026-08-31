@@ -3,6 +3,7 @@
 import dynamic from "next/dynamic";
 import { useEffect, useRef, useState } from "react";
 import { useUnsavedChanges } from "../unsaved-changes";
+import { useGenerationLock } from "./generation-lock";
 import { DEFAULT_PRODUCT_UPDATE_TEMPLATE } from "@/lib/workspace/product-update-template";
 
 const MdxEditor = dynamic(() => import("@/components/markdown/mdx-editor"), { ssr: false });
@@ -14,6 +15,10 @@ export function ProductUpdateTemplateEditor({ defaultValue }: { defaultValue: st
   const initial = defaultValue ?? DEFAULT_PRODUCT_UPDATE_TEMPLATE;
   const [template, setTemplate] = useState(initial);
   const { setSectionDirty, cleanToken } = useUnsavedChanges();
+  // Frozen while the Generate band below is running: on success the page
+  // remounts this editor with the derived value, so an edit typed now would be
+  // silently discarded.
+  const { generating } = useGenerationLock();
   const baseline = useRef(initial);
   const latest = useRef(initial);
   // Sticky once true: distinguishes "the user actually edited this field" from
@@ -53,6 +58,7 @@ export function ProductUpdateTemplateEditor({ defaultValue }: { defaultValue: st
         value={submittedValue}
       />
       <MdxEditor
+        readOnly={generating}
         markdown={template}
         contentEditableClassName="min-h-[50vh]"
         placeholder={<span className="text-muted-foreground/40">Product update template</span>}

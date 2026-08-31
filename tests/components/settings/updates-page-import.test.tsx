@@ -13,6 +13,7 @@ vi.mock("../../../src/app/(dashboard)/company/actions", () => ({
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: vi.fn() }) }));
 
 import { UpdatesPageImport } from "../../../src/app/(dashboard)/company/updates-page-import";
+import { GenerationLockProvider, useGenerationLock } from "../../../src/app/(dashboard)/company/generation-lock";
 
 describe("UpdatesPageImport", () => {
   beforeEach(() => {
@@ -63,5 +64,61 @@ describe("UpdatesPageImport", () => {
 
     expect(importBrandStyleFromUrl).toHaveBeenCalledWith("https://acme.com/changelog");
     expect(importProductUpdateTemplateFromUrl).not.toHaveBeenCalled();
+  });
+
+  it("locks the card while a generation is in flight, and unlocks after", async () => {
+    const user = userEvent.setup();
+    let release: (v: { ok: boolean }) => void = () => {};
+    importBrandStyleFromUrl.mockReturnValue(new Promise((resolve) => { release = resolve; }));
+
+    function Probe() {
+      const { generating } = useGenerationLock();
+      return <span data-testid="lock">{generating ? "locked" : "unlocked"}</span>;
+    }
+
+    render(
+      <GenerationLockProvider>
+        <Probe />
+        <UpdatesPageImport kind="guidelines" defaultUrl="https://acme.com/changelog" />
+      </GenerationLockProvider>
+    );
+
+    expect(screen.getByTestId("lock")).toHaveTextContent("unlocked");
+
+    await user.click(screen.getByRole("button", { name: "Generate" }));
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+
+    // The editor above reads this and goes read-only. Without it, an edit typed
+    // now is destroyed when the refresh remounts the editor on the new value.
+    expect(screen.getByTestId("lock")).toHaveTextContent("locked");
+
+    release({ ok: true });
+    await screen.findByText("Brand guidelines updated from your updates page.");
+    expect(screen.getByTestId("lock")).toHaveTextContent("unlocked");
+  });
+
+  it("unlocks even when the action throws", async () => {
+    const user = userEvent.setup();
+    importProductUpdateTemplateFromUrl.mockRejectedValue(new Error("boom"));
+
+    function Probe() {
+      const { generating } = useGenerationLock();
+      return <span data-testid="lock">{generating ? "locked" : "unlocked"}</span>;
+    }
+
+    render(
+      <GenerationLockProvider>
+        <Probe />
+        <UpdatesPageImport kind="template" defaultUrl="https://acme.com/changelog" />
+      </GenerationLockProvider>
+    );
+
+    await user.click(screen.getByRole("button", { name: "Generate" }));
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+
+    // A thrown action must not strand the card read-only until a reload, and
+    // must say something rather than just stopping the spinner.
+    await screen.findByText(/didn.t go through/);
+    expect(screen.getByTestId("lock")).toHaveTextContent("unlocked");
   });
 });
