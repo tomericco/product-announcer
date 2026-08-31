@@ -7,6 +7,7 @@ import { companyProfiles, competitors, sources } from "@/db/schema";
 import { requireSession } from "@/lib/workspace/session";
 import { getOrCreateCompanyProfile } from "@/lib/workspace/company-profile";
 import { importBrandStyleForTenant } from "@/lib/workspace/brand-import";
+import { importProductUpdateTemplateForTenant } from "@/lib/workspace/template-import";
 import { sanitizePersonas } from "@/lib/workspace/persona-form";
 import { parseTopics } from "@/lib/workspace/parse-topics";
 import { addCompetitor, listCompetitors, removeCompetitor } from "@/lib/workspace/competitors";
@@ -106,10 +107,14 @@ export async function savePersonas(personas: unknown): Promise<void> {
 }
 
 /**
- * Re-derives the brand guidelines from a public updates page (the same
- * extraction used in onboarding) and overwrites them. Called from the import
- * panel, which confirms first since this replaces hand-written guidelines.
- * Returns the outcome so the client can show inline feedback.
+ * Re-derives the brand guidelines and industry from a public updates page (the
+ * same extraction used in onboarding) and overwrites them. Called from the
+ * import panel inside the Guidelines card, which confirms first since this
+ * replaces hand-written guidelines. Returns the outcome so the client can show
+ * inline feedback.
+ *
+ * Writes VOICE ONLY. The product update template has its own action below, so
+ * re-running either analysis leaves the other alone.
  */
 export async function importBrandStyleFromUrl(url: string): Promise<{ ok: boolean; reason?: string }> {
   const session = await requireSession();
@@ -117,6 +122,25 @@ export async function importBrandStyleFromUrl(url: string): Promise<{ ok: boolea
   if (!trimmed) return { ok: false, reason: "empty" };
 
   const result = await importBrandStyleForTenant(session.user.tenantId, trimmed);
+  if (result.ok) revalidatePath("/company");
+  return result;
+}
+
+/**
+ * Re-derives the product update template from a public updates page and
+ * overwrites it. The structural sibling of `importBrandStyleFromUrl`, called
+ * from the import panel inside the Product update template card.
+ *
+ * Separate action, separate column, separate button — the two analyses were one
+ * call until 2026-08-31, which meant iterating on the template (the less
+ * reliable of the two) overwrote hand-tuned guidelines every attempt.
+ */
+export async function importProductUpdateTemplateFromUrl(url: string): Promise<{ ok: boolean; reason?: string }> {
+  const session = await requireSession();
+  const trimmed = url.trim();
+  if (!trimmed) return { ok: false, reason: "empty" };
+
+  const result = await importProductUpdateTemplateForTenant(session.user.tenantId, trimmed);
   if (result.ok) revalidatePath("/company");
   return result;
 }

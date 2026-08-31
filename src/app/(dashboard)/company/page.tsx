@@ -7,7 +7,7 @@ import { listCompetitorSources, getNewsSource } from "@/lib/signals/sources";
 import { getAiVisibilitySettings, getAiVisibilitySource } from "@/lib/ai-visibility/settings";
 import { listPrompts } from "@/lib/ai-visibility/prompts";
 import { saveGuidelines, saveProductUpdateTemplate } from "./actions";
-import { BrandStyleImport } from "./brand-style-import";
+import { UpdatesPageImport } from "./updates-page-import";
 import { CompanyContextForm } from "./company-context-form";
 import { CompetitorsEditor } from "./competitors-editor";
 import { IndustrySelect } from "./industry-select";
@@ -185,7 +185,7 @@ export default async function CompanyPage({
           <CardDescription>Grounds updates in the language of your market — selects the writing exemplars generation draws on.</CardDescription>
         </CardHeader>
         <CardContent>
-          {/* Keyed on the server value. A successful import (BrandStyleImport,
+          {/* Keyed on the server value. A successful import (UpdatesPageImport,
               below) overwrites `industry` server-side and calls router.refresh(),
               which re-renders this page with the new brandProfile. IndustrySelect
               owns its selection as internal state, so without a key React would
@@ -206,15 +206,6 @@ export default async function CompanyPage({
         </CardContent>
       </Card>
 
-      <Card id="derive-from-updates">
-        <CardHeader>
-          <CardTitle>Derive from your updates page</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <BrandStyleImport defaultUrl={brandProfile.updatesPageUrl ?? ""} />
-        </CardContent>
-      </Card>
-
       <Card id="guidelines">
         <CardHeader>
           <CardTitle>Guidelines</CardTitle>
@@ -222,7 +213,9 @@ export default async function CompanyPage({
             Voice, structure, and the words you do and don&apos;t use. Written as Markdown.
           </CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
+          <UpdatesPageImport kind="guidelines" defaultUrl={brandProfile.updatesPageUrl ?? ""} />
+
           <ToastForm action={saveGuidelines} successMessage="Brand guidelines saved" className="space-y-4">
             {/* Keyed on the server value for the same reason as IndustrySelect above:
                 a successful import overwrites `guidelines` and refreshes the page, but
@@ -250,7 +243,9 @@ export default async function CompanyPage({
             The shape your product updates take — headings, section order, sign-off. Written as Markdown.
           </CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
+          <UpdatesPageImport kind="template" defaultUrl={brandProfile.updatesPageUrl ?? ""} />
+
           <ToastForm
             action={saveProductUpdateTemplate}
             successMessage="Product update template saved"
