@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { fetchPageText, htmlToText, cleanMarkdown, IMAGE_MARKER, VIDEO_MARKER, extractSameOriginLinks, MAX_TEXT_CHARS } from "../../../src/lib/workspace/fetch-page";
+import { fetchPageText, htmlToText, cleanMarkdown, MEDIA_MARKER, extractSameOriginLinks, MAX_TEXT_CHARS } from "../../../src/lib/workspace/fetch-page";
 
 function htmlResponse(body: string, headers: Record<string, string> = {}) {
   return new Response(body, { status: 200, headers: { "content-type": "text/html", ...headers } });
@@ -43,18 +43,26 @@ describe("htmlToText — block structure", () => {
     expect(htmlToText("<p>see <a href='https://x.com/a?b=1'>the docs</a></p>")).toBe("see the docs");
   });
 
-  it("marks media rather than deleting it", () => {
+  it("drops site chrome that sits in semantic landmarks", () => {
+    // On a real changelog the product menu, resources list and footer all
+    // arrived ahead of the first update — and on a page long enough to
+    // truncate, that chrome is spent from the same budget as the content.
+    const html = "<nav><a href='/x'>Pricing</a></nav><main><h2>New</h2><p>a</p></main><footer>© 2026</footer>";
+    expect(htmlToText(html)).toBe("## New\n\na");
+  });
+
+  it("marks image and embedded media with one marker", () => {
     // Deleting images meant a page could show a screenshot under every feature
     // and an embedded walkthrough in every release, and a template derived from
     // it would say nothing about either. The URL is still dropped — it is the
     // placement that is structure, not the asset.
     expect(htmlToText("<h2>New</h2><img src='https://x/y.png' alt='shot'><p>a</p>")).toBe(
-      `## New\n\n${IMAGE_MARKER}\n\na`
+      `## New\n\n${MEDIA_MARKER}\n\na`
     );
     expect(htmlToText("<h2>New</h2><iframe src='https://loom.com/x'></iframe><p>a</p>")).toBe(
-      `## New\n\n${VIDEO_MARKER}\n\na`
+      `## New\n\n${MEDIA_MARKER}\n\na`
     );
-    expect(htmlToText("<p>a</p><video src='x.mp4'></video>")).toBe(`a\n\n${VIDEO_MARKER}`);
+    expect(htmlToText("<p>a</p><video src='x.mp4'></video>")).toBe(`a\n\n${MEDIA_MARKER}`);
   });
 
   it("still collapses runs of inline whitespace within a block", () => {
@@ -84,7 +92,7 @@ describe("cleanMarkdown", () => {
 
   it("marks images and drops link targets, as the html path does", () => {
     expect(cleanMarkdown("![Logo](https://x/a.svg)\n\nsee [docs](https://x/d)")).toBe(
-      `${IMAGE_MARKER}\n\nsee docs`
+      `${MEDIA_MARKER}\n\nsee docs`
     );
   });
 

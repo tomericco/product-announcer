@@ -147,7 +147,7 @@ async function readBodyCapped(res: Response, maxBytes: number): Promise<string> 
  * once, and floods the inbox. The version lets that consumer notice the format
  * moved and re-baseline instead.
  */
-export const EXTRACTOR_VERSION = 3;
+export const EXTRACTOR_VERSION = 4;
 
 // Elements that never carry page content. Removed outright rather than
 // converted, so their text does not survive as stray lines.
@@ -155,7 +155,27 @@ export const EXTRACTOR_VERSION = 3;
 // `iframe` is NOT here. An embedded player or walkthrough is a real part of how
 // some companies write an update, and dropping it silently made that invisible
 // to anything reading the page — see MEDIA_MARKERS.
-const DROPPED_ELEMENTS = ["script", "style", "noscript", "svg", "form", "template"];
+const DROPPED_ELEMENTS = [
+  "script",
+  "style",
+  "noscript",
+  "svg",
+  "form",
+  "template",
+  // Site chrome. These are semantic landmarks, so removing them is a structural
+  // rule and not a class-name guess — turndown's `remove` runs against the
+  // parsed DOM, which is what makes it reliable.
+  //
+  // Worth the entry: on a real changelog the whole product menu, resources list
+  // and footer arrived ahead of the first update, and on a page long enough to
+  // truncate that chrome is spent from the same character budget as the
+  // content. A page that does not use landmarks is unaffected, which is why
+  // this is additive rather than a switch to main-only extraction.
+  "nav",
+  "header",
+  "footer",
+  "aside",
+];
 
 /**
  * What an image or embed becomes in extracted text.
@@ -167,13 +187,12 @@ const DROPPED_ELEMENTS = ["script", "style", "noscript", "svg", "form", "templat
  * nothing about either — the one part of an update the model can see is missing
  * is the part it was never shown.
  *
- * A marker is the middle: two tokens of signal, no URL. They deliberately use
- * the `[add link]` shape, because they mean the same thing downstream — a slot
- * only a person can fill. Nothing in the pipeline can render a screenshot of a
- * customer's own product.
+ * A marker is the middle: one token of signal, no URL. It deliberately uses the
+ * `[add link]` shape, because it means the same thing downstream — a slot only a
+ * person can fill. Nothing in the pipeline can render a screenshot or a
+ * walkthrough of a customer's own product.
  */
-export const IMAGE_MARKER = "[image]";
-export const VIDEO_MARKER = "[video]";
+export const MEDIA_MARKER = "[media]";
 
 const turndown = new TurndownService({
   headingStyle: "atx",
@@ -184,13 +203,17 @@ turndown.remove(DROPPED_ELEMENTS as TurndownService.Filter);
 
 // Embeds first: an <iframe> carries no text, so without a rule turndown emits
 // nothing for it and the embed vanishes as surely as if it were removed.
+// One marker for both, because the distinction does not survive into anything
+// useful: a company that leads with a demo clip one week and a screenshot the
+// next is doing the same thing structurally, and a template that insisted on
+// which would be wrong half the time.
 turndown.addRule("embed", {
   filter: ["iframe", "video", "embed", "object", "audio"],
-  replacement: () => `\n\n${VIDEO_MARKER}\n\n`,
+  replacement: () => `\n\n${MEDIA_MARKER}\n\n`,
 });
 turndown.addRule("media", {
   filter: "img",
-  replacement: () => IMAGE_MARKER,
+  replacement: () => MEDIA_MARKER,
 });
 
 /**
@@ -262,7 +285,7 @@ export function cleanMarkdown(markdown: string): string {
     .replace(/[\u200b-\u200d\ufeff]/g, "")
     // Markdown served directly still arrives with real image syntax; the HTML
     // path has already been through the rule above.
-    .replace(/!\[[^\]]*\]\([^)]*\)/g, IMAGE_MARKER)
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, MEDIA_MARKER)
     .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
     .replace(/[ \t]+$/gm, "")
     .replace(/\n{3,}/g, "\n\n")
