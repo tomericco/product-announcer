@@ -9,20 +9,46 @@ export type ParsedTemplate = {
 /**
  * Splits a template into its title pattern and body skeleton.
  *
- * Only a LEADING H1 counts — a template whose first content line is `## …`
- * leaves the title untemplated (generated as it was before this feature), which
- * is the degradation path for a derivation that only recovered body structure.
- * A later H1 is body content and must survive as-is, so this deliberately does
- * not scan the whole document for one.
+ * The title is the first heading, but ONLY when it sits structurally above
+ * everything that follows — i.e. every other heading in the document is
+ * deeper. That rule, rather than "the first line starts with a single #",
+ * because the level a company uses for an update's title is theirs to choose:
+ * a page whose entries are headed `## …` yields a template headed `## …`, and
+ * insisting on `#` there silently produced templates with no title pattern at
+ * all while the derivation looked like it had worked.
+ *
+ * The comparison is what keeps a section from being mistaken for a title. A
+ * template opening `## Highlights` followed by `## Fixes` has no title: those
+ * are peers, and promoting the first would drop a real section AND fabricate a
+ * title pattern out of it. Same-level headings anywhere below mean the first
+ * one is a section.
+ *
+ * A heading that is the document's only heading is a title, since there are no
+ * peers to contradict it — that is the common shape for a company whose entries
+ * are a headline over prose.
  */
 export function parseTemplate(template: string): ParsedTemplate {
   const trimmed = template.trim();
-  const newline = trimmed.indexOf("\n");
-  const firstLine = newline === -1 ? trimmed : trimmed.slice(0, newline);
-  const h1 = /^#\s+(.+)$/.exec(firstLine);
-  if (!h1) return { titlePattern: null, bodySkeleton: trimmed };
-  const rest = newline === -1 ? "" : trimmed.slice(newline + 1);
-  return { titlePattern: h1[1].trim(), bodySkeleton: rest.trim() };
+  const lines = trimmed.split("\n");
+  const firstIndex = lines.findIndex((line) => line.trim() !== "");
+  if (firstIndex === -1) return { titlePattern: null, bodySkeleton: "" };
+
+  const heading = /^(#{1,6})\s+(.+)$/.exec(lines[firstIndex].trim());
+  if (!heading) return { titlePattern: null, bodySkeleton: trimmed };
+
+  const level = heading[1].length;
+  const hasPeerBelow = lines
+    .slice(firstIndex + 1)
+    .some((line) => {
+      const other = /^(#{1,6})\s+/.exec(line.trim());
+      return other !== null && other[1].length <= level;
+    });
+  if (hasPeerBelow) return { titlePattern: null, bodySkeleton: trimmed };
+
+  return {
+    titlePattern: heading[2].trim(),
+    bodySkeleton: lines.slice(firstIndex + 1).join("\n").trim(),
+  };
 }
 
 export type TemplateFacts = {

@@ -25,6 +25,28 @@ describe("parseTemplate", () => {
     expect(parsed.bodySkeleton).toContain("# Not the title");
   });
 
+  it("takes a deeper first heading as the title when nothing below is its peer", () => {
+    // A company whose entries are headed `## …` yields a template headed
+    // `## …`. Requiring `#` here silently produced templates with no title
+    // pattern while the derivation looked like it had worked — measured
+    // against a real updates page on 2026-08-31.
+    expect(parseTemplate("## {main feature} {month}\n\n{intro paragraph}\n\nTeam Acme")).toEqual({
+      titlePattern: "{main feature} {month}",
+      bodySkeleton: "{intro paragraph}\n\nTeam Acme",
+    });
+  });
+
+  it("treats a first heading with same-level peers below as a section, not a title", () => {
+    // Promoting it would drop a real section AND invent a title pattern from
+    // its name.
+    expect(parseTemplate("## Highlights\n\n## Fixes").titlePattern).toBeNull();
+    expect(parseTemplate("# Highlights\n\n# Fixes").titlePattern).toBeNull();
+  });
+
+  it("keeps a title whose sections are deeper than it", () => {
+    expect(parseTemplate("## Title\n\n### Fixes\n\n### Improvements").titlePattern).toBe("Title");
+  });
+
   it("tolerates leading blank lines before the H1", () => {
     expect(parseTemplate("\n\n# Title\n\n## Body\n").titlePattern).toBe("Title");
   });
