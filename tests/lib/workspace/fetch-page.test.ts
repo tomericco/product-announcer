@@ -12,7 +12,7 @@ const publicResolve = async () => ["93.184.216.34"]; // example.com, public
 describe("htmlToText", () => {
   it("strips scripts/styles/tags and collapses whitespace", () => {
     const out = htmlToText("<style>a{}</style><h1>Hi</h1><script>x()</script><p>We&nbsp;shipped &amp; fixed.</p>");
-    expect(out).toBe("Hi\nWe shipped & fixed.");
+    expect(out).toBe("# Hi\n\nWe shipped & fixed.");
   });
 });
 
@@ -21,11 +21,29 @@ describe("htmlToText — block structure", () => {
     const html = `<h2>v2.4.0</h2><p>Added SSO.</p><ul><li>One</li><li>Two</li></ul>`;
     const text = htmlToText(html);
     expect(text.split("\n").map((l) => l.trim()).filter(Boolean)).toEqual([
-      "v2.4.0",
+      "## v2.4.0",
       "Added SSO.",
-      "One",
-      "Two",
+      "-   One",
+      "-   Two",
     ]);
+  });
+
+  it("keeps a heading distinguishable from a styled label beside it", () => {
+    // The whole point of the markdown extractor. The old regex stripper turned
+    // `</h2>` into a newline, so a section heading and a CMS category chip both
+    // arrived as bare lines — and the template derivation described the chip as
+    // though it were part of an update.
+    const text = htmlToText('<h2>Fixes</h2><div class="category-title">Improvement</div><p>body</p>');
+    expect(text).toContain("## Fixes");
+    expect(text).toContain("\nImprovement\n");
+    expect(text).not.toContain("## Improvement");
+  });
+
+  it("keeps link text but drops link targets and images", () => {
+    // A URL is noise to every consumer of this text, and images were 13% of the
+    // output on a real changelog page.
+    expect(htmlToText("<p>see <a href='https://x.com/a?b=1'>the docs</a></p>")).toBe("see the docs");
+    expect(htmlToText("<p>a</p><img src='https://x/y.png' alt='shot'>")).toBe("a");
   });
 
   it("still collapses runs of inline whitespace within a block", () => {

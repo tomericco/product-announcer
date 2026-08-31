@@ -1,3 +1,5 @@
+import TurndownService from "turndown";
+
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 
@@ -134,57 +136,77 @@ async function readBodyCapped(res: Response, maxBytes: number): Promise<string> 
   return new TextDecoder().decode(combined);
 }
 
-export function htmlToText(html: string): string {
-  // Collapse all source whitespace (including real newlines) to single spaces
-  // *before* block boundaries are turned into structural newlines below, so a
-  // literal line break inside a single block (e.g. a <p> wrapped mid-tag in
-  // the source) isn't mistaken for a paragraph break.
-  const withoutScripts = html
-    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
-    .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, " ")
-    .replace(/\s+/g, " ");
+/**
+ * The extractor version, stamped into anything that persists a fingerprint of
+ * extracted text. Bump it whenever a change here would alter the output for an
+ * unchanged page.
+ *
+ * `competitor-agent` is why this exists. It stores hashes of text blocks and
+ * treats any hash it has not seen as a new change worth a signal — so a silent
+ * change to this function makes every block of every watched page look new at
+ * once, and floods the inbox. The version lets that consumer notice the format
+ * moved and re-baseline instead.
+ */
+export const EXTRACTOR_VERSION = 2;
 
-  // Only these closing tags (and <br>) become line breaks -- they are the
-  // block-level boundaries later per-item extraction splits on. Everything
-  // else (inline tags, opening tags) still strips to a plain space.
-  const withBlockBreaks = withoutScripts
-    .replace(/<\/(p|div|li|h[1-6]|tr)>/gi, "\n")
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&amp;/gi, "&")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
-    .replace(/&#39;|&apos;/gi, "'")
-    .replace(/&quot;/gi, '"');
+// Elements that never carry page content. Removed outright rather than
+// converted, so their text does not survive as stray lines.
+const DROPPED_ELEMENTS = ["script", "style", "noscript", "iframe", "svg", "form", "template"];
 
-  // Collapse inline whitespace within each line, trim each line, and squeeze
-  // runs of blank lines (including leading/trailing) down to none.
-  const lines: string[] = [];
-  let prevBlank = true;
-  for (const raw of withBlockBreaks.split("\n")) {
-    const line = raw.replace(/[ \t]+/g, " ").trim();
-    if (line === "") {
-      if (!prevBlank) lines.push("");
-      prevBlank = true;
-    } else {
-      lines.push(line);
-      prevBlank = false;
-    }
-  }
-  while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
-
-  return lines.join("\n");
-}
+const turndown = new TurndownService({
+  headingStyle: "atx",
+  bulletListMarker: "-",
+  codeBlockStyle: "fenced",
+});
+turndown.remove(DROPPED_ELEMENTS as TurndownService.Filter);
 
 /**
- * Fetches a public page and returns its readable text alongside the raw HTML
- * (so callers can discover links without a second request). SSRF-guarded:
- * http(s) only, every hop's host must resolve entirely to public IPs, redirects
- * are followed manually and re-validated. Bounded by timeout, size, and content
- * type; returns `insufficient-content` for JS-only shells with little text.
+ * HTML to Markdown.
+ *
+ * This used to be a regex tag-stripper, and what it threw away was heading
+ * LEVEL: `</h2>` became a newline, so `<h2>Fixes</h2>` and a styled
+ * `<div class="badge">Improvement</div>` both arrived as bare lines,
+ * indistinguishable to anything reading the result. Every consumer that wanted
+ * to know what was a section and what was a label had to guess, and the
+ * template derivation guessed wrong — describing a CMS category chip as though
+ * it were part of the update.
+ *
+ * Markdown keeps that distinction at no cost: measured on a real 20-entry
+ * changelog, the output is the same size as the old plain text (25.3k vs 25.4k
+ * chars) and carries 20 heading markers where the old one carried none.
+ *
+ * Images and link targets are dropped — the URL of a link is noise to every
+ * consumer here, and images were 13% of the output. Link TEXT is kept, since
+ * that is content.
+ *
+ * `extractBlocks` in `@/lib/signals/agent-page` was already markdown-aware
+ * (it splits on `/^#{1,6}\s/`), because it also reads `.md` and `llms.txt`
+ * pages. This makes the HTML path behave like the one it already supported
+ * rather than being a second, structureless shape.
  */
+export function htmlToText(html: string): string {
+  let markdown: string;
+  try {
+    markdown = turndown.turndown(html);
+  } catch {
+    // Turndown parses; a pathological document can throw. Returning empty is
+    // right — every caller already treats empty extraction as a failed read,
+    // and the alternative is propagating a parse error out of a network fetch.
+    return "";
+  }
+
+  return markdown
+    // Turndown decodes &nbsp; to a real U+00A0. Left alone it is an invisible
+    // difference that breaks string comparisons and, worse, changes a block's
+    // hash depending on how the page happened to encode a space.
+    .replace(/\u00a0/g, " ")
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/[ \t]+$/gm, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 export async function fetchPageText(
   url: string,
   deps: { fetchImpl?: typeof fetch; resolveHost?: ResolveHost } = {}
