@@ -198,6 +198,10 @@ const turndown = new TurndownService({
   headingStyle: "atx",
   bulletListMarker: "-",
   codeBlockStyle: "fenced",
+  // `---` rather than turndown's default `* * *`: it is what a person writing
+  // markdown types, so a divider that reaches a template or a draft reads as a
+  // divider rather than as three stray asterisks.
+  hr: "---",
 });
 turndown.remove(DROPPED_ELEMENTS as TurndownService.Filter);
 

@@ -75,7 +75,33 @@ describe("postProcessTemplate", () => {
     expect(postProcessTemplate("   \n\n  ")).toBeNull();
   });
 
-  it("collapses runs of blank lines", () => {
-    expect(postProcessTemplate("# Updates\n\n\n\n## Fixes")).toBe("# Updates\n\n## Fixes");
+  it("keeps deliberate spacing, capping only runaway runs", () => {
+    // Spacing is part of what a template carries — the air a company leaves
+    // before a sign-off, or around a divider, is how their updates read.
+    // Collapsing every gap to the markdown minimum produced a dense block.
+    expect(postProcessTemplate("# Updates\n\n\n## Fixes")).toBe("# Updates\n\n\n## Fixes");
+    expect(postProcessTemplate("# Updates\n\n\n\n\n## Fixes")).toBe("# Updates\n\n\n## Fixes");
+  });
+
+  it("drops a slot reserved for the category chip", () => {
+    // Enforced here rather than asked for: the prompt has been rewritten three
+    // times and the chip returns whenever extraction gets cleaner, because it
+    // genuinely looks like structure — it recurs, in the same place, briefly.
+    // A slot for it puts a stray word atop every future update.
+    const out = postProcessTemplate("# {main feature} {month}\n\n{category label line}\n\n{the changes}")!;
+    expect(out).not.toContain("category label");
+    expect(out).toContain("{the changes}");
+    expect(postProcessTemplate("# T\n\n{update type}\n\n{body}")!).not.toContain("{update type}");
+  });
+
+  it("leaves a real description that merely mentions a classifying word", () => {
+    // Narrow on purpose. A brief long enough to be a brief is content.
+    const tpl = "# T\n\n{one paragraph explaining what changed and who it helps, by category}";
+    expect(postProcessTemplate(tpl)).toBe(tpl);
+  });
+
+  it("keeps a divider", () => {
+    const withRule = "# Updates\n\n{the changes}\n\n---\n\nTeam Acme";
+    expect(postProcessTemplate(withRule)).toBe(withRule);
   });
 });

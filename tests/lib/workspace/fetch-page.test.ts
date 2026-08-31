@@ -96,6 +96,10 @@ describe("cleanMarkdown", () => {
     );
   });
 
+  it("renders a divider as --- rather than turndown's asterisks", () => {
+    expect(htmlToText("<p>a</p><hr><p>b</p>")).toBe("a\n\n---\n\nb");
+  });
+
   it("normalises non-breaking spaces", () => {
     expect(cleanMarkdown("a\u00a0b")).toBe("a b");
   });

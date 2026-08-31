@@ -12,7 +12,13 @@ export const config: VercelConfig = {
   // instead of shipping an app against a stale schema. drizzle.config.ts calls
   // dotenv on .env.local, which doesn't exist in a Vercel build; dotenv treats
   // a missing file as a no-op, so the injected Vercel environment is used.
-  buildCommand: "npm run db:migrate && next build",
+  //
+  // `db:migrate:deploy`, not `db:migrate`: Preview deployments have no Postgres
+  // env vars, so the raw command failed every preview build on `url: undefined`
+  // and every pull request carried a red check. The wrapper skips when there is
+  // no database and still fails loudly when a PRODUCTION build has none — see
+  // scripts/db-migrate-deploy.mjs.
+  buildCommand: "npm run db:migrate:deploy && next build",
   // `npm ci`, not the default `npm install`. Vercel restores node_modules from
   // a build cache, and `npm install` then reconciles it incrementally — which
   // it can get wrong. It shipped a production build carrying a stale

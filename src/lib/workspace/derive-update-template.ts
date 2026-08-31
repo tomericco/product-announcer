@@ -91,13 +91,19 @@ const TEMPLATE_SYSTEM = [
   "   ONE marker per position — if entries lead with a clip or a screenshot, that is one slot, not two.",
   "   Judge by recurrence like any other section (rule 2). One entry with a screenshot is that entry having",
   "   a screenshot; most entries having one is how they write updates.",
-  `6. These brace names are RESERVED and are filled in automatically: ${ALLOWED_TOKENS}.`,
+  "6. SPACING IS STRUCTURE. Carry the visual rhythm of their updates, not just the words: the blank line",
+  "   they leave between a heading and its body, the extra air before a sign-off, a `---` divider where the",
+  "   page separates one part of an update from the next. Reproduce a divider they use, and add one where",
+  "   the page clearly breaks between parts even if it draws that break some other way.",
+  "   A skeleton whose lines are jammed together produces updates that read jammed together. Prefer a blank",
+  "   line between blocks, and leave two where the page sets something notably apart.",
+  `7. These brace names are RESERVED and are filled in automatically: ${ALLOWED_TOKENS}.`,
   "   Use one only where the page shows that literal kind of value in that position, and only for its own",
   "   meaning. The count names are the NUMBER OF CHANGES in an update; {month} and {year} are the period it",
   "   covers. Never reach for one because it is the closest available — writing {count} where a day of the",
   "   month goes puts the number of changes into a date, and ships an update carrying a wrong one.",
-  "   There is no day-of-month name. If their titles carry a specific day, that part has no reusable shape:",
-  "   use {month} {year}, or leave it to a description.",
+  "   {month}, {day} and {year} are the period an update covers — use {day} only where the page dates its",
+  "   entries to the day.",
   "",
   "THE TITLE LINE.",
   "The first line may be a heading giving the shape their update TITLES take. Describe that shape — do not",
@@ -134,13 +140,41 @@ const TEMPLATE_SYSTEM = [
  * when the body is empty, so persisting a body-less skeleton would only make the
  * settings UI claim a template that does nothing.
  */
+/**
+ * A line that is nothing but a brace asking for the category chip.
+ *
+ * The prompt has been rewritten three times to keep this out — by markup, by
+ * word-variance, by position and brevity — and it comes back whenever the
+ * extraction gets cleaner, because a chip genuinely looks like structure: it
+ * recurs, it sits in the same place, and it is short. The model is not being
+ * careless; the signal really is ambiguous from the page alone.
+ *
+ * So it is enforced here instead, where the rule can actually hold. Narrow on
+ * purpose: the whole line must be a single brace, it must be short, and its
+ * text must name a classification rather than describe content. A description
+ * long enough to be a real brief is left alone even if it contains one of these
+ * words.
+ */
+const CHIP_SLOT = /^\{[^}]{0,40}\}$/;
+const CHIP_WORDS = /\b(category|categories|label|labell?ed|badge|chip|tag|update type|change type|type of (?:update|change))\b/i;
+
+function isChipSlot(line: string): boolean {
+  const trimmed = line.trim();
+  return CHIP_SLOT.test(trimmed) && CHIP_WORDS.test(trimmed);
+}
+
 export function postProcessTemplate(raw: string): string | null {
-  const lines = raw.split("\n").map((line) => line.trimEnd());
+  const lines = raw.split("\n").map((line) => line.trimEnd()).filter((line) => !isChipSlot(line));
   const firstMeaningful = lines.findIndex((line) => line.trim() !== "");
   const body = lines.slice(firstMeaningful + 1).filter((line) => line.trim() !== "");
   if (firstMeaningful === -1 || body.length === 0) return null;
 
-  return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  // Up to two blank lines survive, not one. Spacing is part of what a template
+  // carries: a company that sets its sign-off apart from the body, or puts air
+  // around a divider, is describing how their updates READ, and collapsing
+  // every gap to the markdown minimum threw that away and produced a dense
+  // block. Three or more is runaway rather than intent, so that still caps.
+  return lines.join("\n").replace(/\n{4,}/g, "\n\n\n").trim();
 }
 
 export function buildTemplatePrompt(pageText: string): string {

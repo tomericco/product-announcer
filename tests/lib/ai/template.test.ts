@@ -91,6 +91,10 @@ describe("substituteVariables", () => {
     expect(substituteVariables("{month} {year}", facts)).toBe("August 2026");
   });
 
+  it("substitutes the day, so a day-dated title never needs one invented", () => {
+    expect(substituteVariables("{month} {day}, {year}", facts)).toBe("August 20, 2026");
+  });
+
   it("falls back to now when no item carries an evidence date", () => {
     expect(substituteVariables("{month}", { ...facts, latestEvidenceAt: null })).toBe("September");
   });

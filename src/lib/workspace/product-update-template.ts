@@ -25,6 +25,7 @@ export const TEMPLATE_VARIABLES = [
   "count_s",
   "count_rounded",
   "month",
+  "day",
   "year",
 ] as const;
 

@@ -97,6 +97,12 @@ export function substituteVariables(template: string, facts: TemplateFacts): str
     count_s: String(facts.items.filter((i) => i.size === "s").length),
     count_rounded: String(roundDownToTen(count)),
     month: period.toLocaleString("en-US", { month: "long", timeZone: "UTC" }),
+    // Day of the month, no padding — "August 3, 2026", the way a changelog
+    // writes a date. Reserved rather than left to a description because a
+    // company that dates its titles to the day would otherwise get a brace the
+    // composer has to invent a number for, and a published update carrying a
+    // wrong date is exactly the failure these reserved names exist to prevent.
+    day: String(period.getUTCDate()),
     year: String(period.getUTCFullYear()),
   };
 
