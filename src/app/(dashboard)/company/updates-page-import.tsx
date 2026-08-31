@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Loader2, Sparkles } from "lucide-react";
 import { importBrandStyleFromUrl, importProductUpdateTemplateFromUrl } from "./actions";
 import { Button } from "@/components/ui/button";
+import { CardFooter } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import {
   Dialog,
@@ -30,6 +31,17 @@ import {
  * records where the company's updates live rather than belonging to either
  * analysis.
  *
+ * Rendered as a `CardFooter` — the tinted band across the bottom of its card.
+ * It must therefore be a direct child of `Card`, a sibling of `CardContent`,
+ * not nested inside it: the band is full-bleed and rounds off the card's bottom
+ * corners, which only lands right outside `CardContent`'s horizontal padding.
+ * `Card` drops its own bottom padding when it contains this slot.
+ *
+ * The tint is doing the work here. Generating is a secondary, occasional action
+ * against an editor people came to read and hand-edit, and it overwrites what
+ * they wrote — so it reads as attached-but-separate rather than as one more
+ * control in the form.
+ *
  * Each overwrites a field people hand-tune, so the button opens a confirm
  * modal first. The server revalidates /company on success; `router.refresh()`
  * re-renders the page's server component with the new value. That value only
@@ -42,6 +54,8 @@ type ImportKind = "guidelines" | "template";
 const COPY: Record<
   ImportKind,
   {
+    /** The band's heading — it has to say what this section of the card is for. */
+    title: string;
     hint: string;
     confirmTitle: string;
     confirmBody: string;
@@ -57,6 +71,7 @@ const COPY: Record<
   }
 > = {
   guidelines: {
+    title: "Generate from your updates page",
     hint: "Paste your changelog or “what’s new” URL and we’ll write your guidelines from it. This overwrites your current guidelines.",
     confirmTitle: "Replace your brand guidelines?",
     confirmBody: "This replaces your brand guidelines and industry with what we derive from the page. Your product update template is not affected.",
@@ -64,6 +79,7 @@ const COPY: Record<
     empty: "We read the page but couldn’t infer a voice from it. Your guidelines are unchanged.",
   },
   template: {
+    title: "Generate from your updates page",
     hint: "Derive the structure your updates follow — headings, section order, sign-off — from the same page. This overwrites your current template.",
     confirmTitle: "Replace your product update template?",
     confirmBody: "This replaces your template with the structure we derive from the page. Your brand guidelines are not affected.",
@@ -111,21 +127,22 @@ export function UpdatesPageImport({ kind, defaultUrl }: { kind: ImportKind; defa
   }
 
   return (
-    // No border/padding here: the page renders this inside a Card, which
-    // already supplies both.
-    <div className="space-y-2">
-      <p className="text-xs text-muted-foreground">{copy.hint}</p>
+    <CardFooter className="flex-col items-stretch gap-2">
+      <div>
+        <p className="text-sm font-medium">{copy.title}</p>
+        <p className="text-xs text-muted-foreground">{copy.hint}</p>
+      </div>
       <div className="flex gap-2">
         <Input
           type="url"
           placeholder="https://yourproduct.com/changelog"
           value={url}
           onChange={(e) => setUrl(e.target.value)}
-          className="flex-1"
+          className="flex-1 bg-background"
         />
         <Button type="button" variant="outline" onClick={requestRun} disabled={loading || !url.trim()}>
           {loading ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
-          {loading ? "Analyzing…" : "Re-analyze"}
+          {loading ? "Analyzing…" : "Generate"}
         </Button>
       </div>
       {result && (
@@ -144,6 +161,6 @@ export function UpdatesPageImport({ kind, defaultUrl }: { kind: ImportKind; defa
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </CardFooter>
   );
 }

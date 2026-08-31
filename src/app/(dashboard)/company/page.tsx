@@ -213,9 +213,7 @@ export default async function CompanyPage({
             Voice, structure, and the words you do and don&apos;t use. Written as Markdown.
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4">
-          <UpdatesPageImport kind="guidelines" defaultUrl={brandProfile.updatesPageUrl ?? ""} />
-
+        <CardContent>
           <ToastForm action={saveGuidelines} successMessage="Brand guidelines saved" className="space-y-4">
             {/* Keyed on the server value for the same reason as IndustrySelect above:
                 a successful import overwrites `guidelines` and refreshes the page, but
@@ -234,6 +232,8 @@ export default async function CompanyPage({
             </Button>
           </ToastForm>
         </CardContent>
+
+        <UpdatesPageImport kind="guidelines" defaultUrl={brandProfile.updatesPageUrl ?? ""} />
       </Card>
 
       <Card id="product-update-template">
@@ -243,9 +243,7 @@ export default async function CompanyPage({
             The shape your product updates take — headings, section order, sign-off. Written as Markdown.
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4">
-          <UpdatesPageImport kind="template" defaultUrl={brandProfile.updatesPageUrl ?? ""} />
-
+        <CardContent>
           <ToastForm
             action={saveProductUpdateTemplate}
             successMessage="Product update template saved"
@@ -266,6 +264,8 @@ export default async function CompanyPage({
             </Button>
           </ToastForm>
         </CardContent>
+
+        <UpdatesPageImport kind="template" defaultUrl={brandProfile.updatesPageUrl ?? ""} />
       </Card>
 
       <Card id="visual-identity">
