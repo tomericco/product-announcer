@@ -7,6 +7,8 @@ import { listSignals } from "../../../src/lib/signals/query";
 import { seedTenant, dropTenant } from "../../helpers/fixtures";
 
 const TENANT = "Shipped Work Signals Test Tenant";
+// A second tenant, used only by the cross-tenant scoping test below.
+const OTHER_TENANT = "Shipped Work Signals Foreign Tenant";
 
 async function shippedSignals(tenantId: string) {
   return db.select().from(signals).where(and(eq(signals.tenantId, tenantId), eq(signals.kind, "shipped_work")));
@@ -19,6 +21,7 @@ function daysAgo(days: number): Date {
 describe("syncShippedWorkSignals", () => {
   afterEach(async () => {
     await dropTenant(TENANT);
+    await dropTenant(OTHER_TENANT);
   });
 
   it("projects an open atomic update into a signal", async () => {
@@ -214,6 +217,41 @@ describe("syncShippedWorkSignals", () => {
     // The point of the fix: a year-old merge must not read as fresh just
     // because the atomic update wrapping it was created today.
     expect(row.occurredAt.getFullYear()).toBe(new Date().getFullYear() - 1);
+  });
+
+  it("ignores a change event belonging to another tenant when dating the signal", async () => {
+    const tenant = await seedTenant(TENANT);
+    const foreign = await seedTenant(OTHER_TENANT);
+    const [atomic] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "A", summary: "S" })
+      .returning();
+
+    // `changeEvents.atomicUpdateId` is a plain FK with no cross-tenant
+    // constraint, so a bad or migrated row can point at another tenant's
+    // atomic update. Without a tenant predicate on the join, this row's
+    // mergedAt would win the max() and date THIS tenant's signal a year ago —
+    // which matters more here than anywhere else, because `occurredAt` is what
+    // signal ranking decays on, so a wrong date changes which signals surface
+    // for publication.
+    const foreignMergedAt = new Date();
+    foreignMergedAt.setFullYear(foreignMergedAt.getFullYear() - 1);
+    await db.insert(changeEvents).values({
+      tenantId: foreign.id,
+      type: "pull_request",
+      provider: "github",
+      externalId: "gh-foreign-1",
+      atomicUpdateId: atomic.id,
+      mergedAt: foreignMergedAt,
+    });
+
+    await syncShippedWorkSignals();
+
+    const [row] = await shippedSignals(tenant.id);
+    // No change event of this tenant's own backs the update, so occurredAt
+    // falls back to the atomic update's createdAt.
+    expect(row.occurredAt.getTime()).toBe(atomic.createdAt.getTime());
+    expect(row.occurredAt.toISOString()).not.toBe(foreignMergedAt.toISOString());
   });
 
   it("takes the most recent date across multiple linked change events", async () => {

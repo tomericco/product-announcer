@@ -61,7 +61,24 @@ export async function syncShippedWorkSignals(deps: ShippedWorkDeps = {}): Promis
         latestEvidenceAt: sql<Date | null>`max(coalesce(${changeEvents.mergedAt}, ${changeEvents.committedAt}, ${changeEvents.completedAt}, ${changeEvents.releasedAt}))`,
       })
       .from(atomicUpdates)
-      .leftJoin(changeEvents, eq(changeEvents.atomicUpdateId, atomicUpdates.id))
+      // Scoped on BOTH sides. `changeEvents.atomicUpdateId` is a plain FK with
+      // no cross-tenant constraint, so a bad or migrated row pointing at
+      // another tenant's atomic update would otherwise supply the max() below
+      // and date that tenant's signal. The same guard, for the same reason, is
+      // on `loadShippedWorkAtomicUpdates` in `@/lib/briefs/draft` — see the
+      // comment above it, which states the standard: a plain FK could cross
+      // the boundary, so ownership is re-verified locally rather than assumed.
+      //
+      // This is the higher-stakes of the two sites. `occurredAt` is what
+      // signal ranking decays on, so a wrong date here does not merely mislabel
+      // a period — it changes which signals surface for publication.
+      .leftJoin(
+        changeEvents,
+        and(
+          eq(changeEvents.atomicUpdateId, atomicUpdates.id),
+          eq(changeEvents.tenantId, atomicUpdates.tenantId)
+        )
+      )
       .where(and(ne(atomicUpdates.status, "hidden"), gte(atomicUpdates.createdAt, windowStart)))
       .groupBy(
         atomicUpdates.id,
