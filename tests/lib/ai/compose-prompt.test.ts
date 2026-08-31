@@ -441,7 +441,7 @@ describe("composeReleasePrompt with a template", () => {
 
   it("orders items most-significant-first", () => {
     const small = { ...TEMPLATE_ITEM, id: "a2", title: "Tiny fix", size: "s" as const };
-    const { prompt } = composeReleasePrompt({ ...base, items: [small, TEMPLATE_ITEM], template: "## Highlights\n" });
+    const { prompt } = composeReleasePrompt({ ...base, items: [small, TEMPLATE_ITEM], template: "## Highlights\n{the changes}\n" });
     expect(prompt.indexOf("Shared dashboards")).toBeLessThan(prompt.indexOf("Tiny fix"));
   });
 
@@ -462,7 +462,7 @@ describe("composeReleasePrompt with a template", () => {
 
   it("lets a human-pinned size win a tie against an unpinned one", () => {
     const pinned = { ...TEMPLATE_ITEM, id: "a3", title: "Pinned change", sizeEditedAt: new Date("2026-08-01T00:00:00Z") };
-    const { prompt } = composeReleasePrompt({ ...base, items: [TEMPLATE_ITEM, pinned], template: "## Highlights\n" });
+    const { prompt } = composeReleasePrompt({ ...base, items: [TEMPLATE_ITEM, pinned], template: "## Highlights\n{the changes}\n" });
     expect(prompt.indexOf("Pinned change")).toBeLessThan(prompt.indexOf("Shared dashboards"));
   });
 
@@ -517,8 +517,10 @@ describe("composeMergePrompt with a template", () => {
   it("counts the whole release, not just the delta being folded in", () => {
     // The delta is what the model is asked to fold in; the template's numbers
     // describe the FINISHED piece. Substituting over the delta put "1 updates"
-    // into the skeleton of a three-update release — invisible in the H1 (which
-    // `parseTemplate` strips) but not in a body section.
+    // into the skeleton of a three-update release. The count sits in a BODY
+    // line here on purpose: `parseTemplate` lifts the leading heading out as
+    // the title pattern, so a count placed there would never reach the fenced
+    // skeleton this assertion reads.
     const others = [
       { ...TEMPLATE_ITEM, id: "b1", title: "Already written up" },
       { ...TEMPLATE_ITEM, id: "b2", title: "Also already written up" },
@@ -531,7 +533,7 @@ describe("composeMergePrompt with a template", () => {
       brandProfile: PROFILE,
       personas: [],
       examples: [],
-      template: "## {count} updates this month\n",
+      template: "## This month\n\n{count} updates this month\n{the changes}\n",
     });
     expect(system).toContain("3 updates this month");
     expect(system).not.toContain("1 updates this month");
@@ -546,7 +548,7 @@ describe("composeMergePrompt with a template", () => {
       brandProfile: PROFILE,
       personas: [],
       examples: [],
-      template: "## {count} updates\n",
+      template: "## {count} updates\n{the changes}\n",
     });
     expect(system.toLowerCase()).toContain("authoritative");
   });
@@ -564,7 +566,7 @@ describe("composeMergePrompt with a template", () => {
       personas: [],
       examples: [],
     };
-    const templated = composeMergePrompt({ ...base, template: "## Highlights\n" });
+    const templated = composeMergePrompt({ ...base, template: "## Highlights\n{the changes}\n" });
     expect(templated.prompt).not.toContain("gather them into a single bulleted list");
 
     const untemplated = composeMergePrompt({ ...base, template: null });
