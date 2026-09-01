@@ -98,7 +98,14 @@ describe("compressPng", () => {
     expect(Math.abs(out.width / out.height - 3 / 2)).toBeLessThan(0.02);
     const meta = await sharp(out.png).metadata();
     expect({ width: meta.width, height: meta.height }).toEqual({ width: out.width, height: out.height });
-  });
+  },
+    // Generating a 3000x2000 noise JPEG and compressing it does not fit
+    // vitest's 5s default — it came in at 5,006ms under the parallel suite,
+    // failing on a margin of six milliseconds. Every other heavy case in this
+    // file already carries an explicit ceiling; this one was relying on the
+    // default and had simply not crossed it yet.
+    30_000
+  );
 
   it("leaves an already-small image essentially alone — no needless quality loss", async () => {
     // The common case must not pay for the ceiling: a 600x300 flat graphic is

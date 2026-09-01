@@ -40,6 +40,7 @@ import {
   findNamedCompanies,
   MIN_COMPETITOR_NAME_LENGTH,
   type DraftGenerator,
+  type DraftReviewer,
   type Illustrator,
 } from "../../../src/lib/briefs/draft";
 import { composeBriefPrompt } from "../../../src/lib/ai/compose-prompt";
@@ -925,6 +926,43 @@ describe("generateDraftForPiece — release fork", () => {
       unknown, unknown, unknown, unknown, unknown, string | null,
     ];
     expect(call[5]).toBe("# {month} release\n\n## Highlights\n");
+  });
+
+  it("reviews against the RAW template, not the substituted one the composer got", async () => {
+    const tenant = await seedTenant();
+    const { piece, brief } = await seedProductUpdate(tenant.id);
+    await seedShippedWork({ tenantId: tenant.id, briefId: brief.id });
+
+    await db
+      .update(companyProfiles)
+      .set({ productUpdateTemplate: "# {count} updates in {month}\n\n## Highlights\n{the changes}\n" })
+      .where(eq(companyProfiles.tenantId, tenant.id));
+
+    const review = vi.fn(
+      async (draft: { title: string; body: string }): Promise<ReviewOutcome> => ({
+        finalDraft: draft,
+        status: "passed",
+        issues: [],
+      })
+    );
+
+    await generateDraftForPiece(piece.id, tenant.id, {
+      database: db,
+      generate: vi.fn(async () => ({ title: "Brief title", body: "Brief body." })),
+      generateRelease: vi.fn(async () => ({ title: "Release title", body: "Release body." })),
+      review: review as unknown as DraftReviewer,
+    });
+
+    // The reviewer checks SHAPE. Handing it the composer's substituted copy
+    // bakes one release's numbers into that check — a reviewer shown a literal
+    // "1 updates in August" starts asking whether the draft says one, which is
+    // a content judgement the composer already made. Unfilled also gives it the
+    // comparison that catches a brace published verbatim.
+    // Read positionally: the mock declares only the argument it uses, so the
+    // third is reached through the untyped call tuple.
+    const templateSeen = (review.mock.calls[0] as unknown as unknown[])?.[2];
+    expect(templateSeen).toBe("# {count} updates in {month}\n\n## Highlights\n{the changes}\n");
+    expect(templateSeen).toContain("{count}");
   });
 
   it("takes atomic updates only from shipped_work signals", async () => {

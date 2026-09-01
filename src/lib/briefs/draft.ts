@@ -17,7 +17,6 @@ import type {
   BriefEvidenceForPrompt,
 } from "@/lib/ai/compose-prompt";
 import { generateBriefDraft, generateReleaseDraft } from "@/lib/ai/generation";
-import { fillTemplate } from "@/lib/ai/compose-prompt";
 import { briefBody } from "@/lib/briefs/body";
 import { prepareGenerationContext } from "@/lib/ai/generation-context";
 import { reviewAndReconcile, type ReviewOutcome } from "@/lib/ai/review-draft";
@@ -504,20 +503,23 @@ export async function generateDraftForPiece(
         // The one step key the generic path never writes, because it has no
         // review pass. The client renders the full DRAFT_STEPS list and marks
         // everything before the stored key as done, so a path that skips a step
-        // is fine — this is what makes "reviewing" real for the first time.
-        //
-        // `reviewAndReconcile`'s optional onProgress is deliberately not
-        // passed: it emits only `detail` events, and detail text is not
-        // persisted (there is no reader for it once the streamed dialog goes).
-        //
-        // The reviewer gets the SUBSTITUTED template, not the raw column —
-        // otherwise it would flag every draft for omitting literal `{count}`
-        // placeholders. `fillTemplate` is called on the same `releaseItems`
-        // the composer passed to `generateRelease` above, so the two can
-        // never disagree about what a variable like `{count}` resolved to.
+        // is fine — this is what makes "reviewing" real.
         await setStep(database, contentPieceId, "reviewing");
-        const substitutedTemplate = template ? fillTemplate(template, releaseItems) : null;
-        reviewOutcome = await review(draft, brandProfile, substitutedTemplate);
+
+        // The RAW template, not the substituted one the composer got.
+        //
+        // The reviewer is checking shape, and the two versions differ only in
+        // the reserved counts and dates — `fillTemplate` leaves every
+        // description brace alone. Baking one release's numbers into a
+        // structural check is what misfires: a reviewer shown the literal
+        // "7 updates in August" starts checking whether the draft says seven,
+        // which is a content judgement the composer already made.
+        //
+        // Raw also gives the reviewer the one comparison that catches this
+        // system's worst failure — a template's own brace published verbatim.
+        // Seeing `{main feature}` in the template and `{main feature}` in the
+        // draft is unmistakable.
+        reviewOutcome = await review(draft, brandProfile, template);
 
         // Validate links on the FINAL body — after review, which may itself
         // rewrite links — so no unresolvable URL is persisted.
