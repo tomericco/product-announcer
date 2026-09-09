@@ -254,6 +254,62 @@ describe("syncShippedWorkSignals", () => {
     expect(row.occurredAt.toISOString()).not.toBe(foreignMergedAt.toISOString());
   });
 
+  it("excludes atomic updates sized below the signal floor (xs, xxs), but not their s-sized sibling", async () => {
+    const tenant = await seedTenant(TENANT);
+    await db.insert(atomicUpdates).values([
+      { tenantId: tenant.id, title: "Tiny copy tweak", summary: "S", size: "xs" },
+      { tenantId: tenant.id, title: "Refactor only", summary: "S", size: "xxs" },
+      { tenantId: tenant.id, title: "Small fix", summary: "S", size: "s" },
+    ]);
+
+    await syncShippedWorkSignals();
+
+    const rows = await shippedSignals(tenant.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].title).toBe("Small fix");
+  });
+
+  it("still projects an atomic update with no size set", async () => {
+    const tenant = await seedTenant(TENANT);
+    const [atomic] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "Unsized", summary: "S", size: null })
+      .returning();
+
+    await syncShippedWorkSignals();
+
+    const rows = await shippedSignals(tenant.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].externalId).toBe(atomic.id);
+  });
+
+  it("marks a signal stale when its atomic update is re-sized below the floor, and restores it when re-sized back up", async () => {
+    const tenant = await seedTenant(TENANT);
+    const [atomic] = await db
+      .insert(atomicUpdates)
+      .values({ tenantId: tenant.id, title: "A", summary: "S", size: "m" })
+      .returning();
+    await syncShippedWorkSignals();
+    const [created] = await shippedSignals(tenant.id);
+    expect(created.status).toBe("new");
+
+    await db.update(atomicUpdates).set({ size: "xs" }).where(eq(atomicUpdates.id, atomic.id));
+    await syncShippedWorkSignals();
+
+    const afterShrink = await shippedSignals(tenant.id);
+    expect(afterShrink).toHaveLength(1);
+    expect(afterShrink[0].id).toBe(created.id);
+    expect(afterShrink[0].status).toBe("stale");
+
+    await db.update(atomicUpdates).set({ size: "m" }).where(eq(atomicUpdates.id, atomic.id));
+    await syncShippedWorkSignals();
+
+    const afterGrow = await shippedSignals(tenant.id);
+    expect(afterGrow).toHaveLength(1);
+    expect(afterGrow[0].id).toBe(created.id);
+    expect(afterGrow[0].status).toBe("new");
+  });
+
   it("takes the most recent date across multiple linked change events", async () => {
     const tenant = await seedTenant(TENANT);
     const [atomic] = await db.insert(atomicUpdates).values({ tenantId: tenant.id, title: "A", summary: "S" }).returning();

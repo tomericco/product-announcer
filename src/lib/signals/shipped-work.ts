@@ -1,6 +1,7 @@
-import { and, eq, gte, ne, notInArray, sql } from "drizzle-orm";
+import { and, eq, gte, isNull, ne, notInArray, or, sql } from "drizzle-orm";
 import { db as defaultDb } from "@/db";
 import { atomicUpdates, changeEvents, signals } from "@/db/schema";
+import { SIZES_BELOW_SIGNAL_FLOOR } from "@/lib/atomic-updates/sizes";
 import { signalWindowStart } from "./window";
 
 export type ShippedWorkDeps = { database?: typeof defaultDb };
@@ -19,6 +20,15 @@ export type ShippedWorkDeps = { database?: typeof defaultDb };
  * why the stale-marking step below is allowed to run unscoped across tenants
  * (see the comment there) — see `externalId`'s comment on `signals` in
  * `schema.ts` for the invariant that relies on.
+ *
+ * The candidate select also excludes atomic updates sized below the signal
+ * floor (`SIZES_BELOW_SIGNAL_FLOOR` in `@/lib/atomic-updates/sizes` — `xs` and
+ * `xxs`, currently), null size passing through untouched. Re-sizing an update
+ * below the floor drops it out of `visible` exactly like hiding it does, so
+ * the existing stale-marking step below picks it up for free and flips its
+ * signal to `stale`; re-sizing it back up re-enters `visible`, so the upsert's
+ * `stale` → `new` case fires and restores it. Nothing new to write — this
+ * reuses the hide/unhide mechanics above, just gated on a different column.
  *
  * Bounded by `SIGNAL_WINDOW_DAYS` (`./window`) on both sides: the candidate
  * select only considers atomic updates created within the window, and the
@@ -79,7 +89,13 @@ export async function syncShippedWorkSignals(deps: ShippedWorkDeps = {}): Promis
           eq(changeEvents.tenantId, atomicUpdates.tenantId)
         )
       )
-      .where(and(ne(atomicUpdates.status, "hidden"), gte(atomicUpdates.createdAt, windowStart)))
+      .where(
+        and(
+          ne(atomicUpdates.status, "hidden"),
+          gte(atomicUpdates.createdAt, windowStart),
+          or(isNull(atomicUpdates.size), notInArray(atomicUpdates.size, SIZES_BELOW_SIGNAL_FLOOR))
+        )
+      )
       .groupBy(
         atomicUpdates.id,
         atomicUpdates.tenantId,
