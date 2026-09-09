@@ -44,8 +44,9 @@ import type { ImportRepo } from "@/lib/change-events/list";
 import { AddEventPicker } from "./add-event-picker";
 import { SelectionCheckbox } from "../_components/selection-checkbox";
 import { CategoryBadge, CATEGORY_LABEL, SizeBadge } from "./atomic-update-badges";
+import { ASCENDING_SIZE_KEYS, type SizeKey } from "@/lib/atomic-updates/sizes";
 
-const SIZE_OPTIONS: Array<"s" | "m" | "l" | "xl"> = ["s", "m", "l", "xl"];
+const SIZE_OPTIONS: SizeKey[] = ASCENDING_SIZE_KEYS;
 
 const CATEGORY_OPTIONS: Array<"new" | "improvement" | "fix" | "announcement"> = [
   "new",
@@ -286,7 +287,7 @@ export function AtomicUpdateCard({
           <div className="flex gap-2">
             <Select
               value={size ?? undefined}
-              onValueChange={(value) => setSize(value as "s" | "m" | "l" | "xl")}
+              onValueChange={(value) => setSize(value as SizeKey)}
               disabled={pending}
             >
               <SelectTrigger className="w-24" aria-label="Size">

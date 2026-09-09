@@ -3,6 +3,7 @@ import { z } from "zod";
 import { resolveModel, modelId } from "./model";
 import { recordLlmUsage } from "./llm-usage";
 import { CATEGORY_RUBRIC, SIZE_RUBRIC, TITLE_SUMMARY_STYLE } from "./prompt-rules";
+import { SIZE_KEYS, type SizeKey } from "@/lib/atomic-updates/sizes";
 
 export const RESOLVER_BATCH_SIZE = 25;
 
@@ -35,7 +36,7 @@ export type ResolutionAction =
       title: string;
       summary: string;
       category: "new" | "improvement" | "fix" | "announcement";
-      size: "s" | "m" | "l" | "xl";
+      size: SizeKey;
     };
 
 const ActionSchema = z.discriminatedUnion("action", [
@@ -46,7 +47,7 @@ const ActionSchema = z.discriminatedUnion("action", [
     title: z.string(),
     summary: z.string(),
     category: z.enum(["new", "improvement", "fix", "announcement"]),
-    size: z.enum(["s", "m", "l", "xl"]),
+    size: z.enum(SIZE_KEYS),
   }),
 ]);
 

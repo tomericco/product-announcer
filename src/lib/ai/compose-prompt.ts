@@ -5,10 +5,9 @@ import {
   fenceGuidelines,
   GROUNDING_RULE,
   NO_INVENTED_LINKS_RULE,
-  SIZE_RANK,
   truncateForPrompt,
-  type SizeKey,
 } from "./prompt-rules";
+import { SIZE_RANK, type SizeKey } from "@/lib/atomic-updates/sizes";
 import { parseTemplate, substituteVariables } from "./template";
 
 type BrandProfileRow = typeof companyProfiles.$inferSelect;
@@ -116,7 +115,7 @@ export type AtomicUpdateForPrompt = {
   title: string;
   summary: string;
   category: "new" | "improvement" | "fix" | "announcement" | null;
-  size: "s" | "m" | "l" | "xl" | null;
+  size: SizeKey | null;
   // Non-null means a human set the size. Breaks ties in the composer's sort:
   // a human who picked a size is a stronger signal than a Haiku call on a
   // one-line summary.
@@ -135,7 +134,7 @@ export type AtomicUpdateForPrompt = {
  * motivated it. See the spec's Part 1.
  */
 function bySignificance(a: AtomicUpdateForPrompt, b: AtomicUpdateForPrompt): number {
-  const rank = (item: AtomicUpdateForPrompt) => SIZE_RANK[(item.size ?? "m") as SizeKey];
+  const rank = (item: AtomicUpdateForPrompt) => SIZE_RANK[item.size ?? "m"];
   return (
     rank(b) - rank(a) ||
     Number(Boolean(b.sizeEditedAt)) - Number(Boolean(a.sizeEditedAt))
@@ -167,9 +166,9 @@ function formatAtomicUpdate(item: AtomicUpdateForPrompt, index: number): string 
 const SIZE_GUIDANCE =
   "Give each update space proportional to its size. XL updates are the headline — lead with them, each in " +
   "its own short paragraph. L updates each get their own short paragraph. M updates get a sentence or two and " +
-  "may share a paragraph. S updates are minor: when there are two or more, gather them into a single bulleted " +
-  "list (e.g. under \"Also improved\" or \"Smaller fixes\") rather than a paragraph each; a lone S update may be " +
-  "a brief one-liner. Treat an update with no stated size as M.";
+  "may share a paragraph. S, XS and XXS updates are minor: when there are two or more, gather them into a " +
+  "single bulleted list (e.g. under \"Also improved\" or \"Smaller fixes\") rather than a paragraph each; a lone " +
+  "one may be a brief one-liner. Treat an update with no stated size as M.";
 
 const FORMAT_GUIDANCE: Record<ContentType, string> = {
   product_update: SIZE_GUIDANCE,
@@ -355,12 +354,13 @@ export function composeMergePrompt(args: {
     sections.push(`Changes whose details were updated since the current body was written:\n${serializeAtomicUpdates(args.changedItems)}`);
   }
 
-  // `SIZE_GUIDANCE` prescribes its own structure ("gather S updates into a
-  // single bulleted list"), which directly contradicts a skeleton's literal
-  // sections. `composeReleasePrompt` omits it when a template is present for
-  // exactly this reason; the two paths must not disagree. Gated on
-  // `bodySkeleton` rather than `args.template` for the same reason `templateNote`
-  // is: an empty skeleton means this behaves as the untemplated path.
+  // `SIZE_GUIDANCE` prescribes its own structure ("gather S, XS and XXS
+  // updates into a single bulleted list"), which directly contradicts a
+  // skeleton's literal sections. `composeReleasePrompt` omits it when a
+  // template is present for exactly this reason; the two paths must not
+  // disagree. Gated on `bodySkeleton` rather than `args.template` for the
+  // same reason `templateNote` is: an empty skeleton means this behaves as
+  // the untemplated path.
   const sizeGuidance = bodySkeleton ? "" : ` ${SIZE_GUIDANCE}`;
   const prompt = `Update the product release note below to incorporate the new material, preserving as much of the existing wording and structure as still applies. Format the body as Markdown (short paragraphs, and bullet lists where helpful).${sizeGuidance}\n\n${sections.join("\n\n")}`;
 

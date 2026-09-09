@@ -18,6 +18,7 @@ import {
   ATOMIC_UPDATES_DEFAULTS,
   type AtomicUpdatesFilterState,
 } from "./filter-params";
+import { ASCENDING_SIZE_KEYS } from "@/lib/atomic-updates/sizes";
 
 const CATEGORY_OPTIONS = [
   { value: "all", label: "All categories" },
@@ -29,10 +30,7 @@ const CATEGORY_OPTIONS = [
 
 const SIZE_OPTIONS = [
   { value: "all", label: "All sizes" },
-  { value: "s", label: "S" },
-  { value: "m", label: "M" },
-  { value: "l", label: "L" },
-  { value: "xl", label: "XL" },
+  ...ASCENDING_SIZE_KEYS.map((key) => ({ value: key, label: key.toUpperCase() })),
 ];
 
 function labelFor(options: { value: string; label: string }[], value: string) {

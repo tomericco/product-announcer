@@ -6,6 +6,7 @@ import { atomicUpdates, changeEvents } from "@/db/schema";
 import { resolveModel, modelId } from "./model";
 import { recordLlmUsage } from "./llm-usage";
 import { SIZE_RUBRIC, TITLE_SUMMARY_STYLE } from "./prompt-rules";
+import { SIZE_KEYS, type SizeKey } from "@/lib/atomic-updates/sizes";
 
 type Database = typeof defaultDb;
 
@@ -18,7 +19,7 @@ export type AtomicEvidence = {
 export const AtomicSummarySchema = z.object({
   title: z.string(),
   summary: z.string(),
-  size: z.enum(["s", "m", "l", "xl"]),
+  size: z.enum(SIZE_KEYS),
 });
 
 const SUMMARY_SYSTEM = [
@@ -34,7 +35,7 @@ export async function regenerateAtomicSummary(input: {
   tenantId: string;
   current: { title: string; summary: string };
   evidence: AtomicEvidence[];
-}): Promise<{ title: string; summary: string; size: "s" | "m" | "l" | "xl" } | null> {
+}): Promise<{ title: string; summary: string; size: SizeKey } | null> {
   try {
     const spec = process.env.SUMMARY_MODEL ?? "anthropic/claude-haiku-4-5";
     const evidenceBlock = input.evidence

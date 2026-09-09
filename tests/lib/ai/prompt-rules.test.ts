@@ -1,35 +1,34 @@
 import { describe, it, expect } from "vitest";
-import {
-  SIZE_BANDS,
-  SIZE_RANK,
-  SIZE_RUBRIC,
-  CATEGORY_RUBRIC,
-  fenceGuidelines,
-  truncateForPrompt,
-} from "../../../src/lib/ai/prompt-rules";
+import { SIZE_RUBRIC, CATEGORY_RUBRIC, fenceGuidelines, truncateForPrompt } from "../../../src/lib/ai/prompt-rules";
+import { SIZE_BANDS, SIZE_RANK } from "../../../src/lib/atomic-updates/sizes";
 
-// The exact string this replaces, copied from resolve-atomic-updates.ts:57-61
-// and regenerate-atomic-summary.ts:29-33 (byte-identical in both). This
-// extraction MUST NOT change behaviour, so the snapshot is the whole point of
-// the test — if you change SIZE_BANDS' glosses, this fails and that is correct.
-const CURRENT_SIZE_RUBRIC = [
-  "Also pick a size by USER-FACING SIGNIFICANCE (not amount of code): 's' (a minor fix, tweak, or polish —",
-  "small individual user impact), 'm' (a standard improvement or small feature noticeable to users of that",
-  "area), 'l' (a significant feature or major improvement worth calling out to many users), 'xl' (a flagship",
-  "or headline change — a major new capability or overhaul you would lead an announcement with).",
-].join(" ");
+const BOTTOM_UP_SENTENCE =
+  "Decide from the bottom up: if no user could notice it, 'xxs'; if a user could notice it but would not care, 'xs'; otherwise 's' or larger by how many users it reaches and how much it changes for them.";
 
 describe("SIZE_RUBRIC", () => {
-  it("renders byte-identically to the text it replaces", () => {
-    expect(SIZE_RUBRIC).toBe(CURRENT_SIZE_RUBRIC);
+  it("names every band as 'key' (gloss), ascending (xxs first, xl last)", () => {
+    const ascending = [...SIZE_BANDS].reverse();
+    let searchFrom = 0;
+    for (const band of ascending) {
+      const needle = `'${band.key}' (${band.gloss})`;
+      const at = SIZE_RUBRIC.indexOf(needle, searchFrom);
+      expect(at).toBeGreaterThanOrEqual(0);
+      searchFrom = at + needle.length;
+    }
+  });
+
+  it("ends with the bottom-up decision sentence, verbatim", () => {
+    expect(SIZE_RUBRIC.endsWith(BOTTOM_UP_SENTENCE)).toBe(true);
   });
 });
 
 describe("SIZE_RANK", () => {
   it("ranks descending by significance, matching SIZE_BANDS order", () => {
-    expect(SIZE_RANK.xl).toBeGreaterThan(SIZE_RANK.l);
-    expect(SIZE_RANK.l).toBeGreaterThan(SIZE_RANK.m);
-    expect(SIZE_RANK.m).toBeGreaterThan(SIZE_RANK.s);
+    for (let i = 0; i < SIZE_BANDS.length - 1; i++) {
+      const higher = SIZE_BANDS[i].key;
+      const lower = SIZE_BANDS[i + 1].key;
+      expect(SIZE_RANK[higher]).toBeGreaterThan(SIZE_RANK[lower]);
+    }
   });
 
   it("has an entry for every band and nothing else", () => {

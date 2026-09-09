@@ -146,7 +146,12 @@ export const notionConnectionStatusEnum = pgEnum("notion_connection_status", [
   "misconfigured",
 ]);
 export const atomicUpdateStatusEnum = pgEnum("atomic_update_status", ["open", "released", "hidden"]);
-export const atomicUpdateSizeEnum = pgEnum("atomic_update_size", ["s", "m", "l", "xl"]);
+// Literal tuple, not `[...SIZE_KEYS]`: this file must stay importable in
+// contexts (drizzle-kit, migrations) where pulling in `@/lib/...` is
+// undesirable, and drizzle's `pgEnum` wants a literal tuple type anyway. The
+// source of truth for these six keys — order, glosses, and the signal floor —
+// is `src/lib/atomic-updates/sizes.ts`; keep this list in sync with it.
+export const atomicUpdateSizeEnum = pgEnum("atomic_update_size", ["s", "m", "l", "xl", "xs", "xxs"]);
 // Why tier 1 dropped an event. Null means it was not dropped deterministically.
 export const filterReasonEnum = pgEnum("filter_reason", [
   "merge_commit",

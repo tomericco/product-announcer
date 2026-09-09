@@ -13,46 +13,31 @@
  * cleanup. See the spec's Part 0, rule 3.
  */
 
+import { SIZE_BANDS } from "@/lib/atomic-updates/sizes";
+
 /** Chars of a body/excerpt a prompt will carry before truncation. */
 export const DEFAULT_MAX_PROMPT_CHARS = 24000;
 
 /** Chars of the brand guidelines document a prompt will carry. */
 const MAX_GUIDELINES_CHARS = 6000;
 
-/**
- * Size bands, most significant FIRST. This order is load-bearing twice: it is
- * the order the composer lists changes in, and it is what `SIZE_RUBRIC`
- * describes to the model. One array, so the two can never disagree.
- *
- * A shared string constant would have satisfied the two prompts and left the
- * composer's sort free to hardcode its own ordering — precisely the divergence
- * this module exists to prevent, just moved somewhere harder to see.
- */
-export const SIZE_BANDS = [
-  { key: "xl", gloss: "a flagship or headline change — a major new capability or overhaul you would lead an announcement with" },
-  { key: "l", gloss: "a significant feature or major improvement worth calling out to many users" },
-  { key: "m", gloss: "a standard improvement or small feature noticeable to users of that area" },
-  { key: "s", gloss: "a minor fix, tweak, or polish — small individual user impact" },
-] as const;
-
-export type SizeKey = (typeof SIZE_BANDS)[number]["key"];
-
-/** Descending significance. The composer sorts its item list on this. */
-export const SIZE_RANK: Record<SizeKey, number> = Object.fromEntries(
-  SIZE_BANDS.map((band, index) => [band.key, SIZE_BANDS.length - index])
-) as Record<SizeKey, number>;
+/** The bottom-up decision sentence appended to `SIZE_RUBRIC` below. */
+const BOTTOM_UP_SENTENCE =
+  "Decide from the bottom up: if no user could notice it, 'xxs'; if a user could notice it but would not care, 'xs'; otherwise 's' or larger by how many users it reaches and how much it changes for them.";
 
 /**
- * Rendered ASCENDING, which is the order the two prompts already used. The
- * array is descending because that is what `SIZE_RANK` needs; reversing here
- * rather than there keeps the emitted string byte-identical to what it
- * replaces. A snapshot test enforces that — this extraction is the one in this
- * change set that must not alter behaviour at all.
+ * Rendered ASCENDING (xxs first, xl last), so the model reads the rubric from
+ * "nothing noticeable" up to "flagship" — the same direction as the bottom-up
+ * decision sentence appended below. `SIZE_BANDS` (in
+ * `src/lib/atomic-updates/sizes.ts`, the source of truth for bands and their
+ * order) is descending because that is what `SIZE_RANK` there needs;
+ * reversing here rather than there keeps that module's order load-bearing in
+ * one direction only.
  */
 export const SIZE_RUBRIC = `Also pick a size by USER-FACING SIGNIFICANCE (not amount of code): ${[...SIZE_BANDS]
   .reverse()
   .map((band) => `'${band.key}' (${band.gloss})`)
-  .join(", ")}.`;
+  .join(", ")}. ${BOTTOM_UP_SENTENCE}`;
 
 export const CATEGORIES = [
   { key: "new", gloss: "a new capability" },
