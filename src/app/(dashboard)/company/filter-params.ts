@@ -25,6 +25,8 @@
  * functions themselves.)
  */
 
+import { SIZE_KEYS } from "@/lib/atomic-updates/sizes";
+
 export type SearchParamsRecord = { [key: string]: string | string[] | undefined };
 
 export const CHANGE_EVENTS_PREFIX = "ce";
@@ -147,7 +149,9 @@ export function changeEventsFiltersAreDefault(state: ChangeEventsFilterState): b
 // ---------------------------------------------------------------------------
 
 export const ATOMIC_UPDATE_CATEGORIES = ["all", "new", "improvement", "fix", "announcement"] as const;
-export const ATOMIC_UPDATE_SIZES = ["all", "s", "m", "l", "xl"] as const;
+// A URL param whitelist, not a rendered order — descending (SIZE_KEYS' own
+// order) is fine here; only the filter bar's Select options need ascending.
+export const ATOMIC_UPDATE_SIZES = ["all", ...SIZE_KEYS] as const;
 
 export type AtomicUpdatesFilterState = {
   category: (typeof ATOMIC_UPDATE_CATEGORIES)[number];

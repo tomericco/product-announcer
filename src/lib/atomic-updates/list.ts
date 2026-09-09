@@ -3,6 +3,7 @@ import { db as defaultDb } from "@/db";
 import { atomicUpdates, changeEvents } from "@/db/schema";
 import { reassignChangeEvent, type ReassignResult } from "@/lib/change-events/reassign";
 import { eventLabel } from "@/lib/change-events/event-label";
+import type { SizeKey } from "@/lib/atomic-updates/sizes";
 
 type Database = typeof defaultDb;
 
@@ -21,7 +22,7 @@ export type AtomicUpdateRow = {
   title: string;
   summary: string;
   category: "new" | "improvement" | "fix" | "announcement" | null;
-  size: "s" | "m" | "l" | "xl" | null;
+  size: SizeKey | null;
   events: AtomicUpdateEvent[];
   summaryEditedAt: Date | null;
   updatedAt: Date;
@@ -36,7 +37,7 @@ export type AtomicUpdateRow = {
 
 export type AtomicUpdateListFilters = {
   category?: "new" | "improvement" | "fix" | "announcement";
-  size?: "s" | "m" | "l" | "xl";
+  size?: SizeKey;
   // Include `hidden` updates alongside the open ones, interleaved by createdAt
   // rather than segregated into their own section (mirrors `showHidden` in
   // `listChangeEvents`). The category/size filters apply to them too.
@@ -392,7 +393,7 @@ export async function removeEventFromAtomicUpdate(input: {
 export async function setAtomicUpdateSize(
   tenantId: string,
   id: string,
-  size: "s" | "m" | "l" | "xl",
+  size: SizeKey,
   database: Database = defaultDb
 ): Promise<{ ok: boolean }> {
   const rows = await database

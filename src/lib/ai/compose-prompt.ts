@@ -5,10 +5,9 @@ import {
   fenceGuidelines,
   GROUNDING_RULE,
   NO_INVENTED_LINKS_RULE,
-  SIZE_RANK,
   truncateForPrompt,
-  type SizeKey,
 } from "./prompt-rules";
+import { SIZE_RANK, type SizeKey } from "@/lib/atomic-updates/sizes";
 import { parseTemplate, substituteVariables } from "./template";
 
 type BrandProfileRow = typeof companyProfiles.$inferSelect;
@@ -116,7 +115,7 @@ export type AtomicUpdateForPrompt = {
   title: string;
   summary: string;
   category: "new" | "improvement" | "fix" | "announcement" | null;
-  size: "s" | "m" | "l" | "xl" | null;
+  size: SizeKey | null;
   // Non-null means a human set the size. Breaks ties in the composer's sort:
   // a human who picked a size is a stronger signal than a Haiku call on a
   // one-line summary.
@@ -167,9 +166,9 @@ function formatAtomicUpdate(item: AtomicUpdateForPrompt, index: number): string 
 const SIZE_GUIDANCE =
   "Give each update space proportional to its size. XL updates are the headline — lead with them, each in " +
   "its own short paragraph. L updates each get their own short paragraph. M updates get a sentence or two and " +
-  "may share a paragraph. S updates are minor: when there are two or more, gather them into a single bulleted " +
-  "list (e.g. under \"Also improved\" or \"Smaller fixes\") rather than a paragraph each; a lone S update may be " +
-  "a brief one-liner. Treat an update with no stated size as M.";
+  "may share a paragraph. S, XS and XXS updates are minor: when there are two or more, gather them into a " +
+  "single bulleted list (e.g. under \"Also improved\" or \"Smaller fixes\") rather than a paragraph each; a lone " +
+  "one may be a brief one-liner. Treat an update with no stated size as M.";
 
 const FORMAT_GUIDANCE: Record<ContentType, string> = {
   product_update: SIZE_GUIDANCE,

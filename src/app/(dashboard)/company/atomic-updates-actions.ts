@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { requireSession } from "@/lib/workspace/session";
 import * as curation from "@/lib/atomic-updates/list";
 import type { ReassignResult } from "@/lib/change-events/reassign";
+import type { SizeKey } from "@/lib/atomic-updates/sizes";
 
 // Mutations behind the Company page's "Atomic updates" section (moved here
 // from the retired standalone /atomic-updates route in Task 6 of the
@@ -70,7 +71,7 @@ export async function removeEventFromAtomicUpdate(
 
 export async function setAtomicUpdateSize(
   id: string,
-  size: "s" | "m" | "l" | "xl"
+  size: SizeKey
 ): Promise<{ ok: boolean }> {
   const session = await requireSession();
   const result = await curation.setAtomicUpdateSize(session.user.tenantId, id, size);

@@ -554,6 +554,13 @@
       "when": 1788123380723,
       "tag": "0078_yummy_gwen_stacy",
       "breakpoints": true
+    },
+    {
+      "idx": 79,
+      "version": "7",
+      "when": 1788972244845,
+      "tag": "0079_foamy_blacklash",
+      "breakpoints": true
     }
   ]
 }

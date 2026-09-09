@@ -16,6 +16,7 @@ import {
   reassignChangeEvent,
   type ReassignResult,
 } from "@/lib/change-events/reassign";
+import type { SizeKey } from "@/lib/atomic-updates/sizes";
 
 /**
  * Loads the atomic update and change events behind one signal, for the
@@ -66,7 +67,7 @@ export async function saveEvidenceEdit(
 
 export async function saveEvidenceSize(
   atomicUpdateId: string,
-  size: "s" | "m" | "l" | "xl"
+  size: SizeKey
 ): Promise<{ ok: boolean }> {
   const session = await requireSession();
   const result = await setAtomicUpdateSize(session.user.tenantId, atomicUpdateId, size);
