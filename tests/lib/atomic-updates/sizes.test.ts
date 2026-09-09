@@ -2,9 +2,11 @@ import { describe, it, expect } from "vitest";
 import {
   SIZE_BANDS,
   SIZE_KEYS,
+  ASCENDING_SIZE_KEYS,
   SIZE_RANK,
   SIZES_BELOW_SIGNAL_FLOOR,
 } from "../../../src/lib/atomic-updates/sizes";
+import { atomicUpdateSizeEnum } from "../../../src/db/schema";
 
 describe("SIZE_BANDS", () => {
   it("carries the six bands, most significant first", () => {
@@ -27,6 +29,16 @@ describe("SIZE_BANDS", () => {
 describe("SIZE_KEYS", () => {
   it("matches SIZE_BANDS' keys in the same order", () => {
     expect(SIZE_KEYS).toEqual(SIZE_BANDS.map((b) => b.key));
+  });
+
+  it("agrees with the pg enum on the set of size keys", () => {
+    expect([...atomicUpdateSizeEnum.enumValues].sort()).toEqual([...SIZE_KEYS].sort());
+  });
+});
+
+describe("ASCENDING_SIZE_KEYS", () => {
+  it("is the exact reverse of SIZE_KEYS", () => {
+    expect(ASCENDING_SIZE_KEYS).toEqual([...SIZE_KEYS].reverse());
   });
 });
 

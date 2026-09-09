@@ -134,7 +134,7 @@ export type AtomicUpdateForPrompt = {
  * motivated it. See the spec's Part 1.
  */
 function bySignificance(a: AtomicUpdateForPrompt, b: AtomicUpdateForPrompt): number {
-  const rank = (item: AtomicUpdateForPrompt) => SIZE_RANK[(item.size ?? "m") as SizeKey];
+  const rank = (item: AtomicUpdateForPrompt) => SIZE_RANK[item.size ?? "m"];
   return (
     rank(b) - rank(a) ||
     Number(Boolean(b.sizeEditedAt)) - Number(Boolean(a.sizeEditedAt))
@@ -354,12 +354,13 @@ export function composeMergePrompt(args: {
     sections.push(`Changes whose details were updated since the current body was written:\n${serializeAtomicUpdates(args.changedItems)}`);
   }
 
-  // `SIZE_GUIDANCE` prescribes its own structure ("gather S updates into a
-  // single bulleted list"), which directly contradicts a skeleton's literal
-  // sections. `composeReleasePrompt` omits it when a template is present for
-  // exactly this reason; the two paths must not disagree. Gated on
-  // `bodySkeleton` rather than `args.template` for the same reason `templateNote`
-  // is: an empty skeleton means this behaves as the untemplated path.
+  // `SIZE_GUIDANCE` prescribes its own structure ("gather S, XS and XXS
+  // updates into a single bulleted list"), which directly contradicts a
+  // skeleton's literal sections. `composeReleasePrompt` omits it when a
+  // template is present for exactly this reason; the two paths must not
+  // disagree. Gated on `bodySkeleton` rather than `args.template` for the
+  // same reason `templateNote` is: an empty skeleton means this behaves as
+  // the untemplated path.
   const sizeGuidance = bodySkeleton ? "" : ` ${SIZE_GUIDANCE}`;
   const prompt = `Update the product release note below to incorporate the new material, preserving as much of the existing wording and structure as still applies. Format the body as Markdown (short paragraphs, and bullet lists where helpful).${sizeGuidance}\n\n${sections.join("\n\n")}`;
 

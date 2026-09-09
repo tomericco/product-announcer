@@ -21,6 +21,10 @@ export const DEFAULT_MAX_PROMPT_CHARS = 24000;
 /** Chars of the brand guidelines document a prompt will carry. */
 const MAX_GUIDELINES_CHARS = 6000;
 
+/** The bottom-up decision sentence appended to `SIZE_RUBRIC` below. */
+const BOTTOM_UP_SENTENCE =
+  "Decide from the bottom up: if no user could notice it, 'xxs'; if a user could notice it but would not care, 'xs'; otherwise 's' or larger by how many users it reaches and how much it changes for them.";
+
 /**
  * Rendered ASCENDING (xxs first, xl last), so the model reads the rubric from
  * "nothing noticeable" up to "flagship" — the same direction as the bottom-up
@@ -30,9 +34,6 @@ const MAX_GUIDELINES_CHARS = 6000;
  * reversing here rather than there keeps that module's order load-bearing in
  * one direction only.
  */
-const BOTTOM_UP_SENTENCE =
-  "Decide from the bottom up: if no user could notice it, 'xxs'; if a user could notice it but would not care, 'xs'; otherwise 's' or larger by how many users it reaches and how much it changes for them.";
-
 export const SIZE_RUBRIC = `Also pick a size by USER-FACING SIGNIFICANCE (not amount of code): ${[...SIZE_BANDS]
   .reverse()
   .map((band) => `'${band.key}' (${band.gloss})`)

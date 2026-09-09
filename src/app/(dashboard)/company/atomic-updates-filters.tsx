@@ -18,7 +18,7 @@ import {
   ATOMIC_UPDATES_DEFAULTS,
   type AtomicUpdatesFilterState,
 } from "./filter-params";
-import { SIZE_KEYS } from "@/lib/atomic-updates/sizes";
+import { ASCENDING_SIZE_KEYS } from "@/lib/atomic-updates/sizes";
 
 const CATEGORY_OPTIONS = [
   { value: "all", label: "All categories" },
@@ -28,11 +28,9 @@ const CATEGORY_OPTIONS = [
   { value: "announcement", label: "Announcement" },
 ];
 
-// Ascending (xxs → xl): the visual order should match significance, smallest
-// first, unlike SIZE_KEYS' own descending order.
 const SIZE_OPTIONS = [
   { value: "all", label: "All sizes" },
-  ...[...SIZE_KEYS].reverse().map((key) => ({ value: key, label: key.toUpperCase() })),
+  ...ASCENDING_SIZE_KEYS.map((key) => ({ value: key, label: key.toUpperCase() })),
 ];
 
 function labelFor(options: { value: string; label: string }[], value: string) {

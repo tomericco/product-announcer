@@ -47,17 +47,22 @@ export const SIZE_BANDS = [
 export type SizeKey = (typeof SIZE_BANDS)[number]["key"];
 
 /**
- * A non-empty tuple of the same keys, in the same order, for callers that need
- * a runtime array rather than the full band objects — `z.enum` (which requires
- * a non-empty tuple type) and the ascending-order Select menus being the two
- * real ones. Derived from `SIZE_BANDS` rather than re-spelled, so there is
- * exactly one place (besides the pg enum literal in `schema.ts`, which can't
- * import from here — see that file's comment) the six keys are written out.
+ * The same keys, in the same order, for callers that need a runtime array
+ * rather than the full band objects — `z.enum` and the URL-param whitelist
+ * being the two real ones. Derived from `SIZE_BANDS` rather than re-spelled,
+ * so there is exactly one place (besides the pg enum literal in `schema.ts`,
+ * which can't import from here — see that file's comment) the six keys are
+ * written out.
  */
-export const SIZE_KEYS = SIZE_BANDS.map((band) => band.key) as unknown as readonly [
-  SizeKey,
-  ...SizeKey[],
-];
+export const SIZE_KEYS = SIZE_BANDS.map((band) => band.key);
+
+/**
+ * Least significant first — the reverse of `SIZE_KEYS`. Select menus for size
+ * read bottom-up (xxs, then up to xl) so the visual order matches
+ * significance; kept here rather than reversed at each call site so there is
+ * one place that does the reversing.
+ */
+export const ASCENDING_SIZE_KEYS = [...SIZE_KEYS].reverse();
 
 /** Descending significance. The composer sorts its item list on this. */
 export const SIZE_RANK: Record<SizeKey, number> = Object.fromEntries(

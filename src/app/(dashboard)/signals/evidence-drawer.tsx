@@ -44,7 +44,7 @@ import { CATEGORY_LABEL } from "../company/atomic-update-badges";
 // a "use server" action below — a Server Function reference, not a runtime
 // value out of a server module.
 import type { SignalEvidence, EvidenceEvent } from "@/lib/signals/evidence";
-import { SIZE_KEYS } from "@/lib/atomic-updates/sizes";
+import { ASCENDING_SIZE_KEYS } from "@/lib/atomic-updates/sizes";
 // Type-only, same reasoning: `@/lib/change-events/reassign` also has a
 // top-level `db` import.
 import type { ReassignResult } from "@/lib/change-events/reassign";
@@ -63,9 +63,7 @@ import {
   removeEvidenceEvent,
 } from "./evidence-actions";
 
-// Ascending (xxs → xl): the visual order should match significance, smallest
-// first, unlike SIZE_KEYS' own descending order.
-const SIZE_OPTIONS: Array<NonNullable<SignalEvidence["size"]>> = [...SIZE_KEYS].reverse();
+const SIZE_OPTIONS: Array<NonNullable<SignalEvidence["size"]>> = ASCENDING_SIZE_KEYS;
 
 const CATEGORY_OPTIONS: Array<NonNullable<SignalEvidence["category"]>> = [
   "new",
